@@ -16,9 +16,12 @@
 //! The panel only ever *displays* server state: the C→S "set auto potion"
 //! opcode is UNKNOWN (no doc, zero outbound samples), so OK is spawned
 //! permanently disabled, the sliders render a thumb at the current percentage
-//! with no drag observers, and the combo boxes render as empty boxes — what they
-//! enumerate is UNKNOWN too, and this repo has no combo widget to fill them
-//! with. Cancel (and the shell's X) closes the window.
+//! with no drag observers, and the combo boxes render as empty closed fields —
+//! what they enumerate is UNKNOWN too. The fields themselves are no longer a
+//! private box: they come from the shared
+//! [`crate::plugins::hud::widgets::combo_box`], whose house chrome was taken
+//! from this file, so the adoption changes no pixel. Cancel (and the shell's X)
+//! closes the window.
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -31,6 +34,7 @@ use crate::plugins::hud::autopotion::model::{
 };
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::widgets::combo_box;
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -182,7 +186,8 @@ const THUMB_Y: f32 = 4.0;
 
 // --- Art paths --------------------------------------------------------------
 
-const FRAME_1_DIR: &str = "media://interface/inventory/int_window_";
+/// The shared `int_window_` board kit ([`game_window::INT_WINDOW`]).
+const FRAME_1_DIR: &str = game_window::INT_WINDOW.dir;
 const FRAME_2_DIR: &str = "media://interface/frame/frameg_wnd_";
 const BG_TILE_DDJ: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_b.ddj";
 const CHECK_OFF_DDJ: &str = "media://interface/ifcommon/com_checkbutton_off.ddj";
@@ -205,13 +210,6 @@ const TEXT_COLOR: Color = Color::WHITE;
 /// `FontColor="255,255,247,202"` on the OK / Cancel buttons
 /// (`ifautopotion.txt:11,30`).
 const BUTTON_TEXT_COLOR: Color = Color::srgb_u8(255, 247, 202);
-/// `CIFComboBox` and `CIFVerticalSpinCtrl` carry an **empty** `DDJ` and have no
-/// prototype file anywhere in the resinfo corpus, so their art is code-side in
-/// the original and UNKNOWN to us. They are drawn as the house inset the
-/// store/storage modals already use (`storage/ui.rs:837-841`) so the boxes are
-/// visible without inventing an ornament.
-const INSET_BG: Color = Color::srgb(0.09, 0.08, 0.06);
-const INSET_BORDER: Color = Color::srgb(0.55, 0.45, 0.25);
 
 // --- Markers ----------------------------------------------------------------
 
@@ -282,8 +280,8 @@ pub fn spawn_autopotion_window(
             &asset_server,
             FRAME_1_DIR,
             FRAME_1_RECT,
-            16.0,
-            16.0,
+            game_window::INT_WINDOW.piece,
+            game_window::INT_WINDOW.piece,
             s,
         );
         content.spawn((
@@ -377,7 +375,10 @@ pub fn spawn_autopotion_window(
             Justify::Right,
             s,
         ));
-        content.spawn(inset_box(ABNORMAL_BELT_COMBO_RECT, s));
+        content.spawn((
+            combo_box::combo_field(ABNORMAL_BELT_COMBO_RECT, s),
+            Pickable::IGNORE,
+        ));
         content.spawn(static_text(
             &fonts,
             ABNORMAL_QUICK_LABEL_RECT,
@@ -386,7 +387,10 @@ pub fn spawn_autopotion_window(
             Justify::Right,
             s,
         ));
-        content.spawn(inset_box(ABNORMAL_QUICK_COMBO_RECT, s));
+        content.spawn((
+            combo_box::combo_field(ABNORMAL_QUICK_COMBO_RECT, s),
+            Pickable::IGNORE,
+        ));
 
         // --- Section PotionDelaySlot: the spin control shows the raw number
         // (the row has no unit static, so the delay's unit is UNKNOWN).
@@ -432,8 +436,14 @@ pub fn spawn_autopotion_window(
             ImageButtonStyle {
                 normal: disabled.clone(),
                 hover: disabled.clone(),
-                press: disabled,
-                ..Default::default()
+                press: disabled.clone(),
+                // The `disable` slot too, not just the three live ones: the
+                // button carries `InteractionDisabled`, so `disabled_art()`
+                // reads *this* slot — an unset one made it report the art as
+                // missing and fall back to `normal`. `com_button_disable.ddj`
+                // is present in the archive (`interface/ifcommon/`), so the
+                // warning was about the style, not about the data.
+                disable: disabled,
             },
             s,
         );
@@ -521,7 +531,7 @@ fn spawn_slot(
                 Justify::Right,
                 s,
             ));
-            slot.spawn(inset_box(L_BELT_COMBO, s));
+            slot.spawn((combo_box::combo_field(L_BELT_COMBO, s), Pickable::IGNORE));
             slot.spawn(static_text(
                 fonts,
                 L_QUICK_LABEL,
@@ -530,7 +540,7 @@ fn spawn_slot(
                 Justify::Right,
                 s,
             ));
-            slot.spawn(inset_box(L_QUICK_COMBO, s));
+            slot.spawn((combo_box::combo_field(L_QUICK_COMBO, s), Pickable::IGNORE));
 
             // the slider: track art at its native extent, plus a static thumb
             // (no drag observers — the panel is read-only)
@@ -628,15 +638,23 @@ fn check_box(
     )
 }
 
-/// The stand-in box for a `CIFComboBox` / `CIFVerticalSpinCtrl` (see
-/// [`INSET_BG`]).
+/// The stand-in box for this window's one `CIFVerticalSpinCtrl` (the potion
+/// delay). Like `CIFComboBox` it carries an **empty** `DDJ` and has no
+/// prototype file anywhere in the resinfo corpus, so its art is code-side in
+/// the original and UNKNOWN to us.
+///
+/// The two colours are the shared combo widget's, not a private copy: the four
+/// `CIFComboBox`es in this window are now spawned by
+/// [`combo_box::combo_field`], and `combo_box::FIELD_BG`/`FIELD_BORDER` were
+/// taken *from* this file, so the spin box keeps drawing the identical pixels
+/// while there is only one definition of them left.
 fn inset_box(rect: (f32, f32, f32, f32), s: f32) -> impl Bundle {
     (
         abs_node(rect, s),
-        BackgroundColor(INSET_BG),
+        BackgroundColor(combo_box::FIELD_BG),
         Outline {
             width: Val::Px(1.0),
-            color: INSET_BORDER,
+            color: combo_box::FIELD_BORDER,
             ..default()
         },
         Pickable::IGNORE,

@@ -918,7 +918,10 @@ pub fn refresh_statup_button(
             let disable: Handle<Image> = asset_server.load(PLUS_BUTTON_DISABLE);
             style.normal = disable.clone();
             style.hover = disable.clone();
-            style.press = disable;
+            style.press = disable.clone();
+            // and the slot `disabled_art()` actually reads once
+            // `InteractionDisabled` is on the button (same as `character_info`).
+            style.disable = disable;
             commands.entity(entity).insert(InteractionDisabled);
         }
         image.image = style.normal.clone();
@@ -1135,14 +1138,7 @@ pub fn refresh_mini_info(
     // The crop node carries the fill; its art child keeps its native size.
     let mut set_fill = |entity: Entity, cur: u32, max: Option<u32>, track_w: f32| {
         if let Ok(mut node) = nodes.get_mut(entity) {
-            // Compared before writing, like `set_text` above: a `Node` write
-            // marks the UI tree dirty and bevy_ui re-runs the whole Taffy
-            // layout, so an unguarded gauge fill costs a relayout every frame
-            // whether or not the bar moved.
-            let width = gauge_fill_width(gauge_fill(cur, max), track_w);
-            if node.width != width {
-                node.width = width;
-            }
+            node.width = gauge_fill_width(gauge_fill(cur, max), track_w);
         }
     };
     let hp_track_w = HP_BAR_RECT.2 * hud_scale();
@@ -1388,8 +1384,8 @@ pub fn aim_portrait_camera(
             }
             let to_local = to_player * mesh_gt.affine();
             for i in 0..8 {
-                let corner = Vec3A::from(aabb.center)
-                    + Vec3A::from(aabb.half_extents)
+                let corner = aabb.center
+                    + aabb.half_extents
                         * Vec3A::new(
                             if i & 1 == 0 { -1.0 } else { 1.0 },
                             if i & 2 == 0 { -1.0 } else { 1.0 },

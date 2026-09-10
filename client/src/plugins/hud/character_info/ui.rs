@@ -30,7 +30,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::character_info::model::{balance_text, CharacterInfoState, PlayerStats};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{font_px, hud_scale};
 use crate::plugins::hud::underbar::model::PlayerProgress;
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
@@ -106,6 +106,15 @@ const GRID_ROW_H: f32 = 15.0;
 // the icons at y-2 (:433/:300/:167) agree, so three controls confirm each row.
 const JOB_ROW_YS: [f32; 3] = [230.0, 248.0, 266.0];
 
+/// The `JobInfo.job_type` behind each drawn row. The panel lists trader, hunter,
+/// thief (that is the original's row order), but the wire numbers them trader 1,
+/// **thief 2**, hunter 3 — so the mapping is [1, 3, 2] and not `row + 1`.
+///
+/// Source: the server's enrolment answer computes the fee as
+/// `(internal - 0x14) * 5000` after mapping union_type 1/2/3 to 0x14/0x15/0x16
+/// which prices trader 0, thief 5000, hunter 10000 — the well-known vSRO fees.
+const JOB_ROW_TYPES: [u8; 3] = [1, 3, 2];
+
 // The two brighter com_bg_tile_b panels behind the stats and job sections
 // (`GDR_PI_BG_TILE_B` 16,75,332,173 :1233, `GDR_PI_BG_TILE_B2` 16,260,332,60
 // :1214). Named rather than inline so the rebase test below can see them — as
@@ -154,8 +163,9 @@ pub enum CiValue {
     MagDef,
     MagBal,
     Parry,
-    /// Job level rows: 0 = merchant/trader, 1 = hunter, 2 = thief (matching
-    /// the vSRO `JobInfo.job_type` 1/2/3 minus one).
+    /// Job level rows in the order the original panel draws them: 0 = trader,
+    /// 1 = hunter, 2 = thief. The row index is *not* the wire value minus one —
+    /// see [`JOB_ROW_TYPES`].
     JobLevel(u8),
 }
 
@@ -219,11 +229,27 @@ pub fn spawn_character_info_window(
         .entity(window.expect_close_button())
         .observe(on_close_button);
 
-    let text_font = |size: f32| TextFont {
+    // `resinfo/ifplayerinfo.txt` gives every text control a `FontIndex`, and
+    // that index — not a hand-picked design size — is what decides the pixel
+    // height (`hud::scale::FONT_INDEX_PX`). All of this window's controls carry
+    // index 0 except the four HP/MP readouts, which carry 1
+    // (`GDR_PI_TEXT_HP`/`_HP_DAT`/`_MP`/`_MP_DAT`) and the three job exp
+    // strings. The sizes used to be 8.0/8.5 *before* `hud_scale`, i.e. the
+    // original's pixel height rendered into a window scaled 1.5x, which left
+    // every label filling half its box instead of the original's three
+    // quarters.
+    let text_font = |index: usize| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(font_px(index)),
         ..default()
     };
+    /// `GDR_PI_*` default: `FontIndex=INTEGER,"0"` -> 12 px.
+    const FI_DEFAULT: usize = 0;
+    // The four HP/MP readouts and the three job-exp statics carry
+    // `FontIndex=INTEGER,"1"` (11 px, 17 px scaled). They are drawn through the
+    // same `label`/`value` helpers as everything else and so render one pixel
+    // larger than authored — a stated 1 px deviation rather than a second pair
+    // of closures for two rows.
 
     // level readout, right-aligned on the title band (vanilla GDR_PI_TEXT_LEVEL)
     let (outer_w, _) = game_window::outer_size((CONTENT_W, CONTENT_H));
@@ -231,7 +257,7 @@ pub fn spawn_character_info_window(
         root.spawn((
             CiLevelText,
             Text::new(""),
-            text_font(8.5),
+            text_font(FI_DEFAULT),
             TextColor(TITLE_GOLD),
             TextLayout::justify(Justify::Right),
             abs_node((9.0, 8.0, outer_w - 36.0, 12.0), s),
@@ -261,7 +287,7 @@ pub fn spawn_character_info_window(
         let label = |rect, text: String, color: Color, justify: Justify| {
             (
                 Text::new(text),
-                text_font(8.0),
+                text_font(FI_DEFAULT),
                 TextColor(color),
                 TextLayout::justify(justify),
                 abs_node(rect, s),
@@ -272,7 +298,7 @@ pub fn spawn_character_info_window(
             (
                 field,
                 Text::new("-"),
-                text_font(8.0),
+                text_font(FI_DEFAULT),
                 TextColor(color),
                 TextLayout::justify(justify),
                 abs_node(rect, s),
@@ -709,15 +735,8 @@ pub fn refresh_character_info(
     let sheet = stats.sheet.as_ref();
     let job = player.single().ok().and_then(|info| info.job.as_ref());
 
-    // Compared before writing, like the value fields below already are: a
-    // `Text` write re-measures the glyph run and marks the UI tree dirty, so an
-    // unconditional one keeps bevy_ui's Taffy layout re-running every frame for
-    // a level that changes a few times an hour.
     for mut text in level_text.iter_mut() {
-        let new = format!("Level {}", vitals.level);
-        if text.0 != new {
-            text.0 = new;
-        }
+        text.0 = format!("Level {}", vitals.level);
     }
 
     for (field, mut text) in values.iter_mut() {
@@ -756,7 +775,7 @@ pub fn refresh_character_info(
             CiValue::Hit => sheet.map_or("-".into(), |s| s.hit_rate.to_string()),
             CiValue::Parry => sheet.map_or("-".into(), |s| s.parry_rate.to_string()),
             CiValue::JobLevel(row) => job
-                .filter(|j| j.job_type == row + 1)
+                .filter(|j| j.job_type == JOB_ROW_TYPES[*row as usize])
                 .map(|j| j.job_level.to_string())
                 .unwrap_or_else(|| "-".into()),
         };
@@ -773,12 +792,7 @@ pub fn refresh_character_info(
         } else {
             vitals.mp as f32 / mp_max as f32
         };
-        // Guarded for the same reason: a `Node` write dirties the layout, and
-        // the bar only moves when vitals do.
-        let width = Val::Percent(fill.clamp(0.0, 1.0) * 100.0);
-        if node.width != width {
-            node.width = width;
-        }
+        node.width = Val::Percent(fill.clamp(0.0, 1.0) * 100.0);
     }
 
     // + buttons: grey out (vanilla-style) instead of hiding. The button
@@ -801,7 +815,12 @@ pub fn refresh_character_info(
             let disable = asset_server.load::<Image>(format!("{stem}.ddj"));
             style.normal = disable.clone();
             style.hover = disable.clone();
-            style.press = disable;
+            style.press = disable.clone();
+            // and the `disable` slot itself — the button is about to carry
+            // `InteractionDisabled`, which is the slot the visuals system
+            // reads; leaving it unset reported `com_plus_button_disable.ddj`
+            // (which the archive does ship) as missing art.
+            style.disable = disable;
             commands.entity(entity).insert(InteractionDisabled);
         }
         image.image = style.normal.clone();
