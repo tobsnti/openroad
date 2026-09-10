@@ -3,7 +3,7 @@
 .PHONY: check-deps check-env
 .PHONY: run watch launcher intro intro_v2 world animations ui_testing asset-loading asset_loading skills dungeons netcheck
 
-.PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data no-private deny ci clean
+.PHONY: build windows release test fmt fmt-check clippy warnings messages opcodes check-target-dir re-tools reference-data no-private deny ci clean
 .PHONY: pk2 pk2-list pk2-unpack list unpack bsr2glb
 .PHONY: perf snapshot sample fps get set attribute
 .PHONY: profile chrome tracy summary windows
@@ -219,7 +219,9 @@ launcher intro intro_v2 world animations ui_testing asset-loading asset_loading 
 	@:
 
 # Headless net-check client: drives the full login->join roundtrip with no
-# window and dumps every packet (credentials from config.yaml `dev_fast_login`).
+# window and dumps every packet (credentials from config.yaml `dev_fast_login`,
+# overridable with NETCHECK_ACCOUNT / NETCHECK_PASSWORD). `BOT=1` runs the same
+# session as a remote-controlled bot; see client/src/bot.rs.
 netcheck:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; NETCHECK=1 cargo run -p client
 
@@ -288,10 +290,17 @@ no-private:
 warnings:
 	python3 scripts/check_warnings.py
 
+# A `MessageReader<T>` whose `T` nobody registers is not skipped by Bevy: it
+# fails parameter validation and takes the schedule down at startup. Neither
+# `test` nor `build` can see that, and the NETCHECK smoke run returns before
+# the full app is assembled — so this is the only cheap check for the class.
+messages:
+	python3 scripts/check_message_registration.py
+
 # The full local quality gate — run this before pushing. There is no CI service:
 # this repo deliberately has no GitHub Actions, so these checks are the gate.
 
-ci: check-target-dir fmt-check warnings opcodes re-tools reference-data no-private deny test build
+ci: check-target-dir fmt-check warnings messages opcodes re-tools reference-data no-private deny test build
 
 # Supply-chain gate: licences, advisories, wildcard versions, source registries
 # (deny.toml). Skips with a notice when cargo-deny is absent, the same way the
