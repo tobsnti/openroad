@@ -91,7 +91,7 @@ impl Default for PacketDump {
 /// exactly the property the dump exists for: that a line is one packet of one
 /// session. Env rather than config, like `SCENE`/`NETCHECK`/`BRP_EXTRAS_PORT`:
 /// it identifies the *run*, not the installation.
-fn dump_root() -> PathBuf {
+pub(crate) fn dump_root() -> PathBuf {
     match std::env::var("PACKET_DUMP_DIR") {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(DUMP_DIR),

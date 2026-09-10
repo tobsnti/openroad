@@ -20,6 +20,7 @@ use bevy_inspector_egui::quick::StateInspectorPlugin;
 use bevy_tweening::TweeningPlugin;
 
 mod assets;
+mod bot;
 mod commands;
 mod net;
 mod netcheck;
@@ -62,6 +63,14 @@ fn main() {
     // and dump packets, then exit. Reuses the net stack minus rendering/scenes.
     if env::var("NETCHECK").is_ok() {
         netcheck::run_headless(config);
+        return;
+    }
+
+    // Clientless bot mode: the same headless session, but steerable over its
+    // own BRP surface so several accounts can be played at once (party,
+    // exchange, trade need a second character). See `bot.rs`.
+    if env::var("BOT").is_ok() {
+        bot::run_bot(config);
         return;
     }
 
