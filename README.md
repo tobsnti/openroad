@@ -382,12 +382,14 @@ make ci
 That runs the full gate: `cargo fmt --all --check`, the Rust warning policy
 (`scripts/check_warnings.py` — rejects every compiler warning except unread
 struct-field diagnostics retained for parsed but not yet consumed SRO data), the
-opcode-ledger check, the `scripts/re/` tool tests, the reference-data column check
+message-registration check (`scripts/check_message_registration.py` — a
+`MessageReader<T>` without an `add_message::<T>()` panics the schedule at startup,
+which neither the build nor the tests can see), the opcode-ledger check, the `scripts/re/` tool tests, the reference-data column check
 (`scripts/re/check_reference_data.py` — asserts our textdata column indices against
 the SQL `SELECT` order in `SR_Db2Media/Settings.cs`; skips with exit 0 unless
 `SRO_REFS_PATH` or `<refs>` holds that checkout), `cargo test --workspace`, and
 the client build. The pieces are also available individually as `make fmt-check`,
-`make warnings`, `make opcodes`, `make re-tools`, `make reference-data`,
+`make warnings`, `make messages`, `make opcodes`, `make re-tools`, `make reference-data`,
 `make test`, `make build`.
 
 The gate starts with `make check-target-dir`, which refuses to run when
