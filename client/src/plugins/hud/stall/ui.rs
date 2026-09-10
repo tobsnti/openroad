@@ -62,9 +62,9 @@ use crate::plugins::textdata::ClientUiStrings;
 const OUTER: (f32, f32) = (467.0, 490.0);
 /// `GDR_STALL_INTERNAL_FRAME` `11,39,447,440` on `int_window_` (id 104).
 const INNER_FRAME: (f32, f32, f32, f32) = (11.0, 39.0, 447.0, 440.0);
-const INNER_FRAME_DIR: &str = "media://interface/inventory/int_window_";
-/// `int_window_` pieces are 16x16, as in the inventory and skill windows.
-const INNER_FRAME_CORNER: f32 = 16.0;
+/// The shared `int_window_` board kit ([`game_window::INT_WINDOW`]).
+const INNER_FRAME_DIR: &str = game_window::INT_WINDOW.dir;
+const INNER_FRAME_CORNER: f32 = game_window::INT_WINDOW.piece;
 
 /// The three `com_bg_tile_b` fills and the `com_bg_tile_e` grid divider,
 /// verbatim (ids 100..103).

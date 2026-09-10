@@ -32,7 +32,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::textdata::skilldata::SkillData;
 use crate::assets::FontAssets;
-use crate::plugins::hud::game_window::spawn_game_window;
+use crate::plugins::hud::game_window::{self, spawn_game_window};
 use crate::plugins::hud::inventory::ui::{drag_ghost_bundle, DragGhost};
 use crate::plugins::hud::magic_state_board::BuffIcon;
 use crate::plugins::hud::scale::hud_scale;
@@ -972,9 +972,7 @@ pub fn refresh_skill_window(
                     ..default()
                 },
                 ImageNode {
-                    image: asset_server.load(format!(
-                        "media://interface/inventory/int_window_{piece}.ddj"
-                    )),
+                    image: asset_server.load(game_window::INT_WINDOW.piece_path(piece)),
                     image_mode: NodeImageMode::Stretch,
                     ..default()
                 },
