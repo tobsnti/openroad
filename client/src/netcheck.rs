@@ -12,8 +12,13 @@
 //! explicitly.
 //!
 //! Run with `make netcheck` (or `NETCHECK=1 cargo run -p client`). Credentials
-//! come from `config.dev_fast_login`; the captcha is answered with
-//! `dev_fast_login.captcha_answer` when set, first operating shard
+//! come from `config.dev_fast_login` unless `NETCHECK_ACCOUNT` /
+//! `NETCHECK_PASSWORD` override them (same shape as `BOT_ACCOUNT`/`BOT_PASSWORD`
+//! in [`crate::bot`]) — needed because the configured account is usually the
+//! owner's and a second session on it is answered `already connected`, which
+//! makes the gate report an environment condition as a code defect. The chosen
+//! account and its origin are logged once at startup. The captcha is answered
+//! with `dev_fast_login.captcha_answer` when set, first operating shard
 //! and first character are chosen automatically.
 //!
 //! With `NETCHECK_ACTIONS=1` the client also *drives* actions after join — it
@@ -60,17 +65,196 @@ use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::plugin::{NetworkCorePlugin, NetworkState};
 use packets::hexdump;
 
+/// Who to log in as, and which character to join. Split out of
+/// `config.dev_fast_login` so the same login driver serves two callers: netcheck
+/// (credentials from the config) and the remote-controlled bot
+/// (`crate::bot`, credentials from the environment, one process per account).
+#[derive(Resource, Clone)]
+pub struct LoginIdentity {
+    pub username: String,
+    pub password: String,
+    /// Character to join. `None` joins the first one the lobby lists, which is
+    /// what netcheck always did.
+    pub character: Option<String>,
+    pub captcha_answer: Option<String>,
+}
+
+/// Login attempt bookkeeping, so a rejected login can be retried.
+///
+/// A killed session lingers on the server for a while: the very next start of
+/// the same account is answered `already connected`, and a one-shot login turns
+/// that into a process that is up, idle and silently useless. Retrying is
+/// therefore part of the driver, not of the caller.
+#[derive(Resource)]
+pub struct LoginAttempt {
+    /// Elapsed seconds at which the next attempt may fire.
+    pub next_at: f64,
+    pub attempts: u32,
+    /// Set once a login has been accepted; stops further attempts.
+    pub accepted: bool,
+}
+
+impl Default for LoginAttempt {
+    fn default() -> Self {
+        Self {
+            next_at: 0.0,
+            attempts: 0,
+            accepted: false,
+        }
+    }
+}
+
+/// Seconds between login attempts. The lingering-session window on the
+/// reference server is tens of seconds, so a tight retry only burns attempts.
+const LOGIN_RETRY_SECS: f64 = 20.0;
+/// Give up after this many, so a wrong password does not hammer the server.
+const LOGIN_MAX_ATTEMPTS: u32 = 30;
+
+/// The login → join sequence, without the netcheck-specific dumping and action
+/// driving: connect, log in, answer the captcha, list characters, join, send
+/// `GameReady`. Requires a [`LoginIdentity`] resource and an already-started
+/// gateway connect (`init_gateway_service`).
+pub struct LoginDriverPlugin;
+
+impl Plugin for LoginDriverPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<LoginAttempt>().add_systems(
+            Update,
+            (
+                poll_gateway_connection,
+                on_shardlist_ping_response,
+                on_shardlist_response,
+                netcheck_login,
+                netcheck_captcha,
+                netcheck_on_login_response,
+                netcheck_retry_after_rejection,
+                netcheck_request_char_list,
+                netcheck_join_first_character,
+                netcheck_on_join_response,
+                netcheck_game_ready,
+            ),
+        );
+    }
+}
+
+/// Reconnect the gateway and re-arm the login after a rejection. The gateway
+/// drops the connection right after a failed login, so a retry needs a fresh
+/// connect — which is what [`init_gateway_service`] does.
+fn netcheck_retry_after_rejection(
+    mut attempt: ResMut<LoginAttempt>,
+    mut rejections: MessageReader<LoginResponse>,
+    time: Res<Time>,
+    gateway: Query<Entity, With<GatewayConnection>>,
+    mut commands: Commands,
+) {
+    let mut rejected = false;
+    for res in rejections.read() {
+        if res.login_error.is_some() {
+            rejected = true;
+        }
+    }
+    if !rejected || attempt.accepted || attempt.attempts >= LOGIN_MAX_ATTEMPTS {
+        return;
+    }
+    attempt.next_at = time.elapsed_secs_f64() + LOGIN_RETRY_SECS;
+    for gw in gateway.iter() {
+        commands.entity(gw).despawn();
+    }
+    commands.run_system_cached(init_gateway_service);
+    info!(
+        "login: rejected — retrying in {:.0}s (attempt {} of {})",
+        LOGIN_RETRY_SECS, attempt.attempts, LOGIN_MAX_ATTEMPTS
+    );
+}
+
+/// Where the netcheck login account came from.
+///
+/// Idea: the smoke is a *gate*, and a gate whose input is invisible in the log
+/// is how an environment condition gets read as a result — the config account is
+/// usually the owner's and answers `already connected`, which looks exactly like
+/// a code defect in the log. So the account and its origin are printed once at
+/// startup and the origin is part of the return value, not a comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountSource {
+    /// `NETCHECK_ACCOUNT` was set.
+    Env,
+    /// Nothing in the environment; `config.dev_fast_login` decided.
+    Config,
+}
+
+impl AccountSource {
+    fn label(self) -> &'static str {
+        match self {
+            AccountSource::Env => "NETCHECK_ACCOUNT",
+            AccountSource::Config => "config.yaml",
+        }
+    }
+}
+
+/// Pick the account the smoke logs in as: `NETCHECK_ACCOUNT`/`NETCHECK_PASSWORD`
+/// override `config.dev_fast_login`, mirroring `BOT_ACCOUNT`/`BOT_PASSWORD` in
+/// [`crate::bot`] (same shape, no new configuration layer).
+///
+/// The environment values are passed in rather than read here so the choice is
+/// testable without touching the process environment. A blank value counts as
+/// unset: `NETCHECK_ACCOUNT= make netcheck` must not try to log in as "".
+/// The two variables are independent — an override of only the password keeps
+/// the configured account, which is what a rotated password needs.
+fn select_account(
+    env_account: Option<String>,
+    env_password: Option<String>,
+    cfg_account: &str,
+    cfg_password: &str,
+) -> (String, String, AccountSource, AccountSource) {
+    let non_blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    let (username, user_src) = match non_blank(env_account) {
+        Some(u) => (u, AccountSource::Env),
+        None => (cfg_account.to_string(), AccountSource::Config),
+    };
+    let (password, pass_src) = match non_blank(env_password) {
+        Some(p) => (p, AccountSource::Env),
+        None => (cfg_password.to_string(), AccountSource::Config),
+    };
+    (username, password, user_src, pass_src)
+}
+
 /// Build and run the headless net-check app. Blocks until the process is killed.
 pub fn run_headless(config: ClientConfig) {
-    App::new()
-        .add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_millis(5))))
+    let (username, password, user_src, pass_src) = select_account(
+        env::var("NETCHECK_ACCOUNT").ok(),
+        env::var("NETCHECK_PASSWORD").ok(),
+        &config.dev_fast_login.username,
+        &config.dev_fast_login.password,
+    );
+    let account_line = format!(
+        "netcheck: account {} (from {}), password from {}",
+        username,
+        user_src.label(),
+        if pass_src == AccountSource::Env {
+            "NETCHECK_PASSWORD"
+        } else {
+            pass_src.label()
+        }
+    );
+    let identity = LoginIdentity {
+        username,
+        password,
+        character: None,
+        captcha_answer: config.dev_fast_login.captcha_answer.clone(),
+    };
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_millis(5))))
         .add_plugins(LogPlugin {
             // Everything at info, plus the per-frame packet dumps at trace.
             level: Level::TRACE,
             filter: "info,packets_in=trace,packets_out=trace".to_string(),
             ..default()
-        })
-        .insert_resource(config)
+        });
+    // Only now is there a subscriber: `LogPlugin::build` installs it, so a line
+    // printed before this point is silently dropped.
+    info!("{}", account_line);
+    app.insert_resource(config)
+        .insert_resource(identity)
         .insert_resource(DivisionInfo::load_or_fallback())
         .insert_resource(ActionDriver {
             enabled: env::var("NETCHECK_ACTIONS").is_ok(),
@@ -83,24 +267,9 @@ pub fn run_headless(config: ClientConfig) {
         // `netcheck_login` (which already waits for both the shard list and the
         // connection) proceeds once they arrive.
         .add_systems(Startup, init_gateway_service)
-        .add_systems(
-            Update,
-            (
-                // reused gateway reactions (poll connect -> ping -> shard list)
-                poll_gateway_connection,
-                on_shardlist_ping_response,
-                on_shardlist_response,
-                // headless login/join driver
-                netcheck_login,
-                netcheck_captcha,
-                netcheck_on_login_response,
-                netcheck_request_char_list,
-                netcheck_join_first_character,
-                netcheck_on_join_response,
-                netcheck_game_ready,
-                netcheck_dump_group_spawns,
-            ),
-        )
+        // the shared login driver (also used by `crate::bot`)
+        .add_plugins(LoginDriverPlugin)
+        .add_systems(Update, netcheck_dump_group_spawns)
         // Action driver (only active with NETCHECK_ACTIONS=1); every system
         // early-returns when disabled.
         .add_systems(
@@ -120,13 +289,17 @@ pub fn run_headless(config: ClientConfig) {
 /// Once the shard list and gateway connection are ready, send the login request
 /// with the configured credentials on the first operating shard. Fires once.
 fn netcheck_login(
-    mut fired: Local<bool>,
-    config: Res<ClientConfig>,
+    mut attempt: ResMut<LoginAttempt>,
+    identity: Res<LoginIdentity>,
     shard_list: Option<Res<ShardList>>,
     gateway: Query<&SilkroadConnection, With<GatewayConnection>>,
     division: Res<DivisionInfo>,
+    time: Res<Time>,
 ) {
-    if *fired {
+    if attempt.accepted
+        || attempt.attempts >= LOGIN_MAX_ATTEMPTS
+        || time.elapsed_secs_f64() < attempt.next_at
+    {
         return;
     }
     let Some(shard_list) = shard_list else {
@@ -148,8 +321,8 @@ fn netcheck_login(
 
     let frame = Packet::from(LoginRequest {
         content_id: division.content_id,
-        username: config.dev_fast_login.username.clone(),
-        password: config.dev_fast_login.password.clone(),
+        username: identity.username.clone(),
+        password: identity.password.clone(),
         shard_id: shard.id,
     })
     .into();
@@ -157,11 +330,14 @@ fn netcheck_login(
         error!("netcheck: failed to send LoginRequest: {}", e.0);
         return;
     }
+    attempt.attempts += 1;
+    // Nothing may fire again until either the response accepts (`accepted`) or
+    // the rejection handler schedules the next attempt.
+    attempt.next_at = f64::INFINITY;
     info!(
-        "netcheck: sent LoginRequest for '{}' on shard {} ({})",
-        config.dev_fast_login.username, shard.id, shard.name
+        "netcheck: sent LoginRequest for '{}' on shard {} ({}) — attempt {}",
+        identity.username, shard.id, shard.name, attempt.attempts
     );
-    *fired = true;
 }
 
 /// Answer the captcha with the configured `dev_fast_login.captcha_answer`.
@@ -170,13 +346,13 @@ fn netcheck_login(
 /// only say so. Guessing a code would hide the missing configuration.
 fn netcheck_captcha(
     mut events: MessageReader<LoginCaptchaChallenge>,
-    config: Res<ClientConfig>,
+    identity: Res<LoginIdentity>,
     gateway: Query<&SilkroadConnection, With<GatewayConnection>>,
 ) {
     if events.read().count() == 0 {
         return;
     }
-    let Some(code) = config.dev_fast_login.captcha_answer.clone() else {
+    let Some(code) = identity.captcha_answer.clone() else {
         error!(
             "netcheck: server sent an IBUV captcha but dev_fast_login.captcha_answer is unset; \
              login cannot continue"
@@ -198,7 +374,8 @@ fn netcheck_captcha(
 /// from the gateway's login info and send the agent login.
 fn netcheck_on_login_response(
     mut reader: MessageReader<LoginResponse>,
-    config: Res<ClientConfig>,
+    mut attempt: ResMut<LoginAttempt>,
+    identity: Res<LoginIdentity>,
     mut network_state: ResMut<NetworkState>,
     gateway: Query<Entity, With<GatewayConnection>>,
     division: Res<DivisionInfo>,
@@ -216,6 +393,7 @@ fn netcheck_on_login_response(
         let Some(info) = res.login_info.clone() else {
             continue;
         };
+        attempt.accepted = true;
 
         if let Ok(gw) = gateway.single() {
             commands.entity(gw).despawn();
@@ -233,8 +411,8 @@ fn netcheck_on_login_response(
                 let sender = conn.get_sender();
                 let frame = Packet::from(AgentLoginRequest {
                     token: info.agent_token,
-                    username: config.dev_fast_login.username.clone(),
-                    password: config.dev_fast_login.password.clone(),
+                    username: identity.username.clone(),
+                    password: identity.password.clone(),
                     content_id: division.content_id,
                     mac_address: mac,
                 })
@@ -291,10 +469,26 @@ fn netcheck_request_char_list(
     info!("netcheck: requested character list");
 }
 
-/// Join the first character from the list response. Fires once.
+/// Which listed character to join: the wanted name (case-insensitive, as the
+/// server treats names), or the first listed when none is wanted. A wanted name
+/// the account does not own is a configuration error, not a reason to silently
+/// play someone else, so it joins nothing.
+fn pick_character<'a>(wanted: Option<&str>, listed: &[&'a str]) -> Option<&'a str> {
+    match wanted {
+        Some(wanted) => listed
+            .iter()
+            .copied()
+            .find(|name| name.eq_ignore_ascii_case(wanted)),
+        None => listed.first().copied(),
+    }
+}
+
+/// Join the character named by [`LoginIdentity`], or the first one the lobby
+/// listed when no name is configured. Fires once.
 fn netcheck_join_first_character(
     mut fired: Local<bool>,
     mut reader: MessageReader<CharacterSelectionActionResponse>,
+    identity: Res<LoginIdentity>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     if *fired {
@@ -303,8 +497,24 @@ fn netcheck_join_first_character(
     let mut name = None;
     for res in reader.read() {
         if let Some(characters) = &res.characters {
-            if let Some(first) = characters.characters.first() {
-                name = Some(first.name.clone());
+            info!(
+                "lobby: {} character(s): {}",
+                characters.characters.len(),
+                characters
+                    .characters
+                    .iter()
+                    .map(|c| format!("{} (lv {})", c.name, c.level))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let listed: Vec<&str> = characters
+                .characters
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect();
+            name = pick_character(identity.character.as_deref(), &listed).map(String::from);
+            if let (Some(wanted), None) = (&identity.character, &name) {
+                error!("login: character '{}' is not on this account", wanted);
             }
         }
     }
@@ -691,6 +901,68 @@ mod tests {
 
         assert!(parse_character_data(&raw, None).is_none());
         assert!(parse_character_data(&raw, Some(119_948)).is_some());
+    }
+
+    /// The gate's own input: `NETCHECK_ACCOUNT` must win over `config.yaml`,
+    /// because a smoke that always logs in as the owner's account reports
+    /// `already connected` — an environment condition read as a result.
+    #[test]
+    fn netcheck_account_env_overrides_the_config() {
+        let (user, pass, user_src, pass_src) = select_account(
+            Some("env-user".to_string()),
+            Some("env-pw".to_string()),
+            "cfg-user",
+            "cfg-pw",
+        );
+        assert_eq!((user.as_str(), pass.as_str()), ("env-user", "env-pw"));
+        assert_eq!(user_src, AccountSource::Env);
+        assert_eq!(pass_src, AccountSource::Env);
+        assert_eq!(user_src.label(), "NETCHECK_ACCOUNT");
+    }
+
+    /// Backwards control: with nothing in the environment the configured
+    /// account is still used, and the log says so.
+    #[test]
+    fn netcheck_account_falls_back_to_the_config() {
+        let (user, pass, user_src, pass_src) = select_account(None, None, "cfg-user", "cfg-pw");
+        assert_eq!((user.as_str(), pass.as_str()), ("cfg-user", "cfg-pw"));
+        assert_eq!(user_src, AccountSource::Config);
+        assert_eq!(pass_src, AccountSource::Config);
+        assert_eq!(user_src.label(), "config.yaml");
+    }
+
+    /// `NETCHECK_ACCOUNT= make netcheck` (exported but empty) must not try to
+    /// log in as "", and the two variables are independent: a password-only
+    /// override keeps the configured account.
+    #[test]
+    fn netcheck_account_ignores_blanks_and_handles_each_variable_alone() {
+        let (user, pass, user_src, pass_src) =
+            select_account(Some("   ".to_string()), None, "cfg-user", "cfg-pw");
+        assert_eq!((user.as_str(), pass.as_str()), ("cfg-user", "cfg-pw"));
+        assert_eq!(
+            (user_src, pass_src),
+            (AccountSource::Config, AccountSource::Config)
+        );
+
+        let (user, pass, user_src, pass_src) =
+            select_account(None, Some("rotated".to_string()), "cfg-user", "cfg-pw");
+        assert_eq!((user.as_str(), pass.as_str()), ("cfg-user", "rotated"));
+        assert_eq!(
+            (user_src, pass_src),
+            (AccountSource::Config, AccountSource::Env)
+        );
+    }
+
+    /// The name rule: `BOT_CHAR`/`LoginIdentity::character` matches the lobby
+    /// list case-insensitively, an unknown name joins nobody (never "the first
+    /// one instead"), and no name at all keeps the old netcheck behaviour.
+    #[test]
+    fn a_wanted_character_is_matched_case_insensitively_or_not_at_all() {
+        let listed = ["Alpha", "Beta"];
+        assert_eq!(pick_character(Some("beta"), &listed), Some("Beta"));
+        assert_eq!(pick_character(Some("Gamma"), &listed), None);
+        assert_eq!(pick_character(None, &listed), Some("Alpha"));
+        assert_eq!(pick_character(None, &[]), None);
     }
 
     /// The body is kept and re-scanned when the id arrives, so an out-of-order
