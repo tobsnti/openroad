@@ -48,6 +48,7 @@ pub mod gauge;
 pub mod guild_storage;
 pub mod hitcount;
 pub mod inventory;
+pub mod item_cell;
 pub mod magic_state_board;
 pub mod main_popup;
 pub mod minimap;
@@ -74,6 +75,7 @@ pub mod target_menu;
 pub mod target_window;
 pub mod toast;
 pub mod underbar;
+pub mod widgets;
 pub mod window_positions;
 pub mod world_anchor;
 pub mod world_map;
@@ -195,6 +197,187 @@ mod test {
             .expect("split always yields a first part")
     }
 
+    /// Every HUD resource a HUD system asks for must be registered by a HUD
+    /// plugin.
+    ///
+    /// This is the failure that killed the client half a second after login
+    /// (#836): `cast.rs` took `ResMut<ItemUseGate>`, no plugin called
+    /// `init_resource::<ItemUseGate>()`, and Bevy 0.19 does not skip such a
+    /// system — parameter validation fails and the schedule panics. `make ci`
+    /// cannot see it (it never starts the app), and a unit test of the window
+    /// cannot either, because nothing runs the schedule.
+    ///
+    /// Rather than boot a GPU app, the invariant is read off the source, like
+    /// the two registry tests above: collect the resources the HUD *defines*,
+    /// the ones its systems *demand*, and the ones it *registers*. Foreign
+    /// resources (`ClientConfig`, `Time`, textdata) are deliberately out of
+    /// scope — another plugin owns those, and demanding them is legitimate.
+    #[test]
+    fn every_hud_resource_a_hud_system_demands_is_registered_by_a_hud_plugin() {
+        let sources = hud_sources();
+
+        // 1. resources the HUD owns: `#[derive(..., Resource, ...)]` on the
+        //    next struct/enum item.
+        let mut defined: Vec<String> = Vec::new();
+        for (_, text) in &sources {
+            let mut derives_resource = false;
+            for line in text.lines() {
+                let line = line.trim();
+                if line.starts_with("#[derive") || line.starts_with("#[") {
+                    if line.contains("Resource") {
+                        derives_resource = true;
+                    }
+                    continue;
+                }
+                if derives_resource {
+                    if let Some(name) = line
+                        .split_once("struct ")
+                        .or_else(|| line.split_once("enum "))
+                        .map(|(_, rest)| {
+                            rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                                .next()
+                                .unwrap_or_default()
+                        })
+                    {
+                        if !name.is_empty() {
+                            defined.push(name.to_string());
+                        }
+                    }
+                    derives_resource = false;
+                }
+            }
+        }
+        defined.sort();
+        defined.dedup();
+        assert!(
+            defined.len() > 20,
+            "the scan found almost no HUD resources ({}) — it broke, it did not pass",
+            defined.len()
+        );
+
+        // 2. everything the HUD registers, anywhere in its tree. The type in
+        //    `init_resource::<model::AlchemyState>()` is written with whatever
+        //    path the call site needs, so only the last segment is compared.
+        let all: String = sources.iter().map(|(_, t)| t.as_str()).collect();
+        let mut registered: Vec<String> = Vec::new();
+        for marker in ["init_resource::<", "init_state::<", "insert_resource("] {
+            for chunk in all.split(marker).skip(1) {
+                let raw = chunk
+                    .split(|c: char| !c.is_alphanumeric() && c != '_' && c != ':')
+                    .next()
+                    .unwrap_or_default();
+                if let Some(last) = raw.rsplit("::").next() {
+                    if !last.is_empty() {
+                        registered.push(last.to_string());
+                    }
+                }
+            }
+        }
+        registered.sort();
+        registered.dedup();
+
+        // 3. a demand is a *non-optional* `Res<X>` / `ResMut<X>` on a resource
+        //    the HUD owns. `Option<Res<X>>` is the documented way to depend on
+        //    a resource that comes and goes (the minimap's dungeon context is
+        //    inserted on entering a dungeon and removed on leaving), and it is
+        //    also the shape AGENTS.md prescribes for HUD state read outside the
+        //    HUD — those must not be flagged.
+        let demands = |text: &str, name: &str| {
+            ["Res<", "ResMut<"].iter().any(|kind| {
+                let needle = format!("{kind}{name}>");
+                text.match_indices(&needle)
+                    .any(|(at, _)| !text[..at].ends_with("Option<"))
+            })
+        };
+
+        let mut missing: Vec<String> = Vec::new();
+        for (path, text) in &sources {
+            for name in &defined {
+                if !demands(text, name) {
+                    continue;
+                }
+                if !registered.contains(name) {
+                    missing.push(format!("{name} (demanded by {path})"));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "HUD resources a system demands but no HUD plugin registers — this panics the \
+             schedule on entering the world, not at compile time:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// A source file's production part: comment lines dropped and
+    /// `#[cfg(test)]` modules cut out.
+    ///
+    /// Both matter, and both were learned the hard way while writing this
+    /// gate: a doc comment that merely *names* `init_resource::<X>()` made the
+    /// check pass, and so did a test that builds its own app. Cutting at the
+    /// first `#[cfg(test)]` is not enough either — several windows put their
+    /// tests above their `Plugin` impl, so that would drop the very
+    /// registration being looked for. The test module is therefore skipped by
+    /// brace depth.
+    fn production_part(text: &str) -> String {
+        let mut out = Vec::new();
+        let mut skipping_from: Option<i32> = None;
+        let mut depth: i32 = 0;
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            let opens = line.matches('{').count() as i32;
+            let closes = line.matches('}').count() as i32;
+
+            if skipping_from.is_none() && trimmed.starts_with("#[cfg(test)]") {
+                skipping_from = Some(depth);
+                depth += opens - closes;
+                continue;
+            }
+            if let Some(base) = skipping_from {
+                depth += opens - closes;
+                if depth <= base {
+                    skipping_from = None;
+                }
+                continue;
+            }
+            depth += opens - closes;
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            out.push(line);
+        }
+        out.join("\n")
+    }
+
+    /// Every `.rs` file under `plugins/hud/`, as (path, contents).
+    fn hud_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir)
+                .expect("hud tree is readable")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("source is readable");
+                    out.push((path.display().to_string(), production_part(&text)));
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/hud");
+        let mut out = Vec::new();
+        walk(&root, &mut out);
+        assert!(
+            out.len() > 50,
+            "the hud tree scan found {} files",
+            out.len()
+        );
+        out
+    }
+
     /// The registry may only *name* plugins. If a window's wiring creeps back
     /// into this file, the shared-block collisions that #558 measured come
     /// back with it, so the invariant is pinned rather than trusted.
@@ -260,6 +443,37 @@ mod test {
         );
     }
 
+    /// No plugin may be named twice. Bevy rejects a second registration of the
+    /// same type at runtime — `add_boxed_plugin` returns `DuplicatePlugin` for
+    /// any plugin whose `is_unique()` is true (the default; nothing in
+    /// `client/src` overrides it), and `Plugins::add_to_app` turns that into a
+    /// `panic!` (bevy_app 0.19.1 `src/app.rs:542`, `src/plugin.rs:147`). So the
+    /// duplicate compiles, passes `make ci`, and kills the client on startup.
+    ///
+    /// This is not hypothetical: merging the upstream party system (#860) left
+    /// `party::PartyWindowPlugin` in both group 2 and the new party group, and
+    /// nothing in this file could see it.
+    #[test]
+    fn the_registry_names_each_plugin_only_once() {
+        let mut seen: Vec<&str> = registry()
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.ends_with("Plugin,"))
+            .collect();
+        seen.sort_unstable();
+        let mut duplicates: Vec<&str> = seen
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| w[0])
+            .collect();
+        duplicates.dedup();
+        assert!(
+            duplicates.is_empty(),
+            "registered twice: {duplicates:?} — Bevy panics on the second \
+             registration (`plugin was already added in application`)"
+        );
+    }
+
     #[test]
     fn every_hud_module_is_registered_or_an_excused_helper() {
         // `game_window` is the shared window chrome (rects, spawn helpers) —
@@ -294,7 +508,9 @@ mod test {
         // because the low-vitals overlays are authored TWICE at different sheet
         // sizes (the mini-info's 512x64 pair and the quick-party board's
         // 256x64 pair), so the tile arithmetic cannot be a constant in either.
-        const HELPERS: [&str; 8] = [
+        const HELPERS: [&str; 10] = [
+            // shared state, registered by the windows that publish it
+            "item_cell",
             "game_window",
             "modal_dialog",
             "world_anchor",
@@ -303,6 +519,10 @@ mod test {
             "pet_mini_info",
             "quest_reward_confirm",
             "context_menu",
+            // `CIFComboBox` / `CIFPageManager` as shared chrome: spawner
+            // functions and geometry only, so the windows that use them keep
+            // owning their own systems and state.
+            "widgets",
         ];
 
         let registry = registry();
