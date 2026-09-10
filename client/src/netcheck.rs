@@ -1016,6 +1016,14 @@ mod tests {
 struct OpcodeProbe {
     frames: Vec<(u16, Bytes)>,
     delay: f64,
+    /// Seconds between two frames of the list. 0 (the default) keeps the
+    /// upstream behaviour — the whole list goes out in one tick. A positive
+    /// value turns the list into a *sequence*, which is what walking a
+    /// character to a fixed world position needs: one 0x7021 per waypoint,
+    /// spaced far enough apart that the server has actually moved us before
+    /// the next order arrives (a single far order is refused when the straight
+    /// line is blocked).
+    interval: f64,
     due: Option<f64>,
     sent: bool,
 }
@@ -1049,15 +1057,27 @@ impl OpcodeProbe {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5.0),
+            interval: env::var("NETCHECK_PROBE_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
             ..Self::default()
         }
     }
 }
 
+/// The placeholder a probe body uses for "our own in-world unique id": the
+/// id is assigned per session, so a body that has to name us cannot be a
+/// literal. `FF FF FF FE` is not a plausible id and is replaced at fire time
+/// with the id `netcheck_capture_local_uid` read from 0x3020 (so this needs
+/// `NETCHECK_ACTIONS=1`, the flag that arms that read).
+const PROBE_LOCAL_UID_PLACEHOLDER: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFE];
+
 /// Fire the configured probe frames once, after the join has settled.
 fn netcheck_fire_probe(
     mut probe: ResMut<OpcodeProbe>,
     time: Res<Time>,
+    driver: Res<ActionDriver>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     if probe.sent || probe.frames.is_empty() {
@@ -1072,9 +1092,43 @@ fn netcheck_fire_probe(
     if now < due {
         return;
     }
-    probe.sent = true;
-    let frames = std::mem::take(&mut probe.frames);
-    for (opcode, data) in frames {
+    // With an interval configured, take exactly one frame per due time and
+    // re-arm; otherwise take the whole list at once (upstream behaviour).
+    let frames: Vec<(u16, Bytes)> = if probe.interval > 0.0 {
+        let head = probe.frames.remove(0);
+        if probe.frames.is_empty() {
+            probe.sent = true;
+        } else {
+            let interval = probe.interval;
+            probe.due = Some(now + interval);
+        }
+        vec![head]
+    } else {
+        probe.sent = true;
+        std::mem::take(&mut probe.frames)
+    };
+    for (opcode, mut data) in frames {
+        // Substitute the local-uid placeholder, if the body carries it.
+        if let Some(at) = data
+            .windows(4)
+            .position(|w| w == PROBE_LOCAL_UID_PLACEHOLDER)
+        {
+            match driver.local_uid {
+                Some(uid) => {
+                    let mut bytes = data.to_vec();
+                    bytes[at..at + 4].copy_from_slice(&uid.to_le_bytes());
+                    data = Bytes::from(bytes);
+                    info!("netcheck: PROBE local-uid placeholder -> {}", uid);
+                }
+                None => {
+                    error!(
+                        "netcheck: PROBE body wants the local uid but none was read \
+                         (NETCHECK_ACTIONS=1 arms that) — NOT sending"
+                    );
+                    continue;
+                }
+            }
+        }
         info!(
             "netcheck: PROBE sending opcode {:#06x} body [{}] ({} bytes)",
             opcode,
