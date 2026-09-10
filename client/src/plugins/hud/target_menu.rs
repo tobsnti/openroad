@@ -55,6 +55,7 @@ use crate::plugins::hud::context_menu::{
     ContextMenuRow,
 };
 use crate::plugins::hud::exchange;
+use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
@@ -145,6 +146,7 @@ pub fn open_target_menu(
     fonts: Res<FontAssets>,
     cameras: Query<Entity, With<Camera2d>>,
     open: Query<Entity, With<ContextMenuRoot>>,
+    names: Query<&DisplayName>,
     mut target: ResMut<TargetMenuTarget>,
     mut owner: ResMut<ContextMenuOwner>,
     mut press_at: Local<Option<Vec2>>,
@@ -188,7 +190,7 @@ pub fn open_target_menu(
         })
         .collect();
 
-    spawn_context_menu(
+    let root = spawn_context_menu(
         &mut commands,
         &asset_server,
         &fonts,
@@ -201,6 +203,27 @@ pub fn open_target_menu(
         &items,
         hud_scale(),
     );
+    // The header plate carries the target's name: the original's target
+    // window sets the menu's header static (id 8) from it when it opens the
+    // menu. The plate stayed a blank block before.
+    if let Ok(name) = names.get(entity) {
+        let s = hud_scale();
+        let (x, y, w, h) = crate::plugins::hud::context_menu::HEADER;
+        commands.entity(root).with_children(|popup| {
+            popup.spawn((
+                Text::new(name.0.clone()),
+                TextFont {
+                    font: fonts.nine.clone().into(),
+                    font_size: FontSize::Px(crate::plugins::hud::context_menu::ROW_FONT * s),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                TextLayout::justify(Justify::Center),
+                abs_node((x, y + 4.0, w, h - 4.0), s),
+                Pickable::IGNORE,
+            ));
+        });
+    }
     target.0 = Some(entity);
     *owner = ContextMenuOwner::Target;
 }
@@ -472,6 +495,69 @@ mod test {
                 );
             }
         }
+    }
+
+    /// The header plate names the target (the original fills the menu's header
+    /// static from the target window's name). It was a blank block before.
+    #[test]
+    fn the_menu_header_names_the_target() {
+        use bevy::window::PrimaryWindow;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<ClientUiStrings>()
+        .init_resource::<TargetMenuTarget>()
+        .init_resource::<ContextMenuOwner>()
+        .insert_resource(FontAssets {
+            one: Handle::default(),
+            two: Handle::default(),
+            three: Handle::default(),
+            nine: Handle::default(),
+        })
+        .add_systems(Update, open_target_menu);
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(300.0, 200.0)));
+        app.world_mut().spawn((window, PrimaryWindow));
+        app.world_mut().spawn(Camera2d);
+        let target = app
+            .world_mut()
+            .spawn((RemoteEntity::Player, DisplayName("Trader6".into())))
+            .id();
+        app.insert_resource(SelectedEntity(Some(target)));
+
+        // a right-click that did not drag: press one frame, release the next
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        app.update();
+        {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.clear();
+            buttons.release(MouseButton::Right);
+        }
+        app.update();
+
+        let root = app
+            .world_mut()
+            .query_filtered::<Entity, With<ContextMenuRoot>>()
+            .single(app.world())
+            .expect("the menu opened");
+        let texts: Vec<String> = app
+            .world_mut()
+            .query::<(&Text, &ChildOf)>()
+            .iter(app.world())
+            .filter(|(_, child_of)| child_of.parent() == root)
+            .map(|(text, _)| text.0.clone())
+            .collect();
+        assert!(
+            texts.iter().any(|text| text == "Trader6"),
+            "the header must carry the target's name: {texts:?}"
+        );
     }
 
     /// The rows render in y order, which is neither id order nor record order —

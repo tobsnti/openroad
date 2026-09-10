@@ -45,7 +45,7 @@ const ROW_W: f32 = 86.0;
 const ROWS_TOP: f32 = 32.0;
 /// Frame-local header plate (`643,327,93,20`), `exc_box.ddj` borrowed from
 /// `interface/exchange/` — there is no header art under `interface/underbar/`.
-const HEADER: (f32, f32, f32, f32) = (5.0, 6.0, 93.0, 20.0);
+pub(crate) const HEADER: (f32, f32, f32, f32) = (5.0, 6.0, 93.0, 20.0);
 /// What is left below the last row in the authored 5-row instance
 /// (`142 - 32 - 5*20`). One sample, so it is a measurement, not a law.
 const BOTTOM_PAD: f32 = 10.0;
@@ -56,7 +56,7 @@ pub const MENU_W: f32 = 102.0;
 /// file; frame, fill and header are default white. Contrast on the fill tile is
 /// 11.0:1 (AAA), measured over the tile's 400 opaque pixels.
 const ROW_TEXT: Color = Color::srgb_u8(229, 184, 97);
-const ROW_FONT: f32 = 9.0;
+pub(crate) const ROW_FONT: f32 = 9.0;
 
 const FRAME_DIR: &str = "media://interface/frame/ub_new_wnd_";
 const BG_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_u.ddj";
