@@ -55,12 +55,39 @@ const TO_WMAP_BTN_RECT: (f32, f32, f32, f32) = (590.0, 10.0, 16.0, 16.0);
 /// subtracting the chrome's content origin (12, 36).
 const AUTO_MOVE_BTN_RECT: (f32, f32, f32, f32) = (531.0, 7.0, 96.0, 28.0);
 
+// --- Small-window mode (`GDR_WM_BTN_WNDSIZE` id 7) ---------------------------
+//
+// Idea: the world map has two shell sizes, and the size button swaps between
+// them. The original's size-button handler is symmetric:
+// with the small flag clear it resizes the window to **268x296**, sets the
+// flag, moves the size button to window-local `(224,10)` and the
+// back-to-world button to `(206,10)`, and hides the auto-move button; with the
+// flag set it restores **652x424** with the buttons at `(608,10)` and
+// `(590,10)` and shows the auto-move button again. The two big-mode positions
+// are exactly `ifworldmap.txt`'s own rects for ids 7 and 6, which is what pins
+// the reading. The 268 width is also the width of
+// `wmap_window_small_bottom.ddj` (268x44), the art for that state.
+/// Small-mode outer size (268x296 in the handler above), expressed as
+/// a content box so `outer_size` reconstructs 268x296 the way `CONTENT_W/H`
+/// reconstructs 652x424.
+const SMALL_CONTENT_W: f32 = 244.0;
+const SMALL_CONTENT_H: f32 = 244.0;
+/// `GDR_WM_BTN_WNDSIZE` id 7 — 16x16 at `608,10` (`ifworldmap.txt:34`), the
+/// same title strip as the back-to-world button; the handler restores the
+/// same x.
+const WNDSIZE_BTN_RECT: (f32, f32, f32, f32) = (608.0, 10.0, 16.0, 16.0);
+/// Small mode moves both title-strip buttons left with the shell (handler
+/// literals 224 / 206, both at y 10).
+const SMALL_WNDSIZE_BTN_RECT: (f32, f32, f32, f32) = (224.0, 10.0, 16.0, 16.0);
+const SMALL_TO_WMAP_BTN_RECT: (f32, f32, f32, f32) = (206.0, 10.0, 16.0, 16.0);
+
 /// Same sign as the minimap's player arrow (map_arrow.ddj is a tiny plain
 /// triangle; the minimap sign reads much better at this size).
 const ARROW_DDJ: &str = "media://interface/minimap/mm_sign_character.ddj";
 const ARROW_SIZE: f32 = 16.0;
 
 const WORLD_BTN_DDJ: &str = "media://interface/worldmap/wmap_button_world";
+const SIZE_BTN_DDJ: &str = "media://interface/worldmap/wmap_button_windowsize";
 const FOLLOW_BTN_DDJ: &str = "media://interface/ifcommon/com_mid_button";
 
 const LABEL_COLOR: Color = Color::srgb_u8(235, 225, 190);
@@ -73,6 +100,10 @@ pub struct WmWindowRoot;
 pub struct WmCanvas {
     /// Canvas size in UI px (map px * scale).
     pub size: Vec2,
+    /// Size of the clipped viewport it pans inside, in UI px. Carried here
+    /// rather than read from a constant because the shell has two sizes
+    /// (`WorldMapState::small`).
+    pub view: Vec2,
 }
 
 /// The clipped viewport the canvas pans inside.
@@ -101,6 +132,10 @@ pub struct WmArrow;
 struct WmCityButton {
     link_map: u32,
 }
+
+/// The window-size toggle (`GDR_WM_BTN_WNDSIZE`).
+#[derive(Component)]
+pub struct WmSizeButton;
 
 /// The "back to the world map" corner button (city maps only).
 #[derive(Component)]
@@ -195,13 +230,16 @@ pub fn sync_world_map_window(
         (None, None) => unreachable!("either a dungeon def or a map def is set"),
     };
 
+    // vanilla: the size button swaps the whole shell between
+    // 652x424 and 268x296, so every content-box rect below follows the mode.
+    let (content_w, content_h) = content_size(state.small);
     let window = game_window::spawn_game_window(
         &mut commands,
         &asset_server,
         &fonts,
         camera,
         &title,
-        (CONTENT_W, CONTENT_H),
+        (content_w, content_h),
         (WINDOW_RIGHT, WINDOW_TOP),
         s,
     );
@@ -226,7 +264,7 @@ pub fn sync_world_map_window(
     };
 
     commands.entity(window.content).with_children(|content| {
-        let mut viewport_node = abs_node((0.0, 0.0, CONTENT_W, CONTENT_H), s);
+        let mut viewport_node = abs_node((0.0, 0.0, content_w, content_h), s);
         viewport_node.overflow = Overflow::clip();
         content
             .spawn((WmViewport, viewport_node, Hovered::default()))
@@ -235,7 +273,10 @@ pub fn sync_world_map_window(
             .with_children(|viewport| {
                 viewport
                     .spawn((
-                        WmCanvas { size: canvas_size },
+                        WmCanvas {
+                            size: canvas_size,
+                            view: Vec2::new(content_w, content_h) * s,
+                        },
                         Node {
                             position_type: PositionType::Absolute,
                             left: Val::Px(0.0),
@@ -370,7 +411,7 @@ pub fn sync_world_map_window(
                             },
                             Button,
                             Hovered::default(),
-                            abs_node((4.0 + index as f32 * 34.0, CONTENT_H - 22.0, 30.0, 20.0), s),
+                            abs_node((4.0 + index as f32 * 34.0, content_h - 22.0, 30.0, 20.0), s),
                             ImageNode {
                                 image: if selected {
                                     button_style.press.clone()
@@ -407,7 +448,13 @@ pub fn sync_world_map_window(
         }
 
         // the auto-move toggle (`GDR_WM_BTN_AUTO_MOVE`); the back-to-world
-        // button lives in the title strip and is spawned on the root below
+        // button lives in the title strip and is spawned on the root below.
+        // Small mode hides it, as vanilla does (`SetVisible(0)` on control
+        // 20) — there is no room for a 96px
+        // button on a 244px content box either.
+        if state.small {
+            return;
+        }
         let follow_style = ImageButtonStyle {
             normal: asset_server.load(format!("{FOLLOW_BTN_DDJ}.ddj")),
             hover: asset_server.load(format!("{FOLLOW_BTN_DDJ}_focus.ddj")),
@@ -460,7 +507,7 @@ pub fn sync_world_map_window(
                 WmWorldButton,
                 Button,
                 Hovered::default(),
-                abs_node(TO_WMAP_BTN_RECT, s),
+                abs_node(to_wmap_btn_rect(state.small), s),
                 ImageNode {
                     image: world_style.normal.clone(),
                     image_mode: NodeImageMode::Stretch,
@@ -470,6 +517,57 @@ pub fn sync_world_map_window(
             ))
             .observe(on_world_button);
         });
+    }
+
+    // `GDR_WM_BTN_WNDSIZE` (big/small shell): same title strip, one slot to
+    // the right of the back-to-world button, present in both modes because
+    // it is the only way back out of small mode.
+    let size_style = ImageButtonStyle {
+        normal: asset_server.load(format!("{SIZE_BTN_DDJ}.ddj")),
+        hover: asset_server.load(format!("{SIZE_BTN_DDJ}_focus.ddj")),
+        press: asset_server.load(format!("{SIZE_BTN_DDJ}_press.ddj")),
+        ..Default::default()
+    };
+    commands.entity(window.root).with_children(|root| {
+        root.spawn((
+            WmSizeButton,
+            Button,
+            Hovered::default(),
+            abs_node(wndsize_btn_rect(state.small), s),
+            ImageNode {
+                image: size_style.normal.clone(),
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            size_style,
+        ))
+        .observe(on_size_button);
+    });
+}
+
+/// The content box of the two shell sizes: 652x424 and 268x296 outer
+/// (the original's size-button handler).
+fn content_size(small: bool) -> (f32, f32) {
+    if small {
+        (SMALL_CONTENT_W, SMALL_CONTENT_H)
+    } else {
+        (CONTENT_W, CONTENT_H)
+    }
+}
+
+fn to_wmap_btn_rect(small: bool) -> (f32, f32, f32, f32) {
+    if small {
+        SMALL_TO_WMAP_BTN_RECT
+    } else {
+        TO_WMAP_BTN_RECT
+    }
+}
+
+fn wndsize_btn_rect(small: bool) -> (f32, f32, f32, f32) {
+    if small {
+        SMALL_WNDSIZE_BTN_RECT
+    } else {
+        WNDSIZE_BTN_RECT
     }
 }
 
@@ -707,6 +805,15 @@ fn on_world_button(_: On<Activate>, mut state: ResMut<WorldMapState>) {
     state.center_on_player = true;
 }
 
+/// The size toggle. Vanilla flips its small flag and rebuilds the view
+/// right after the resize, so the shrunk viewport
+/// still shows the player rather than whatever corner the old pan left in it —
+/// hence the one-shot re-centre here.
+fn on_size_button(_: On<Activate>, mut state: ResMut<WorldMapState>) {
+    state.small = !state.small;
+    state.center_on_player = true;
+}
+
 fn on_follow_button(_: On<Activate>, mut follow: ResMut<WorldMapFollow>) {
     follow.0 = !follow.0;
 }
@@ -777,8 +884,7 @@ fn on_pan(
 /// Clamp the canvas offset so the viewport never shows past the map edge
 /// (small maps center instead).
 fn apply_pan(canvas: &WmCanvas, node: &mut Node, target: Vec2) {
-    let s = hud_scale();
-    let view = Vec2::new(CONTENT_W, CONTENT_H) * s;
+    let view = canvas.view;
     let clamp_axis = |value: f32, canvas_extent: f32, view_extent: f32| {
         if canvas_extent <= view_extent {
             (view_extent - canvas_extent) * 0.5
@@ -856,8 +962,7 @@ pub fn update_world_map_arrow(
     // `center_on_player` covers open/map-switch jumps while in manual mode
     if follow.0 || state.center_on_player {
         if let Ok((canvas, mut canvas_node)) = canvases.single_mut() {
-            let view = Vec2::new(CONTENT_W, CONTENT_H) * s;
-            apply_pan(canvas, &mut canvas_node, view * 0.5 - px);
+            apply_pan(canvas, &mut canvas_node, canvas.view * 0.5 - px);
             // bypass_change_detection: this is a render-side one-shot, not a
             // state change the rebuild system should react to
             state.bypass_change_detection().center_on_player = false;
@@ -936,6 +1041,49 @@ mod test {
             (543.0, 43.0, 96.0, 28.0)
         );
         assert_eq!(CONTENT_W - x - w, 1.0);
+    }
+
+    /// The size toggle's two shells and the three control positions the
+    /// original's size-button handler writes: 652x424 with the buttons at
+    /// `608,10` / `590,10`, 268x296 with them at `224,10` / `206,10`. The big
+    /// pair is also `ifworldmap.txt`'s own data for ids 7 and 6, which is what
+    /// ties the handler's offsets to the descriptor.
+    #[test]
+    fn the_size_button_swaps_between_the_two_shells() {
+        assert_eq!(game_window::outer_size(content_size(false)), (652.0, 424.0));
+        assert_eq!(game_window::outer_size(content_size(true)), (268.0, 296.0));
+
+        assert_eq!(wndsize_btn_rect(false), (608.0, 10.0, 16.0, 16.0));
+        assert_eq!(to_wmap_btn_rect(false), (590.0, 10.0, 16.0, 16.0));
+        assert_eq!(wndsize_btn_rect(true), (224.0, 10.0, 16.0, 16.0));
+        assert_eq!(to_wmap_btn_rect(true), (206.0, 10.0, 16.0, 16.0));
+
+        // both buttons stay in the chrome's title band in either mode, and
+        // keep the same 18px pitch vanilla gives them
+        for small in [false, true] {
+            let (sx, sy, _, sh) = wndsize_btn_rect(small);
+            let (wx, wy, _, _) = to_wmap_btn_rect(small);
+            assert!(sy >= 6.0 && sy + sh <= 28.0);
+            assert_eq!(sy, wy);
+            assert_eq!(sx - wx, 18.0);
+            // and inside the shell they belong to
+            assert!(sx + 16.0 <= game_window::outer_size(content_size(small)).0);
+        }
+    }
+
+    /// The pan clamp reads the viewport size off the canvas instead of a
+    /// constant, so the small shell clamps against 244px and not 628px — the
+    /// regression that would let the shrunk window pan past the map edge.
+    #[test]
+    fn the_pan_clamp_follows_the_shell_size() {
+        let canvas = WmCanvas {
+            size: Vec2::new(1000.0, 1000.0),
+            view: Vec2::new(SMALL_CONTENT_W, SMALL_CONTENT_H),
+        };
+        let mut node = Node::default();
+        apply_pan(&canvas, &mut node, Vec2::new(-900.0, -900.0));
+        assert_eq!(node.left, Val::Px(SMALL_CONTENT_W - 1000.0));
+        assert_eq!(node.top, Val::Px(SMALL_CONTENT_H - 1000.0));
     }
 }
 
