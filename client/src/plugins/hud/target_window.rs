@@ -2,20 +2,28 @@
 //! click-selected.
 //!
 //! Idea: one persistent panel built from the `window_all.ddj` frame crops named
-//! in `resinfo/iftargetwindow.txt`: `CIFTargetWindowCommonEnemy` (196x51) for
-//! regular targets, `CIFTargetWindowSpecialMob` (196x78, same art plus a
-//! translucent lower strip — reserved for buffs) for monsters with a rarity
-//! class, and `CIFTargetWindowPlayer` (196x36) for players. The inner layout of
+//! in `resinfo/iftargetwindow.txt`. Which crop a target gets is the original's
+//! own rule, read off `CIFTargetWindow::SetTarget`: the *monster* branch
+//! drives child id 2, `CIFTargetWindowSpecialMob` (196x78, the
+//! taller plate with the rank strip) — every monster, not only a rare one.
+//! `CIFTargetWindowCommonEnemy` (id 4, 196x51) is the **non**-monster frame: it
+//! is reached only from the animal/COS branch, the fortress fallback and the
+//! NPC branch.
+//! `CIFTargetWindowPlayer` (196x36) is the player plate. The inner layout of
 //! the enemy frames is exe-code in vanilla, so it was measured off the
 //! decoded frame art: the gold ring socket top-left holds a 20x20 `tw_gem_*`
-//! (level-gap gem for monsters, `tw_gem_npc`/`tw_gem_player` otherwise), the
+//! (the level-gap gem plus its tint for monsters, see [`GEM_TINTS`], and
+//! `tw_gem_player.ddj` for everything
+//! else, which is the texture the original's non-monster branches force), the
 //! dark rounded plate holds the centered name plus the close (X) button
-//! (GDR_TW_CLOSE), and the thin groove below is the 168x4 HP line — live
-//! [`EntityVitals`] fill for monsters (characterdata max, 0x3057 updates) and
-//! the static gold `tw_hp_npc` for NPCs. The player plate carries no gauge at
+//! (GDR_TW_CLOSE), and the thin groove below is the 168x4 HP line drawn with
+//! `tw_hp.ddj` — the only fill art the descriptors name (`iftw_commonenemy.txt:29`,
+//! `iftw_specialmob.txt:86`) — with a live [`EntityVitals`] fill for monsters
+//! (characterdata max scaled by the rank multiplier, 0x3057 updates) and a full
+//! bar for the static NPCs. The player plate carries no gauge at
 //! all — none in `iftw_player.txt`, no trough in its art, and remote player HP
-//! is not on the wire — so it shows none. Monsters use the taller frame, whose
-//! translucent lower strip shows a centered `tw_icon_*` + class label
+//! is not on the wire — so it shows none. The special frame's translucent lower
+//! strip shows a centered `tw_icon_*` + class label
 //! (Normal/Champion/Giant/... — the per-spawn rarity byte). Selection ends on
 //! despawn, the X button, or Esc (see `toggle_system_window`'s priority).
 
@@ -126,8 +134,10 @@ pub struct TwBuffRow;
 #[derive(Resource)]
 pub struct TargetWindowAssets {
     hp: Handle<Image>,
-    hp_npc: Handle<Image>,
-    gem_npc: Handle<Image>,
+    /// The non-monster gem. `tw_gem_player.ddj` is the texture the original's
+    /// non-monster branches push (fortress plus two more sites);
+    /// `tw_gem_npc.ddj` is named by neither the binary nor any resinfo file
+    /// and is gone.
     gem_player: Handle<Image>,
     /// weak2, weak1, normal, strong1, strong2 (level gap ascending).
     gems: [Handle<Image>; 5],
@@ -140,8 +150,6 @@ impl TargetWindowAssets {
         let tw = |name: &str| asset_server.load(format!("media://interface/targetwindow/{name}"));
         Self {
             hp: tw("tw_hp.ddj"),
-            hp_npc: tw("tw_hp_npc.ddj"),
-            gem_npc: tw("tw_gem_npc.ddj"),
             gem_player: tw("tw_gem_player.ddj"),
             gems: [
                 tw("tw_gem_weak2.ddj"),
@@ -163,8 +171,9 @@ impl TargetWindowAssets {
 
     /// The gem for a `target level - player level` gap (thresholds per the
     /// vanilla behavior): ≤-9 weak2, -8..-3 weak1, -2..2 normal, 3..8 strong1,
-    /// ≥9 strong2.
-    fn gem(&self, diff: i32) -> &Handle<Image> {
+    /// ≥9 strong2. The original picks *both* a texture and a tint from the same
+    /// index (see [`GEM_TINTS`]), so this returns the pair.
+    fn gem(&self, diff: i32) -> (&Handle<Image>, Color) {
         let index = match diff {
             i32::MIN..=-9 => 0,
             -8..=-3 => 1,
@@ -172,7 +181,7 @@ impl TargetWindowAssets {
             3..=8 => 3,
             _ => 4,
         };
-        &self.gems[index]
+        (&self.gems[index], GEM_TINTS[index])
     }
 
     /// The rarity badge for a spawn rarity class (party bit already masked;
@@ -216,22 +225,44 @@ fn rarity_label(strings: &ClientUiStrings, kind: u8, party: bool) -> String {
     }
 }
 
-/// The atlas crop for a target. Players get their own short plate; monsters keep
-/// the rarity-strip frame when they carry a class, otherwise the plain enemy
-/// frame. NPCs stay on the enemy frame: which variant the original uses for an
-/// NPC is unresolved, and it is entangled with the 196-vs-236 frame-width
-/// question (`docs/re/ui/hud-target-window.md` §9-U1/U3). The JobPlayer variant
-/// (543,210,196x58) is byte-verified but not selectable — no job or PK-rank
-/// field exists anywhere in the packet layer (§9-U2).
-/// A COS takes the player plate for the same reason it takes the player's
-/// interaction path: it is a character to whoever is pointing at it, and the
-/// NPC plate reads as "this thing has a dialog".
-fn frame_for(kind: &RemoteEntity, has_rarity: bool, is_cos: bool) -> (f32, f32, f32, f32) {
+/// The level-gap gem is a texture **and** a tint: the five arms of the jump
+/// table in `SetTarget` each load a `tw_gem_*` texture and push an ARGB
+/// immediate as the draw colour — `0xFF87D2FF` (weak2), `0xFFA5E0CE`
+/// (weak1), `0xFFFFFFFF` (normal), `0xFFFFB387` (strong1), `0xFFFF8787`
+/// (strong2). Byte order is `0xAARRGGBB` (all five keep `0xFF` in the top
+/// byte while the lower three run a blue→green→white→orange→red ramp; read the
+/// other way the five gems would differ only in opacity).
+const GEM_TINTS: [Color; 5] = [
+    Color::srgba_u8(0x87, 0xD2, 0xFF, 0xFF), // weak2
+    Color::srgba_u8(0xA5, 0xE0, 0xCE, 0xFF), // weak1
+    Color::srgba_u8(0xFF, 0xFF, 0xFF, 0xFF), // normal — untinted
+    Color::srgba_u8(0xFF, 0xB3, 0x87, 0xFF), // strong1
+    Color::srgba_u8(0xFF, 0x87, 0x87, 0xFF), // strong2
+];
+
+/// The atlas crop for a target — the original's rule, not ours. In
+/// `CIFTargetWindow::SetTarget` the *entity class* decides, and the rarity
+/// byte plays no part in it: the monster branch shows child id 2 = SpecialMob
+/// for every monster, and id 4 = CommonEnemy is read only by the animal/COS,
+/// fortress-fallback and NPC branches. We had the two swapped: a rare
+/// monster got the tall plate and a plain one the short frame.
+///
+/// Not yet modelled: the JobPlayer plate
+/// (`iftw_jobplayer_trijob2.txt`) and FortressStructure.
+///
+/// The one thing rarity used to decide here it does not decide any more, and the
+/// one thing upstream added stays: a **COS takes the player plate** for the same
+/// reason it takes the player's interaction path — it is a character to whoever
+/// is pointing at it, and the NPC plate reads as "this thing has a dialog"
+/// (upstream `00893d97`).
+fn frame_for(kind: &RemoteEntity, is_cos: bool) -> (f32, f32, f32, f32) {
     if interacts_as_character(kind, is_cos) {
         return FRAME_PLAYER;
     }
     match kind {
-        _ if has_rarity => FRAME_SPECIAL,
+        RemoteEntity::Player => FRAME_PLAYER,
+        RemoteEntity::Monster => FRAME_SPECIAL,
+        // NPC, COS/animal and item drops fall back to the 51-tall common frame.
         _ => FRAME_COMMON,
     }
 }
@@ -516,11 +547,12 @@ pub fn update_target_window(
         return;
     };
 
-    // --- Frame variant: monsters with a class get the taller strip frame,
-    // players their own short plate; inner offsets are shared, so only the crop
-    // and the height change ---
+    // --- Frame variant: monsters get the taller strip frame, players their own
+    // short plate, everything else the common frame (`SetTarget`, see
+    // `frame_for`); inner offsets are shared, so only the crop and the height
+    // change ---
     let rarity = rarity.filter(|_| matches!(kind, RemoteEntity::Monster));
-    let (fx, fy, fw, fh) = frame_for(kind, rarity.is_some(), is_cos);
+    let (fx, fy, fw, fh) = frame_for(kind, is_cos);
     let crop = Rect::new(fx, fy, fx + fw, fy + fh);
     if frame.rect != Some(crop) {
         frame.rect = Some(crop);
@@ -542,17 +574,25 @@ pub fn update_target_window(
         .and_then(|r| char_data.as_ref()?.get(&(r.0 as i32))?.level())
         .filter(|_| matches!(kind, RemoteEntity::Monster));
     if let Ok(mut gem) = gems.single_mut() {
-        let wanted = match kind {
+        // Monsters: level-gap texture + its tint. Everything else
+        // gets `tw_gem_player.ddj` untinted — the texture the original's
+        // non-monster branches force; no tint is pushed there, so
+        // white is the absence of one, not an invented value.
+        let (wanted, tint) = match kind {
             // A COS wears the player gem for the same reason it wears the
-            // player plate: the NPC gem announces a dialog it does not have.
-            _ if interacts_as_character(kind, is_cos) => &assets.gem_player,
-            RemoteEntity::Npc => &assets.gem_npc,
-            _ => target_level.map_or(&assets.gems[2], |level| {
-                assets.gem(level as i32 - player_vitals.level as i32)
-            }),
+            // player plate (upstream `00893d97`); it spawns as an NPC.
+            _ if interacts_as_character(kind, is_cos) => (&assets.gem_player, Color::WHITE),
+            RemoteEntity::Monster => target_level
+                .map_or((&assets.gems[2], GEM_TINTS[2]), |level| {
+                    assets.gem(level as i32 - player_vitals.level as i32)
+                }),
+            _ => (&assets.gem_player, Color::WHITE),
         };
         if gem.image != *wanted {
             gem.image = wanted.clone();
+        }
+        if gem.color != tint {
+            gem.color = tint;
         }
     }
 
@@ -594,11 +634,10 @@ pub fn update_target_window(
         if interacts_as_character(kind, is_cos) {
             hide(&mut fill_visibility);
         } else {
-            let art = if matches!(kind, RemoteEntity::Npc) {
-                &assets.hp_npc
-            } else {
-                &assets.hp
-            };
+            // One fill art for every variant: `tw_hp.ddj` is what all three
+            // gauge descriptors name, and `tw_hp_npc.ddj` reaches neither the
+            // binary nor any resinfo file (§3.3 of the variants doc).
+            let art = &assets.hp;
             for child in fill_children.iter() {
                 if let Ok(mut fill_image) = bar_art.get_mut(child) {
                     if fill_image.image != *art {
@@ -722,28 +761,37 @@ mod tests {
         }
     }
 
-    /// Every player and every NPC used to render with the monster frame, because
-    /// the selection only looked at whether a rarity component was present.
+    /// The original's split in `SetTarget`: SpecialMob (id 2) is the *monster*
+    /// frame and CommonEnemy (id 4) is the non-monster fallback. We had them
+    /// the other way round, keyed
+    /// on the rarity byte, which the original never consults for this choice.
     #[test]
-    fn players_get_the_player_plate_and_monsters_keep_theirs() {
-        assert_eq!(frame_for(&RemoteEntity::Player, false, false), FRAME_PLAYER);
-        // Rarity is attached to every spawn from a characterdata fallback, so a
-        // player carrying one must still not get the monster strip frame.
-        assert_eq!(frame_for(&RemoteEntity::Player, true, false), FRAME_PLAYER);
-        assert_eq!(
-            frame_for(&RemoteEntity::Monster, true, false),
-            FRAME_SPECIAL
-        );
-        assert_eq!(
-            frame_for(&RemoteEntity::Monster, false, false),
-            FRAME_COMMON
-        );
-        // NPCs stay on the enemy frame pending §9-U1/U3...
-        assert_eq!(frame_for(&RemoteEntity::Npc, false, false), FRAME_COMMON);
-        // ...but a COS spawns as an NPC and is a character to the player, so
-        // it takes the player plate.
-        assert_eq!(frame_for(&RemoteEntity::Npc, false, true), FRAME_PLAYER);
-        assert_eq!(frame_for(&RemoteEntity::Npc, true, true), FRAME_PLAYER);
+    fn the_monster_frame_is_the_special_one_and_the_common_frame_is_not() {
+        assert_eq!(frame_for(&RemoteEntity::Player, false), FRAME_PLAYER);
+        // every monster, rare or not — rarity is not an input any more
+        assert_eq!(frame_for(&RemoteEntity::Monster, false), FRAME_SPECIAL);
+        // NPC and item drops fall back to the 51-tall frame
+        assert_eq!(frame_for(&RemoteEntity::Npc, false), FRAME_COMMON);
+        assert_eq!(frame_for(&RemoteEntity::Item, false), FRAME_COMMON);
+        // ...but a COS spawns as an NPC and is a character to the player, so it
+        // takes the player plate (upstream's rule, kept).
+        assert_eq!(frame_for(&RemoteEntity::Npc, true), FRAME_PLAYER);
+    }
+
+    /// The five level-gap gems are a texture *and* an ARGB tint from the same
+    /// jump-table arm of `SetTarget`.
+    #[test]
+    fn the_gem_tints_are_the_jump_tables_argb_immediates() {
+        // 0xAARRGGBB read as (r, g, b, a)
+        assert_eq!(GEM_TINTS[0], Color::srgba_u8(0x87, 0xD2, 0xFF, 0xFF));
+        assert_eq!(GEM_TINTS[1], Color::srgba_u8(0xA5, 0xE0, 0xCE, 0xFF));
+        assert_eq!(GEM_TINTS[2], Color::srgba_u8(0xFF, 0xFF, 0xFF, 0xFF)); // untinted
+        assert_eq!(GEM_TINTS[3], Color::srgba_u8(0xFF, 0xB3, 0x87, 0xFF));
+        assert_eq!(GEM_TINTS[4], Color::srgba_u8(0xFF, 0x87, 0x87, 0xFF));
+        // all five are fully opaque: the alpha byte is the constant one
+        for tint in GEM_TINTS {
+            assert_eq!(tint.alpha(), 1.0);
+        }
     }
 
     /// The data reason the bar is hidden for players: the HP groove ends at y=41,
