@@ -110,10 +110,24 @@ const JOB_ROW_YS: [f32; 3] = [230.0, 248.0, 266.0];
 /// thief (that is the original's row order), but the wire numbers them trader 1,
 /// **thief 2**, hunter 3 — so the mapping is [1, 3, 2] and not `row + 1`.
 ///
-/// Source: the server's enrolment answer computes the fee as
-/// `(internal - 0x14) * 5000` after mapping union_type 1/2/3 to 0x14/0x15/0x16
-/// which prices trader 0, thief 5000, hunter 10000 — the well-known vSRO fees.
+/// Provenance, stated rather than implied (ADR-0009): the **row order** is read
+/// out of the tree (`GDR_PI_TEXT_MERCHANT` :357, `_HUNTER` :224, `_THIEF` :91 —
+/// see [`JOB_ROW_YS`]) and is certain. The **wire numbering** (trader 1,
+/// thief 2, hunter 3) is inferred from the enrolment fee ladder
+/// `(internal - 0x14) * 5000` — trader 0, thief 5000, hunter 10000 — and
+/// nothing in this tree pins it.
+/// A live `JobInfo` with a non-zero `job_type` settles it; until then the panel
+/// prints `-` on a mismatch rather than a level from the wrong row, which is
+/// the failure mode this mapping is chosen for.
 const JOB_ROW_TYPES: [u8; 3] = [1, 3, 2];
+
+/// The wire `job_type` for a drawn row, or `None` for a row the panel does not
+/// have. `CiValue::JobLevel` carries a plain `u8`, so indexing the table with it
+/// would panic on any value a future caller (or a deserialised layout) puts
+/// there; the three authored rows are the only ones with a mapping.
+fn job_row_type(row: u8) -> Option<u8> {
+    JOB_ROW_TYPES.get(row as usize).copied()
+}
 
 // The two brighter com_bg_tile_b panels behind the stats and job sections
 // (`GDR_PI_BG_TILE_B` 16,75,332,173 :1233, `GDR_PI_BG_TILE_B2` 16,260,332,60
@@ -735,8 +749,15 @@ pub fn refresh_character_info(
     let sheet = stats.sheet.as_ref();
     let job = player.single().ok().and_then(|info| info.job.as_ref());
 
+    // Compared before writing, like the value fields below already are: a
+    // `Text` write re-measures the glyph run and marks the UI tree dirty, so an
+    // unconditional one keeps bevy_ui's Taffy layout re-running every frame for
+    // a level that changes a few times an hour.
     for mut text in level_text.iter_mut() {
-        text.0 = format!("Level {}", vitals.level);
+        let new = format!("Level {}", vitals.level);
+        if text.0 != new {
+            text.0 = new;
+        }
     }
 
     for (field, mut text) in values.iter_mut() {
@@ -774,8 +795,8 @@ pub fn refresh_character_info(
             }),
             CiValue::Hit => sheet.map_or("-".into(), |s| s.hit_rate.to_string()),
             CiValue::Parry => sheet.map_or("-".into(), |s| s.parry_rate.to_string()),
-            CiValue::JobLevel(row) => job
-                .filter(|j| j.job_type == JOB_ROW_TYPES[*row as usize])
+            CiValue::JobLevel(row) => job_row_type(*row)
+                .and_then(|job_type| job.filter(|j| j.job_type == job_type))
                 .map(|j| j.job_level.to_string())
                 .unwrap_or_else(|| "-".into()),
         };
@@ -792,7 +813,12 @@ pub fn refresh_character_info(
         } else {
             vitals.mp as f32 / mp_max as f32
         };
-        node.width = Val::Percent(fill.clamp(0.0, 1.0) * 100.0);
+        // Guarded for the same reason: a `Node` write dirties the layout, and
+        // the bar only moves when vitals do.
+        let width = Val::Percent(fill.clamp(0.0, 1.0) * 100.0);
+        if node.width != width {
+            node.width = width;
+        }
     }
 
     // + buttons: grey out (vanilla-style) instead of hiding. The button
@@ -867,6 +893,30 @@ mod test {
             assert_eq!(our_x, vanilla_x - ORIGIN_X, "x of vanilla {vanilla_x}");
             assert_eq!(our_y, vanilla_y - ORIGIN_Y, "y of vanilla {vanilla_y}");
         }
+    }
+
+    /// The drawn row order (trader, hunter, thief) is not the wire order
+    /// (trader 1, thief 2, hunter 3), so the middle row must *not* answer for
+    /// `job_type == 2`. A `row + 1` mapping — the shape this replaced — would
+    /// print the thief level on the hunter row.
+    #[test]
+    fn the_job_rows_map_to_the_wire_numbering_not_to_row_plus_one() {
+        assert_eq!(job_row_type(0), Some(1), "row 0 draws the trader");
+        assert_eq!(job_row_type(1), Some(3), "row 1 draws the hunter, wire 3");
+        assert_eq!(job_row_type(2), Some(2), "row 2 draws the thief, wire 2");
+        // The two rows a `row + 1` table would get wrong — row 0 agrees by
+        // coincidence, which is exactly why the middle rows have to be named.
+        for row in [1u8, 2] {
+            assert_ne!(job_row_type(row), Some(row + 1), "row {row} is not row + 1");
+        }
+    }
+
+    /// `CiValue::JobLevel` carries a plain `u8`; a row the panel does not draw
+    /// must report "no mapping" instead of indexing the three-entry table.
+    #[test]
+    fn a_row_outside_the_panel_has_no_job_type() {
+        assert_eq!(job_row_type(3), None);
+        assert_eq!(job_row_type(u8::MAX), None);
     }
 
     /// `ifmainpopup.txt:55` — `GDR_PLAYERINFO` (ID 75) is `13,38,364,356`, so

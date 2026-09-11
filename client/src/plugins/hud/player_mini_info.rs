@@ -1138,7 +1138,14 @@ pub fn refresh_mini_info(
     // The crop node carries the fill; its art child keeps its native size.
     let mut set_fill = |entity: Entity, cur: u32, max: Option<u32>, track_w: f32| {
         if let Ok(mut node) = nodes.get_mut(entity) {
-            node.width = gauge_fill_width(gauge_fill(cur, max), track_w);
+            // Compared before writing, like `set_text` above: a `Node` write
+            // marks the UI tree dirty and bevy_ui re-runs the whole Taffy
+            // layout, so an unguarded gauge fill costs a relayout every frame
+            // whether or not the bar moved.
+            let width = gauge_fill_width(gauge_fill(cur, max), track_w);
+            if node.width != width {
+                node.width = width;
+            }
         }
     };
     let hp_track_w = HP_BAR_RECT.2 * hud_scale();

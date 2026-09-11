@@ -29,37 +29,23 @@
 //! two colours, so this module *replaces* three private copies instead of
 //! adding a fourth style.
 //!
-//! # The open state is no longer unknown — it was photographed
+//! # The open state of the combo box
 //!
-//! Measured on a capture of the original's item mall with the
-//! `Set Inquiry Period` combo open
-//! (806x629, client area at image offset `(+3,+26)`, 1:1 inside the window):
-//! the item mall's `Set Inquiry Period` combo — `ifitemmallshop.txt:1209`
-//! `GDR_ITEM_MALL_SILK_COMBOBOX`, `Rect="165,85,78,20"` — caught open. Every
-//! number in the "open list" block below is a pixel coordinate out of that
-//! image, and the drop arrow is a template match against a shipped `.ddj`
-//! (see [`DROP_ARROW_DDJ`]). The art the *trees* never name does exist in the
-//! archive; it is only invisible to a resinfo reader.
+//! The open list is described down to the pixel — panel insets, row
+//! pitch, the bevelled frame, the 50 % fill and the hover pair. None of it is
+//! code in this module: no window in this tree opens a combo yet, and a widget
+//! nobody spawns is a transcription nobody can catch being wrong. The
+//! numbers live in `docs/ui/combo-box-open-list.md`, together with the
+//! standing rule for whoever implements it — **a combo's rows are assembled by
+//! the window, never sliced out of `textuisystem.txt`** (the original's box
+//! shows four of six consecutive shipped lines).
 //!
-//! # The list is assembled per window, in code — never generated from the text
+//! The drop arrow is a template match against a shipped `.ddj`
+//! (see [`DROP_ARROW_DDJ`]): the art the *trees* never name does exist in the
+//! archive, it is only invisible to a resinfo reader.
 //!
-//! **This is a standing rule for every consumer of this widget.** The same §31
-//! measured what the open list *shows*, and it shows less than the shipped text
-//! offers: `textuisystem.txt` L3498-L3503 holds six consecutive lines
-//! (`1 day`, `7 days`, **`28 days`**, **`Permanence`**, `1 month`, `3 months`),
-//! and the original lists exactly **four** of them — `1 day`, `7 days`,
-//! `1 month`, `3 months`. `28 days` and `Permanence` are shipped, plausible,
-//! adjacent — and not in the box.
-//!
-//! So a combo's rows are **not** a contiguous text block. Whoever fills one by
-//! slicing `textuisystem.txt` builds two entries the original does not have,
-//! and would never notice, because both read like the others. Each window
-//! spells out its own row list, next to the `file:line` of the combo it
-//! belongs to.
-//!
-//! **Display only.** The widget renders the caption it is handed and, when
-//! open, the rows it is handed. It never enumerates anything: what a given
-//! combo lists is the window's business — see the rule above.
+//! **Display only.** The widget renders the caption it is handed. It never
+//! enumerates anything: what a given combo lists is the window's business.
 
 use bevy::prelude::*;
 
@@ -188,142 +174,6 @@ pub const FIELD_BORDER: Color = Color::srgb(0.55, 0.45, 0.25);
 /// to, for the same reason no art exists at all.
 pub const DISABLED_TEXT: Color = Color::srgba(1.0, 1.0, 1.0, 0.4);
 
-/// Open state. Measured, not guessed: the list opens **downwards**, directly
-/// under the field, at the field's own width (§31).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ComboState {
-    #[default]
-    Closed,
-    Open,
-}
-
-// --- The open list, measured (§31) -------------------------------------------
-//
-// One frame of the original, read pixel by pixel. Reference frame: the field is
-// painted at image x 342..423, y 185..204; the list panel at x 342..423,
-// y 204..264 — the two share the y=204 line, which is why the panel's local y
-// below is `FIELD_H - 1` and not `FIELD_H`.
-
-/// **13 px.** The four rows' glyph tops sit at image y 212 / 225 / 238 / 251 —
-/// three intervals, all 13. Not [`FIELD_H`]: an open row is markedly tighter
-/// than the field that carries the caption.
-pub const LIST_ROW_H: f32 = 13.0;
-
-/// Panel top edge (y 204) to the first row's top (y 209): the 1 px frame line
-/// plus the 4 px of opaque black behind it.
-pub const LIST_INSET_TOP: f32 = 5.0;
-
-/// Last row's bottom (y 260, exclusive) to the panel's bottom edge (y 264):
-/// 3 px of opaque black plus the 1 px frame line.
-pub const LIST_INSET_BOTTOM: f32 = 4.0;
-
-/// Left and right inset of a row inside the panel. Left: x 342 (the panel's
-/// own dark edge) plus 343..345 opaque black, so the fill starts at x 346 =
-/// panel + 4. Right: the fill ends at x 419, then 420..422 opaque black and the
-/// frame line at 423 — panel + 82 - 4. Symmetric, 4 px.
-pub const LIST_INSET_X: f32 = 4.0;
-
-/// The measured glyph top inside a row (row 1 spans y 209..221, its glyphs
-/// start at 212). Our font's own ascent is not the original's, so this is the
-/// text node's inset rather than a promise about the baseline.
-pub const LIST_TEXT_TOP: f32 = 3.0;
-
-/// `rgb(123,121,123)` — sampled at image (346,204), (423,220) and (346,264),
-/// identical on all three. It is a 1 px line on **top, right and bottom only**:
-/// the panel's left edge (x 342) is dark (`rgb(8,12,8)` where the frame line
-/// would be, against `rgb(37,35,32)` of the dialog one pixel further left), so
-/// the frame reads as a bevel, not as a box. Reproduced as measured.
-pub const LIST_BORDER: Color = Color::srgb_u8(123, 121, 123);
-
-/// The panel is **translucent black at 50 %**, which is why it is worth a
-/// constant rather than a flat fill: four different backgrounds shine through
-/// it at exactly half strength — the table header bar `rgb(123,121,123)` reads
-/// `rgb(61,60,61)` at y 238, the divider `rgb(73,69,63)` reads `rgb(36,34,31)`
-/// at y 244, the dialog `rgb(37,35,32)` reads `rgb(18,17,16)` at y 209-218, and
-/// `rgb(8,12,8)` reads `rgb(4,6,4)` at y 219. Four ratios, 0.486-0.500.
-pub const LIST_FILL: Color = Color::srgba(0.0, 0.0, 0.0, 0.5);
-
-/// The opaque black ring between [`LIST_BORDER`] and [`LIST_FILL`]. Same probe
-/// row that proved the 50 % fill proves this is *not* 50 %: over the bright
-/// header bar at y 238, x 343..345 and x 420..422 stay `rgb(0,0,0)`.
-pub const LIST_INSET_FILL: Color = Color::BLACK;
-
-/// Row text: pure `rgb(255,255,255)`, and **centred** — "1 day" spans
-/// x 369..396 (centre 382.5) in a panel spanning x 342..423 (centre 382.5); the
-/// other three rows centre within a pixel. Note this is the row's own
-/// treatment, not the field's: the same combo is authored `HAlign=0`
-/// (`ifitemmallshop.txt:1209`), and its *caption* is centred too, so the open
-/// list does not inherit the site's alignment.
-pub const LIST_TEXT: Color = Color::WHITE;
-
-/// **Hover fill, `rgb(128,128,255)`** — from a capture of the original with a
-/// hovered row (806x629, same frame as the header): the row under the pointer (`3 months`,
-/// row 3) is filled over image x 346..419, y 248..260 — 844 of the row's
-/// 962 px, the remaining 118 being the glyphs. That rectangle is exactly
-/// [`list_row_rect`] for row 3 (74x13), so the highlight is the row, not a
-/// band around the text.
-///
-/// The value is an exact half/full triple (128/128/255), i.e. *set* by the
-/// client, not a blend of the 50 % fill with something behind it — a blend
-/// would land off the halves the way every other pixel in this panel does.
-///
-/// One caveat, recorded rather than smoothed: the row-1 hover in the same
-/// series (`05-hover-row2.png`) measures y 222..235, **14** px — one pixel
-/// into the next row's top — while the last row measures 13. We draw 13
-/// ([`LIST_ROW_H`]): the 14 px variant would run into the opaque inset ring
-/// on the last row, and the capture cannot say which of the two the client
-/// intends. [V] on both extents, [S] on the choice.
-pub const LIST_ROW_HOVER: Color = Color::srgb_u8(128, 128, 255);
-
-/// **Hover text, `rgb(255,255,128)`** — same frame, 118 px at image
-/// x 359..408, y 251..259, i.e. the glyph band of the hovered row. Again an
-/// exact half/full triple. It replaces [`LIST_TEXT`] wholesale: the hovered
-/// row has no white glyph pixels left, only this colour plus 74 px of black
-/// glyph edging.
-///
-/// Fill and text are **one state**, not two independent ones — see
-/// [`ComboRowState::paint`].
-pub const LIST_ROW_HOVER_TEXT: Color = Color::srgb_u8(255, 255, 128);
-
-/// Which of the two paints a row wears. **Display only**: the widget draws
-/// the state it is handed, the window decides which row the pointer is over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ComboRowState {
-    /// Every row the pointer is not on, *including the selected one* — see
-    /// the absence note on [`ComboRowState::paint`].
-    #[default]
-    Idle,
-    /// The single row under the pointer.
-    Hovered,
-}
-
-impl ComboRowState {
-    /// `(fill, text)`, resolved together because the capture shows them
-    /// switching together: in `06-hover-row4.png` the hovered row has
-    /// [`LIST_ROW_HOVER`] behind it *and* not one white glyph pixel left.
-    /// A caller that flips only one of them draws a state the original never
-    /// shows.
-    ///
-    /// # There is no selection marker, and that is measured
-    ///
-    /// `06-hover-row4.png` was taken **after** a click had set the field to
-    /// `7 days` (`04-after-select.png`), i.e. row 1 is the current value —
-    /// and row 1 carries nothing: the whole image holds exactly 844
-    /// `rgb(128,128,255)` pixels and every one of them is in row 3, under the
-    /// pointer. Positive control on the same read path: that same probe *does*
-    /// find the fill (844 px) in this image and finds it 13 rows higher in
-    /// `05-hover-row2.png`, so a marker on the selected row would have been
-    /// found by the identical scan. The highlight follows the pointer; it does
-    /// not stick to the selection. This is an absence in the original, not a
-    /// piece of this widget that is still missing.
-    pub fn paint(self) -> (Color, Color) {
-        match self {
-            Self::Idle => (Color::NONE, LIST_TEXT),
-            Self::Hovered => (LIST_ROW_HOVER, LIST_ROW_HOVER_TEXT),
-        }
-    }
-}
-
 /// The drop arrow, and the answer to "the data carry no art for this widget":
 /// the art is in the archive, it is just never named by a tree. The 18x18
 /// arrow the original draws template-matches
@@ -338,7 +188,7 @@ impl ComboRowState {
 /// `GDR_ITEM_MALL_SILK_SQUARE_1`) and returns nothing for `com_qst_downarrow`.
 /// `_focus` and `_press` variants ship beside it, so the button has the usual
 /// three states.
-pub const DROP_ARROW_DDJ: &str = "interface/ifcommon/com_qst_downarrow_button.ddj";
+pub const DROP_ARROW_DDJ: &str = "media://interface/ifcommon/com_qst_downarrow_button.ddj";
 
 /// The drop arrow is drawn 18x18 (image x 425..442, y 186..203) — the 20x20
 /// texture's 1 px transparent margin is not part of it.
@@ -364,35 +214,9 @@ pub const DROP_ARROW_GAP: f32 = 1.0;
 /// Kept for the classic generation only, and no longer described as an
 /// overdraw: in the 4th-generation rect the same 82 px are simply the field's
 /// share of a 102 px control (see [`DROP_ARROW_GAP`]). A consumer that renders
-/// the 4th-generation layout must **not** add this — `item_mall::buy_list`
-/// derives its width from `102 - arrow - gaps` instead and tests that sum.
+/// the 4th-generation layout must **not** add this — it derives its width from
+/// `102 - arrow - gaps` instead and tests that sum.
 pub const PAINTED_EXTRA_W: f32 = 4.0;
-
-/// Height of the panel an open combo needs for `rows` entries. Four rows give
-/// `5 + 4*13 + 4 = 61`, which is exactly the measured y 204..264.
-pub fn open_panel_height(rows: usize) -> f32 {
-    if rows == 0 {
-        return 0.0;
-    }
-    LIST_INSET_TOP + rows as f32 * LIST_ROW_H + LIST_INSET_BOTTOM
-}
-
-/// The open list panel's rect, widget-local, directly under the field. `y` is
-/// `FIELD_H - 1`: the field's last row and the panel's frame line are the same
-/// pixel in the capture (y 204).
-pub fn open_panel_rect(field_w: f32, rows: usize) -> (f32, f32, f32, f32) {
-    (0.0, FIELD_H - 1.0, field_w, open_panel_height(rows))
-}
-
-/// Row `index`'s rect inside a panel of `panel_w`, panel-local.
-pub fn list_row_rect(panel_w: f32, index: usize) -> (f32, f32, f32, f32) {
-    (
-        LIST_INSET_X,
-        LIST_INSET_TOP + index as f32 * LIST_ROW_H,
-        panel_w - 2.0 * LIST_INSET_X,
-        LIST_ROW_H,
-    )
-}
 
 // --- Markers -----------------------------------------------------------------
 
@@ -404,24 +228,11 @@ pub struct ComboBox;
 #[derive(Component, Debug)]
 pub struct ComboCaption;
 
-/// One row of an open list.
-#[derive(Component, Debug)]
-pub struct ComboRow(pub usize);
-
-/// The open list's panel node.
-#[derive(Component, Debug)]
-pub struct ComboList;
-
-/// The opaque black ring drawn inside [`ComboList`], between the frame line and
-/// the translucent fill.
-#[derive(Component, Debug)]
-pub struct ComboListInset;
-
 // --- Spawning ----------------------------------------------------------------
 
 /// How a site wants its field drawn. Constructed from the tree's own values, so
-/// a consumer writes `ComboStyle::from_site(0, None)` next to the `file:line` it
-/// transcribed rather than restating colours.
+/// a consumer states the align/tint pair next to the `file:line` it transcribed
+/// rather than restating colours.
 #[derive(Debug, Clone, Copy)]
 pub struct ComboStyle {
     pub align: ComboAlign,
@@ -499,103 +310,6 @@ pub fn combo_caption(
     )
 }
 
-/// The open list's panel. Spawn with [`open_panel_rect`] in the field's parent
-/// space; give it [`combo_list_inset`] and one [`combo_list_row`] per entry as
-/// children.
-///
-/// The frame is asymmetric on purpose — top, right and bottom carry
-/// [`LIST_BORDER`], the left edge carries nothing, because that is what the
-/// capture shows (see [`LIST_BORDER`]).
-pub fn combo_list_panel(rect: (f32, f32, f32, f32), s: f32) -> impl Bundle {
-    let mut node = abs_node(rect, s);
-    node.border = UiRect {
-        left: Val::Px(0.0),
-        top: Val::Px(s),
-        right: Val::Px(s),
-        bottom: Val::Px(s),
-    };
-    (
-        ComboList,
-        node,
-        BackgroundColor(LIST_FILL),
-        BorderColor {
-            top: LIST_BORDER,
-            right: LIST_BORDER,
-            bottom: LIST_BORDER,
-            left: Color::NONE,
-        },
-    )
-}
-
-/// The opaque black ring, a child of [`combo_list_panel`]. It is a *border*
-/// with no fill, so the translucent middle survives: only the ring is painted.
-///
-/// It spans the panel minus the frame line on top and bottom, and its own edges
-/// are the 4/4/3/3 px measured at x 342..345, x 420..422, y 205..208 and
-/// y 261..263.
-pub fn combo_list_inset(panel: (f32, f32, f32, f32), s: f32) -> impl Bundle {
-    let (_, _, w, h) = panel;
-    let mut node = abs_node((0.0, 1.0, w - 1.0, h - 2.0), s);
-    node.border = UiRect {
-        left: Val::Px(LIST_INSET_X * s),
-        top: Val::Px((LIST_INSET_TOP - 1.0) * s),
-        right: Val::Px((LIST_INSET_X - 1.0) * s),
-        bottom: Val::Px((LIST_INSET_BOTTOM - 1.0) * s),
-    };
-    (
-        ComboListInset,
-        node,
-        BorderColor::all(LIST_INSET_FILL),
-        Pickable::IGNORE,
-    )
-}
-
-/// One row of the open list, a child of [`combo_list_panel`].
-///
-/// **No selection highlight**, and that is a measurement, not an omission: the
-/// panel's fill is uniform 50 % black over all four rows, including the row
-/// whose value the field is showing. §31 saw it with `1 day` selected and
-/// row 0 unmarked; §32 saw it again after a click had moved the value to
-/// `7 days`, with row 1 unmarked while the pointer's row 3 carried the full
-/// [`LIST_ROW_HOVER`] fill. Positive control on the same read path — the two
-/// bands that *look* lighter in the §31 screenshot, y 209-218 and y 238-244,
-/// are exactly the y ranges where bright content sits **outside** the panel at
-/// the same height (x 338..341 reads `rgb(37,35,32)` and `rgb(123,121,123)`
-/// there), i.e. they are the translucency doing its job.
-///
-/// The row node spans the whole [`list_row_rect`] and pushes its glyphs down
-/// with padding instead of an offset, because the hover fill was measured over
-/// the full 13 px row, not over the glyph band.
-///
-/// The pressed state was not in either frame and stays unknown.
-pub fn combo_list_row(
-    fonts: &FontAssets,
-    panel_w: f32,
-    index: usize,
-    text: impl Into<String>,
-    state: ComboRowState,
-    s: f32,
-) -> impl Bundle {
-    let (x, y, w, h) = list_row_rect(panel_w, index);
-    let (fill, colour) = state.paint();
-    let mut node = abs_node((x, y, w, h), s);
-    node.padding = UiRect::top(Val::Px(LIST_TEXT_TOP * s));
-    (
-        ComboRow(index),
-        Text::new(text.into()),
-        TextFont {
-            font: fonts.two.clone().into(),
-            font_size: FontSize::Px(FIELD_H * 0.5 * s),
-            ..default()
-        },
-        TextColor(colour),
-        TextLayout::justify(Justify::Center),
-        node,
-        BackgroundColor(fill),
-        Pickable::IGNORE,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,186 +382,33 @@ mod tests {
         assert!(DISABLED_TEXT.alpha() < 1.0);
     }
 
-    /// An open list is a stack of rows directly under the field — and an empty
-    /// list must not produce a negative or floating panel.
-    #[test]
-    fn open_panel_stacks_under_the_field() {
-        assert_eq!(open_panel_height(0), 0.0);
-        assert_eq!(
-            open_panel_height(5),
-            LIST_INSET_TOP + 5.0 * LIST_ROW_H + LIST_INSET_BOTTOM
-        );
-        let (x, y, w, h) = open_panel_rect(176.0, 3);
-        assert_eq!((x, y, w), (0.0, FIELD_H - 1.0, 176.0));
-        assert_eq!(h, LIST_INSET_TOP + 3.0 * LIST_ROW_H + LIST_INSET_BOTTOM);
-        assert_eq!(ComboState::default(), ComboState::Closed);
-
-        // A row is not as tall as the field that carries the caption. This is
-        // the one thing a "rows of FIELD_H" guess gets wrong, so state it.
-        assert!(LIST_ROW_H < FIELD_H);
-    }
-
-    /// The capture, replayed in absolute image coordinates: the item mall's
-    /// `Set Inquiry Period` combo open with four rows
-    /// (the capture named in the module header). Field top-left (342,185),
-    /// painted 82x20; panel y 204..264; row glyph tops y 212/225/238/251.
-    ///
-    /// Every assertion here is a pixel someone can go and re-read.
-    #[test]
-    fn the_open_list_reproduces_the_measured_capture() {
-        const FIELD_X: f32 = 342.0;
-        const FIELD_Y: f32 = 185.0;
-        const PAINTED_W: f32 = 82.0;
-
-        // The authored rect is `165,85,78,20` (ifitemmallshop.txt:1209): the
-        // height is honoured exactly, the width is painted 4 px wider.
-        assert_eq!(PAINTED_W, 78.0 + PAINTED_EXTRA_W);
-        assert_eq!(
-            SITES[13],
-            ("resinfo/ifitemmallshop.txt:1209", 165.0, 85.0, 78.0, 20.0)
-        );
-
-        // Panel: shares the field's last row (y 204) and its width, ends 264.
-        let panel = open_panel_rect(PAINTED_W, 4);
-        assert_eq!(FIELD_Y + panel.1, 204.0);
-        assert_eq!(panel.2, PAINTED_W, "the list holds the field's width");
-        assert_eq!(FIELD_Y + panel.1 + panel.3 - 1.0, 264.0);
-
-        // Rows: the translucent fill starts at x 346 and y 209 and is exactly
-        // four rows tall (52 px, y 209..260).
-        let first = list_row_rect(panel.2, 0);
-        assert_eq!(FIELD_X + first.0, 346.0);
-        assert_eq!(FIELD_Y + panel.1 + first.1, 209.0);
-        assert_eq!(first.2, 74.0, "fill spans x 346..419");
-        let last = list_row_rect(panel.2, 3);
-        assert_eq!(FIELD_Y + panel.1 + last.1 + last.3, 261.0);
-
-        // The four measured glyph tops, in order.
-        for (index, glyph_top) in [212.0, 225.0, 238.0, 251.0].into_iter().enumerate() {
-            let row = list_row_rect(panel.2, index);
-            assert_eq!(
-                FIELD_Y + panel.1 + row.1 + LIST_TEXT_TOP,
-                glyph_top,
-                "row {index}"
-            );
-        }
-    }
-
-    /// The frame the capture shows is a bevel, not a box: three light edges and
-    /// a dark left one. Worth a test because the obvious implementation —
-    /// `Outline`/`BorderColor::all` — silently draws the fourth.
-    #[test]
-    fn the_panel_frame_is_light_on_three_edges_only() {
-        assert_eq!(LIST_BORDER, Color::srgb_u8(123, 121, 123));
-        assert_eq!(LIST_FILL.alpha(), 0.5, "the panel is translucent");
-        assert_eq!(LIST_INSET_FILL.alpha(), 1.0, "its inset ring is not");
-        assert_ne!(LIST_FILL, LIST_INSET_FILL);
-    }
-
-    /// §31's rule, as an executable reminder: the shipped text block holds six
-    /// consecutive period lines, the original's box lists four. A consumer that
-    /// slices the block gets two rows that do not exist.
-    ///
-    /// The rule is no longer capture-only: the binary confirms it. The four
-    /// shown keys are pushed onto one control in this order in the original,
-    /// and the two dropped keys (`UIIT_CTL_SILK_INQUIRY_MONTH_DAY`,
-    /// `_PERMANENCE`) do not occur in the image at all. A test cannot read the exe,
-    /// so this stays a note beside the assertions rather than an assertion.
-    #[test]
-    fn the_shipped_text_block_is_not_the_row_list() {
-        const SHIPPED: [&str; 6] = [
-            "1 day",
-            "7 days",
-            "28 days",
-            "Permanence",
-            "1 month",
-            "3 months",
-        ];
-        const SHOWN: [&str; 4] = ["1 day", "7 days", "1 month", "3 months"];
-
-        assert_eq!(SHIPPED.len(), 6, "textuisystem.txt L3498-L3503");
-        assert_eq!(SHOWN.len(), 4, "capture 04-combo-open.png");
-        for missing in ["28 days", "Permanence"] {
-            assert!(SHIPPED.contains(&missing));
-            assert!(!SHOWN.contains(&missing), "{missing} is not in the box");
-        }
-        // And the panel is sized for what is shown, not for what ships.
-        assert_ne!(
-            open_panel_height(SHOWN.len()),
-            open_panel_height(SHIPPED.len())
-        );
-    }
-
-    /// §32, replayed in the same absolute image coordinates: the hovered row
-    /// is filled over exactly its own [`list_row_rect`]
-    /// (`271-combo-hover/06-hover-row4.png`, x 346..419, y 248..260 — 74x13),
-    /// and the two hover colours are the exact half/full triples that were
-    /// measured, not blends.
-    ///
-    /// Fails without the hover state: `LIST_ROW_HOVER` is what it asserts.
-    #[test]
-    fn the_hovered_row_matches_the_measured_rectangle() {
-        const FIELD_X: f32 = 342.0;
-        const FIELD_Y: f32 = 185.0;
-        const PAINTED_W: f32 = 82.0;
-
-        assert_eq!(LIST_ROW_HOVER, Color::srgb_u8(128, 128, 255));
-        assert_eq!(LIST_ROW_HOVER_TEXT, Color::srgb_u8(255, 255, 128));
-        assert_eq!(
-            LIST_ROW_HOVER.alpha(),
-            1.0,
-            "the fill is opaque, not the 50 %"
-        );
-
-        let panel = open_panel_rect(PAINTED_W, 4);
-        let row = list_row_rect(panel.2, 3);
-        assert_eq!(FIELD_X + row.0, 346.0);
-        assert_eq!(FIELD_X + row.0 + row.2 - 1.0, 419.0);
-        assert_eq!(FIELD_Y + panel.1 + row.1, 248.0);
-        assert_eq!(FIELD_Y + panel.1 + row.1 + row.3 - 1.0, 260.0);
-        // 74x13 = 962 px, of which 844 are fill and 118 are the recoloured
-        // glyphs; the remaining 74 are the black glyph edging.
-        assert_eq!(row.2 * row.3, 962.0);
-        assert_eq!(844.0 + 118.0, 962.0);
-    }
-
-    /// The one thing a later refactor can silently break: fill and text are a
-    /// pair. The hovered row in the capture has *no* white glyph pixel left,
-    /// so a state that keeps [`LIST_TEXT`] on a filled row — or tints the text
-    /// without filling — is a state the original never shows.
-    ///
-    /// Also the absence: [`ComboRowState::default`] is `Idle`, i.e. the
-    /// selected row is painted like every other one (§32, row 1 unmarked while
-    /// the field read `7 days`).
-    #[test]
-    fn hover_switches_fill_and_text_together() {
-        for state in [ComboRowState::Idle, ComboRowState::Hovered] {
-            let (fill, text) = state.paint();
-            assert_eq!(
-                fill != Color::NONE,
-                text != LIST_TEXT,
-                "{state:?} changes only one of fill/text"
-            );
-        }
-        assert_eq!(ComboRowState::Idle.paint(), (Color::NONE, LIST_TEXT));
-        assert_eq!(
-            ComboRowState::Hovered.paint(),
-            (LIST_ROW_HOVER, LIST_ROW_HOVER_TEXT)
-        );
-        assert_eq!(ComboRowState::default(), ComboRowState::Idle);
-        // No selection marker: nothing but the pointer's row can be painted,
-        // because `Hovered` is the only non-idle state there is.
-        assert_ne!(LIST_ROW_HOVER, LIST_FILL);
-    }
-
     /// The drop arrow is a real shipped tile, and it lives beside the field
     /// rather than inside it.
     #[test]
     fn the_drop_arrow_sits_outside_the_field() {
+        // The path has to be loadable, not merely spelled: every asset in this
+        // tree is read through the `media://` source (the PK2 reader), so the
+        // prefix is checked against a constant that is actually spawned today
+        // (`game_window`'s tile) rather than against a copy of this literal.
+        let (source, path) = DROP_ARROW_DDJ
+            .split_once("://")
+            .expect("an asset path carries its source");
         assert_eq!(
-            DROP_ARROW_DDJ,
-            "interface/ifcommon/com_qst_downarrow_button.ddj"
+            source,
+            crate::plugins::hud::game_window::BG_TILE_DDJ
+                .split_once("://")
+                .expect("an asset path carries its source")
+                .0
         );
+        assert_eq!(path, "interface/ifcommon/com_qst_downarrow_button.ddj");
+        // The painted field is 4 px wider than the classic authored rect
+        // (`ifitemmallshop.txt:1209` = `165,85,78,20`), which is what
+        // `PAINTED_EXTRA_W` records and what puts the arrow at x 425.
+        assert_eq!(
+            SITES[13],
+            ("resinfo/ifitemmallshop.txt:1209", 165.0, 85.0, 78.0, 20.0)
+        );
+        assert_eq!(78.0 + PAINTED_EXTRA_W, 82.0);
         // Field x 342..423 painted 82 wide, arrow x 425..442.
         let field_right = 342.0 + 82.0;
         assert_eq!(field_right + DROP_ARROW_GAP, 425.0);

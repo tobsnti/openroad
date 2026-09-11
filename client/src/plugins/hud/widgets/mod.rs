@@ -11,22 +11,17 @@
 //! up either empty or invented. This module is where that vocabulary lives once
 //! so a window can spend a rect and get the original's widget back.
 //!
-//! Two members so far, both chosen because more than one window needs them
-//! (`shared-input-widgets.md` §9 "consumer census"):
+//! One member so far, kept to what this tree actually draws:
 //!
-//! * [`page_manager`] — `CIFPageManager`, the Prev/Next strip under a paged
-//!   list (item mall, stall network).
-//! * [`combo_box`] — `CIFComboBox`, the drop-down field, closed and open
-//!   (options/video, party matching, stall network, item mall, guild-war
-//!   request, …).
+//! * [`combo_box`] — `CIFComboBox`, the drop-down field as the autopotion
+//!   panel spends it (`autopotion/ui.rs`).
 //!
-//! **These are displays, not controllers.** Neither widget fetches, owns or
-//! derives its content: the page strip renders the page numbers it is handed
-//! and the combo field renders the caption and the rows it is handed. Paging
-//! policy and option lists belong to the window, which is the only place that
-//! knows where the rows come from — and for the combo that is a **rule**, not a
-//! convenience: the original's open list shows four of the six period lines the
-//! text file ships in one block (`combo_box`, §31).
+//! `CIFPageManager` (the Prev/Next strip) is deliberately *not* here yet: no
+//! window in this tree pages, and a widget nobody spawns is a transcription
+//! nobody can catch being wrong. It lands with its first consumer.
+//!
+//! **This is a display, not a controller.** The widget neither fetches nor owns
+//! its content: it renders the caption it is handed. The option list belongs to
+//! the window, which is the only place that knows where the rows come from.
 
 pub mod combo_box;
-pub mod page_manager;

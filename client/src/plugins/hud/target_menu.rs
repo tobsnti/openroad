@@ -370,13 +370,21 @@ pub fn send_target_menu_exchange_invite(
 ///
 /// The chat window is un-collapsed on the way, because a prefilled input the
 /// player cannot see is the same dead click this is removing.
+/// `ChatState` is an `Option` for the same reason as in
+/// [`log_target_menu_actions`]: it belongs to `hud/chat/mod.rs`, not to this
+/// plugin, and Bevy does not skip a system whose `ResMut` is missing — it fails
+/// parameter validation and panics the schedule. A scene that has the target
+/// menu but no chat must lose the prefill, not the frame.
 pub fn send_target_menu_whisper(
     mut actions: MessageReader<TargetMenuAction>,
     names: Query<&DisplayName>,
     mut focus: ResMut<InputFocus>,
-    mut chat: ResMut<ChatState>,
+    chat: Option<ResMut<ChatState>>,
     mut input: Query<(Entity, &mut EditableText), With<ChatInputBox>>,
 ) {
+    let Some(mut chat) = chat else {
+        return;
+    };
     for action in actions.read() {
         if action.action != TargetAction::Whisper {
             continue;
@@ -612,6 +620,28 @@ mod test {
         assert_eq!(out.chat_type, chat_type::PM);
         assert_eq!(out.receiver.as_deref(), Some("Trader6"));
         assert_eq!(out.message, "hi");
+    }
+
+    /// A scene with the target menu but no chat plugin must still run: Bevy
+    /// fails parameter validation for a missing `ResMut` and panics the whole
+    /// schedule, so the whisper row takes `ChatState` as an `Option` and
+    /// degrades. With a hard `ResMut<ChatState>` this update panics.
+    #[test]
+    fn the_whisper_row_degrades_without_the_chat_plugin() {
+        let mut app = App::new();
+        app.add_message::<TargetMenuAction>()
+            .init_resource::<InputFocus>()
+            .add_systems(Update, send_target_menu_whisper);
+        let target = app.world_mut().spawn(DisplayName("Trader6".into())).id();
+        app.world_mut().write_message(TargetMenuAction {
+            target,
+            action: TargetAction::Whisper,
+        });
+        app.update();
+        assert!(
+            app.world().get_resource::<ChatState>().is_none(),
+            "the test must run without the chat plugin's resource"
+        );
     }
 
     /// The anchor is expressed as the authored offset inside the target

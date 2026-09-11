@@ -100,23 +100,29 @@ pub fn font_px(index: usize) -> f32 {
     text_px(ladder_px(index))
 }
 
-/// The ladder entry for a resinfo `FontIndex`, clamped. Split out so it can be
+/// The ladder entry for a resinfo `FontIndex`. Split out so it can be
 /// asserted without reading the process global the tests below race on.
+///
+/// An index the binary has no slot for falls back to **index 0**, the 9 pt
+/// body size 3547 of 3739 authored controls carry — not to the largest entry,
+/// which would render the three `ifchatbubblewindow.txt` FontIndex-7 sites at
+/// nearly twice the size the rest of the chat text uses.
 fn ladder_px(index: usize) -> f32 {
-    FONT_INDEX_PX[index.min(FONT_INDEX_PX.len() - 1)]
+    FONT_INDEX_PX
+        .get(index)
+        .copied()
+        .unwrap_or(FONT_INDEX_PX[0])
 }
 
 /// [`text_px`]'s rule without the process global, so it can be asserted
 /// without writing the one value the other tests here race on.
 ///
-/// `pub(crate)` because a build-time *fit* check has the same need: it has to
-/// know what size a design value rounds to at a given scale, for several
-/// scales, without writing the global
-/// (`scenes::intro_v2::character_select::countdown_line_fits`, which asserts
-/// that the deletion countdown line fits its 328 px control). Re-deriving
-/// `(design * scale).round()` at that call site is exactly the duplication
-/// this module's doc calls the bug it replaces.
-pub(crate) fn round_text_px(design_px: f32, scale: f32) -> f32 {
+/// Private on purpose: a *fit* check elsewhere would have the same need (know
+/// what a design value rounds to at a given scale without writing the global),
+/// but no such call site exists in this tree yet, and `pub(crate)` on a
+/// helper nobody outside the module calls only invites the re-derivation of
+/// `(design * scale).round()` this module exists to remove.
+fn round_text_px(design_px: f32, scale: f32) -> f32 {
     (design_px * scale).round()
 }
 
@@ -221,11 +227,16 @@ mod test {
     }
 
     /// A resinfo `FontIndex` the binary has no slot for (7, in
-    /// `ifchatbubblewindow.txt`) must not index out of bounds.
+    /// `ifchatbubblewindow.txt`) must not index out of bounds — and it must
+    /// land on the body size, not on the 20 px headline entry: a clamp to the
+    /// last slot renders those three chat-bubble sites at nearly twice the
+    /// size of the text around them.
     #[test]
-    fn an_out_of_range_font_index_falls_back_instead_of_panicking() {
-        assert_eq!(ladder_px(7), ladder_px(4));
+    fn an_out_of_range_font_index_falls_back_to_the_body_size() {
+        assert_eq!(ladder_px(7), ladder_px(0));
+        assert_eq!(ladder_px(7), 12.0, "must not clamp to the 20 px entry");
         assert_eq!(ladder_px(0), 12.0);
+        assert_eq!(ladder_px(4), 20.0, "an in-range index still resolves");
     }
 
     /// The knob has to move the number every surface multiplies by — and a

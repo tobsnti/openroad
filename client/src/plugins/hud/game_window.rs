@@ -455,6 +455,15 @@ pub fn spawn_game_window(
 /// [`spawn_game_window`] with the per-window parts spelled out. See
 /// [`GameWindowStyle`].
 #[allow(clippy::too_many_arguments)]
+/// The geometry [`spawn_game_window_styled`] derives — *in the family the style
+/// asks for*. `WindowGeometry::from_content` is the mframe default, so deriving
+/// through it while drawing `style.chrome` gave a caller that picks
+/// [`MSGBOX2_WINDOW`] the msgbox ring around mframe insets: content under the
+/// frame and a wrong outer size.
+fn styled_geometry(style: &GameWindowStyle, content_size: (f32, f32)) -> WindowGeometry {
+    WindowGeometry::from_content_in(style.chrome, content_size)
+}
+
 pub fn spawn_game_window_styled(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -472,7 +481,7 @@ pub fn spawn_game_window_styled(
         fonts,
         camera,
         title,
-        WindowGeometry::from_content(content_size),
+        styled_geometry(&style, content_size),
         None,
         anchor_right_top,
         scale,
@@ -857,6 +866,49 @@ mod test {
                 "{piece} must keep stretching"
             );
         }
+    }
+
+    /// A style that picks the second family must get *that* family's geometry.
+    /// Deriving through `WindowGeometry::from_content` (the mframe default)
+    /// while drawing `style.chrome` is the shape this pins: the msgbox ring
+    /// around mframe insets, i.e. content under the frame. `GDR_PREV_JOB_INFO`
+    /// closes the msgbox case independently (`0,0,364,164` around a
+    /// `16,40,332,108` background).
+    #[test]
+    fn a_styled_window_is_measured_in_the_family_it_draws() {
+        let msgbox = styled_geometry(
+            &GameWindowStyle {
+                chrome: &MSGBOX2_WINDOW,
+                ..default()
+            },
+            (332.0, 108.0),
+        );
+        // The family's own insets plus our `CHROME_PAD` breathing room on each
+        // side. Ground truth for the insets: `GDR_PREV_JOB_INFO` is authored
+        // `0,0,364,164` around a `16,40,332,108` background, and that authored
+        // outer is exactly this minus the two pads on each axis.
+        assert_eq!(msgbox.outer, (372.0, 172.0));
+        assert_eq!(
+            (
+                msgbox.outer.0 - 2.0 * CHROME_PAD,
+                msgbox.outer.1 - 2.0 * CHROME_PAD
+            ),
+            (364.0, 164.0),
+            "the authored GDR_PREV_JOB_INFO rect, pad excluded"
+        );
+        assert_eq!(
+            msgbox.content_at,
+            (
+                MSGBOX2_WINDOW.vis_left + CHROME_PAD,
+                MSGBOX2_WINDOW.vis_top + CHROME_PAD
+            )
+        );
+        let mframe = styled_geometry(&GameWindowStyle::default(), (332.0, 108.0));
+        assert_ne!(
+            mframe.outer, msgbox.outer,
+            "the two families must not measure alike, or this proves nothing"
+        );
+        assert_ne!(mframe.content_at, msgbox.content_at);
     }
 
     /// The second family, off
