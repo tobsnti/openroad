@@ -86,15 +86,26 @@ pub fn apply_hud_scale(config: Res<ClientConfig>) {
 /// asks GDI for a character height, which for a TrueType face is the em size —
 /// exactly what Bevy's `FontSize::Px` means, so the numbers transfer 1:1.
 ///
-/// Across the 247 `resinfo` files: index 0 appears 3547 times,
-/// 2 → 156, 1 → 30, 3 → 2, 4 → 2. Three sites in `ifchatbubblewindow.txt` ask
-/// for index **7**, which no slot in the binary covers.
+/// Across the 247 `resinfo` files: 3740 authored controls carry a
+/// `FontIndex` — index 0 appears 3547 times, 2 → 156, 1 → 30, 3 → 2, 4 → 2.
+/// Three sites in `ifchatbubblewindow.txt` (`:12,:31,:50`) ask for index **7**,
+/// which no slot in the binary covers; only one of the three carries text
+/// (`GDR_CHATBUBBLEWINDOW_CHATBOX:CIFTextBox`, `:44`), the other two are empty
+/// `CIFWnd` bubble ends.
+///
+/// The intro scene keeps its own copy of this ladder
+/// (`scenes::intro_v2::intro_font_px`) with the *opposite* out-of-range rule —
+/// it clamps to the largest entry. That is not a second opinion about the same
+/// question: the intro trees (`ps*.txt`) author only index 0 and 2, so no
+/// out-of-range value reaches it, and it is unscaled because the intro draws at
+/// the art's native size. The rule below is the HUD's, and the paragraph on
+/// [`ladder_px`] states the data it rests on.
 pub const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
 
 /// The `FontSize::Px` value for a control whose resinfo `FontIndex` is
 /// `index`, scaled by [`hud_scale`] like every other transcribed rect.
 ///
-/// An out-of-range index falls back to 0, the index 3547 of 3739 authored
+/// An out-of-range index falls back to 0, the index 3547 of 3740 authored
 /// controls use, rather than panicking on a data value.
 pub fn font_px(index: usize) -> f32 {
     text_px(ladder_px(index))
@@ -104,9 +115,18 @@ pub fn font_px(index: usize) -> f32 {
 /// asserted without reading the process global the tests below race on.
 ///
 /// An index the binary has no slot for falls back to **index 0**, the 9 pt
-/// body size 3547 of 3739 authored controls carry — not to the largest entry,
-/// which would render the three `ifchatbubblewindow.txt` FontIndex-7 sites at
-/// nearly twice the size the rest of the chat text uses.
+/// body size 3547 of 3740 authored controls carry — not to the largest entry,
+/// which would render the one `ifchatbubblewindow.txt` FontIndex-7 site that
+/// carries text at nearly twice the size the rest of the chat uses.
+///
+/// The data behind the choice: the only out-of-range index in the shipped
+/// resinfo is 7, and it occurs in chat bubbles only. The eight other chat trees
+/// (`ifchatviewer`, `ifchatmodule`, `ifwholechat`, `ifchatoptionboard`,
+/// `ifchattingblocking(+slot)`, `ifcaschatview`, `ifsupporterchatwnd`) carry
+/// **104 controls, every one of them FontIndex 0**, so index 0 is the size of
+/// the surrounding chat text. What the original itself does with index 7 was
+/// not read out of the binary — this is a stated openroad decision under
+/// ADR-0009, not a transcribed rule.
 fn ladder_px(index: usize) -> f32 {
     FONT_INDEX_PX
         .get(index)
@@ -202,7 +222,7 @@ mod test {
 
     /// The ladder is data + binary, not taste: both sources are quoted in
     /// `FONT_INDEX_PX`'s doc comment, and the order is the resinfo `FontIndex`
-    /// order (0 = 9 pt, the default of 3547 of 3739 authored controls), not
+    /// order (0 = 9 pt, the default of 3547 of 3740 authored controls), not
     /// ascending size. A future edit that "tidies" it into 11,12,15,16,20
     /// would silently re-point every FontIndex-0 label at 8 pt.
     #[test]
@@ -229,8 +249,10 @@ mod test {
     /// A resinfo `FontIndex` the binary has no slot for (7, in
     /// `ifchatbubblewindow.txt`) must not index out of bounds — and it must
     /// land on the body size, not on the 20 px headline entry: a clamp to the
-    /// last slot renders those three chat-bubble sites at nearly twice the
-    /// size of the text around them.
+    /// last slot renders the one chat-bubble site that carries text at nearly
+    /// twice the size of the text around it. The intro scene's copy of the
+    /// ladder clamps instead, and says why in its own doc — it never sees an
+    /// out-of-range index.
     #[test]
     fn an_out_of_range_font_index_falls_back_to_the_body_size() {
         assert_eq!(ladder_px(7), ladder_px(0));

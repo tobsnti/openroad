@@ -169,18 +169,14 @@ impl TargetWindowAssets {
         }
     }
 
-    /// The gem for a `target level - player level` gap (thresholds per the
-    /// vanilla behavior): ≤-9 weak2, -8..-3 weak1, -2..2 normal, 3..8 strong1,
-    /// ≥9 strong2. The original picks *both* a texture and a tint from the same
-    /// index (see [`GEM_TINTS`]), so this returns the pair.
+    /// The gem for a `target level - player level` gap. The ladder is the
+    /// original's, not guessed: it computes `diff = targetLevel - playerLevel`
+    /// and steps at -7, -4, 0 and 5 — so: ≤-7 weak2, -6..-4 weak1,
+    /// -3..0 normal, 1..5 strong1, ≥6 strong2. A same-level target is *normal*,
+    /// a +1 target already *strong1*. The original picks *both* a texture and a
+    /// tint from the same index (see [`GEM_TINTS`]), so this returns the pair.
     fn gem(&self, diff: i32) -> (&Handle<Image>, Color) {
-        let index = match diff {
-            i32::MIN..=-9 => 0,
-            -8..=-3 => 1,
-            -2..=2 => 2,
-            3..=8 => 3,
-            _ => 4,
-        };
+        let index = gem_index(diff);
         (&self.gems[index], GEM_TINTS[index])
     }
 
@@ -222,6 +218,18 @@ fn rarity_label(strings: &ClientUiStrings, kind: u8, party: bool) -> String {
         format!("Party {name}")
     } else {
         name.to_string()
+    }
+}
+
+/// The jump-table index of [`TargetWindowAssets::gem`], split out so the four
+/// step edges can be pinned by a test without any loaded art.
+fn gem_index(diff: i32) -> usize {
+    match diff {
+        i32::MIN..=-7 => 0,
+        -6..=-4 => 1,
+        -3..=0 => 2,
+        1..=5 => 3,
+        _ => 4,
     }
 }
 
@@ -776,6 +784,40 @@ mod tests {
         // ...but a COS spawns as an NPC and is a character to the player, so it
         // takes the player plate (upstream's rule, kept).
         assert_eq!(frame_for(&RemoteEntity::Npc, true), FRAME_PLAYER);
+    }
+
+    /// The step edges of the level-gap ladder are the original's: -7, -4, 0
+    /// and 5. We used to step at -9/-3/2/8, which
+    /// showed the wrong gem for eight of the gaps, among them a target one or
+    /// two levels above the player (original: strong1, ours: normal).
+    #[test]
+    fn the_gem_ladder_steps_where_the_binary_steps() {
+        // each boundary and the value just past it
+        assert_eq!(gem_index(-8), 0);
+        assert_eq!(gem_index(-7), 0);
+        assert_eq!(gem_index(-6), 1);
+        assert_eq!(gem_index(-4), 1);
+        assert_eq!(gem_index(-3), 2);
+        assert_eq!(gem_index(0), 2); // a same-level target is untinted
+        assert_eq!(gem_index(1), 3); // ...one level up is already strong1
+        assert_eq!(gem_index(5), 3);
+        assert_eq!(gem_index(6), 4);
+        // the eight gaps the old -9/-3/2/8 ladder got wrong
+        for (diff, index) in [
+            (-8, 0),
+            (-7, 0),
+            (-3, 2),
+            (1, 3),
+            (2, 3),
+            (6, 4),
+            (7, 4),
+            (8, 4),
+        ] {
+            assert_eq!(gem_index(diff), index, "gap {diff}");
+        }
+        // levels are bytes in the original, so the gap never leaves -255..255
+        assert_eq!(gem_index(-255), 0);
+        assert_eq!(gem_index(255), 4);
     }
 
     /// The five level-gap gems are a texture *and* an ARGB tint from the same

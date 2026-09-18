@@ -45,19 +45,24 @@ Derived: panel height for `rows` entries is `5 + rows*13 + 4`; four rows give
 Fill and text are **one state**: a row that keeps white text on a filled
 background is a state the original never shows.
 
-**There is no selection marker, and that is measured.** The hover capture was
-taken after a click had set the field to `7 days`, i.e. row 1 is the current
-value — and row 1 carries nothing: the whole image holds exactly 844
-`rgb(128,128,255)` pixels, all of them in row 3, under the pointer. Positive
-control on the same read path: the identical scan finds the fill 13 rows higher
-in the row-1 hover frame. The highlight follows the pointer; it does not stick
-to the selection.
+**There is no selection marker.** With the field already set to `7 days`, i.e.
+row 1 being the current value, row 1 carries nothing: the whole frame holds
+exactly 844 `rgb(128,128,255)` pixels, all of them in row 3, under the pointer.
+With the pointer on row 1 the same fill sits 26 px (two rows) higher, at y
+222..235 instead of y 248..260. The highlight follows the pointer; it does not
+stick to the selection.
 
-One caveat, recorded rather than smoothed: the row-1 hover measures 14 px — one
-pixel into the next row — while the last row measures 13. 13 is the safer
-choice (14 would run into the opaque inset ring on the last row), but the
-capture cannot say which the client intends. The pressed state was in neither
-frame and stays unknown.
+One caveat, recorded rather than smoothed: the row-1 hover is 14 px tall — one
+pixel into the next row — while the last row is 13. 13 is the safer
+choice (14 would run into the opaque inset ring on the last row), but nothing
+here says which the client intends.
+
+**Pressed paints nothing of its own.** In the pressed state the
+row holds 938 px `rgb(128,128,255)` and 98 px `rgb(255,255,128)` in y 235..248
+— the same colour pair as hover, in the same one-state fill+text form. So a
+press needs no third visual; only the hover state and the commit on release.
+It also supports the 13/14 caveat above: its middle row is 14 px too, only the
+last row is 13.
 
 ## The rule for whoever implements it
 
