@@ -93,6 +93,30 @@ const DEFAULT_BOT_PORT: u16 = 15810;
 /// polls every second or two to never miss a kill, a level-up or an error.
 const LOG_CAPACITY: usize = 400;
 
+/// The control methods `run_bot` registers. Named once so the README section
+/// and the registration cannot drift apart (there is a test for that).
+const BRP_METHODS: [&str; 6] = [
+    "bot/status",
+    "bot/entities",
+    "bot/inventory",
+    "bot/log",
+    "bot/command",
+    "bot/send",
+];
+
+/// Smallest gap between two commands leaving the queue, in seconds.
+///
+/// Origin, not taste: 210 ms is the shortest `Action_ActionDuration` (col 13)
+/// of any castable player skill in the v1.188 corpus — measured over all
+/// `Media.pk2` `server_dep/silkroad/textdata/skilldata_*.txt` shards (30661
+/// rows, activity 1 and 2 of the `SKILL_CH_*`/`SKILL_EU_*` rows); the minimum
+/// is `skilldata_5000.txt` line 22, `SKILL_CH_SWORD_CHAIN_E_1S_01`, col 13 =
+/// 210 (next values 262, 265, 283 ms). Nothing the character can do finishes
+/// faster, so commands issued faster than this cannot be answered by the
+/// session — they only make an error impossible to attribute. `BOT_COMMAND_INTERVAL`
+/// (seconds, `0` = as fast as frames allow) overrides it for opcode probing.
+const DEFAULT_COMMAND_INTERVAL: f64 = 0.210;
+
 /// Build and run the bot. Blocks until the process is killed.
 pub fn run_bot(config: ClientConfig) {
     let port = env::var("BOT_PORT")
@@ -123,12 +147,12 @@ pub fn run_bot(config: ClientConfig) {
         })
         .add_plugins((
             RemotePlugin::default()
-                .with_method_main("bot/status", brp_status)
-                .with_method_main("bot/entities", brp_entities)
-                .with_method_main("bot/inventory", brp_inventory)
-                .with_method_main("bot/log", brp_log)
-                .with_method_main("bot/command", brp_command)
-                .with_method_main("bot/send", brp_send),
+                .with_method_main(BRP_METHODS[0], brp_status)
+                .with_method_main(BRP_METHODS[1], brp_entities)
+                .with_method_main(BRP_METHODS[2], brp_inventory)
+                .with_method_main(BRP_METHODS[3], brp_log)
+                .with_method_main(BRP_METHODS[4], brp_command)
+                .with_method_main(BRP_METHODS[5], brp_send),
             RemoteHttpPlugin::default().with_port(port),
         ))
         .insert_resource(config)
@@ -140,6 +164,7 @@ pub fn run_bot(config: ClientConfig) {
         .init_resource::<BotWalk>()
         .init_resource::<BotInventory>()
         .init_resource::<BotQueue>()
+        .insert_resource(BotPace::from_env())
         .insert_resource(BotRefdata::load())
         .add_plugins(NetworkCorePlugin)
         .add_systems(Startup, init_gateway_service)
@@ -417,6 +442,48 @@ pub struct BotWorld {
 pub struct BotQueue {
     commands: VecDeque<Value>,
     log: VecDeque<String>,
+}
+
+/// The rate brake on the command queue: the queue is drained one command per
+/// frame, and a 5 ms run loop means 200 frames a second, so "one per frame" on
+/// its own is not a brake at all. See [`DEFAULT_COMMAND_INTERVAL`] for where
+/// the spacing comes from.
+#[derive(Resource)]
+pub struct BotPace {
+    interval: f64,
+    /// When a command last left the queue; `None` until the first one does.
+    last_sent: Option<f64>,
+}
+
+impl Default for BotPace {
+    fn default() -> Self {
+        Self {
+            interval: DEFAULT_COMMAND_INTERVAL,
+            last_sent: None,
+        }
+    }
+}
+
+impl BotPace {
+    fn from_env() -> Self {
+        Self {
+            interval: env::var("BOT_COMMAND_INTERVAL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_COMMAND_INTERVAL),
+            last_sent: None,
+        }
+    }
+
+    /// Whether the next queued command may leave at `now` (seconds since start).
+    fn due(&self, now: f64) -> bool {
+        self.last_sent
+            .is_none_or(|last| now - last >= self.interval)
+    }
+
+    fn mark(&mut self, now: f64) {
+        self.last_sent = Some(now);
+    }
 }
 
 impl BotQueue {
@@ -1219,17 +1286,68 @@ fn track_social(
 // Command execution
 // ---------------------------------------------------------------------------
 
-/// Send the queued commands. One command per frame is deliberate: the server
-/// rejects a second action while one is running (`ObjectActionResponse` code 2),
-/// and a burst would make it impossible to tell which command an error answered.
+/// The packed `type_id` a `use_item` command must carry, or why it may not be
+/// sent at all.
+///
+/// Against a server this reads: `{"cmd":"use_item", "slot":22}` puts
+/// `16 0000` on the wire — the right slot with a zero type — and the answer is
+/// `0xB04C 02 03 00`. A packet that is certain to fail
+/// is worse than a refused command, because it looks like a server defect. So
+/// an explicit `type_id` wins (that is how a caller probes a type our itemdata
+/// does not describe), otherwise the slot's ref id is looked up, and a lookup
+/// that comes back empty stops the command with a reason in `bot/log`.
+fn use_item_type_id(
+    explicit: Option<u32>,
+    slot: u8,
+    inventory: &BotInventory,
+    refdata: &BotRefdata,
+) -> Result<u16, String> {
+    if let Some(type_id) = explicit {
+        return match type_id {
+            0 => Err("type_id 0 is not a packed item type".to_string()),
+            t if t <= u16::MAX as u32 => Ok(t as u16),
+            t => Err(format!("type_id {t} does not fit the packet's u16")),
+        };
+    }
+    let Some(item) = inventory.items.get(slot) else {
+        return Err(format!(
+            "slot {slot} holds no item the session has seen — pass type_id to send anyway"
+        ));
+    };
+    match refdata.packed_type_id(item.ref_id) {
+        Some(0) | None => Err(format!(
+            "itemdata has no type ids for ref id {} in slot {slot}",
+            item.ref_id
+        )),
+        Some(type_id) => Ok(type_id),
+    }
+}
+
+/// Send the queued commands, at most one every [`DEFAULT_COMMAND_INTERVAL`].
+/// The spacing is deliberate: the server rejects a second action while one is
+/// running (`ObjectActionResponse` code 2), and a burst would make it
+/// impossible to tell which command an error answered. One per *frame* is not
+/// enough of a brake — the run loop ticks every 5 ms.
 fn execute_commands(
     mut queue: ResMut<BotQueue>,
     mut state: ResMut<BotState>,
+    mut pace: ResMut<BotPace>,
+    inventory: Res<BotInventory>,
+    refdata: Res<BotRefdata>,
+    time: Res<Time>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
+    let now = time.elapsed_secs_f64();
+    if !pace.due(now) {
+        return;
+    }
     let Some(cmd) = queue.commands.pop_front() else {
         return;
     };
+    // Marked whatever the outcome: a dropped command spent its slot too, which
+    // is what keeps "command dropped: no agent connection yet" from filling the
+    // whole rolling log 200 times a second before the session is up.
+    pace.mark(now);
     let Ok(conn) = conn.single() else {
         queue.note("command dropped: no agent connection yet");
         return;
@@ -1439,15 +1557,23 @@ fn execute_commands(
             _ => None,
         },
         // The wire slot is the +0x0D-biased one the packet documents; the
-        // type_id is the item's packed itemdata type, which the caller knows
-        // from `bot/inventory`.
-        "use_item" => uid("slot").map(|slot| {
-            Packet::from(ItemUseRequest::Simple {
-                slot: slot as u8,
-                type_id: uid("type_id").unwrap_or(0) as u16,
-            })
-            .into()
-        }),
+        // type_id is the item's packed itemdata type, taken from what the slot
+        // holds unless the caller names one ([`use_item_type_id`]).
+        "use_item" => match uid("slot") {
+            None => None,
+            Some(slot) => {
+                let slot = slot as u8;
+                match use_item_type_id(uid("type_id"), slot, &inventory, &refdata) {
+                    Ok(type_id) => {
+                        Some(Packet::from(ItemUseRequest::Simple { slot, type_id }).into())
+                    }
+                    Err(why) => {
+                        queue.note(format!("use_item rejected: {why}"));
+                        return;
+                    }
+                }
+            }
+        },
         "invite_accept" => {
             state.pending_invite = None;
             Some(Packet::from(GameInvite::Response(InviteResponse::Accept)).into())
@@ -2134,5 +2260,129 @@ mod tests {
         );
         assert!(!state.moving, "a snap ends the walk");
         assert!(state.destination.is_none());
+    }
+
+    /// `bot/command {"cmd":"use_item","slot":22}` puts `16 0000` on the wire —
+    /// right slot, zero type — and the server answers `0xB04C 02 03 00`. That
+    /// happens when the refdata lookup comes back empty and the command is sent
+    /// anyway. A
+    /// packet that is certain to fail looks like a server fault, so an
+    /// unresolvable type must stop the command instead.
+    #[test]
+    fn use_item_never_puts_a_zero_type_on_the_wire() {
+        let inventory = seeded_inventory();
+        let (slot, ref_id) = inventory
+            .items
+            .slots
+            .iter()
+            .flatten()
+            .map(|item| (item.slot, item.ref_id))
+            .next()
+            .expect("the fixture body carries items");
+
+        // No itemdata at all — the state that produces `16 0000`.
+        let blind = BotRefdata::default();
+        let why = use_item_type_id(None, slot, &inventory, &blind)
+            .expect_err("an unresolvable type must not be sent");
+        assert!(
+            why.contains(&ref_id.to_string()),
+            "the rejection has to name the ref id that could not be resolved, got {why}"
+        );
+        // The same garbage by the other route: an explicit zero.
+        assert!(use_item_type_id(Some(0), slot, &inventory, &blind).is_err());
+        // And a slot the session has never seen an item in.
+        let free = (0..inventory.items.size())
+            .find(|s| inventory.items.get(*s).is_none())
+            .expect("the fixture leaves slots empty");
+        assert!(use_item_type_id(None, free, &inventory, &blind).is_err());
+
+        // Positive control: with itemdata the type resolves, and it is the
+        // packing the HUD's own use path applies. An HP potion is TID
+        // `3,3,1,1`, i.e. (3<<2)|(3<<5)|(1<<7)|(1<<11) = 2284.
+        let mut known = BotRefdata::default();
+        let mut cells = vec!["0".to_string(); 20];
+        cells[9] = "3".to_string();
+        cells[10] = "3".to_string();
+        cells[11] = "1".to_string();
+        cells[12] = "1".to_string();
+        known.items.insert(ref_id as i32, ItemDataRow(cells));
+        assert_eq!(use_item_type_id(None, slot, &inventory, &known), Ok(2284));
+        // An explicit type still wins, so an unknown class can be probed.
+        assert_eq!(
+            use_item_type_id(Some(0x2C), slot, &inventory, &blind),
+            Ok(0x2C)
+        );
+    }
+
+    /// The brake the "one command per frame" comment promised but did not have:
+    /// the bot's run loop ticks every 5 ms, so per-frame draining is 200
+    /// commands a second. Three queued commands must take three *intervals*.
+    #[test]
+    fn the_command_queue_is_paced_not_merely_one_per_frame() {
+        let mut app = App::new();
+        app.init_resource::<BotQueue>()
+            .init_resource::<BotState>()
+            .init_resource::<BotPace>()
+            .init_resource::<BotInventory>()
+            .init_resource::<BotRefdata>()
+            .init_resource::<Time>()
+            .add_systems(Update, execute_commands);
+        app.world_mut()
+            .resource_mut::<BotQueue>()
+            .commands
+            .extend([json!({"cmd": "cancel"}), json!({"cmd": "cancel"})]);
+
+        // Three frames at the run loop's own 5 ms tick (`run_bot`).
+        for _ in 0..3 {
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(Duration::from_millis(5));
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<BotQueue>().commands.len(),
+            1,
+            "15 ms of frames may spend one command, not the whole queue"
+        );
+
+        // One interval later the next one may go.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f64(DEFAULT_COMMAND_INTERVAL));
+        app.update();
+        assert_eq!(
+            app.world().resource::<BotQueue>().commands.len(),
+            0,
+            "after one interval the next command leaves"
+        );
+
+        // The default is the game data's own floor, not a round number: the
+        // shortest castable player action in v1.188 skilldata is 210 ms.
+        assert!(DEFAULT_COMMAND_INTERVAL >= 0.210);
+    }
+
+    /// A control method nobody documents is a method nobody can call, and
+    /// AGENTS.md asks for the README to follow behavior. This is what keeps the
+    /// registration in `run_bot` and the README section in step.
+    #[test]
+    fn the_readme_documents_the_control_surface() {
+        let readme = include_str!("../../README.md");
+        for method in BRP_METHODS {
+            assert!(readme.contains(method), "README does not document {method}");
+        }
+        for var in [
+            "BOT=1",
+            "BOT_ACCOUNT",
+            "BOT_PASSWORD",
+            "BOT_CHAR",
+            "BOT_PORT",
+            "BOT_COMMAND_INTERVAL",
+        ] {
+            assert!(readme.contains(var), "README does not document {var}");
+        }
+        assert!(
+            readme.contains("127.0.0.1"),
+            "README must state that the control port is localhost-only"
+        );
     }
 }
