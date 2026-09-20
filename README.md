@@ -318,6 +318,48 @@ SCREENSHOT=/tmp/world.png SCREENSHOT_AFTER=25 SCENE=game cargo run -p client
   PK2 art. A bare filename lands in the gitignored `screenshots/` directory for
   that reason.
 
+## Clientless Bot (`BOT=1`)
+`BOT=1 cargo run -p client` runs the login → join → in-world session **without a
+window, a GPU or the HUD** and makes it steerable over the Bevy Remote Protocol.
+There is no game logic in the bot: it reports what the server said and sends
+what it was told, so a driving script (Python, shell, anything that can POST
+JSON) decides what to do.
+
+```bash
+BOT=1 BOT_ACCOUNT=myaccount BOT_PASSWORD=1234 BOT_PORT=15810 cargo run -p client
+```
+
+Environment:
+- `BOT_ACCOUNT` / `BOT_PASSWORD` / `BOT_CHAR` — credentials and character to
+  join with; they fall back to `dev_fast_login` in `config.yaml`. One process
+  per account, so N bots run side by side.
+- `BOT_PORT` (default `15810`) — the control port. One bot per port.
+- `BOT_COMMAND_INTERVAL` (default `0.210`, seconds) — the floor between two
+  commands leaving the queue. The default is the shortest action the game data
+  itself allows (smallest non-zero `Action_ActionDuration` of a castable player
+  skill in v1.188 `skilldata`); `0` sends as fast as frames allow, which is only
+  useful for opcode probing.
+- `PACKET_DUMP_DIR` — own dump directory per session, so two bots running side
+  by side do not append into the same log.
+- `RUST_LOG` — wins over the default `info` (e.g. `packets_in=trace`).
+
+Control methods (JSON-RPC over HTTP on `BOT_PORT`):
+- `bot/status` — character, position, hp/mp, level, exp, target, party, counters.
+- `bot/entities` — what the server has spawned nearby, with ref id and age.
+- `bot/inventory` — slots, items and gold as the server confirmed them.
+- `bot/log` — the rolling event log (drained by default).
+- `bot/command` — queue one action (`move`, `select`, `attack`, `pickup`,
+  `skill`, `cancel`, `chat`, party/exchange, or `raw` with an opcode and a hex
+  body).
+- `bot/send` — send one frame immediately, for probing an opcode the `packets`
+  crate has no type for.
+
+**Reach and scope:** the control surface binds to `127.0.0.1` only
+(`bevy_remote`'s default address), sends at most one frame per accepted call,
+and talks to no server but the one `config.yaml` points at. It is a testing
+tool for your own server — never point it at a live official service (see
+[Assets and Legal](#assets-and-legal)).
+
 ## Assets and Legal
 Required PK2 files are expected under `SRO_PATH` or, if unset, `assets/`:
 - `Media.pk2`
