@@ -2035,6 +2035,21 @@ pub fn spawn_figure_overlay_camera(
             sky_reflection_env_light(&mut images),
         ))
         .id();
+    // The figure is alone on the `CreateFigure` layer, and a `DirectionalLight`
+    // only lights the layers it is on — the scene's sun is on the main layer,
+    // so without this the body was lit by the sky probe alone and read as a
+    // flat silhouette. Same construction and the same illuminance as the paper
+    // doll's headlight (`plugins::hud::inventory::paperdoll`): a light parented
+    // to the camera with an identity transform shines wherever the camera
+    // looks, so the figure keeps its lighting through the camera flight.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 3_000.0,
+            ..default()
+        },
+        RenderLayers::layer(CameraLayers::CreateFigure.into()),
+        ChildOf(camera),
+    ));
     // Not for bloom's sake: bevy keys the shared main texture on
     // `(target, usage, format, msaa)`, so a `clear_color: None` camera whose
     // format disagrees with the others composites into an empty texture and
@@ -3793,5 +3808,65 @@ mod tests {
         );
         eu.garment_chosen = true;
         assert_eq!(gate_selection(&eu), Ok(()));
+    }
+
+    /// The overlay pass has to bring its own light.
+    ///
+    /// [`spawn_figure_overlay_camera`] moves the preview onto the
+    /// `CreateFigure` render layer ([`tag_figure_overlay_meshes`]), and a
+    /// `DirectionalLight` only lights the layers it is on — the scene's sun is
+    /// on the main layer, so the figure was lit by the sky probe alone and read
+    /// as a flat silhouette. The light is a child of the camera with an
+    /// identity transform (the paper doll's headlight construction), so it
+    /// follows the camera flight.
+    #[test]
+    fn the_overlay_camera_carries_a_headlight_on_the_figure_layer() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>();
+        let example = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../config.example.yaml")
+            .with_extension("")
+            .to_str()
+            .expect("the example path is utf-8")
+            .to_string();
+        let config = crate::plugins::config::ClientConfig::from_file(&example)
+            .expect("config.example.yaml loads");
+        app.insert_resource(config);
+        app.world_mut()
+            .run_system_once(spawn_figure_overlay_camera)
+            .expect("the overlay camera spawns");
+
+        let figure_layer = RenderLayers::layer(CameraLayers::CreateFigure.into());
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, With<FigureOverlayCamera>>();
+        let camera = cameras
+            .iter(app.world())
+            .next()
+            .expect("the overlay camera exists");
+
+        let mut lights = app
+            .world_mut()
+            .query::<(&DirectionalLight, &RenderLayers, &ChildOf)>();
+        let on_the_layer: Vec<_> = lights
+            .iter(app.world())
+            .filter(|(_, layers, _)| layers.intersects(&figure_layer))
+            .collect();
+        assert_eq!(
+            on_the_layer.len(),
+            1,
+            "exactly one light on the figure's own layer"
+        );
+        assert_eq!(
+            on_the_layer[0].2.parent(),
+            camera,
+            "a headlight is parented to the camera, or it stops following the flight"
+        );
     }
 }
