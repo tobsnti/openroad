@@ -473,8 +473,7 @@ pub fn action(id: u16) -> Option<&'static KeyAction> {
 /// crate's own call sites, so an entry cannot outlive its excuse and a new
 /// dead binding cannot be added quietly. Shrinking the list is the work;
 /// growing it needs a reason in the same commit.
-pub const UNWIRED_ACTIONS: [(u16, &str); 11] = [
-    (3004, "KeyAction — no action window yet"),
+pub const UNWIRED_ACTIONS: [(u16, &str); 10] = [
     (3006, "KeyQuest — no quest journal yet"),
     (3007, "KeyCommunity — no community window yet"),
     (3009, "KeyBerserkerMode — no berserk trigger yet"),

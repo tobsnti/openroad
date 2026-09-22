@@ -42,6 +42,8 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::settings::keymap::{text_field_focused, KEY_ACTION_PANEL};
+use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::{ClientActionCommands, ClientUiStrings};
 
 /// The page extent the four sub-frames tile: `0,240,364,117` is the last row,
@@ -408,6 +410,24 @@ fn spawn_outline(
     }
 }
 
+/// `KeyAction` (id 3004, `A` by default) toggles the panel.
+///
+/// The panel's own caption is `Action ( A )`, and until now nothing read the
+/// binding: the Key Map tab offered the key and the press did nothing.
+pub fn toggle_action_window(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::plugins::hud::chat::model::ChatState>,
+    options: Res<GameOptions>,
+    mut state: ResMut<ActionWindowState>,
+) {
+    let Some(key) = options.key_for(KEY_ACTION_PANEL) else {
+        return;
+    };
+    if keys.just_pressed(key) && !chat.input_open {
+        state.open = !state.open;
+    }
+}
+
 pub fn apply_action_window_visibility(
     state: Res<ActionWindowState>,
     mut roots: Query<&mut Node, With<ActionWindowRoot>>,
@@ -549,7 +569,93 @@ impl Plugin for ActionPlugin {
             // built on enter, shown on demand
             .add_systems(
                 Update,
-                apply_action_window_visibility.run_if(in_state(SceneState::GameWorld)),
+                (
+                    toggle_action_window.run_if(not(text_field_focused)),
+                    apply_action_window_visibility,
+                )
+                    .chain()
+                    .run_if(in_state(SceneState::GameWorld)),
             );
+    }
+}
+
+#[cfg(test)]
+mod keybind_test {
+    use super::*;
+    use crate::plugins::hud::chat::model::ChatState;
+    use crate::plugins::settings::keymap::action_is_wired;
+
+    /// The panel was built, registered and reachable only from the under-bar
+    /// menu: `A` was offered by the Key Map tab and did nothing. It must also
+    /// stay quiet while the chat input is capturing keys.
+    #[test]
+    fn the_shortcut_toggles_the_panel_but_not_while_chat_is_capturing() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ChatState>()
+            .init_resource::<GameOptions>()
+            .init_resource::<ActionWindowState>()
+            .add_systems(Update, toggle_action_window);
+
+        // Bound explicitly, so this asserts the panel's behaviour rather than
+        // the contents of a table it does not own.
+        assert!(app
+            .world_mut()
+            .resource_mut::<GameOptions>()
+            .bind_key(KEY_ACTION_PANEL, KeyCode::KeyA));
+
+        // `reset` before `press`: a key already held records no just_pressed.
+        let press = |app: &mut App| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset(KeyCode::KeyA);
+            keys.press(KeyCode::KeyA);
+            app.update();
+        };
+
+        press(&mut app);
+        assert!(app.world().resource::<ActionWindowState>().open);
+        press(&mut app);
+        assert!(!app.world().resource::<ActionWindowState>().open);
+
+        app.world_mut().resource_mut::<ChatState>().input_open = true;
+        press(&mut app);
+        assert!(!app.world().resource::<ActionWindowState>().open);
+    }
+
+    /// The shipped default resolves the panel's key without any binding of its
+    /// own, and the shared registry now reports the action as wired.
+    #[test]
+    fn the_shipped_default_opens_the_panel() {
+        let options = GameOptions::default();
+        assert_eq!(options.key_for(KEY_ACTION_PANEL), Some(KeyCode::KeyA));
+        assert!(action_is_wired(KEY_ACTION_PANEL));
+    }
+
+    /// The text-field guard must sit on the toggle itself, not on the tuple:
+    /// typing a title into the party-match box would otherwise open the panel.
+    #[test]
+    fn the_toggle_carries_the_text_field_guard() {
+        // Searched from the plugin, not from the file head: this file keeps
+        // its registration *after* a test module, which is exactly the shape
+        // that used to hide a call site from the dead-wire scan.
+        let source = include_str!("action.rs");
+        let plugin = source
+            .find("impl Plugin for ActionPlugin")
+            .expect("the plugin is declared");
+        let registration = &source[plugin..];
+        let update = registration
+            .find("Update,")
+            .expect("the plugin registers Update systems");
+        let after = &registration[update..];
+        let toggle = after
+            .find("toggle_action_window")
+            .expect("the toggle is registered");
+        let guard = after[toggle..]
+            .find("text_field_focused")
+            .expect("the toggle carries no text-field guard");
+        let next = after[toggle..]
+            .find("apply_action_window_visibility")
+            .expect("the visibility system follows the toggle");
+        assert!(guard < next, "the guard must sit on the toggle itself");
     }
 }
