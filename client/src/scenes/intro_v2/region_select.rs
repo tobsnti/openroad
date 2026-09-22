@@ -24,9 +24,8 @@ use crate::assets::FontAssets;
 use crate::plugins::textdata::{ClientCharacterData, ClientUiStrings};
 use crate::plugins::ui_v2::style::ButtonSound;
 use crate::plugins::ui_v2::widgets::{image_button, label};
-use crate::scenes::intro_v2::character_create::{
-    figure_variants, CharCreateSelection, Gender, Race,
-};
+use crate::scenes::intro_v2::character_create::figure_variants;
+use crate::scenes::intro_v2::model::{CharCreateSelection, Gender, Race};
 use crate::scenes::loading_screen::spawn_loading_chrome;
 
 use super::assets::IntroV2Assets;
