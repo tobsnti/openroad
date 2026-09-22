@@ -7,42 +7,51 @@
 //! N bound to" for the gameplay systems. The stored value always wins; a
 //! [`KeyAction::default_key`] is only the fallback when nothing is bound.
 //!
-//! **On defaults.** A real `SROptionSet.dat` always wins — a stored binding
-//! overrides everything below, and importing a user's `.dat` is still the only
-//! way to learn what *that* player uses. But the shipped defaults are not all
-//! unknown: the user's own
-//! `Media/server_dep/silkroad/textdata/textuisystem.txt` prints fourteen of them
-//! in the label text itself, at L2250-2274 (the file is **UTF-16LE**, which is
-//! why an ASCII grep finds nothing there). `Character ( C )`, `Inventory ( I )`,
-//! `Skill ( S )` in that run agree with what openroad already bound, and the
+//! **On defaults.** A stored binding always wins — a real `SROptionSet.dat`
+//! overrides everything below, and importing a `.dat` is the only way to learn
+//! what *that* player uses.
+//!
+//! The defaults below are the shipped ones: every binding carries its
+//! `SROptionSet.dat` id and VK code, and the six actions that stay `None` are
+//! stored there as VK `0x00`, i.e. they ship unbound.
+//!
+//! A second source agrees with the option stream:
+//! `Media/server_dep/silkroad/textdata/textuisystem.txt` prints fourteen of the
+//! bindings in the label text itself, at L2250-2274 (the file is **UTF-16LE**,
+//! which is why an ASCII grep finds nothing there). `Character ( C )`,
+//! `Inventory ( I )` and `Skill ( S )` agree with what openroad binds, and the
 //! neighbouring `UIIT_STT_TOGGLE_CONTENTS_MENU_*` family (L2275+) writes the same
 //! labels with `%s` where the letter goes — the same UI showing a literal in one
 //! place and a live keymap lookup in the other, which is what makes the
 //! bracketed letters read as the shipped bindings rather than decoration.
 //!
-//! So eight further actions get a data-sourced default, each carrying its
-//! textuisystem line in a comment. What the data does *not* say stays `None`:
+//! Eight further actions take their default from that text, each carrying its
+//! textuisystem line in a comment; the `.dat` confirms every one of them.
 //!
 //! * **`Guild ( U )` (L2252) and `Community ( U )` (L2263) claim the same
 //!   letter.** Nothing in the data decides it — plausibly the original really
 //!   ships both on `U` (the guild page lives inside the community window), or one
 //!   label is stale. `OptionSet.csv` has no `KeyGuild` action at all, so the only
 //!   one of the pair that is bindable here is `KeyCommunity`, and it is the only
-//!   one bound. The collision is recorded, not resolved.
+//!   one bound (`.dat` id 3007 = `0x55`). The collision is recorded, not resolved.
 //! * **`UIIT_STT_TOGGLE_WORLD_MAP` (L2258) carries no letter** — its text is
-//!   "Whole area map". `KeyWorldMap`'s `M` below is openroad's own pre-existing
-//!   binding, kept for behaviour, and is *not* data-sourced.
+//!   "Whole area map". `KeyWorldMap`'s `M` comes from the option stream instead:
+//!   `.dat` id 3008 stores `0x4D` = `M`.
 //! * `Option ( ESC )` (L2265), `System ( Esc )` (L2274) and `Stall network ( F )`
 //!   (L2272) name no `OptionSet.csv` action, so there is nothing to bind them to.
-//! * The remaining actions have no string evidence and stay unbound. Inventing a
-//!   letter for them would look grounded while being guesswork.
+//! * Six actions (3029-3032 `KeyTarget*`, 3034/3035 `KeyHide*`) ship unbound: the
+//!   `.dat` stores VK `0x00` for them.
 //!
-//! **Three COS defaults come from the same kind of evidence**: the original
-//! prints its own bindings inside the button captions in `textuisystem.txt` —
+//! **Three COS defaults come from the same kind of text**: the original prints
+//! its own bindings inside the button captions in `textuisystem.txt` —
 //! `UIIT_STT_COS_DISEMBARK` = "Dismount (Home)", `UIIT_STT_COS_CLEAN` =
 //! "Terminated (PgUp)", `UIIT_STT_COS_AGGRESSIVE` / `_DEFENSIVE` =
-//! "Offensive (PgDn)" / "Defensive (PgDn)". `KeyCOSFollow` and the rest stay
-//! `None` because no caption names a key for them.
+//! "Offensive (PgDn)" / "Defensive (PgDn)" — all three confirmed by the `.dat`
+//! (3017 `0x24`, 3018 `0x21`, 3021 `0x22`). No caption names a key for
+//! `KeyCOSFollow`, but the option stream does: `.dat` id 3019 = `0x2E` =
+//! `VK_DELETE`, and 3020 `KeyCOSAttack` = `0x23` = `VK_END`, 3025
+//! `KeyCOSSelection` = `0x57` = `W`. A caption is simply not the only place the
+//! original states a binding.
 
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
@@ -90,9 +99,10 @@ pub struct KeyAction {
 /// the 681-byte `SROptionSet.dat` arithmetic land, so the gaps are real and not a
 /// transcription slip (`docs/formats/sroptionset.md`).
 pub const KEY_ACTIONS: [KeyAction; 32] = [
-    // Defaults are the textuisystem L2250-2274 literals where the data has one
-    // (each cited at its entry); `KeyWorldMap`'s M is openroad's own, and every
-    // action the data does not name stays unbound.
+    // Every default below is a byte out of `SROptionSet.dat`, cited per entry as
+    // `id NNNN = 0xVV`. Fifteen of them also appear in the textuisystem
+    // L2250-2274 literals, so those citations are kept alongside. The six
+    // actions with no `default_key` store VK `0x00`: shipped unbound.
     KeyAction {
         id: 3001,
         name: "KeyCharacter",
@@ -138,42 +148,51 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3008,
         name: "KeyWorldMap",
+        // SROptionSet.dat id 3008 = 0x4D. L2258 "Whole area map" prints no
+        // letter, so the option stream is the only source for this one.
         default_key: Some(KeyCode::KeyM),
     },
     KeyAction {
         id: 3009,
         name: "KeyBerserkerMode",
-        default_key: None,
+        // SROptionSet.dat id 3009 = 0x09
+        default_key: Some(KeyCode::Tab),
     },
     KeyAction {
         id: 3011,
         name: "KeyHelp",
-        default_key: None,
+        // SROptionSet.dat id 3011 = 0x48
+        default_key: Some(KeyCode::KeyH),
     },
     KeyAction {
         id: 3012,
         name: "KeyViewDropItem",
-        default_key: None,
+        // SROptionSet.dat (two real v1.188-era files, byte-identical): id 3012 = 0x5A
+        default_key: Some(KeyCode::KeyZ),
     },
     KeyAction {
         id: 3013,
         name: "KeyMouseQuickSlot",
-        default_key: None,
+        // SROptionSet.dat id 3013 = 0x58
+        default_key: Some(KeyCode::KeyX),
     },
     KeyAction {
         id: 3014,
         name: "KeySitStand",
-        default_key: None,
+        // SROptionSet.dat id 3014 = 0x4E
+        default_key: Some(KeyCode::KeyN),
     },
     KeyAction {
         id: 3015,
         name: "KeyAutoPickup",
-        default_key: None,
+        // SROptionSet.dat id 3015 = 0x47
+        default_key: Some(KeyCode::KeyG),
     },
     KeyAction {
         id: 3016,
         name: "KeyCOSInfo",
-        default_key: None,
+        // SROptionSet.dat id 3016 = 0x2D
+        default_key: Some(KeyCode::Insert),
     },
     // Board/dismount is one toggle in the original (there is no separate
     // dismount action), and its caption names the key: "Dismount (Home)".
@@ -191,12 +210,14 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3019,
         name: "KeyCOSFollow",
-        default_key: None,
+        // SROptionSet.dat (two real files, byte-identical), id 3019 = 0x2E
+        default_key: Some(KeyCode::Delete),
     },
     KeyAction {
         id: 3020,
         name: "KeyCOSAttack",
-        default_key: None,
+        // SROptionSet.dat (two real files, byte-identical), id 3020 = 0x23
+        default_key: Some(KeyCode::End),
     },
     // Offensive/defensive share one toggle, and both captions name "(PgDn)".
     KeyAction {
@@ -207,7 +228,8 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3023,
         name: "KeyReplyWhisper",
-        default_key: None,
+        // SROptionSet.dat id 3023 = 0x52
+        default_key: Some(KeyCode::KeyR),
     },
     KeyAction {
         id: 3024,
@@ -218,7 +240,8 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3025,
         name: "KeyCOSSelection",
-        default_key: None,
+        // SROptionSet.dat id 3025 = 0x57
+        default_key: Some(KeyCode::KeyW),
     },
     KeyAction {
         id: 3026,
@@ -235,21 +258,25 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3029,
         name: "KeyTargetEnemy",
+        // SROptionSet.dat id 3029 = 0x00 = unbound.
         default_key: None,
     },
     KeyAction {
         id: 3030,
         name: "KeyTargetRecent",
+        // SROptionSet.dat id 3030 = 0x00 = unbound.
         default_key: None,
     },
     KeyAction {
         id: 3031,
         name: "KeyTargetSupport",
+        // SROptionSet.dat id 3031 = 0x00 = unbound.
         default_key: None,
     },
     KeyAction {
         id: 3032,
         name: "KeyTargetSee",
+        // SROptionSet.dat id 3032 = 0x00 = unbound.
         default_key: None,
     },
     KeyAction {
@@ -261,11 +288,13 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3034,
         name: "KeyHideFriends",
+        // SROptionSet.dat id 3034 = 0x00 = unbound.
         default_key: None,
     },
     KeyAction {
         id: 3035,
         name: "KeyHideEnemies",
+        // SROptionSet.dat id 3035 = 0x00 = unbound.
         default_key: None,
     },
 ];
@@ -273,29 +302,29 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
 /// The option ids openroad actually consumes today. Kept next to the migrated
 /// call sites' ids so a rename cannot silently unbind a window.
 pub const KEY_CHARACTER: u16 = 3001;
-/// Opens the COS/companion window (`docs/re/ui/cos-pet-window.md`).
+/// Opens the COS/companion window.
 pub const KEY_COS_INFO: u16 = 3016;
 pub const KEY_INVENTORY: u16 = 3002;
 pub const KEY_SKILL: u16 = 3003;
-/// Opens the party roster page (`docs/re/ui/hud-party-window.md`). `P` by
+/// Opens the party roster page. `P` by
 /// default; the dev hotkeys that used to claim `P` unconditionally are behind
 /// `dev_tools` now, so the binding is actually reachable.
 pub const KEY_PARTY: u16 = 3005;
-/// Opens the party-matching board (`docs/re/ui/hud-party-matching.md`).
+/// Opens the party-matching board.
 pub const KEY_PARTY_MATCH: u16 = 3026;
 pub const KEY_WORLD_MAP: u16 = 3008;
 pub const KEY_ALCHEMY: u16 = 3027;
 /// Held (not tapped) while the player wants every dropped item in range
-/// labelled — `docs/re/ui/hud-nameplates.md` §1.
+/// labelled.
 pub const KEY_VIEW_DROP_ITEM: u16 = 3012;
-/// Opens the auto-potion configuration window
-/// (`docs/re/ui/autopotion-window.md`).
+/// Opens the auto-potion configuration window.
 pub const KEY_AUTO_POTION: u16 = 3024;
 /// Board/dismount toggle (the COS command bar's first cell).
 pub const KEY_COS_RIDE: u16 = 3017;
 /// Dismiss the summon ("Terminated").
 pub const KEY_COS_RELEASE: u16 = 3018;
-/// Order the COS to follow. Unbound by default — no caption names a key.
+/// Order the COS to follow. `SROptionSet.dat` id 3019 = `0x2E` = `VK_DELETE`,
+/// bound by default even though no caption names a key for it.
 pub const KEY_COS_FOLLOW: u16 = 3019;
 /// Send the attack pet at the selected target. Unbound by default, and that is
 /// the evidence-correct choice: `UIIT_STT_COS_ATTACK` is plain "Attack", where
@@ -476,6 +505,138 @@ impl GameOptions {
 
 #[cfg(test)]
 mod tests {
+
+    /// A key the options pane offers must actually do something — or be
+    /// listed here as knowingly unwired.
+    ///
+    /// The Key Map tab renders every [`KEY_ACTIONS`] entry with its default
+    /// key, so a player sees "Action ( A )" and presses A. If no system reads
+    /// the id, nothing happens and the UI has lied: A, P, Q and U were all
+    /// dead at one point while the pane advertised them. Wiring one is a few
+    /// lines; the point of this test is that *forgetting* it can no longer be
+    /// silent — a new window either consumes its id or says out loud that it
+    /// does not yet.
+    #[test]
+    fn every_bound_key_is_either_consumed_or_declared_unwired() {
+        /// Ids whose consumer does not exist yet. Shrinking this list is the
+        /// work; growing it needs a reason in the same commit.
+        const NOT_YET_WIRED: [(u16, &str); 12] = [
+            (3004, "KeyAction — no action window yet"),
+            (3006, "KeyQuest — no quest journal yet"),
+            (3007, "KeyCommunity — no community window yet"),
+            (3009, "KeyBerserkerMode — no berserk trigger yet"),
+            (3011, "KeyHelp — no help window yet"),
+            (3013, "KeyMouseQuickSlot — no mouse quick-slot mode yet"),
+            (3014, "KeySitStand — no sit/stand chain yet"),
+            (3015, "KeyAutoPickup — pickup is click/loot driven"),
+            (3023, "KeyReplyWhisper — no whisper-reply shortcut yet"),
+            (
+                3025,
+                "KeyCOSSelection — bound (0x57) since the .dat was read; \
+                    there is no COS cycling/selection action yet",
+            ),
+            (3026, "KeyPartyMatch — no party-matching window yet"),
+            (3033, "KeyAcademy — no academy panel yet"),
+        ];
+
+        let sources = client_sources();
+        let consumed = |id: u16| {
+            let needle = format!("key_for({id}");
+            // A call site may name the constant with any path prefix
+            // (`KEY_COMMUNITY`, `keymap::KEY_COMMUNITY`, the full path), so the
+            // constant's *name* is what is searched for, outside this file.
+            let by_const = KEY_CONSTS
+                .iter()
+                .find(|(const_id, _)| *const_id == id)
+                .map(|(_, name)| *name);
+            sources.iter().any(|text| {
+                if text.contains("pub const KEY_ACTIONS") {
+                    return false; // this file defines them; it does not consume them
+                }
+                text.contains(&needle) || by_const.is_some_and(|name| text.contains(name))
+            })
+        };
+
+        let mut dead: Vec<String> = Vec::new();
+        for action in KEY_ACTIONS.iter() {
+            if action.default_key.is_none() {
+                continue;
+            }
+            if NOT_YET_WIRED.iter().any(|(id, _)| *id == action.id) {
+                continue;
+            }
+            if !consumed(action.id) {
+                dead.push(format!("{} ({})", action.name, action.id));
+            }
+        }
+        assert!(
+            dead.is_empty(),
+            "the Key Map tab offers these bindings and no system reads them:\n  {}",
+            dead.join("\n  ")
+        );
+
+        // The excuse list must not outlive the excuse. `NOT_YET_WIRED` is a
+        // *skip* list, so an id that gained its window keeps silencing the
+        // check above — that is exactly how 3005 stayed listed as "no party
+        // window yet" while `hud/party/model.rs:48` read it. A listed id that
+        // is consumed is now a failure, not a shrug.
+        let stale: Vec<&str> = NOT_YET_WIRED
+            .iter()
+            .filter(|(id, _)| consumed(*id))
+            .map(|(_, why)| *why)
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "these ids are consumed and must leave NOT_YET_WIRED:\n  {}",
+            stale.join("\n  ")
+        );
+
+        // Positive control: the scan can actually find a consumed id, so a
+        // broken scan fails loudly instead of passing everything.
+        assert!(
+            consumed(3002),
+            "KeyInventory is consumed by inventory/model.rs — the scan is broken"
+        );
+    }
+
+    /// The `pub const KEY_*` names a call site may use instead of a literal id.
+    /// A missing entry is not cosmetic: `consumed()` falls back to searching for
+    /// `key_for(<id>`, which a site calling `pressed(KEY_COS_RIDE)` never
+    /// matches.
+    const KEY_CONSTS: [(u16, &str); 14] = [
+        (3001, "KEY_CHARACTER"),
+        (3002, "KEY_INVENTORY"),
+        (3003, "KEY_SKILL"),
+        (3005, "KEY_PARTY"),
+        (3008, "KEY_WORLD_MAP"),
+        (3012, "KEY_VIEW_DROP_ITEM"),
+        (3016, "KEY_COS_INFO"),
+        (3017, "KEY_COS_RIDE"),
+        (3018, "KEY_COS_RELEASE"),
+        (3019, "KEY_COS_FOLLOW"),
+        (3020, "KEY_COS_ATTACK"),
+        (3021, "KEY_COS_AI_TYPE"),
+        (3024, "KEY_AUTO_POTION"),
+        (3027, "KEY_ALCHEMY"),
+    ];
+
+    /// Every `.rs` file of the client crate.
+    fn client_sources() -> Vec<String> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("src is readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(std::fs::read_to_string(&path).expect("source is readable"));
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&root, &mut out);
+        out
+    }
     use super::*;
 
     /// The trap that came with the party-title field: typing a name like
@@ -591,24 +752,24 @@ mod tests {
         assert_eq!(opts.key_for(KEY_COS_RIDE), Some(KeyCode::Home));
         assert_eq!(opts.key_for(KEY_COS_RELEASE), Some(KeyCode::PageUp));
         assert_eq!(opts.key_for(KEY_COS_AI_TYPE), Some(KeyCode::PageDown));
-        // No caption names a key for follow, so it stays unbound.
-        assert_eq!(opts.key_for(KEY_COS_FOLLOW), None);
+        // Follow names no caption, but the option stream does:
+        // SROptionSet.dat id 3019 = 0x2E = VK_DELETE.
+        assert_eq!(opts.key_for(KEY_COS_FOLLOW), Some(KeyCode::Delete));
     }
 
-    /// Everything the data does not name stays unbound: eight data-sourced
-    /// defaults (textuisystem L2250-2274) plus `C`/`I`/`S`, which that same run
-    /// confirms, plus openroad's own `M` for the world map and the three COS
-    /// keys the vanilla captions print = 15 bound, 17 not. Inventing a letter
-    /// for the other 17 would look authoritative.
+    /// The shipped keymap: 26 of the 32 actions carry a binding and exactly 6
+    /// do not. Both halves come from the `SROptionSet.dat` KeyMap block — the
+    /// unbound six are stored there as VK `0x00`, so "unbound" is a value the
+    /// file states, not a gap we left.
     #[test]
-    fn actions_without_a_grounded_default_stay_unbound() {
+    fn the_keymap_binds_26_actions_and_leaves_6_unbound() {
         let opts = GameOptions::default();
         let bound = KEY_ACTIONS
             .iter()
             .filter(|a| opts.key_for(a.id).is_some())
             .count();
-        assert_eq!(bound, 15);
-        assert_eq!(KEY_ACTIONS.len() - bound, 17);
+        assert_eq!(bound, 26);
+        assert_eq!(KEY_ACTIONS.len() - bound, 6);
     }
 
     /// The defaults that come from the user's own textdata, pinned against the
@@ -642,6 +803,90 @@ mod tests {
         assert!(on_u <= 1, "the U collision must not be resolved silently");
         // openroad's own pre-existing M, explicitly not a data-sourced letter
         assert_eq!(opts.key_for(KEY_WORLD_MAP), Some(KeyCode::KeyM));
+    }
+
+    /// Eleven bindings that come from the option stream alone, nailed to the id
+    /// and the raw VK byte the file stores.
+    ///
+    /// Source for every row: `setting\SROptionSet.dat`, KeyMap block. **No
+    /// fixture is copied into the repo**: the bytes are the constants below, and
+    /// each one is checked twice — once as the VK the file stores, once as the
+    /// `KeyCode` it must resolve to — so a slip in `VK_TABLE` cannot hide behind
+    /// a slip here.
+    #[test]
+    fn the_eleven_dat_sourced_bindings_match_their_stored_vk_bytes() {
+        /// (`OptionSet.csv` id, raw VK byte in the `.dat`, expected key)
+        const SHIPPED_BINDINGS: [(u16, u32, KeyCode); 11] = [
+            (3009, 0x09, KeyCode::Tab),    // KeyBerserkerMode
+            (3011, 0x48, KeyCode::KeyH),   // KeyHelp
+            (3012, 0x5A, KeyCode::KeyZ),   // KeyViewDropItem
+            (3013, 0x58, KeyCode::KeyX),   // KeyMouseQuickSlot
+            (3014, 0x4E, KeyCode::KeyN),   // KeySitStand
+            (3015, 0x47, KeyCode::KeyG),   // KeyAutoPickup
+            (3016, 0x2D, KeyCode::Insert), // KeyCOSInfo
+            (3019, 0x2E, KeyCode::Delete), // KeyCOSFollow
+            (3020, 0x23, KeyCode::End),    // KeyCOSAttack
+            (3023, 0x52, KeyCode::KeyR),   // KeyReplyWhisper
+            (3025, 0x57, KeyCode::KeyW),   // KeyCOSSelection
+        ];
+
+        let opts = GameOptions::default();
+        for (id, vk, key) in SHIPPED_BINDINGS {
+            assert_eq!(
+                vk_to_keycode(vk),
+                Some(key),
+                "VK {vk:#04X} (id {id}) must translate to {key:?}"
+            );
+            assert_eq!(
+                opts.key_for(id),
+                Some(key),
+                "id {id} ships bound to VK {vk:#04X} in both SROptionSet.dat"
+            );
+            assert_eq!(
+                keycode_to_vk(key),
+                Some(vk),
+                "rebinding id {id} back to its shipped key must store {vk:#04X} again"
+            );
+        }
+    }
+
+    /// The six actions the original itself leaves unbound. Same two files, same
+    /// read: their stored VK is `0x00`, which is not a key — so openroad must
+    /// not invent one either.
+    ///
+    /// Positive control on the same read path: id 3033 `KeyAcademy` comes out
+    /// of that same `.dat` block with `0x4C`, so a table that had lost its
+    /// bindings wholesale would fail here instead of passing this test.
+    #[test]
+    fn the_six_actions_with_vk_zero_stay_unbound() {
+        const UNBOUND: [(u16, &str); 6] = [
+            (3029, "KeyTargetEnemy"),
+            (3030, "KeyTargetRecent"),
+            (3031, "KeyTargetSupport"),
+            (3032, "KeyTargetSee"),
+            (3034, "KeyHideFriends"),
+            (3035, "KeyHideEnemies"),
+        ];
+
+        let opts = GameOptions::default();
+        for (id, name) in UNBOUND {
+            assert_eq!(
+                action(id).map(|a| a.name),
+                Some(name),
+                "id {id} must still be {name} in OptionSet.csv order"
+            );
+            assert_eq!(
+                opts.key_for(id),
+                None,
+                "{name} ({id}) stores VK 0x00 in both SROptionSet.dat"
+            );
+        }
+
+        assert_eq!(
+            opts.key_for(3033),
+            Some(KeyCode::KeyL),
+            "positive control: id 3033 is 0x4C in the same block"
+        );
     }
 
     #[test]
