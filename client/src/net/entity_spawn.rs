@@ -25,6 +25,8 @@
 //! tid4-dependent owner tail, and a riding player inserts a `u32` mount uid
 //! between its state flags — both used to desync the whole batch.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use packets::agent::character_data::{EntityState, ItemClass, ItemClassResolver};
 use packets::hexdump;
 
@@ -385,7 +387,7 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
         RefType::Monster => parse_character(r, ref_id, true),
         RefType::Npc => parse_character(r, ref_id, false),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
-        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold),
+        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold, resolver),
         RefType::Structure => parse_structure(r, ref_id),
         RefType::Unknown => None,
     }
@@ -457,13 +459,22 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         .filter_map(|(id, _)| resolver.item_type_ids(*id))
         .any(is_job_suit);
     if wears_job_suit != job_mode {
-        bevy::log::warn!(
-            "entity_spawn: player {} has job_type={} but {} a job suit equipped;              parsing the guild block as job_mode={} (the wire flag). If the record              desyncs from here, the branch predicate is the equipment, not the flag              (docs/re/systems/guild.md §13 D1)",
-            name,
-            job_type,
-            if wears_job_suit { "does" } else { "does not" },
-            job_mode,
-        );
+        // Rate-limited: a town gate puts dozens of players in a single batch and
+        // every one of them would repeat the same layout question, drowning the
+        // log the line exists for.
+        static SEEN: AtomicU64 = AtomicU64::new(0);
+        if should_log_job_mismatch(SEEN.fetch_add(1, Ordering::Relaxed)) {
+            bevy::log::warn!(
+                "entity_spawn: player {} has job_type={} but {} a job suit equipped; \
+                 parsing the guild block as job_mode={} (the wire flag). If the record \
+                 desyncs from here, the branch predicate is the equipment, not the flag \
+                 (docs/net-entity-spawn-0x3019.md, \"job mode\")",
+                name,
+                job_type,
+                if wears_job_suit { "does" } else { "does not" },
+                job_mode,
+            );
+        }
     }
     let guild = r.guild(job_mode)?;
     // equipment_cooldown, pk_flag(0xFF)
@@ -484,6 +495,13 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
             riding_uid,
         },
     })
+}
+
+/// Whether the `seen`-th job-mode mismatch should reach the log: the first
+/// one, then one in every 64. The first line carries the whole message; the
+/// later ones only say the condition persists, so a rare sample is enough.
+fn should_log_job_mismatch(seen: u64) -> bool {
+    seen == 0 || seen.is_multiple_of(64)
 }
 
 /// Read a `u8`-count-prefixed equipment list, appending each item's
@@ -605,7 +623,13 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
 /// **every** dropped item, gold included —
 /// `ref u32, [amount u32 | upgrade u8], uid u32, pos, owner flag(+u32),
 /// rarity u8, drop source u8, dropper uid u32`.
-fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Option<SpawnedEntity> {
+fn parse_item(
+    r: &mut Reader,
+    ref_id: u32,
+    equipment: bool,
+    gold: bool,
+    resolver: &impl RefResolver,
+) -> Option<SpawnedEntity> {
     let mut amount = None;
     if equipment {
         r.skip(1)?; // upgrade / opt level
@@ -632,7 +656,20 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
     // `06000000 875C0200 A860 0D746244 CF4F29BE 2C83C844 6879 00 00`).
     // Requiring the tail aborted the whole spawn batch, so the item never
     // appeared and could not be picked up.
-    if r.remaining() >= 5 {
+    //
+    // Whether the tail is there is a *per record* question, but the reader
+    // spans the whole group-spawn body, so `remaining()` cannot answer it: a
+    // GM item with a follower record still has bytes left and a blind skip(5)
+    // would eat the next record's head. The follower's first field is its own
+    // ref id, so the client tables decide: if the four bytes under the cursor
+    // classify, the next record starts here and this item has no tail. With a
+    // tail those four bytes are `drop source u8 + the low 3 bytes of the
+    // dropper uid`, i.e. >= 0x01000000 for any real dropper — no ref id of the
+    // client tables reaches that far.
+    let next_record_starts_here = r
+        .peek_u32()
+        .is_some_and(|id| resolver.resolve(id) != RefType::Unknown);
+    if !next_record_starts_here && r.remaining() >= 5 {
         r.skip(5)?;
     }
     Some(SpawnedEntity {
@@ -1524,5 +1561,63 @@ mod test {
         assert_eq!(parsed.spawns.len(), 1, "the record must parse");
         assert_eq!(parsed.spawns[0].unique_id, 154_759);
         assert_eq!(parsed.spawns[0].position.region, 24_744);
+    }
+
+    /// The mismatch line is a layout question, not a per-player event: a busy
+    /// batch must not repeat it for every record.
+    #[test]
+    fn the_job_mismatch_warning_is_rate_limited() {
+        assert!(should_log_job_mismatch(0), "the first one always logs");
+        assert!(
+            (1..64).all(|seen| !should_log_job_mismatch(seen)),
+            "the 63 behind it stay silent"
+        );
+        assert!(should_log_job_mismatch(64), "then one in every 64");
+        assert!(should_log_job_mismatch(128));
+    }
+
+    /// The tailless GM item in the *middle* of a batch: `remaining()` is
+    /// batch-wide, so a blind 5-byte skip here eats the head of the record
+    /// behind it and desyncs exactly what the tail fix was meant to prevent.
+    #[test]
+    fn a_gm_made_item_does_not_eat_the_next_record() {
+        const POTION: u32 = 6;
+        let res = resolver(&[(
+            POTION,
+            RefType::Item {
+                equipment: false,
+                gold: false,
+            },
+        )]);
+        let body = Body::default()
+            // record 1: GM-made, no dropper -> ends after the rarity byte
+            .u32(POTION)
+            .u32(154_759)
+            .u16(0x60A8)
+            .f32(905.8)
+            .f32(-0.165)
+            .f32(1604.1)
+            .u16(0x7968)
+            .u8(0) // owner flag: nobody
+            .u8(0) // rarity
+            // record 2: an ordinary drop, dropper tail present
+            .u32(POTION)
+            .u32(154_760)
+            .u16(0x60A8)
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0)
+            .u8(0) // owner flag: nobody
+            .u8(1) // rarity
+            .u8(5) // drop source
+            .u32(0x147A8) // dropper uid
+            .0;
+
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert_eq!(parsed.spawns.len(), 2, "both records must parse");
+        assert_eq!(parsed.spawns[0].unique_id, 154_759);
+        assert_eq!(parsed.spawns[1].unique_id, 154_760);
+        assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
     }
 }
