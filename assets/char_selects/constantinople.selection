@@ -25,9 +25,55 @@ select_camera_transforms:
     rz: 105.0
     offset: [ 56.0, 0.0, 660.0 ]
     rotation: [0.0, 0.1415, 0.0 ]
-create_camera_transforms:
-  - frame: 0.0
-    rx: 81.0
-    rz: 105.0
-    offset: [ 56.0, -12.0, 697.6 ]
-    rotation: [ -0.1, 0.1415, 0.0 ]
+# Character CREATION is not a camera move on this stage - it is a different
+# place in the world, one per race. Region + local offset come straight out of
+# the two creation screens' stage setup in the original; the rotation is ours
+# (see below).
+create_stages:
+  # Chinese creation screen: region 0x62A8 = (x 168, z 98)
+  #   = RN_CH_JANGAN (regioncode.txt:111, 25256)
+  #   anchor 960.4188843 (x) - 50.0 (y) - 458.2597656 (z)
+  # The first courtyard of the Jangan palace, on the compound's own mirror axis
+  # (Map/98/168.o2: cj_pal_bigdoor 971.05, cj_pal_indoor 972.96, main hall
+  # 955.44 all share it), and Map/98/168.m reads ground 20.0 there.
+  #
+  # `character` carries the measured x/z UNCHANGED: what the original writes is
+  # the stage's place, and the stage's subject is the body being made. Only y is
+  # ours - the anchor's 50.0 floats 30 above that pavement, and WHAT the triple
+  # drives (camera, figure, both) is still [U] (9.2 open point a), so we put the
+  # body on the ground rather than in the air.
+  #
+  # `camera` is ours throughout, stated deviation (ADR-0009), and it is one rule
+  # rather than a fresh guess: the ACCEPTED selection stage frames its line-up
+  # from 48.6 away and 15.6 above the feet (cam_offset [56, -12, 697.6] vs the
+  # char offsets, this file). We reuse exactly those two numbers here, aimed
+  # along the palace's own terraced axis - measured in Map/98/168.o2:
+  # cj_pal_bigdoor z 28.2, stair 278.9, THIS POINT 458.3, cj_pal_center_stair
+  # 520.7, cj_pal_indoor 808.9, cj_pal_main_buil 1607.1. The palace rises toward
+  # +z, so the camera stands 48.6 to the -z side and looks +z (yaw PI in our
+  # x-mirrored convention): the courtyard gate stands behind the body.
+  chinese:
+    character: [ 960.4188843, 20.0, 458.2597656 ]
+    camera:
+      frame: 0.0
+      rx: 168.0
+      rz: 98.0
+      offset: [ 960.4188843, 35.6, 409.6597656 ]
+      rotation: [ -0.1, 3.1415927, 0.0 ]
+  # European creation screen, the same function with its own constants:
+  #   region 0x694F = (x 79, z 105) = RN_EU_CONSTANTINOPLE (26959)
+  #   anchor 335.0 (x) - 140.0 (y) - 1460.0 (z)
+  # Map/105/79.m reads ground 80.0 there (same reader that returns 20.0 for
+  # Jangan), so that anchor floats 60 up - same clause as above.
+  # Map/105/79.o2: the nearest facades are euro_constan_bl_04 (84 units) and
+  # _bl_01, both at x 417 - the street front lies toward +x, so the camera
+  # stands 48.6 to the -x side and looks +x (yaw PI/2), putting Constantinople's
+  # own house fronts behind the body.
+  european:
+    character: [ 335.0, 80.0, 1460.0 ]
+    camera:
+      frame: 0.0
+      rx: 79.0
+      rz: 105.0
+      offset: [ 286.4, 95.6, 1460.0 ]
+      rotation: [ -0.1, 1.5707963, 0.0 ]
