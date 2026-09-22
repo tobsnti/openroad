@@ -6,12 +6,31 @@
 //! id-keyed maps rather than dozens of hand-named fields (several CSV slots are
 //! unnamed anyway); the distinct scalar settings get real names.
 //!
-//! `Default` is openroad's own baseline for the scalar settings: their shipped
-//! values are UNKNOWN here (we never have a `SROptionSet.dat` to read), so they
-//! are sensible starting values, not reverse-engineered constants. The **keymap**
-//! group is the exception — fourteen shipped shortcuts are printed literally in
-//! the user's `textuisystem.txt` (L2250-2274), so [`super::keymap::KEY_ACTIONS`]
-//! carries data-sourced defaults for the actions that run names (#657).
+//! `Default` used to be openroad's own baseline throughout, on the stated
+//! grounds that "we never have a `SROptionSet.dat` to read". **That is no
+//! longer true (2026-08-20).** Two real files were measured on the user's own
+//! machine from two independent installs (a v1.188 client and a later-patch
+//! derivative), **681 bytes each, 105 records with no trailing bytes** under
+//! our own width table.
+//!
+//! What that changes here:
+//!
+//! * **KeyMap** — the block is byte-identical in both files, so it is the
+//!   shipped binding set, not one player's habit. [`super::keymap::KEY_ACTIONS`]
+//!   now cites a `.dat` id/VK per entry (the `textuisystem.txt` L2250-2274
+//!   literals from #657 agree with every one of them).
+//! * **Audio** — ids 1001/1002/1003 read 30 / 50 / 50 and 1004-1006 all read 1
+//!   in both files, so [`AudioOptions::default`] is those values (see there).
+//! * **The Setting toggles** — ids 2001..=2028 are byte-identical in both
+//!   files too (the diff is confined to offsets 13..238, i.e. the video block:
+//!   `third-party-tool-findings.md` §3), so they are adopted as well; see
+//!   [`SHIPPED_TOGGLES`]. This corrects the earlier text here, which lumped
+//!   the toggles in with the video block and left them at openroad's own
+//!   "everything on" guess.
+//! * **Video** is still *not* adopted: that is exactly the region where the
+//!   two files disagree, and the later-patch derivative is not v1.188 ground
+//!   truth. Those defaults stay openroad's own until a second v1.188 sample
+//!   confirms them.
 
 use std::collections::BTreeMap;
 
@@ -48,6 +67,24 @@ fn default_width() -> u32 {
 }
 fn default_height() -> u32 {
     1080
+}
+
+impl GraphicProfile {
+    /// The stored size **only when the player actually chose one**.
+    ///
+    /// Idea: `width`/`height` are plain `u32` with a compiled default of
+    /// 1920x1080 (`default_width`/`default_height`, the shipped values), so the
+    /// struct cannot distinguish "the player picked 1920x1080" from "nobody ever
+    /// touched this". Restoring a saved resolution at startup therefore treats
+    /// *the default pair* as "unset" and leaves the window to `config.yaml`.
+    /// That is a deliberate, stated deviation, not a guess: the alternative is
+    /// either ignoring the player's saved size forever or forcing 1920x1080 on
+    /// every fresh install. The cost is one case — a player whose chosen size
+    /// happens to equal the shipped default keeps `config.yaml`'s window.
+    pub fn chosen_size(&self) -> Option<(u32, u32)> {
+        (self.width != default_width() || self.height != default_height())
+            .then_some((self.width, self.height))
+    }
 }
 
 impl Default for GraphicProfile {
@@ -162,14 +199,16 @@ impl Default for VideoOptions {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioOptions {
-    /// Volume sliders (ids 1001..=1003) — raw slider values, scale UNKNOWN.
-    #[serde(default = "default_volume")]
+    /// Volume sliders (ids 1001..=1003). Raw slider values; the *scale* is
+    /// still UNKNOWN, the *shipped values* are not — see [`default_bgm_volume`].
+    #[serde(default = "default_bgm_volume")]
     pub bgm_volume: u32,
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_fx_volume")]
     pub fx_volume: u32,
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_env_volume")]
     pub env_volume: u32,
-    /// Per-channel on/off checkboxes (ids 1004..=1006).
+    /// Per-channel on/off checkboxes (ids 1004..=1006). `SROptionSet.dat` stores
+    /// `1` for all three.
     #[serde(default = "default_true")]
     pub bgm_enabled: bool,
     #[serde(default = "default_true")]
@@ -178,8 +217,21 @@ pub struct AudioOptions {
     pub env_enabled: bool,
 }
 
-fn default_volume() -> u32 {
-    100
+/// Background music, `SROptionSet.dat` id 1001 = **30**.
+///
+/// The scale is still UNKNOWN; 30/50/50 on a 0..=100 slider is the reading
+/// [`AudioOptions::gain`] assumes, and it is self-consistent (50 sits mid-track,
+/// BGM sits under the effects — the mix the original ships with).
+fn default_bgm_volume() -> u32 {
+    30
+}
+/// Sound effects, `SROptionSet.dat` id 1002 = **50**. Same two files.
+fn default_fx_volume() -> u32 {
+    50
+}
+/// Environment/ambience, `SROptionSet.dat` id 1003 = **50**. Same two files.
+fn default_env_volume() -> u32 {
+    50
 }
 fn default_true() -> bool {
     true
@@ -188,9 +240,9 @@ fn default_true() -> bool {
 impl Default for AudioOptions {
     fn default() -> Self {
         Self {
-            bgm_volume: default_volume(),
-            fx_volume: default_volume(),
-            env_volume: default_volume(),
+            bgm_volume: default_bgm_volume(),
+            fx_volume: default_fx_volume(),
+            env_volume: default_env_volume(),
             bgm_enabled: true,
             fx_enabled: true,
             env_enabled: true,
@@ -258,7 +310,8 @@ impl AudioOptions {
 
     /// `bgm_volume`/`fx_volume` are read as 0-100 percent — openroad's own
     /// scale, since the original client's SROptionSet slider range (ids
-    /// 1001..=1003) is UNKNOWN (`docs/formats/sroptionset.md:54`). The clamp
+    /// 1001..=1003) is UNKNOWN: it stores 30/50/50, which fits 0..=100 but does
+    /// not prove it (`docs/formats/sroptionset.md`). The clamp
     /// keeps a hand-edited `config.yaml` from amplifying past unity gain,
     /// which is the mastered file level; the slider itself is the user's
     /// control, so 100 is not lowered to some "safer" default.
@@ -269,10 +322,85 @@ impl AudioOptions {
 
 /// The `Setting` tab toggles (ids 2001..=2028, excluding 2015 which is video).
 /// Kept id-keyed because many CSV slots are unnamed; see the doc table.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameplayOptions {
-    #[serde(default)]
+    #[serde(default = "default_toggles")]
     pub toggles: BTreeMap<u16, bool>,
+}
+
+/// The shipped state of every `Setting`-tab checkbox, as `SROptionSet.dat`
+/// stores it across the whole 2001..=2028 range.
+///
+/// # The idea
+///
+/// A blanket "on" for all 27 boxes is not what the original ships: seven of
+/// them (HideAbilityPets, the HP/MP warnings, the four condition bars) and two
+/// more (2026 / 2028) ship *off*. This table is the source for those values,
+/// and [`default_toggle`] is the single place a missing id is answered from.
+///
+/// Four of these have visible HUD consequences: 2021/2022/2023 and 2024 ship
+/// **off**, and nothing reads 2024 today. The shipped value stays as the file
+/// states it, so a rebuild inherits it. That is the shipped state, not a
+/// preference; the one place to flip it is the table below.
+///
+/// 2015 (`isWindowMode`, shipped `1`) is deliberately absent: openroad models
+/// it as [`VideoOptions::window_mode_override`], a session-only override whose
+/// `None` means "follow `config.yaml`", and adopting the file's `1` here would
+/// resurrect an override of `config.yaml` at every boot.
+pub const SHIPPED_TOGGLES: [(u16, bool); 27] = [
+    (2001, true),  // GameGuideCheckBox
+    (2002, true),  // PartyInvitationCheckbox
+    (2003, true),  // ExchangeRequestCheckbox
+    (2004, true),  // PersonalMsgCheckbox
+    (2005, true),  // (unnamed in OptionSet.csv; meaning unknown)
+    (2006, true),  // (unnamed; meaning unknown)
+    (2007, true),  // (unnamed; meaning unknown)
+    (2008, true),  // SystemUIAutoHideCheckbox
+    (2009, true),  // QuickPartyViewBuffStatusCheckbox
+    (2010, true),  // OwnNameCheckbox
+    (2011, true),  // OtherNameCheckbox
+    (2012, true),  // MonsterNamCheckbox
+    (2013, true),  // NPCNameCheckbox
+    (2014, true),  // GuildNameCheckbox
+    (2016, true),  // HighSettingIntroCheckbox
+    (2017, true),  // FortressWarMarkCheckbox
+    (2018, false), // HideAbilityPetsCheckbox
+    (2019, false), // HPWarningCheckbox
+    (2020, false), // MPWarningCheckbox
+    (2021, false), // SelfConditionCheckbox
+    (2022, false), // COSConditionCheckbox
+    (2023, false), // PartyMemberStatusCheckbox
+    (2024, false), // MonsterConditionCheckbox
+    (2025, true),  // OpenTheGuideCheckbox
+    (2026, false), // ActivateActionShortcutCheckbox
+    (2027, true),  // CameraRotationMethod1Checkbox
+    (2028, false), // CameraRotationMethod2Checkbox
+];
+
+/// The shipped table as the map `GameOptions` carries.
+fn default_toggles() -> BTreeMap<u16, bool> {
+    SHIPPED_TOGGLES.iter().copied().collect()
+}
+
+/// The shipped value of one toggle id — what a reader uses when the map has no
+/// entry (a hand-edited `user_settings.yaml`, or a partial import).
+///
+/// Unknown ids answer `true`: every id outside 2001..=2028 is openroad's own
+/// invention, and an openroad feature that has to invent its default is better
+/// on than silently off. Stated rather than assumed, per ADR 0009.
+pub fn default_toggle(id: u16) -> bool {
+    SHIPPED_TOGGLES
+        .iter()
+        .find_map(|(known, value)| (*known == id).then_some(*value))
+        .unwrap_or(true)
+}
+
+impl Default for GameplayOptions {
+    fn default() -> Self {
+        Self {
+            toggles: default_toggles(),
+        }
+    }
 }
 
 /// Custom-shortcut key bindings. Values are raw Win32 VK codes (u32); the
@@ -315,10 +443,23 @@ impl GameOptions {
     /// semantic field; unknown ids (and value/id type mismatches) are ignored.
     pub fn from_records(records: &[OptionRecord]) -> Self {
         let mut opts = Self::default();
-        for rec in records {
-            opts.apply(*rec);
-        }
+        opts.apply_records(records);
         opts
+    }
+
+    /// Fold decoded [`OptionRecord`]s onto **these** options, leaving every
+    /// field the file does not mention untouched.
+    ///
+    /// This is the shape an import needs, and the reason it is not
+    /// [`Self::from_records`]: `SROptionSet.dat` has no id for the camera
+    /// sight mode and knows nothing about window positions, so importing the
+    /// original's file through a default set would silently reset a player's
+    /// camera and window layout as the price of bringing their volumes across.
+    /// Merging keeps the import to what the file actually says.
+    pub fn apply_records(&mut self, records: &[OptionRecord]) {
+        for rec in records {
+            self.apply(*rec);
+        }
     }
 
     fn apply(&mut self, rec: OptionRecord) {
@@ -396,6 +537,61 @@ fn set_opt_bool(slot: &mut Option<bool>, value: OptionValue) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B5: the shipped Setting-tab defaults are the *measured* ones, not
+    /// "everything on" — both real `SROptionSet.dat` (two real installs) are
+    /// byte-identical over the whole 2001..=2028 range, which is what makes
+    /// them the shipped set rather than one player's habit. Pinned here so a
+    /// later "looks nicer with everything on" edit has to argue with the file.
+    #[test]
+    fn the_setting_toggle_defaults_are_the_two_measured_dat_files() {
+        let off = [2018u16, 2019, 2020, 2021, 2022, 2023, 2024, 2026, 2028];
+        let options = GameOptions::default();
+
+        for id in 2001..=2028u16 {
+            if id == 2015 {
+                // Not a gameplay toggle here: openroad models `isWindowMode`
+                // as `video.window_mode_override: Option<bool>`.
+                assert!(!options.gameplay.toggles.contains_key(&id));
+                continue;
+            }
+            let expected = !off.contains(&id);
+            assert_eq!(
+                options.gameplay.toggles.get(&id),
+                Some(&expected),
+                "id {id} must default to the value both .dat files store"
+            );
+        }
+        assert_eq!(options.gameplay.toggles.len(), SHIPPED_TOGGLES.len());
+    }
+
+    /// The single place a missing id is answered from (`options_game::toggle_on`,
+    /// and what `hud/nameplates.rs` should use): known ids answer with the
+    /// file's value, unknown ones with openroad's stated "on".
+    #[test]
+    fn a_missing_entry_falls_back_to_the_shipped_value_not_to_on() {
+        assert!(!default_toggle(2021), "Self Condition ships off");
+        assert!(!default_toggle(2024), "Monster Condition ships off");
+        assert!(default_toggle(2010), "Own Name ships on");
+        assert!(default_toggle(9999), "an id we invented defaults on");
+    }
+
+    /// The window mode stays "never chosen" even though the file says 1 — the
+    /// deliberate deviation documented on `VideoOptions::window_mode_override`.
+    #[test]
+    fn the_defaults_do_not_adopt_the_files_window_mode() {
+        assert_eq!(GameOptions::default().video.window_mode_override, None);
+    }
+
+    /// A `user_settings.yaml` without the toggle map must not come back as
+    /// "no toggles at all": `serde(default)` on that field would produce an
+    /// empty map, i.e. blanket-on.
+    #[test]
+    fn a_settings_file_without_a_gameplay_group_gets_the_shipped_toggles() {
+        let older: GameOptions =
+            serde_yaml::from_str("video: {}\naudio: {}\n").expect("an older file still loads");
+        assert_eq!(older.gameplay, GameplayOptions::default());
+    }
 
     /// #379's acceptance is explicitly "changes behaviour **and** survives a
     /// restart". The restart half is this: the sight mode has to go through the
@@ -550,11 +746,19 @@ mod tests {
         assert_eq!(o.keymap, KeyMapOptions::default());
     }
 
+    /// The shipped mix, pinned to the bytes it came from: `SROptionSet.dat` ids
+    /// 1001/1002/1003 = 30/50/50 and 1004-1006 = 1/1/1. Unity gain would be an
+    /// invented default; a change to it has to edit this test and say why.
     #[test]
-    fn default_volume_is_unity_gain() {
+    fn the_default_mix_is_30_50_50() {
         let audio = AudioOptions::default();
-        assert_eq!(audio.bgm_playback().unwrap().volume.to_linear(), 1.0);
-        assert_eq!(audio.fx_playback().unwrap().volume.to_linear(), 1.0);
+        assert_eq!(audio.bgm_volume, 30);
+        assert_eq!(audio.fx_volume, 50);
+        assert_eq!(audio.env_volume, 50);
+        assert!(audio.bgm_enabled && audio.fx_enabled && audio.env_enabled);
+
+        assert_eq!(audio.bgm_playback().unwrap().volume.to_linear(), 0.3);
+        assert_eq!(audio.fx_playback().unwrap().volume.to_linear(), 0.5);
     }
 
     #[test]
