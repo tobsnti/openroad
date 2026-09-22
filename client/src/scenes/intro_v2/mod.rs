@@ -490,7 +490,10 @@ impl Plugin for IntroV2ScenePlugin {
             )
             .add_systems(
                 Update,
-                captcha::spawn_captcha
+                // A new challenge replaces the modal it finds, it does not
+                // stack a second one on top of it (`close_open_captcha_modal`).
+                (captcha::close_open_captcha_modal, captcha::spawn_captcha)
+                    .chain()
                     .run_if(in_state(SceneState::IntroV2))
                     .run_if(resource_added::<captcha::CaptchaImageV2>),
             )
