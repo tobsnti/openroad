@@ -33,6 +33,12 @@ pub struct IntroV2Assets {
     pub logo: Handle<Image>,
     #[asset(path = "media://interface/outer/logo-big.ddj")]
     pub logo_big: Handle<Image>,
+    // `GDR_STA_TITLE:CIFStatic` id 5, `Rect="47,110,184,36"`,
+    // `interface\outer\text-connect.ddj` — `pstitle_europe.txt:657/662`. The
+    // caption the original paints in the top left of the login screen; it was
+    // simply missing here.
+    #[asset(path = "media://interface/outer/text-connect.ddj")]
+    pub text_connect: Handle<Image>,
 
     // Buttons — the `_europe` variants: `config/define.txt` defines
     // EUROPE_SYSTEM, and `resinfo/pscharacterselect.txt` names

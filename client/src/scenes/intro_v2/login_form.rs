@@ -9,7 +9,11 @@ use crate::assets::FontAssets;
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::{ButtonSound, ImageButtonStyle};
-use crate::plugins::ui_v2::widgets::{image_button, label, password_input, text_input_justified};
+use crate::plugins::ui_v2::widgets::{
+    image_button, label, label_aligned, password_input, text_input_justified,
+};
+
+use crate::scenes::loading_screen::{design_pct, DesignFit};
 
 use super::assets::IntroV2Assets;
 use super::{intro_font_px, IntroV2State};
@@ -96,6 +100,45 @@ const PASSWORD_KEY: &str = "UIO_CTL_PASSWORD";
 const SELECT_SERVER_KEY: &str = "UIO_CTL_SELECT_SERVER";
 const CONNECT_KEY: &str = "UIO_CTL_CONNECT";
 const EXIT_KEY: &str = "UIO_CTL_EXIT";
+
+// The two full-screen statics of this screen are **scaled**, not native:
+// they carry a real rect in the title tree's 1600x1200 canvas, so they are
+// drawn at `(x,y,w,h) * k`, `k = view / 1600` (`splash.rs` `BIG_LOGO_RECT`
+// spells `k` out). The rects are
+// taken verbatim and turned into percentages of the same `DesignFit` box
+// the loading chrome uses, so neither `k` nor a pixel size is written here.
+//
+// `GDR_STA_LOGO` id 8, `Rect="540,403,508,172"`, `logo.ddj`
+// (`pstitle_europe.txt:600/605`): at 800x600 that is **254x86 at
+// (270,201)** where the art was drawn at its native 508x172 — twice too
+// large. Its bottom, 201+86 = 287, lands 19 px above the window's top edge
+// 306, which is the gap the previous hand-anchoring produced.
+const LOGO_RECT: (f32, f32, f32, f32) = (540.0, 403.0, 508.0, 172.0);
+// `GDR_STA_TITLE` id 5, `Rect="47,110,184,36"`, `text-connect.ddj`
+// (`pstitle_europe.txt:657/662`): 92x18 at (23,55) on an 800x600 client.
+// The original paints it in the top left of the login screen; we painted
+// nothing.
+const TITLE_RECT: (f32, f32, f32, f32) = (47.0, 110.0, 184.0, 36.0);
+
+// The gap the original draws, replacing a layout rule that produced a number
+// by itself. `GDR_BTN_OK`/`GDR_BTN_CANCEL` are `Rect="0,0,91,41"`
+// (`pstitle_europe.txt:491`, `:472`) — a `0,0` rect is code-placed, so the
+// data gives the size and the original gives the position: on its 800x600
+// client the blue fill of `button_europe.ddj` sits at x 309..381 and 418..491,
+// i.e. the two 91x41 buttons start at **300** and **409**, a gap of **18 px**,
+// the pair spanning 300..500 around the screen centre. `SpaceEvenly` over the
+// 288-wide frame spread them ~35 px apart instead — a number nothing authored.
+// Centred with this gap the pair lands at 44..244 inside the frame, i.e.
+// 300..500 on screen with the frame's left edge 256.
+const BUTTON_GAP: f32 = 18.0;
+
+/// `GDR_BTN_OK`/`GDR_BTN_CANCEL` `Rect="0,0,91,41"` (`pstitle_europe.txt:491`,
+/// `:472`) and `GDR_STA_LOGINWINDOW` `Rect="0,0,288,140"` (`:586`): a `0,0`
+/// rect is code-placed, so these three sizes are drawn **native**, unscaled, as
+/// in the original, whose 288x140 frame sits at (256,306) in an 800x600
+/// client.
+const BUTTON_SIZE: (f32, f32) = (91.0, 41.0);
+const WINDOW_SIZE: (f32, f32) = (288.0, 140.0);
 
 /// Tab order of the screen, in the order the original stacks its controls top
 /// to bottom: the two edit rows come from `widgets::{text_input,password_input}`
@@ -206,6 +249,7 @@ pub fn login_form(
     let connect_label = ui_strings.get_or(CONNECT_KEY, "Connect").to_string();
     let exit_label = ui_strings.get_or(EXIT_KEY, "Exit").to_string();
     let logo = assets.logo.clone();
+    let title_art = assets.text_connect.clone();
     let window = assets.login_window.clone();
     let font = fonts.nine.clone();
     // Text sizes are the resinfo `FontIndex` of the control each label stands
@@ -221,28 +265,22 @@ pub fn login_form(
     let button_sound = assets.sound_button_sound_a.clone();
     let window_open_sound = assets.sound_window_open.clone();
 
-    // Vertical placement of the window: **measured, not centred.** The original
-    // draws the 288x140 frame at `Y0=306` in a 800x600 client, i.e. at 51 % of
-    // the client height — read off a peer capture
-    // (806x629 window shot, client area starting at y=25: frame top 331, left
-    // 258, so `Y0=306`, `X0=255`), and there is no literal for it in the image
-    // (the RE notes PE sweep, §1.3a). Vertical
-    // *centring* would put it at 230 — 76 px too high — which is what stood here
-    // until 2026-08-25 with no line claiming a reason. Horizontally the same
-    // measurement *is* centred: `(800-288)/2 = 256 ~= 255`, so that half stays
-    // an alignment rather than a number.
+    // Vertical placement of the window: it follows the original, not a centring
+    // rule. The original draws the 288x140 frame at `Y0=306` in an 800x600
+    // client, i.e. at 51 % of the client height, and no literal in the data says
+    // so. Vertical *centring* would put it at 230 — 76 px too high — which is
+    // what stood here with no line claiming a reason. Horizontally the original
+    // *is* centred: `(800-288)/2 = 256 ~= 255`, so that half stays an alignment
+    // rather than a number.
     const WINDOW_TOP_PERCENT: f32 = 51.0;
     // The Connect/Exit row hangs off the window instead of the screen so the two
-    // keep the gap the same photo shows: frame bottom 306+140=446, Connect top
+    // keep the gap the original draws: frame bottom 306+140=446, Connect top
     // 460 -> 14 px. As a child of the frame that is one number in one place,
     // and it cannot drift when the frame moves.
-    const BUTTON_ROW_TOP: f32 = 140.0 + 14.0;
-    // Same photo, other side: the logo's art bottom sits just above the frame.
-    // `GDR_STA_LOGO` is `Rect="540,403,508,172"` in the 1600x1200 space of the
-    // full-screen statics (own read, `pstitle_europe.txt:605`), i.e. bottom
-    // (403+172)/2 = 287.5 against the frame top 306 -> 18 px.
-    const LOGO_GAP: f32 = 18.0;
-    const LOGO_BOTTOM_PERCENT: f32 = 100.0 - WINDOW_TOP_PERCENT;
+    const BUTTON_ROW_TOP: f32 = WINDOW_SIZE.1 + 14.0;
+
+    let (logo_l, logo_t, logo_w, logo_h) = design_pct(LOGO_RECT);
+    let (title_l, title_t, title_w, title_h) = design_pct(TITLE_RECT);
 
     bsn! {
         LoginFormRoot
@@ -255,18 +293,38 @@ pub fn login_form(
         }
         Visibility::Hidden
         Children [
-            // Small logo above the window: anchored to the window's top edge
-            // (`bottom: 49 %` = 100 % - 51 %) rather than to the screen, so the
-            // measured 18 px gap holds at any client height.
+            // The two scaled statics (logo, title caption) live inside one
+            // centred 4:3 box; `fit_design_surfaces` sizes the box, and the
+            // rects above are percentages of it. The four `px(0)` are
+            // placeholders that system overwrites, not a layout.
             (
-                ImageNode { image: {logo}, color: Color::NONE }
-                Node {
-                    position_type: PositionType::Absolute,
-                    align_self: AlignSelf::Center,
-                    bottom: percent(LOGO_BOTTOM_PERCENT),
-                    margin: {UiRect::bottom(px(LOGO_GAP))},
-                }
+                DesignFit { cover: false }
+                Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: px(0), height: px(0) }
                 Pickable::IGNORE
+                Children [
+                    (
+                        ImageNode { image: {logo}, color: Color::NONE, image_mode: NodeImageMode::Stretch }
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: percent(logo_l),
+                            top: percent(logo_t),
+                            width: percent(logo_w),
+                            height: percent(logo_h),
+                        }
+                        Pickable::IGNORE
+                    ),
+                    (
+                        ImageNode { image: {title_art}, color: Color::NONE, image_mode: NodeImageMode::Stretch }
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: percent(title_l),
+                            top: percent(title_t),
+                            width: percent(title_w),
+                            height: percent(title_h),
+                        }
+                        Pickable::IGNORE
+                    ),
+                ]
             ),
             // The login window with labels, inputs and the server-list button
             (
@@ -274,8 +332,8 @@ pub fn login_form(
                 Node {
                     position_type: PositionType::Absolute,
                     top: percent(WINDOW_TOP_PERCENT),
-                    width: px(288),
-                    height: px(140),
+                    width: {px(WINDOW_SIZE.0)},
+                    height: {px(WINDOW_SIZE.1)},
                     flex_direction: FlexDirection::Column,
                     align_self: AlignSelf::Center,
                     justify_content: JustifyContent::FlexStart,
@@ -285,15 +343,22 @@ pub fn login_form(
                         // `GDR_STATIC1` (`pstitle_europe.txt:120`) is
                         // `Rect="36,35,53,15"` — 53, not 59; only PW and Server
                         // (`:101`, `:82`) are 59 wide.
-                        label(id_label.as_str(), font.clone(), caption_px)
+                        // `HAlign=0`/`VAlign=0` on this very control
+                        // (`pstitle_europe.txt:127`/`:137`) — left and top, not
+                        // the centred default of `label()`.
+                        label_aligned(id_label.as_str(), font.clone(), caption_px, 0, 0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(35), width: px(53), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
-                        label(password_label.as_str(), font.clone(), caption_px)
+                        // `GDR_STATIC2` `HAlign=0`/`VAlign=0`
+                        // (`pstitle_europe.txt:108`/`:118`).
+                        label_aligned(password_label.as_str(), font.clone(), caption_px, 0, 0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(62), width: px(59), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
-                        label(server_label.as_str(), font.clone(), caption_px)
+                        // `GDR_STATIC3` `HAlign=0`/`VAlign=0`
+                        // (`pstitle_europe.txt:89`/`:99`).
+                        label_aligned(server_label.as_str(), font.clone(), caption_px, 0, 0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(89), width: px(59), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
@@ -361,14 +426,15 @@ pub fn login_form(
                         Node {
                             position_type: PositionType::Absolute,
                             top: px(BUTTON_ROW_TOP),
-                            width: px(288),
-                            height: px(41),
+                            width: {px(WINDOW_SIZE.0)},
+                            height: {px(BUTTON_SIZE.1)},
                             align_self: AlignSelf::Center,
-                            justify_content: JustifyContent::SpaceEvenly,
+                            justify_content: JustifyContent::Center,
+                            column_gap: {px(BUTTON_GAP)},
                         }
                         Children [
                             (
-                                image_button(main_button_style(assets), 91.0, 41.0)
+                                image_button(main_button_style(assets), BUTTON_SIZE.0, BUTTON_SIZE.1)
                                 ConnectButton
                                 ImageNode { color: Color::NONE }
                                 TabIndex({TAB_CONNECT})
@@ -377,7 +443,7 @@ pub fn login_form(
                                 on(super::net::on_connect_activate)
                             ),
                             (
-                                image_button(exit_button_style(assets), 91.0, 41.0)
+                                image_button(exit_button_style(assets), BUTTON_SIZE.0, BUTTON_SIZE.1)
                                 ExitButton
                                 ImageNode { color: Color::NONE }
                                 ButtonSound({button_sound})
@@ -513,6 +579,93 @@ pub fn lock_exit_while_captcha_is_open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This file up to its test module: the scans below are about the authored
+    /// markup, and a scan that also reads the assertions naming the very
+    /// strings it looks for cannot fail.
+    fn authored_markup() -> &'static str {
+        let source = include_str!("login_form.rs");
+        &source[..source.find("#[cfg(test)]").expect("the test module")]
+    }
+
+    /// `GDR_STA_LOGO` and `GDR_STA_TITLE` carry real rects, so they are scaled
+    /// by the one title-scene factor — 254x86 at (270,201) and 92x18 at (23,55)
+    /// on an 800x600 client.
+    #[test]
+    fn the_two_statics_are_scaled_not_native() {
+        use crate::scenes::loading_screen::design_fit_rect;
+
+        let drawn = |rect: (f32, f32, f32, f32), win_w: f32, win_h: f32| {
+            let (bx, by, bw, bh) = design_fit_rect(win_w, win_h, DesignFit::CONTAIN);
+            let (l, t, w, h) = design_pct(rect);
+            (
+                bx + bw * l / 100.0,
+                by + bh * t / 100.0,
+                bw * w / 100.0,
+                bh * h / 100.0,
+            )
+        };
+
+        assert_eq!(drawn(LOGO_RECT, 800.0, 600.0), (270.0, 201.5, 254.0, 86.0));
+        assert_eq!(drawn(TITLE_RECT, 800.0, 600.0), (23.5, 55.0, 92.0, 18.0));
+        // Positive control: at the design size both are their data rect.
+        assert_eq!(drawn(LOGO_RECT, 1600.0, 1200.0), LOGO_RECT);
+        assert_eq!(drawn(TITLE_RECT, 1600.0, 1200.0), TITLE_RECT);
+        // The logo's bottom edge clears the window's top edge (306).
+        let (_, top, _, height) = drawn(LOGO_RECT, 800.0, 600.0);
+        assert!(top + height < 306.0);
+    }
+
+    /// The title caption is actually authored into the scene — it used to be
+    /// missing entirely. Source scan for the reason the file's other markup
+    /// tests give: no test app can spawn this scene.
+    #[test]
+    fn the_title_caption_is_drawn() {
+        assert!(authored_markup().contains("title_art"));
+        assert!(include_str!("assets.rs").contains("outer/text-connect.ddj"));
+    }
+
+    /// In the original the two 91x41 buttons start at 300 and 409 on an 800x600
+    /// client, 18 px apart, the pair spanning 300..500 about the screen centre.
+    /// They hang off the 288-wide frame, whose left edge is (800-288)/2 = 256,
+    /// so centring them with that gap has to reproduce exactly those screen
+    /// positions.
+    #[test]
+    fn connect_and_exit_sit_18px_apart_centred_on_the_screen() {
+        let pair = 2.0 * BUTTON_SIZE.0 + BUTTON_GAP;
+        let frame_left = (800.0 - WINDOW_SIZE.0) / 2.0;
+        let connect_left = frame_left + (WINDOW_SIZE.0 - pair) / 2.0;
+        let exit_left = connect_left + BUTTON_SIZE.0 + BUTTON_GAP;
+        assert_eq!((connect_left, exit_left), (300.0, 409.0));
+        assert_eq!(exit_left + BUTTON_SIZE.0, 500.0);
+        assert_eq!((connect_left + exit_left + BUTTON_SIZE.0) / 2.0, 400.0);
+        // Red control for the layout that stood here: `SpaceEvenly` puts three
+        // equal gaps in the row, i.e. ~35 px between the buttons, not 18.
+        let space_evenly_gap = (WINDOW_SIZE.0 - 2.0 * BUTTON_SIZE.0) / 3.0;
+        assert!(space_evenly_gap > 34.0 && space_evenly_gap < 36.0);
+        assert_ne!(space_evenly_gap, BUTTON_GAP);
+        // and the markup no longer asks for it (scan the authored half only —
+        // the line above names `SpaceEvenly` itself)
+        assert!(!authored_markup().contains("JustifyContent::SpaceEvenly"));
+    }
+
+    /// `HAlign`/`VAlign` are fields on each control, and this screen's three
+    /// captions carry `0`/`0` — left and top (`pstitle_europe.txt:127`, `:108`,
+    /// `:89`). The widget takes them as a parameter, so the test checks the
+    /// mapping *and* that the three call sites pass the data values.
+    #[test]
+    fn the_captions_are_left_aligned_because_the_data_says_so() {
+        use crate::plugins::ui_v2::widgets::{resinfo_align_self, resinfo_justify};
+
+        assert_eq!(resinfo_justify(0), Justify::Left);
+        // positive control: the same function centres what the data centres
+        // (the edit rows and both buttons are `HAlign=1`)
+        assert_eq!(resinfo_justify(1), Justify::Center);
+        assert_eq!(resinfo_align_self(0), AlignSelf::FlexStart);
+        assert_eq!(resinfo_align_self(1), AlignSelf::Center);
+
+        assert_eq!(authored_markup().matches("label_aligned(").count(), 3);
+    }
 
     /// The mouse path to Exit is untouched by the Tab-ring change: activating
     /// the button still ends the session.

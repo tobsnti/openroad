@@ -66,6 +66,67 @@ pub fn label_sized(text: &str, font: Handle<Font>, font_size: FontSize) -> impl 
     }
 }
 
+/// `resinfo`'s `HAlign` as a text justification.
+///
+/// # The idea
+///
+/// Horizontal alignment is a **field on every control**, not a house style:
+/// `pstitle_europe.txt` writes `HAlign=INTEGER,"0"` on the three login captions
+/// `GDR_STATIC1/2/3` (`:127`, `:108`, `:89`) and `HAlign=INTEGER,"1"` on the
+/// edit rows, the buttons and the window (`:70`, `:51`, `:489`, `:470`,
+/// `:584`). So the caption that [`label`] was centring is left-flush in the
+/// data, and the centred rows around it are centred in the data — one
+/// parameter reproduces both instead of a taste decision either way.
+///
+/// Values seen over 40+ `resinfo` files: `HAlign` in {0,1,2}, `VAlign` in
+/// {0,1}. 0 = left and 1 = centre are **proven** by the pair above.
+/// **`2` is unproven** — it does not occur in this file at all; it is mapped to
+/// right because that is the only remaining direction.
+pub fn resinfo_justify(h_align: u32) -> Justify {
+    match h_align {
+        0 => Justify::Left,
+        1 => Justify::Center,
+        // unproven, see above
+        _ => Justify::Right,
+    }
+}
+
+/// `resinfo`'s `VAlign` as a cross-axis alignment: 0 = top, 1 = middle.
+/// Only these two occur in the corpus.
+pub fn resinfo_align_self(v_align: u32) -> AlignSelf {
+    match v_align {
+        0 => AlignSelf::FlexStart,
+        _ => AlignSelf::Center,
+    }
+}
+
+/// [`label`] that takes its alignment from the control's own `HAlign`/`VAlign`
+/// instead of always centring — see [`resinfo_justify`].
+pub fn label_aligned(
+    text: &str,
+    font: Handle<Font>,
+    font_size: f32,
+    h_align: u32,
+    v_align: u32,
+) -> impl Scene {
+    let text = text.to_string();
+    let justify = resinfo_justify(h_align);
+    let align_self = resinfo_align_self(v_align);
+    bsn! {
+        Text({text})
+        TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(font_size)} }
+        TextColor(Color::NONE)
+        TargetColor(Srgba::WHITE)
+        TextLayout::justify({justify})
+        Node {
+            width: percent(100),
+            justify_content: JustifyContent::FlexStart,
+            align_self: {align_self},
+        }
+        Pickable::IGNORE
+    }
+}
+
 /// Top padding that vertically centers the 12px input text (line box ≈14.4px)
 /// in the 20px input fields; `EditableText` has no vertical alignment API.
 const INPUT_PAD_TOP: f32 = 3.0;
