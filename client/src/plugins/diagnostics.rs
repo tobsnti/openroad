@@ -114,10 +114,10 @@ pub struct DiagnosticsPlugin;
 
 impl Plugin for DiagnosticsPlugin {
     fn build(&self, app: &mut App) {
-        // The FPS overlay must own its diagnostic source: previously the
-        // frame-time diagnostic was only present as a side effect of
-        // BrpExtrasPlugin (which defensively installs it), so gating BRP
-        // behind `dev_tools` silently froze the FPS counter.
+        // The FPS overlay must own its diagnostic source: taking the
+        // frame-time diagnostic from `BrpExtrasPlugin` (which defensively
+        // installs it) would freeze the FPS counter whenever BRP is gated
+        // behind `dev_tools`.
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
             .add_plugins(EntityCountDiagnosticsPlugin::default())
             // process/mem_usage (GB) + cpu_usage in the BRP dump: macOS
@@ -163,8 +163,8 @@ impl Plugin for DiagnosticsPlugin {
         // call/bind group), so their count is a direct proxy for terrain draw
         // cost. Water counts every streamed water/ice surface via `WaterPlane`
         // rather than one tier's material type — `graphics.water.quality: low`
-        // swaps the material, and keying on the HQ type made the row read 0
-        // (and miscounted the planes as `mesh parts`) in that tier.
+        // swaps the material, and keying on the HQ type reads 0 (and miscounts
+        // the planes as `mesh parts`) in that tier.
         track::<MeshMaterial3d<TerrainBlockSplatMaterial>>(app, TERRAIN_BLOCK_COUNT);
         track::<TerrainBlock>(app, TERRAIN_TILE_COUNT);
         track::<MapObject>(app, MAP_OBJECT_COUNT);
@@ -309,10 +309,33 @@ fn cache_count_system(
     }
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+/// Spawns the performance panel — **only when the diagnostics tier is on**.
+///
+/// # Two rules it enforces
+///
+/// 1. `diagnostics: false` in `config.yaml` must also hide the panel: a
+///    display the config cannot switch off is worse than one that is missing,
+///    so the same `diagnostics_enabled()` that decides the tier decides the
+///    panel. (`dev_tools` implies it, as everywhere else.)
+/// 2. The panel must not swallow clicks. A `bevy_ui` node is pickable by
+///    default and blocks what is under it, and this one is anchored
+///    bottom-right — exactly where the character-creation screen puts
+///    Confirm/Cancel at 800x600 and 1024x768. Hence `Pickable::IGNORE` on the
+///    panel **and on each of its text nodes** (`Text` requires `Node`, so a
+///    child is a pick target in its own right); a debug overlay must never be
+///    in the input path.
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    config: Res<crate::plugins::config::ClientConfig>,
+) {
+    if !config.diagnostics_enabled() {
+        return;
+    }
     commands
         .spawn((
             RenderLayers::layer(CameraLayers::Debug.into()),
+            Pickable::IGNORE,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(12.0),
@@ -335,6 +358,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             children
                 .spawn((
                     RenderLayers::layer(CameraLayers::Debug.into()),
+                    Pickable::IGNORE,
                     Text::new("FPS: "),
                     TextFont {
                         font: asset_server
@@ -362,6 +386,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 });
             children.spawn((
                 RenderLayers::layer(CameraLayers::Debug.into()),
+                Pickable::IGNORE,
                 Text::new(""),
                 TextFont {
                     font: asset_server
@@ -440,7 +465,7 @@ const MAX_RENDER_PASS_ROWS: usize = 12;
 /// Walked out of the store rather than listed, for two reasons. The passes that
 /// exist depend on configuration (shadows, bloom, the transmissive copy, the
 /// prepass) and on Bevy's internal graph, so a hard-coded list quietly goes
-/// stale — the previous one named three passes and missed the shadow pass
+/// stale. And each pass reports up to two spans: `elapsed_gpu` is only
 /// entirely. And each pass reports up to two spans: `elapsed_gpu` is only
 /// recorded where wgpu supports timestamp queries (Vulkan and DX12 — Bevy
 /// requests every adapter feature via `WgpuSettingsPriority::Functionality`, so
@@ -586,8 +611,8 @@ pub fn brp_all_diagnostics(
 /// entities. `prepare_material_bind_groups`, the instance-buffer writers and the
 /// passes themselves all walk the binned and sorted phases, so "collapse the
 /// terrain materials", "restore effect batching" and "merge object mesh parts"
-/// are all statements about these counts. Nothing in the tree reported them,
-/// which is why those levers were arguments rather than measurements.
+/// are all statements about these counts. Without them those levers are
+/// arguments rather than measurements.
 ///
 /// Mechanics: the counters live behind an `Arc` inserted into *both* worlds —
 /// the pattern `RenderDiagnosticsPlugin` uses for its own mutex — because the
@@ -927,4 +952,103 @@ fn sorted_phase<P: SortedPhaseItem>(app: &mut App, phase: &'static str) {
         .after(RenderSystems::PrepareResourcesBatchPhases)
         .before(RenderSystems::Render),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bevy::asset::AssetPlugin;
+
+    use crate::plugins::config::ClientConfig;
+
+    /// The shipped example config, loaded through the same loader `main()`
+    /// uses — so the switch is tested against what users actually run instead
+    /// of a struct literal.
+    fn example_config() -> ClientConfig {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../config.example.yaml")
+            .with_extension("");
+        ClientConfig::from_file(path.to_str().expect("the example path is utf-8"))
+            .expect("config.example.yaml matches ClientConfig")
+    }
+
+    fn app_with(diagnostics: bool, dev_tools: bool) -> App {
+        let mut app = App::new();
+        let mut config = example_config();
+        config.diagnostics = diagnostics;
+        config.dev_tools = dev_tools;
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            // `setup` loads two fonts; the asset type has to exist for a
+            // handle to be allocated, and `bevy_text`'s plugin is not part of
+            // MinimalPlugins.
+            .init_asset::<Font>()
+            .insert_resource(config)
+            .add_systems(Startup, setup);
+        app.update();
+        app
+    }
+
+    fn panel(app: &mut App) -> Option<Entity> {
+        app.world_mut()
+            .query::<(Entity, &Name)>()
+            .iter(app.world())
+            .find(|(_, name)| name.as_str() == "Performance Panel")
+            .map(|(entity, _)| entity)
+    }
+
+    /// `diagnostics: false` must actually hide the panel: a config switch that
+    /// leaves a debug display on screen is the one display a player cannot
+    /// switch off.
+    #[test]
+    fn the_config_switch_decides_whether_the_panel_exists() {
+        let mut app = app_with(false, false);
+        assert!(
+            panel(&mut app).is_none(),
+            "diagnostics: false still spawns the performance panel"
+        );
+        // Positive control: the same code path does spawn it when the tier is
+        // on, so the assertion above is about the switch and not about a
+        // failed spawn.
+        let mut app = app_with(true, false);
+        assert!(panel(&mut app).is_some());
+        // ...and `dev_tools` implies the tier, as everywhere else.
+        let mut app = app_with(false, true);
+        assert!(panel(&mut app).is_some());
+    }
+
+    /// A debug overlay must never be in the input path. The panel is
+    /// anchored bottom-right, which at 800x600 and 1024x768 is exactly where
+    /// the character-creation screen puts Confirm/Cancel — and a `bevy_ui` node
+    /// is pickable by default, so a pickable panel eats the Confirm click
+    /// entirely: no modal, no status line, no packet.
+    ///
+    /// Every node of the panel is checked, not only the root: `Text` requires
+    /// `Node`, so each caption is a pick target in its own right.
+    #[test]
+    fn the_panel_never_swallows_a_click() {
+        let mut app = app_with(true, false);
+        let root = panel(&mut app).expect("the panel is up");
+        let mut nodes = vec![root];
+        let mut i = 0;
+        while i < nodes.len() {
+            let entity = nodes[i];
+            i += 1;
+            if let Some(children) = app.world().get::<Children>(entity) {
+                nodes.extend(children.iter());
+            }
+        }
+        for entity in nodes {
+            // `TextSpan` children carry no `Node` and are not pick targets.
+            if app.world().get::<Node>(entity).is_none() {
+                continue;
+            }
+            let pickable = app.world().get::<Pickable>(entity);
+            assert_eq!(
+                pickable.map(|p| (p.should_block_lower, p.is_hoverable)),
+                Some((false, false)),
+                "a panel node without Pickable::IGNORE swallows clicks meant for the screen"
+            );
+        }
+    }
 }
