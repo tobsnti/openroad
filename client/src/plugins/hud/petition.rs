@@ -56,6 +56,8 @@ use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{DisplayName, NetworkEntities};
+use crate::plugins::options_game::toggle_on;
+use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `Section = Create` authors the family's interior as `16,40,284,122`; the
@@ -137,16 +139,60 @@ fn unhosted_arm_notice(petition: u8) -> &'static str {
     }
 }
 
-/// 0x3080 S->C: take the petition, or name the arm we cannot host.
+/// The `SROptionSet` `Setting` id that governs an arm, or `None` when no
+/// switch covers it. Read out of the original's 0x3080 handler: it checks
+/// 2002 `PartyInvitationCheckbox` for petition types 2 and 3 and 2003
+/// `ExchangeRequestCheckbox` for type 1, and no other arm; 2004
+/// `PersonalMsgCheckbox` has no reader there at all.
+pub fn refusal_option(petition: u8) -> Option<u16> {
+    match petition {
+        PETITION_PARTY_CREATION | PETITION_PARTY_INVITATION => 2002,
+        PETITION_EXCHANGE => 2003,
+        _ => return None,
+    }
+    .into()
+}
+
+/// The answer to send without asking the player, or `None` to host the box.
 ///
-/// A second petition **replaces** the first. Overlap behaviour is `[U]`
-/// (assembly doc §9.7), but the answer correlates by session, so the box must
+/// The original's behaviour is a **refusal**, not a suppression: with the box
+/// unchecked it builds and sends a C->S `0x3080` decline before any dialog
+/// code runs, so the asker gets an immediate no instead of a server timeout.
+/// The check sits directly behind the type dispatch, ahead of every state
+/// test — it applies unconditionally, at reception.
+pub fn auto_refusal(petition: u8, options: &GameOptions) -> Option<GameInvite> {
+    let id = refusal_option(petition)?;
+    if toggle_on(options, id) {
+        return None;
+    }
+    Some(petition_response(petition, false))
+}
+
+/// What the player is told when a request was refused on their behalf.
+/// **Ours** (ADR 0009): the original refuses silently, which makes a switch a
+/// player set weeks ago indistinguishable from nobody ever asking. One system
+/// line keeps the refusal visible; no `UIIT_*` key covers it.
+fn auto_refused_notice(petition: u8) -> &'static str {
+    match petition {
+        PETITION_EXCHANGE => {
+            "An exchange request was declined automatically (Exchange Request is off)."
+        }
+        _ => "A party invitation was declined automatically (Party Invitation is off).",
+    }
+}
+
+/// 0x3080 S->C: refuse it by setting, take it, or name the arm we cannot host.
+///
+/// A second petition **replaces** the first. Overlap behaviour is unknown, but
+/// the answer correlates by session, so the box must
 /// describe whatever the server currently considers pending — and the newest
 /// arrival is the only candidate for that. Never two boxes.
 pub fn on_game_invite(
     mut reader: MessageReader<GameInvite>,
     mut pending: ResMut<PendingPetition>,
     mut history: ResMut<ChatHistory>,
+    options: Res<GameOptions>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     for invite in reader.read() {
         let GameInvite::Petition(petition) = invite else {
@@ -157,6 +203,24 @@ pub fn on_game_invite(
             "petition: 0x3080 type={} uid={} setup={:?}",
             petition.petition, petition.unique_id, petition.setup
         );
+        // Before anything else, as the original orders it: the switch is
+        // checked at reception, so no box opens and no pending slot is taken.
+        if let Some(response) = auto_refusal(petition.petition, &options) {
+            info!(
+                "petition: refusing type {} by setting ({:?})",
+                petition.petition, response
+            );
+            match conn.single() {
+                Ok(conn) => {
+                    if let Err(e) = conn.get_sender().send(Packet::from(response).into()) {
+                        error!("network: failed to send the automatic refusal: {}", e.0);
+                    }
+                }
+                Err(_) => warn!("petition: no agent connection, dropping the automatic refusal"),
+            }
+            history.push(ChatLine::system(auto_refused_notice(petition.petition)));
+            continue;
+        }
         if !opens_a_box(petition.petition) {
             history.push(ChatLine::system(unhosted_arm_notice(petition.petition)));
             continue;
@@ -561,7 +625,100 @@ mod test {
         }
     }
 
+    /// A switch that is off must make an incoming request *demonstrably*
+    /// different, not merely be readable somewhere. The positive control is in
+    /// the same test — with the switch on, the identical petition takes the
+    /// pending slot.
+    #[test]
+    fn a_refused_arm_never_becomes_a_pending_petition() {
+        fn run(kind: u8, toggles: &[(u16, bool)]) -> (Option<InvitePetition>, usize) {
+            let mut app = App::new();
+            let mut options = GameOptions::default();
+            for (id, on) in toggles {
+                options.gameplay.toggles.insert(*id, *on);
+            }
+            app.insert_resource(options)
+                .init_resource::<PendingPetition>()
+                .init_resource::<ChatHistory>()
+                .add_message::<GameInvite>()
+                .add_systems(Update, on_game_invite);
+            app.world_mut()
+                .write_message(GameInvite::Petition(petition(kind, Some(0))));
+            app.update();
+            let world = app.world();
+            (
+                world.resource::<PendingPetition>().0.clone(),
+                world.resource::<ChatHistory>().iter().count(),
+            )
+        }
+
+        for (kind, id) in [
+            (PETITION_PARTY_CREATION, 2002u16),
+            (PETITION_PARTY_INVITATION, 2002),
+            (PETITION_EXCHANGE, 2003),
+        ] {
+            let (pending, lines) = run(kind, &[(id, false)]);
+            assert!(
+                pending.is_none(),
+                "arm {kind} opened a box although option {id} is off"
+            );
+            assert_eq!(lines, 1, "arm {kind} refused without telling the player");
+
+            // positive control: the same petition with the switch on
+            let (pending, lines) = run(kind, &[(id, true)]);
+            assert_eq!(
+                pending.map(|p| p.petition),
+                Some(kind),
+                "arm {kind} must still open a box when option {id} is on"
+            );
+            assert_eq!(lines, 0);
+        }
+    }
+
+    /// What actually goes on the wire when a switch refuses — the "send" half
+    /// of the chain, using the same decline bytes the manual buttons send.
+    #[test]
+    fn a_refusal_sends_the_arms_own_decline_bytes() {
+        let off = |id: u16| {
+            let mut o = GameOptions::default();
+            o.gameplay.toggles.insert(id, false);
+            o
+        };
+        let bytes = |invite: GameInvite| Packet::from(invite).into_serialize().1.to_vec();
+
+        assert_eq!(
+            auto_refusal(PETITION_PARTY_CREATION, &off(2002)).map(bytes),
+            Some(vec![0x02, 0x0C, 0x2C])
+        );
+        assert_eq!(
+            auto_refusal(PETITION_PARTY_INVITATION, &off(2002)).map(bytes),
+            Some(vec![0x02, 0x0C, 0x2C])
+        );
+        assert_eq!(
+            auto_refusal(PETITION_EXCHANGE, &off(2003)).map(bytes),
+            Some(vec![0x01, 0x00])
+        );
+        // An arm the original does not guard is never refused by setting, no
+        // matter what the map says.
+        let mut everything_off = GameOptions::default();
+        for id in 2001..=2028u16 {
+            everything_off.gameplay.toggles.insert(id, false);
+        }
+        for arm in [
+            PETITION_RESURRECTION,
+            PETITION_GUILD,
+            PETITION_UNION,
+            PETITION_ACADEMY,
+        ] {
+            assert!(auto_refusal(arm, &everything_off).is_none(), "arm {arm}");
+        }
+        // ...and a switch that is ON never refuses.
+        assert!(auto_refusal(PETITION_EXCHANGE, &GameOptions::default()).is_none());
+    }
+
     /// The hosted arms are the two party ones plus exchange; every other arm
+    /// is named, not silently dropped and not answered with an unverified
+    /// encoding.    /// The hosted arms are the two party ones plus exchange; every other arm
     /// is named, not silently dropped and not answered with an unverified
     /// encoding.
     #[test]

@@ -11,9 +11,9 @@
 //!
 //! The pane also carries the vanilla **mouse two-state radio** (`SROptionSet`
 //! id 3101, `isMouseShortcutSwapped`): wheel-changes-view vs wheel-uses-shortcut,
-//! on the authored rects of `ifoption_input.txt`. Before #605 that id was parsed,
-//! stored and persisted with **no** control and, in `zoom_orbit`, no visible
-//! effect — `camera.rs::mouse_camera_roles` is its reader, and this is its writer.
+//! id 3101, `isMouseShortcutSwapped`): wheel-changes-view vs wheel-uses-shortcut,
+//! on the authored rects of `ifoption_input.txt`.
+//! `camera.rs::mouse_camera_roles` is its reader, and this pane is its writer.
 //!
 //! Labels: the CSV `Name` column is an identifier (`KeyInventory`), not a caption,
 //! and the original's textuisystem keys for these rows are not established, so the
@@ -28,6 +28,7 @@ use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::keymap::KEY_ACTIONS;
 use crate::plugins::settings::options::GameOptions;
+use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -62,6 +63,8 @@ const COM_BUTTON_DDJ: &str = "media://interface/ifcommon/com_button.ddj";
 const ROW_COLOR: Color = Color::WHITE;
 const CONFLICT_COLOR: Color = Color::srgb(0.93, 0.31, 0.31);
 /// Gold while the row is waiting for a key press, matching the active-tab gold.
+// 0.318 is the authored gold's blue channel, not 1/PI.
+#[allow(clippy::approx_constant)]
 const CAPTURING_COLOR: Color = Color::srgb(1.0, 0.816, 0.318);
 /// openroad-only: a control whose value nothing acts on in the current scheme is
 /// dimmed rather than silently inert (the same convention as `options_game.rs`).
@@ -101,7 +104,7 @@ impl Plugin for OptionsInputTabPlugin {
 /// Vanilla's pair is *which device changes the view* — `textuisystem` 917
 /// `UIIT_STT_USE_WHEEL_TO_CHANGE_SIGHT` vs 918
 /// `UIIT_STT_USE_WHEEL_TO_USE_SKILL`. `camera.rs::mouse_camera_roles` is the
-/// reader, so this control is a behaviour and not another dead wire (#605).
+/// reader, so this control is a behaviour and not another dead wire.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MouseSwapRadio {
     /// The `mouse_shortcut_swapped` (id 3101) value this position writes.
@@ -127,6 +130,29 @@ const MOUSE_ROWS: [(bool, &str, &str); 2] = [
     ),
 ];
 
+/// The original's hover help for the two mouse positions:
+/// `UIIT_STT_INPUT_TTDESC_01` = "Use the wheel as hot key and change view point
+/// with right button" and `_02` = "Right button is used as hot key and can
+/// change the view point with wheel button" (textuisystem :996-997). Index
+/// matches [`MOUSE_ROWS`]: `_01` describes wheel-as-shortcut, which is the
+/// `swapped = true` row.
+///
+/// The block continues with `_03..31` — **29 further strings**, one per keyboard
+/// shortcut (character window, skill window, party, community, ...), which
+/// belong to the 3001-series bindings in the key list below. They are not wired
+/// here: mapping 29 strings onto `KEY_ACTIONS` is its own pass, and a wrong
+/// mapping is worse than none.
+const MOUSE_TOOLTIPS: [(&str, &str); 2] = [
+    (
+        "UIIT_STT_INPUT_TTDESC_01",
+        "Use the wheel as hot key and change view point with right button.",
+    ),
+    (
+        "UIIT_STT_INPUT_TTDESC_02",
+        "Right button is used as hot key and can change the view point with wheel button.",
+    ),
+];
+
 /// Fills the Key Map pane. Called by the options window while it spawns the pane
 /// so the tab body lives here rather than in the shell.
 pub fn build_input_pane(
@@ -145,7 +171,10 @@ pub fn build_input_pane(
 
     spawn_mouse_radio(pane, assets, &font, ui_strings, options);
 
-    // The key list now sits on its authored rect (`ifoption_input.txt`, the
+    // Hover-help footer, spanning the key list's width.
+    spawn_tooltip_line(pane, &font, KEY_LIST.0, KEY_LIST.2);
+
+    // The key list sits on its authored rect (`ifoption_input.txt`, the
     // `CIFScrollManager` at `14,133,336,161`) instead of filling the pane —
     // it has to, or it would run under the mouse frame above it.
     pane.spawn((
@@ -286,7 +315,7 @@ fn spawn_mouse_radio(
         // The whole row is the hit target, not the 16x16 box (same reason as
         // `options_game.rs`: the vanilla box is under the WCAG 2.2 AA minimum
         // and widening only the click area changes no vanilla geometry).
-        pane.spawn((
+        let mut radio_row = pane.spawn((
             MouseSwapRadio { swapped: *swapped },
             Button,
             Hovered::default(),
@@ -300,9 +329,13 @@ fn spawn_mouse_radio(
                 ..default()
             },
             Pickable::default(),
-        ))
-        .observe(on_mouse_radio_activate)
-        .with_children(|row| {
+        ));
+        radio_row.observe(on_mouse_radio_activate);
+        // `UIIT_STT_INPUT_TTDESC_01/02` (textuisystem :996-997), matched to the
+        // row by what each string says the wheel does — see `MOUSE_TOOLTIPS`.
+        let (tip_key, tip_english) = MOUSE_TOOLTIPS[index];
+        attach_tooltip(&mut radio_row, ui_strings.get_or(tip_key, tip_english));
+        radio_row.with_children(|row| {
             row.spawn((
                 MouseSwapRadio { swapped: *swapped },
                 ImageNode {
@@ -337,7 +370,7 @@ fn spawn_mouse_radio(
 
 /// Select this position: write id 3101. Persistence picks the change up on its
 /// own (`settings::persistence::save_on_change`), and `camera.rs` reads it on
-/// the next frame — that read is the whole point of #605.
+/// the next frame.
 fn on_mouse_radio_activate(
     activate: On<Activate>,
     radios: Query<&MouseSwapRadio>,
@@ -480,8 +513,22 @@ mod tests {
     use crate::plugins::camera::{mouse_camera_roles, MouseCameraRoles};
     use crate::plugins::settings::keymap::{action, keycode_to_vk};
 
+    /// The two mouse rows carry `UIIT_STT_INPUT_TTDESC_01/02` (:996-997),
+    /// in `MOUSE_ROWS` order. The remaining 29 strings of that block (`_03..31`)
+    /// are the keyboard shortcuts and are deliberately unwired — this test
+    /// pins the two that are, so a later pass adding the rest is a visible edit.
+    #[test]
+    fn the_two_mouse_rows_carry_the_first_two_input_tooltips() {
+        assert_eq!(MOUSE_TOOLTIPS.len(), MOUSE_ROWS.len());
+        assert_eq!(MOUSE_TOOLTIPS[0].0, "UIIT_STT_INPUT_TTDESC_01");
+        assert_eq!(MOUSE_TOOLTIPS[1].0, "UIIT_STT_INPUT_TTDESC_02");
+        // `_01` describes wheel-as-shortcut, which is the swapped row.
+        assert!(MOUSE_ROWS[0].0, "row 0 must be the swapped position");
+        assert!(MOUSE_TOOLTIPS[0].1.starts_with("Use the wheel as hot key"));
+    }
+
     /// The pair must cover both values of id 3101 exactly once: a radio that
-    /// can only write one of them is the dead wire this ticket is about.
+    /// can only write one of them would be a dead wire.
     #[test]
     fn the_mouse_radio_covers_both_states_of_id_3101() {
         let mut states: Vec<bool> = MOUSE_ROWS.iter().map(|(swapped, ..)| *swapped).collect();
@@ -507,7 +554,7 @@ mod tests {
     }
 
     /// The point of the control: each position selects a *different* camera
-    /// behaviour, so flipping it is observable (acceptance 2 of #605).
+    /// behaviour, so flipping it is observable.
     #[test]
     fn each_radio_position_selects_a_different_camera_role() {
         let roles: Vec<MouseCameraRoles> = MOUSE_ROWS
@@ -522,7 +569,7 @@ mod tests {
     }
 
     /// Clicking a position writes id 3101 through the same field the option
-    /// stream parses and persists, so the value round-trips (acceptance 3).
+    /// stream parses and persists, so the value round-trips.
     #[test]
     fn selecting_a_position_writes_the_persisted_field() {
         let mut options = GameOptions::default();

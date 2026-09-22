@@ -9,8 +9,18 @@
 //! `com_button.ddj`). The tab-bar placement itself is not part of that file
 //! (the original draws it in code), so the tabs are laid out as a plain row
 //! under the title, labelled from the vanilla `UIIT_CTL_MENU_*SET` keys. The
-//! tab bodies live in their own modules — #195 video, #196 audio, #197
-//! keybinds, #198 gameplay and #379 camera. All five are built.
+//! tab bodies live in their own modules (video, audio, keybinds, gameplay and
+//! camera). All five are built.
+//!
+//! Footer contract: the four buttons of `ifoption.txt` (ids 50-53) need
+//! a working state to differ at all, so opening the window starts an edit
+//! session (`settings::edit_session`) that holds the confirmed baseline.
+//! Confirm = commit + close, Apply = commit + stay, Cancel = restore + close,
+//! Default = load this tab's factory values into the live options (undoable by
+//! Cancel). Closing with the X or with Esc deliberately keeps the edits —
+//! neither is a button in `ifoption.txt`, so whether the original treats them
+//! as Cancel or as Confirm is unknown, and keeping the edits is the
+//! non-destructive of the two guesses.
 //!
 //! Esc-priority contract: while this window is open, Esc closes it and does
 //! nothing else — `toggle_system_window` early-returns on an open options
@@ -30,7 +40,10 @@ use crate::plugins::options_video::{
     apply_bloom_option, apply_profile_tab, refresh_extra_rows, refresh_row_values,
     spawn_video_pane, VideoPane,
 };
-use crate::plugins::settings::options::GameOptions;
+use crate::plugins::settings::edit_session::OptionsEditSession;
+use crate::plugins::settings::options::{
+    AudioOptions, CameraOptions, GameOptions, GameplayOptions, VideoOptions,
+};
 use crate::plugins::small_popup::spawn_frame;
 use crate::plugins::system_window::Closing;
 use crate::plugins::textdata::ClientUiStrings;
@@ -43,10 +56,7 @@ use crate::scenes::SceneState;
 // button height + margin below.
 const WINDOW_W: f32 = 386.0;
 /// The hull is the authored one, not a derived one: `ifsystemwnd.txt`'s
-/// `GDR_OPTION:CIFOption` id 98 carries `Rect="0,0,386,413"` outright (#597).
-/// The earlier 410 was inferred from the content rect plus margins and came
-/// out 3px short — the shell's own block was in a different file than the
-/// panes', which is why it was inferred instead of read.
+/// `GDR_OPTION:CIFOption` id 98 carries `Rect="0,0,386,413"` outright.
 const WINDOW_H: f32 = 413.0;
 const CONTENT_X: f32 = 11.0;
 const CONTENT_Y: f32 = 62.0;
@@ -86,18 +96,17 @@ const BUTTON_FONT: &str = crate::assets::BUNDLED_FALLBACK_FACE;
 /// already was, only the *signal* changes.
 /// The window's own caption key, taken from the window's own block:
 /// `ifsystemwnd.txt` `GDR_OPTION:CIFOption` carries `Text="UIIT_PAG_OPTION"`
-/// (textuisystem 805). We resolved `UIIT_CTL_OPTION` (802) with an invented
-/// "Settings" fallback. Both render "Option" in English, which is exactly why
-/// it survived review — the defect only surfaces once a non-English table
-/// loads, and then it is a wrong *key*, not just a wrong fallback (#597).
+/// (textuisystem 805). The neighbouring `UIIT_CTL_OPTION` (802) renders
+/// "Option" in English as well, so a wrong key here would only become visible
+/// once a non-English table loads.
 const TITLE_KEY: &str = "UIIT_PAG_OPTION";
 const TITLE_FALLBACK: &str = "Option";
 
 const TAB_ON_DDJ: &str = "media://interface/option/opt_long_tab_on.ddj";
 const TAB_OFF_DDJ: &str = "media://interface/option/opt_long_tab_off.ddj";
-/// Both labels stay white. The active tab is now distinguished by its
-/// texture, so colour is no longer carrying the state on its own — which is
-/// what WCAG 2.2 asks for and, here, is also what the data does.
+/// Both labels stay white. The active tab is distinguished by its texture, so
+/// colour is not carrying the state on its own — which is what WCAG 2.2 asks
+/// for and, here, is also what the data does.
 const TAB_LABEL_COLOR: Color = Color::WHITE;
 
 /// The five vanilla option tabs (panes in ifoption.txt).
@@ -131,6 +140,44 @@ impl OptionsTab {
         }
     }
 
+    /// Loads this tab's factory values into the live options — the
+    /// `UIIT_STT_DEFAULT_VALUE` button (`ifoption.txt:63`, id 50).
+    ///
+    /// **Per tab, not global.** The data names only the button, never its
+    /// scope, so the original's scope is unknown. We pick per-tab because it is
+    /// the smaller damage if the guess is wrong
+    /// (a player who wanted everything reset presses it five times; a player
+    /// who wanted one tab reset cannot un-reset four others) and because it is
+    /// the trivially reversible direction — one `match` arm becomes a loop.
+    /// Reversible either way, in fact: Default writes into the edit session's
+    /// working state, so Cancel takes it back.
+    fn apply_defaults(self, options: &mut GameOptions) {
+        match self {
+            OptionsTab::Video => {
+                // `window_mode: None` is not a default *value*, it means "the
+                // player never expressed a preference" and hands the window to
+                // `config.yaml` at the next start (`VideoOptions::window_mode`,
+                // `apply_window_mode`). Stamping it back here would be a change
+                // the button did not visibly make, so it is kept.
+                let window_mode = options.video.window_mode_override;
+                options.video = VideoOptions {
+                    window_mode_override: window_mode,
+                    ..VideoOptions::default()
+                };
+            }
+            OptionsTab::Audio => options.audio = AudioOptions::default(),
+            OptionsTab::Game => options.gameplay = GameplayOptions::default(),
+            // The keymap default is per-action (`reset_key` falls back to the
+            // shipped binding), not an empty map, so it keeps its own reset.
+            // `mouse_shortcut_swapped` (id 3101) is part of the same tab.
+            OptionsTab::Input => {
+                reset_all_bindings(options);
+                options.keymap.mouse_shortcut_swapped = false;
+            }
+            OptionsTab::Camera => options.camera = CameraOptions::default(),
+        }
+    }
+
     /// textuisystem key + English fallback of the tab caption.
     fn label(self) -> (&'static str, &'static str) {
         match self {
@@ -144,14 +191,16 @@ impl OptionsTab {
 }
 
 /// Root marker of the options window; carries the active tab.
+///
+/// `active` is `pub(crate)` so the offline preview scene can show a tab other
+/// than the default one (`scenes/testing/options_ui.rs`) — the tab bar's own
+/// observer writes the same field.
 #[derive(Component, Default)]
 pub(crate) struct OptionsWindow {
-    active: OptionsTab,
+    pub(crate) active: OptionsTab,
 }
 
 /// A tab-bar button, whose texture swaps when the active tab changes.
-/// (Was `OptionsTabLabel` and sat on the caption, back when the state was a
-/// label colour — #597 moved both the marker and the signal onto the button.)
 #[derive(Component)]
 struct OptionsTabButton(OptionsTab);
 
@@ -175,7 +224,14 @@ impl Plugin for OptionsWindowPlugin {
                 refresh_sight_radios,
                 refresh_audio_rows,
             )
-                .run_if(in_state(SceneState::GameWorld)),
+                // `UiTesting` as well as the in-game scene, so the offline
+                // preview scene renders the *same* window instead of a copy of
+                // it — the house pattern of every previewable HUD window
+                // (`hud/chat/mod.rs`, `hud/cos/mod.rs`, `hud/party/mod.rs` all
+                // read `in_state(GameWorld).or_else(in_state(UiTesting))`).
+                // Nothing here touches the world; the systems only repaint the
+                // window that the scene spawned.
+                .run_if(in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting))),
         )
         // The applied options must survive the window being closed, so this
         // runs regardless of whether it is open. The window mode is not here:
@@ -208,6 +264,14 @@ pub(crate) fn spawn_options_window(
         ..Default::default()
     };
 
+    // Opening the window begins an edit session: everything the panes change
+    // from here is undoable by `UIIT_CTL_CANCEL` (`ifoption.txt:25`, id 52).
+    // See `settings::edit_session` for why the baseline (and not a pending
+    // copy) is what we keep.
+    let mut session = OptionsEditSession::default();
+    session.begin(options);
+    commands.insert_resource(session);
+
     commands
         .spawn((
             OptionsWindow::default(),
@@ -228,10 +292,9 @@ pub(crate) fn spawn_options_window(
             w.spawn((
                 // The window's own key, from its own block: `ifsystemwnd.txt`
                 // `GDR_OPTION:CIFOption` carries `Text="UIIT_PAG_OPTION"`
-                // (805). We resolved `UIIT_CTL_OPTION` (802) with an invented
-                // "Settings" fallback. Both keys render "Option" in English,
-                // which is exactly why this survived review — it is only
-                // visible once a non-English table loads (#597).
+                // (805). `UIIT_CTL_OPTION` (802) renders the same English
+                // word, so the difference is only visible once a non-English
+                // table loads.
                 Text::new(ui_strings.get_or(TITLE_KEY, TITLE_FALLBACK).to_string()),
                 TextFont {
                     font: font.clone().into(),
@@ -324,9 +387,9 @@ pub(crate) fn spawn_options_window(
 
             // Content panes, one per tab, each on its own vanilla rect
             // (`11,62,364,H`, H per pane — audio and camera are shorter);
-            // only the active one is shown. With Audio (#196) there is no
-            // placeholder pane left: Video (#195), Game (#198), Input (#197),
-            // Camera (#379) and Audio are all built.
+            // only the active one is shown. Video, Game, Input,
+            // Camera and Audio are all built, so no placeholder
+            // pane is left.
             for tab in OptionsTab::ALL {
                 let mut pane = w.spawn((
                     OptionsPane(tab),
@@ -342,8 +405,7 @@ pub(crate) fn spawn_options_window(
                     BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25)),
                     Pickable::IGNORE,
                 ));
-                // Each tab's body lives in its own module: #195 video, #198
-                // game, #197 key map.
+                // Each tab's body lives in its own module.
                 if tab == OptionsTab::Video {
                     pane.insert(VideoPane::default());
                     pane.with_children(|p| {
@@ -396,28 +458,46 @@ pub(crate) fn spawn_options_window(
                     move |_activate: On<Activate>,
                           window: Query<(Entity, &OptionsWindow)>,
                           mut options: ResMut<GameOptions>,
+                          mut session: ResMut<OptionsEditSession>,
                           mut commands: Commands| {
+                        // The four buttons of `ifoption.txt` (ids 50-53) can
+                        // only differ if the window edits a working state:
+                        // Apply writes through and stays, Confirm writes
+                        // through and closes, Cancel restores the baseline,
+                        // Default loads factory values *into* the working
+                        // state. The data names only the buttons; these
+                        // semantics are openroad's reading of them.
                         match action {
-                            // Edits apply straight to GameOptions (which the
-                            // settings plugin persists), so Confirm and Cancel
-                            // both just close.
-                            BottomAction::Confirm | BottomAction::Cancel => {
+                            BottomAction::Confirm => {
+                                session.commit(&options);
+                                for (entity, _) in window.iter() {
+                                    commands.entity(entity).insert(Closing);
+                                }
+                            }
+                            BottomAction::Cancel => {
+                                // `set_if_neq`-style guard: reverting an
+                                // untouched set would still flag the resource
+                                // changed and re-run every apply/persist
+                                // system for nothing.
+                                if session.is_dirty(&options) {
+                                    session.revert(&mut options);
+                                }
                                 for (entity, _) in window.iter() {
                                     commands.entity(entity).insert(Closing);
                                 }
                             }
                             BottomAction::Default => {
-                                // Per-tab: only the Key Map tab has a reset yet.
-                                let active = window.iter().next().map(|(_, w)| w.active);
-                                if active == Some(OptionsTab::Input) {
-                                    reset_all_bindings(&mut options);
-                                } else {
-                                    info!("options window: Default not wired for {:?}", active);
-                                }
+                                let Some(active) = window.iter().next().map(|(_, w)| w.active)
+                                else {
+                                    return;
+                                };
+                                active.apply_defaults(&mut options);
                             }
-                            BottomAction::Apply => {
-                                info!("options window: {:?} not wired yet", action);
-                            }
+                            // Write-through without closing. Edits already
+                            // reach `GameOptions` live (the audio preview), so
+                            // Apply's real work is to make them survive a
+                            // later Cancel.
+                            BottomAction::Apply => session.commit(&options),
                         }
                     },
                 )
@@ -448,10 +528,10 @@ enum BottomAction {
 /// Swaps each tab's texture and toggles pane visibility whenever the active
 /// tab changes (and once on spawn, via the added-component change).
 ///
-/// The swap is the point (#597): the tab strip used to signal its state by
-/// recolouring the label on a generic `com_button.ddj`, which is neither what
-/// the data models nor distinguishable by anything but colour. `CNIFTabButton`
-/// carries on/off/disable *textures*, so the state lives in the image.
+/// The swap is the point: `CNIFTabButton` carries on/off/disable *textures*,
+/// so the state lives in the image rather than in a recoloured label on a
+/// generic `com_button.ddj`, which is neither what the data models nor
+/// distinguishable by anything but colour.
 fn apply_active_tab(
     window: Query<&OptionsWindow, Changed<OptionsWindow>>,
     asset_server: Res<AssetServer>,
@@ -517,22 +597,22 @@ mod test {
         assert_eq!((BTN_W, BTN_H), (76.0, 24.0));
     }
 
-    /// #597-2. The hull is authored outright — `ifsystemwnd.txt`'s
+    /// The hull is authored outright — `ifsystemwnd.txt`'s
     /// `GDR_OPTION:CIFOption` id 98 is `Rect="0,0,386,413"` — not derived from
-    /// the content rect plus margins, which is how it came out 3px short.
+    /// the content rect plus margins, which comes out 3px short.
     #[test]
     fn the_hull_is_the_authored_rect_not_a_derived_one() {
         assert_eq!((WINDOW_W, WINDOW_H), (386.0, 413.0));
 
-        // The derivation that produced the old 410 is still a sanity floor:
-        // the hull has to clear the bottom button row and its margin.
+        // The derivation is still a sanity floor: the hull has to clear the
+        // bottom button row and its margin.
         assert!(BOTTOM_BTN_Y + BTN_H <= WINDOW_H);
     }
 
-    /// #597-3. The title resolves the window's own key. Both keys render
-    /// "Option" in English, so nothing on an English table can catch this —
-    /// only the key itself can, which is why it is asserted rather than
-    /// eyeballed. "Settings" was invented copy and is gone.
+    /// The title resolves the window's own key. Both candidate keys render
+    /// "Option" in English, so nothing on an English table can catch a mix-up
+    /// — only the key itself can, which is why it is asserted rather than
+    /// eyeballed.
     #[test]
     fn the_title_uses_the_windows_own_key_and_the_vanilla_word() {
         assert_eq!(TITLE_KEY, "UIIT_PAG_OPTION");
@@ -540,7 +620,7 @@ mod test {
         assert_ne!(TITLE_KEY, "UIIT_CTL_OPTION", "802 is a different string");
     }
 
-    /// #597-4. The active tab must be signalled by its **texture**, because
+    /// The active tab must be signalled by its **texture**, because
     /// that is what `CNIFTabButton` models (on/off/disable) and because a
     /// colour-only signal fails "not by colour alone". If someone reintroduces
     /// a single art for both states, the swap silently stops meaning anything.
@@ -558,10 +638,62 @@ mod test {
         assert_eq!(TAB_LABEL_COLOR, Color::WHITE);
     }
 
+    /// Default is wired **per tab**: pressing it on one tab may not touch
+    /// another tab's group. If someone later makes it global, this is the test
+    /// that has to be changed deliberately.
+    #[test]
+    fn default_touches_only_the_active_tabs_group() {
+        let mut edited = GameOptions::default();
+        edited.video.graphic1.brightness = 4;
+        edited.audio.bgm_volume = 99;
+        edited.gameplay.toggles.insert(2001, false);
+        edited.keymap.mouse_shortcut_swapped = true;
+        edited.camera.sight = crate::plugins::settings::options::SightMode::Quarter;
+
+        for tab in OptionsTab::ALL {
+            let mut opts = edited.clone();
+            tab.apply_defaults(&mut opts);
+            let d = GameOptions::default();
+
+            assert_eq!(opts.video == d.video, tab == OptionsTab::Video, "{tab:?}");
+            assert_eq!(opts.audio == d.audio, tab == OptionsTab::Audio, "{tab:?}");
+            assert_eq!(
+                opts.gameplay == d.gameplay,
+                tab == OptionsTab::Game,
+                "{tab:?}"
+            );
+            assert_eq!(opts.keymap == d.keymap, tab == OptionsTab::Input, "{tab:?}");
+            assert_eq!(
+                opts.camera == d.camera,
+                tab == OptionsTab::Camera,
+                "{tab:?}"
+            );
+        }
+    }
+
+    /// The Video tab's Default keeps `window_mode_override`: `None` is not a
+    /// factory *value* but "no preference expressed", and writing it back would
+    /// hand the window to `config.yaml` mid-session — a change the button did
+    /// not visibly make (`VideoOptions::window_mode_override`).
+    #[test]
+    fn video_default_keeps_the_window_mode_preference() {
+        let mut opts = GameOptions::default();
+        opts.video.window_mode_override = Some(true);
+        opts.video.graphic2.brightness = 3;
+
+        OptionsTab::Video.apply_defaults(&mut opts);
+        assert_eq!(opts.video.window_mode_override, Some(true));
+        assert_eq!(
+            opts.video.graphic2,
+            GameOptions::default().video.graphic2,
+            "everything else on the tab does reset"
+        );
+    }
+
     /// `ifoption.txt` — the five `GDR_OPTION_WND_*` panes are `11,62,364,H`
     /// with H **per pane**: video `:167`, input `:110` and game `:91` are
-    /// 313, audio `:148` is 219 and camera `:129` is 212. The shell used to
-    /// apply 313 to all five, leaving the camera pane +101 too tall.
+    /// 313, audio `:148` is 219 and camera `:129` is 212. Applying 313 to all
+    /// five would leave the camera pane +101 too tall.
     #[test]
     fn each_options_pane_uses_its_own_ifoption_height() {
         assert_eq!(OptionsTab::Video.pane_height(), 313.0);

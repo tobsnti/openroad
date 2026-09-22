@@ -19,12 +19,10 @@
 //! fourth would be non-original behaviour.
 //!
 //! **All three channels are live.** `AudioOptions::bgm_playback_settings` and
-//! `fx_playback` are read at every playback site (#373/#478) and by
-//! `apply_background_music_options` (#647); `env_playback_settings` /
+//! `fx_playback` are read at every playback site and by
+//! `apply_background_music_options`; `env_playback_settings` /
 //! `env_gain` / `env_oneshot` drive the zone ambience
-//! (`plugins::zone_ambience`, #772). Environment used to render dimmed and
-//! inert here because nothing read it — that is no longer true, so the row is
-//! drawn like the other two.
+//! (`plugins::zone_ambience`), so all three rows are drawn alike.
 //!
 //! Stated deviations (ADR-0009):
 //!
@@ -45,6 +43,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::plugins::settings::options::{AudioOptions, GameOptions};
+use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `interface\ifcommon\com_radiobutton_off.ddj` — vanilla uses the *radio*
@@ -84,7 +83,7 @@ pub(crate) enum AudioChannel {
     /// `UIIT_STT_EFFSETTING`, ids 20/17/14.
     Effect,
     /// `UIIT_STT_ENVIRONMENT`, ids 21/18/15. Consumed by the zone ambience
-    /// (`plugins::zone_ambience`, #772).
+    /// (`plugins::zone_ambience`).
     Environment,
 }
 
@@ -104,10 +103,32 @@ impl AudioChannel {
         }
     }
 
+    /// The original's hover help for this channel: `UIIT_STT_AUDIO_TTDESC_01`
+    /// (BGM), `_02` (FX), `_03` (environment), textuisystem :990-992. The
+    /// block is in channel order here — unlike the video and setting blocks,
+    /// which are not — and the
+    /// strings name their channel, so the mapping is not an inference.
+    fn tooltip(self) -> (&'static str, &'static str) {
+        match self {
+            AudioChannel::Bgm => (
+                "UIIT_STT_AUDIO_TTDESC_01",
+                "Can select the background music, remove the sound, and turn the volume.",
+            ),
+            AudioChannel::Effect => (
+                "UIIT_STT_AUDIO_TTDESC_02",
+                "Can select the FX sound, remove the sound, and turn the volume.",
+            ),
+            AudioChannel::Environment => (
+                "UIIT_STT_AUDIO_TTDESC_03",
+                "Can select the environment sound, remove the sound, and turn the volume.",
+            ),
+        }
+    }
+
     /// Whether a change to this channel reaches any audio in this build.
     ///
-    /// All three are `true` since #772 gave the environment channel its
-    /// consumer; the flag stays because the pane's dimming path is what tells
+    /// All three are `true`: the environment channel has its consumer too.
+    /// The flag stays because the pane's dimming path is what tells
     /// a future dead row apart from a live one.
     pub(crate) fn is_live(self) -> bool {
         true
@@ -191,7 +212,7 @@ pub(crate) fn spawn_audio_pane(
         pane.spawn((frame, BorderColor::all(FRAME_BORDER), Pickable::IGNORE));
 
         let (key, english) = channel.label();
-        pane.spawn((
+        let mut label = pane.spawn((
             Text::new(ui_strings.get_or(key, english).to_string()),
             TextFont {
                 font: font.clone().into(),
@@ -202,6 +223,12 @@ pub(crate) fn spawn_audio_pane(
             offset(LABEL_XYWH, index),
             Pickable::IGNORE,
         ));
+        // The channel heading is what the original's tooltip describes ("Can
+        // select the background music, remove the sound, and turn the volume" —
+        // slider *and* mute together), so it hangs on the heading rather than on
+        // one of the two controls.
+        let (tip_key, tip_english) = channel.tooltip();
+        attach_tooltip(&mut label, ui_strings.get_or(tip_key, tip_english));
 
         pane.spawn((
             ImageNode {
@@ -222,6 +249,10 @@ pub(crate) fn spawn_audio_pane(
             pane, font, ui_strings, channel, index, live, &off, &on, options,
         );
     }
+
+    // Hover-help footer, spanning the channel frames' width
+    // (`ifoption_audio.txt`: `11,10,342,62`).
+    spawn_tooltip_line(pane, font, FRAME_XYWH.0, FRAME_XYWH.2);
 }
 
 /// The `CIFHScroll_Option` track. Vanilla drags a thumb; we drag the whole
@@ -395,6 +426,26 @@ pub(crate) fn refresh_audio_rows(
 mod tests {
     use super::*;
 
+    /// One `UIIT_STT_AUDIO_TTDESC_*` per channel (:990-992), none reused.
+    #[test]
+    fn every_channel_has_its_own_tooltip_from_the_audio_block() {
+        let mut keys = Vec::new();
+        for channel in AudioChannel::ALL {
+            let (key, english) = channel.tooltip();
+            let number = key
+                .strip_prefix("UIIT_STT_AUDIO_TTDESC_")
+                .unwrap_or_else(|| panic!("{key} is not from the AUDIO_TTDESC block"))
+                .parse::<u8>()
+                .expect("the suffix is a two-digit number");
+            assert!((1..=3).contains(&number), "{key} is outside :990-992");
+            assert!(!english.is_empty(), "{key} has no fallback text");
+            keys.push(key);
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), AudioChannel::ALL.len());
+    }
+
     /// Every rect is a transcription of `ifoption_audio.txt`, and the one
     /// property that ties the three groups together is the 64px pitch — it is
     /// identical across all six control columns, which is what makes a single
@@ -429,9 +480,8 @@ mod tests {
     }
 
     /// The pane must not claim a channel works before it does — and must not
-    /// keep claiming one is dead after it works. Environment became live with
-    /// #772 (`plugins::zone_ambience` reads `env_volume`/`env_enabled`), so
-    /// all three rows now render live.
+    /// keep claiming one is dead after it works. `plugins::zone_ambience` reads
+    /// `env_volume`/`env_enabled`, so all three rows render live.
     #[test]
     fn every_channel_is_live_now_that_the_environment_one_has_a_consumer() {
         for channel in AudioChannel::ALL {
