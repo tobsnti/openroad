@@ -1,4 +1,5 @@
 pub mod animation_culling;
+pub mod animation_sit;
 pub mod animation_sounds;
 pub mod assets;
 /// Event sounds resolved through `effectsound.txt` handles.
