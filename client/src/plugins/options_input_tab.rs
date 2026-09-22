@@ -28,6 +28,7 @@ use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::keymap::KEY_ACTIONS;
 use crate::plugins::settings::options::GameOptions;
+use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -62,6 +63,8 @@ const COM_BUTTON_DDJ: &str = "media://interface/ifcommon/com_button.ddj";
 const ROW_COLOR: Color = Color::WHITE;
 const CONFLICT_COLOR: Color = Color::srgb(0.93, 0.31, 0.31);
 /// Gold while the row is waiting for a key press, matching the active-tab gold.
+// 0.318 is the authored gold's blue channel, not 1/PI.
+#[allow(clippy::approx_constant)]
 const CAPTURING_COLOR: Color = Color::srgb(1.0, 0.816, 0.318);
 /// openroad-only: a control whose value nothing acts on in the current scheme is
 /// dimmed rather than silently inert (the same convention as `options_game.rs`).
@@ -127,6 +130,29 @@ const MOUSE_ROWS: [(bool, &str, &str); 2] = [
     ),
 ];
 
+/// The original's hover help for the two mouse positions:
+/// `UIIT_STT_INPUT_TTDESC_01` = "Use the wheel as hot key and change view point
+/// with right button" and `_02` = "Right button is used as hot key and can
+/// change the view point with wheel button" (textuisystem :996-997). Index
+/// matches [`MOUSE_ROWS`]: `_01` describes wheel-as-shortcut, which is the
+/// `swapped = true` row.
+///
+/// The block continues with `_03..31` — **29 further strings**, one per keyboard
+/// shortcut (character window, skill window, party, community, ...), which
+/// belong to the 3001-series bindings in the key list below. They are not wired
+/// here: mapping 29 strings onto `KEY_ACTIONS` is its own pass, and a wrong
+/// mapping is worse than none.
+const MOUSE_TOOLTIPS: [(&str, &str); 2] = [
+    (
+        "UIIT_STT_INPUT_TTDESC_01",
+        "Use the wheel as hot key and change view point with right button.",
+    ),
+    (
+        "UIIT_STT_INPUT_TTDESC_02",
+        "Right button is used as hot key and can change the view point with wheel button.",
+    ),
+];
+
 /// Fills the Key Map pane. Called by the options window while it spawns the pane
 /// so the tab body lives here rather than in the shell.
 pub fn build_input_pane(
@@ -144,6 +170,9 @@ pub fn build_input_pane(
     };
 
     spawn_mouse_radio(pane, assets, &font, ui_strings, options);
+
+    // Hover-help footer, spanning the key list's width.
+    spawn_tooltip_line(pane, &font, KEY_LIST.0, KEY_LIST.2);
 
     // The key list now sits on its authored rect (`ifoption_input.txt`, the
     // `CIFScrollManager` at `14,133,336,161`) instead of filling the pane —
@@ -286,7 +315,7 @@ fn spawn_mouse_radio(
         // The whole row is the hit target, not the 16x16 box (same reason as
         // `options_game.rs`: the vanilla box is under the WCAG 2.2 AA minimum
         // and widening only the click area changes no vanilla geometry).
-        pane.spawn((
+        let mut radio_row = pane.spawn((
             MouseSwapRadio { swapped: *swapped },
             Button,
             Hovered::default(),
@@ -300,9 +329,13 @@ fn spawn_mouse_radio(
                 ..default()
             },
             Pickable::default(),
-        ))
-        .observe(on_mouse_radio_activate)
-        .with_children(|row| {
+        ));
+        radio_row.observe(on_mouse_radio_activate);
+        // `UIIT_STT_INPUT_TTDESC_01/02` (textuisystem :996-997), matched to the
+        // row by what each string says the wheel does — see `MOUSE_TOOLTIPS`.
+        let (tip_key, tip_english) = MOUSE_TOOLTIPS[index];
+        attach_tooltip(&mut radio_row, ui_strings.get_or(tip_key, tip_english));
+        radio_row.with_children(|row| {
             row.spawn((
                 MouseSwapRadio { swapped: *swapped },
                 ImageNode {
@@ -479,6 +512,20 @@ mod tests {
     use super::*;
     use crate::plugins::camera::{mouse_camera_roles, MouseCameraRoles};
     use crate::plugins::settings::keymap::{action, keycode_to_vk};
+
+    /// The two mouse rows carry `UIIT_STT_INPUT_TTDESC_01/02` (:996-997),
+    /// in `MOUSE_ROWS` order. The remaining 29 strings of that block (`_03..31`)
+    /// are the keyboard shortcuts and are deliberately unwired — this test
+    /// pins the two that are, so a later pass adding the rest is a visible edit.
+    #[test]
+    fn the_two_mouse_rows_carry_the_first_two_input_tooltips() {
+        assert_eq!(MOUSE_TOOLTIPS.len(), MOUSE_ROWS.len());
+        assert_eq!(MOUSE_TOOLTIPS[0].0, "UIIT_STT_INPUT_TTDESC_01");
+        assert_eq!(MOUSE_TOOLTIPS[1].0, "UIIT_STT_INPUT_TTDESC_02");
+        // `_01` describes wheel-as-shortcut, which is the swapped row.
+        assert!(MOUSE_ROWS[0].0, "row 0 must be the swapped position");
+        assert!(MOUSE_TOOLTIPS[0].1.starts_with("Use the wheel as hot key"));
+    }
 
     /// The pair must cover both values of id 3101 exactly once: a radio that
     /// can only write one of them is the dead wire this ticket is about.

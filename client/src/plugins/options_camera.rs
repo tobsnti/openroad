@@ -35,6 +35,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::plugins::settings::options::{GameOptions, SightMode};
+use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `com_radiobutton_off.ddj` / `_on.ddj`, 16x16 (`ifoption_camera.txt` names
@@ -117,6 +118,30 @@ const MODE_STRINGS: [ModeStrings; 3] = [
     },
 ];
 
+/// The original's hover help for the three modes: `UIIT_STT_VIEW_TTDESC_01..03`
+/// (textuisystem :993-995), in the same top-to-bottom order as
+/// [`MODE_STRINGS`] — each string names its own mode ("free viewpoint",
+/// "third party view point", "Quarter view"), so this is not positional
+/// inference.
+///
+/// Note this pane already *shows* the mode descriptions (`_DESC1`/`_DESC2`), so
+/// the tooltip is the one place where the original's own summary of the mode
+/// appears — it is not a duplicate of the caption text.
+const MODE_TOOLTIPS: [(&str, &str); 3] = [
+    (
+        "UIIT_STT_VIEW_TTDESC_01",
+        "Change to free viewpoint using the wheel freely.",
+    ),
+    (
+        "UIIT_STT_VIEW_TTDESC_02",
+        "Change to third party view point like the camera is on your back.",
+    ),
+    (
+        "UIIT_STT_VIEW_TTDESC_03",
+        "Change to Quarter view(Isolation), condition of not changing high and low of screen.",
+    ),
+];
+
 /// Build the Camera pane into an already-positioned pane node.
 pub(crate) fn spawn_camera_pane(
     pane: &mut RelatedSpawnerCommands<ChildOf>,
@@ -179,6 +204,8 @@ pub(crate) fn spawn_camera_pane(
                 options.camera.sight = mode;
             },
         );
+        let (tip_key, tip_english) = MODE_TOOLTIPS[index];
+        attach_tooltip(&mut row, ui_strings.get_or(tip_key, tip_english));
         row.with_children(|r| {
             let image = if options.camera.sight == mode {
                 on.clone()
@@ -233,6 +260,13 @@ pub(crate) fn spawn_camera_pane(
             }
         });
     }
+
+    // Hover-help footer. On this pane (212 px, the shortest of the five) it
+    // overlaps the third mode's description lines while it is visible — the
+    // View pane has no spare rows below its content, and covering a caption the
+    // player is not pointing at is the lesser evil against a bubble whose
+    // original placement is unknown (see `settings::tooltip`).
+    spawn_tooltip_line(pane, font, CAPTION_XY[0].0 - RADIO_SIZE, CAPTION_W);
 }
 
 /// Line pitch inside a caption. Vanilla's `CIFPML` is 282x30 for a single
@@ -277,6 +311,27 @@ pub(crate) fn refresh_sight_radios(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One `UIIT_STT_VIEW_TTDESC_*` per mode (:993-995), in the same order
+    /// as the modes themselves, none reused.
+    #[test]
+    fn every_sight_mode_has_its_own_tooltip_from_the_view_block() {
+        assert_eq!(MODE_TOOLTIPS.len(), MODE_STRINGS.len());
+        let mut keys = Vec::new();
+        for (key, english) in MODE_TOOLTIPS {
+            let number = key
+                .strip_prefix("UIIT_STT_VIEW_TTDESC_")
+                .unwrap_or_else(|| panic!("{key} is not from the VIEW_TTDESC block"))
+                .parse::<u8>()
+                .expect("the suffix is a two-digit number");
+            assert!((1..=3).contains(&number), "{key} is outside :993-995");
+            assert!(!english.is_empty(), "{key} has no fallback text");
+            keys.push(key);
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), MODE_TOOLTIPS.len());
+    }
 
     /// Every rect here is a transcription of `ifoption_camera.txt`, so the
     /// three columns must keep the file's own pitch and alignment. If someone

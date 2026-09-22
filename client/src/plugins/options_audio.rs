@@ -45,6 +45,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::plugins::settings::options::{AudioOptions, GameOptions};
+use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `interface\ifcommon\com_radiobutton_off.ddj` — vanilla uses the *radio*
@@ -101,6 +102,28 @@ impl AudioChannel {
             AudioChannel::Bgm => ("UIIT_STT_BGMSETTING", "Background Music"),
             AudioChannel::Effect => ("UIIT_STT_EFFSETTING", "Sound Effect"),
             AudioChannel::Environment => ("UIIT_STT_ENVIRONMENT", "Environment"),
+        }
+    }
+
+    /// The original's hover help for this channel: `UIIT_STT_AUDIO_TTDESC_01`
+    /// (BGM), `_02` (FX), `_03` (environment), textuisystem :990-992. The
+    /// block is in channel order here — unlike the video and setting blocks,
+    /// which are not — and the
+    /// strings name their channel, so the mapping is not an inference.
+    fn tooltip(self) -> (&'static str, &'static str) {
+        match self {
+            AudioChannel::Bgm => (
+                "UIIT_STT_AUDIO_TTDESC_01",
+                "Can select the background music, remove the sound, and turn the volume.",
+            ),
+            AudioChannel::Effect => (
+                "UIIT_STT_AUDIO_TTDESC_02",
+                "Can select the FX sound, remove the sound, and turn the volume.",
+            ),
+            AudioChannel::Environment => (
+                "UIIT_STT_AUDIO_TTDESC_03",
+                "Can select the environment sound, remove the sound, and turn the volume.",
+            ),
         }
     }
 
@@ -191,7 +214,7 @@ pub(crate) fn spawn_audio_pane(
         pane.spawn((frame, BorderColor::all(FRAME_BORDER), Pickable::IGNORE));
 
         let (key, english) = channel.label();
-        pane.spawn((
+        let mut label = pane.spawn((
             Text::new(ui_strings.get_or(key, english).to_string()),
             TextFont {
                 font: font.clone().into(),
@@ -202,6 +225,12 @@ pub(crate) fn spawn_audio_pane(
             offset(LABEL_XYWH, index),
             Pickable::IGNORE,
         ));
+        // The channel heading is what the original's tooltip describes ("Can
+        // select the background music, remove the sound, and turn the volume" —
+        // slider *and* mute together), so it hangs on the heading rather than on
+        // one of the two controls.
+        let (tip_key, tip_english) = channel.tooltip();
+        attach_tooltip(&mut label, ui_strings.get_or(tip_key, tip_english));
 
         pane.spawn((
             ImageNode {
@@ -222,6 +251,10 @@ pub(crate) fn spawn_audio_pane(
             pane, font, ui_strings, channel, index, live, &off, &on, options,
         );
     }
+
+    // Hover-help footer, spanning the channel frames' width
+    // (`ifoption_audio.txt`: `11,10,342,62`).
+    spawn_tooltip_line(pane, font, FRAME_XYWH.0, FRAME_XYWH.2);
 }
 
 /// The `CIFHScroll_Option` track. Vanilla drags a thumb; we drag the whole
@@ -394,6 +427,26 @@ pub(crate) fn refresh_audio_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One `UIIT_STT_AUDIO_TTDESC_*` per channel (:990-992), none reused.
+    #[test]
+    fn every_channel_has_its_own_tooltip_from_the_audio_block() {
+        let mut keys = Vec::new();
+        for channel in AudioChannel::ALL {
+            let (key, english) = channel.tooltip();
+            let number = key
+                .strip_prefix("UIIT_STT_AUDIO_TTDESC_")
+                .unwrap_or_else(|| panic!("{key} is not from the AUDIO_TTDESC block"))
+                .parse::<u8>()
+                .expect("the suffix is a two-digit number");
+            assert!((1..=3).contains(&number), "{key} is outside :990-992");
+            assert!(!english.is_empty(), "{key} has no fallback text");
+            keys.push(key);
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), AudioChannel::ALL.len());
+    }
 
     /// Every rect is a transcription of `ifoption_audio.txt`, and the one
     /// property that ties the three groups together is the 64px pitch — it is
