@@ -312,7 +312,7 @@ opcodes:
 	python3 scripts/check_opcode_ledger.py
 
 # Cargo cannot tell two worktrees apart in a shared target dir, so a gate run
-# there can pass on another worktree's binary. Refuse instead (#374).
+# there can pass on another worktree's binary. Refuse instead.
 check-target-dir:
 	python3 scripts/check_target_dir.py
 
@@ -325,6 +325,7 @@ re-tools:
 	python3 scripts/test_check_opcode_ledger.py
 	python3 scripts/test_bump_version.py
 	bash scripts/test_safe_analyze.sh
+	bash scripts/test_mingw_runtime_dlls.sh
 
 # Textdata column indices vs SR_Db2Media. Skips (exit 0) when the reference
 # checkout is absent, so it never fails a build over an optional input.
@@ -372,7 +373,7 @@ bsr2glb:
 	fi; \
 	cargo run -p tools --bin bsr2glb -- $(if $(PK2),--pk2 "$(PK2)",) $(if $(BSR),--bsr "$(BSR)",) $(if $(PREFIX),--prefix "$(PREFIX)",) $(if $(OUT),--out "$(OUT)",) $(if $(FORMAT),--format "$(FORMAT)",) $(if $(RAW),--raw,)
 
-# Convert an original cutscene camera script into an .intro camera path (#569).
+# Convert an original cutscene camera script into an .intro camera path.
 # The script is the user's own extracted Media data; nothing is committed here.
 cutscene:
 	@case "$(CUTSCENE_TARGET)" in \
