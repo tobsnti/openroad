@@ -134,12 +134,8 @@ impl IntroScene {
     /// `constantinople`, `egypt`, `roc`) are the *same* format the `.intro`
     /// asset already carries — a `[CAMERA]` block of
     /// `0.0 S_CameraInsert <frame> <rx> <rz> <x> <y> <z> <rotx> <roty> <rotz> 1`
-    /// rows (`the local RE notes`, `the local RE notes`
-    /// §3/§6). Only `china_wharf` has ever been transcribed by hand, so the
-    /// other three cutscenes are unreachable in openroad purely for want of a
-    /// converter. This is that converter: the transcription step stops being
-    /// manual, and no user-supplied data has to enter this repository for it
-    /// (#569).
+    /// rows. This converter replaces the manual transcription step, and no
+    /// user-supplied data has to enter this repository for it.
     ///
     /// Everything that is not an `S_CameraInsert` row — the `[CAMERA]` header,
     /// other verbs, blank lines — is skipped, because the block is one section
@@ -447,8 +443,8 @@ IntroBGM = \"chosen.ogg\"\r
     }
 
     /// The original writes some floats with a C-style `f` suffix — the z offset
-    /// in every shipped `script/intro/*.txt`. Before this was handled the
-    /// converter failed on real input with "field 7 is not a number".
+    /// in every shipped `script/intro/*.txt`. Unhandled, it fails on real input
+    /// with "field 7 is not a number".
     #[test]
     fn converter_accepts_the_originals_f_suffixed_floats() {
         let script = "0.0 S_CameraInsert 0.0 188 95 1.5 2.5 3.5f -0.1 -0.2 0.0 1\n";

@@ -45,11 +45,11 @@ pub struct LoginError {
     pub account_blocked_err: Option<AccountBlockedError>,
 }
 
-/// The `0xA102` failure reasons, named from the login-UI pump's switch
-/// (`corpus/client-dec/0086bfc0_the original's handler.c:236-443`). The pump switches on
-/// an internal id that is the wire `error_code` **+ 1** `[S]`, anchored by the
-/// three arms we already modelled: arm 2 is the password error (wire `1`), arm
-/// 3 the blocked/ban arm (wire `2`), arm 4 `UIO_MSG_ERROR_OVERLAP` — "already
+/// The `0xA102` failure reasons, named from the login-UI pump's switch. The
+/// pump switches on an internal id that is the wire `error_code` **+ 1**,
+/// anchored by the three arms already modelled: arm 2 is the password error
+/// (wire `1`), arm 3 the blocked/ban arm (wire `2`), arm 4
+/// `UIO_MSG_ERROR_OVERLAP` — "already
 /// connected" — (wire `3`). See `docs/net-login-gateway.md` for the full table
 /// with the UI string per code.
 ///
@@ -69,7 +69,7 @@ pub enum LoginFailure {
     AlreadyConnected,
     /// `4`, `6`, `7`, `8`, `9` — five distinct server-connect failures that
     /// share one UI string. The client renders the raw id alongside it
-    /// (`the original's handler(..., 0x43, id)`, `:415`), so the code is kept.
+    /// (the original passes the raw id into the message box), so the code is kept.
     ServerConnect(u8),
     /// `5` — the server is busy.
     ServerBusy,

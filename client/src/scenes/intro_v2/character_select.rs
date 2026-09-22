@@ -691,13 +691,20 @@ pub fn on_char_selection_action_response(
 ) {
     for res in reader.read() {
         // The lineup this response describes REPLACES whatever stands on the
-        // stage. That used to be guaranteed by `OnExit(CharacterList)` wiping
-        // the figures, but since the race board keeps the stage alive (the
-        // figures must stay visible while the camera flies) the
-        // returning list would otherwise spawn a second lineup into the first
-        // one. Rebuilding from the response is idempotent; the earlier form was
-        // only accidentally so.
+        // stage. `OnExit(CharacterList)` cannot be relied on for that: the race
+        // board keeps the stage alive (the figures must stay visible while the
+        // camera flies), so a returning list would spawn a second lineup into
+        // the first one. Rebuilding from the response is idempotent.
         if res.characters.is_some() {
+            // The selection names one of the roots about to go. Keeping it
+            // across the rebuild would point every consumer
+            // (`update_character_info_box`, the delete countdown, Start and
+            // Delete) at a despawned entity: their queries miss, so the info
+            // box keeps the old character's numbers while the buttons do
+            // nothing at all. Dropping it also fires the
+            // `resource_removed::<SelectedCharacterV2>` systems that clear the
+            // box, exactly as a click on empty stage does.
+            commands.remove_resource::<SelectedCharacterV2>();
             for entity in standing.iter() {
                 commands.entity(entity).despawn();
             }
@@ -3429,6 +3436,60 @@ mod tests {
         assert!(
             selection_action_error_line(&CharacterSelectionAction::List, 0x0402, &strings)
                 .is_some()
+        );
+    }
+
+    /// A refreshed list replaces the lineup, so the selection that named one
+    /// of the old figures has to go with it.
+    ///
+    /// A [`SelectedCharacterV2`] kept across the rebuild would point every
+    /// consumer — the info box, the delete countdown, Start and Delete — at a
+    /// despawned entity: their queries miss, so the box keeps the old
+    /// character's numbers on screen while the two buttons do nothing at all.
+    /// An empty list is enough to drive it: the rebuild runs, nothing is
+    /// spawned, and no asset has to resolve.
+    #[test]
+    fn a_refreshed_list_drops_the_selection_it_despawns() {
+        use crate::assets::char_select_scene::CharSelectScene;
+
+        let mut app = App::new();
+        // TaskPoolPlugin before AssetPlugin, the fixture pairing of
+        // `crate::assets`: the system takes `Res<AssetServer>`.
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .add_message::<CharacterSelectionActionResponse>()
+        .add_message::<InfoTextV2Update>()
+        .insert_resource(ActiveCharSelectSceneV2(CharSelectScene::default()))
+        .init_resource::<ClientCharacterData>()
+        .init_resource::<ClientItemData>()
+        .init_resource::<ClientUiStrings>()
+        .init_resource::<WorldOrigin>()
+        .add_systems(Update, on_char_selection_action_response);
+
+        let stale = app.world_mut().spawn(SelectableCharacterV2).id();
+        app.world_mut().insert_resource(SelectedCharacterV2(stale));
+
+        app.world_mut()
+            .write_message(CharacterSelectionActionResponse {
+                action: CharacterSelectionAction::List,
+                result: 1,
+                characters: Some(packets::agent::lobby::CharacterData {
+                    count: 0,
+                    characters: vec![],
+                }),
+                error_code: None,
+            });
+        app.update();
+
+        assert!(
+            app.world().get_entity(stale).is_err(),
+            "the old lineup is gone — that is the precondition of the defect"
+        );
+        assert!(
+            !app.world().contains_resource::<SelectedCharacterV2>(),
+            "the selection must not outlive the entity it names"
         );
     }
 }

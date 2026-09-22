@@ -8,6 +8,11 @@ use crate::assets::textdata::Textdata;
 /// asset server; only the collection resource is duplicated because the
 /// old one lives in a private module.
 #[derive(AssetCollection, Resource)]
+// Test-only `Default`: the pregame `OnEnter` systems take this collection as a
+// plain `Res<_>`, so a unit test that drives one of them has to have *a* value
+// in the world even when the system never dereferences it (an empty handle
+// resolves to nothing, which is what a test without an asset source wants).
+#[cfg_attr(test, derive(Default))]
 #[allow(dead_code)]
 pub struct IntroV2Assets {
     // Windows

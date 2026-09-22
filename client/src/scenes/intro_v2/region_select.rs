@@ -913,7 +913,7 @@ pub fn clear_region_confirm(mut commands: Commands) {
 }
 
 /// The original board→creation cut: full-screen race art + the loading-bar
-/// chrome (gauge skipped — no real progress source).
+/// chrome.
 fn spawn_loading_cut(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -1071,10 +1071,9 @@ mod tests {
         assert!(!race_available(&data, Race::EUROPEAN));
     }
 
-    /// The regression guard proper: when a corpus *does* ship European bodies,
-    /// the predicate must offer Europe. This is what would have caught a
-    /// broken race predicate, which is indistinguishable in the UI from a
-    /// corpus that simply has no European rows.
+    /// When a corpus does ship European bodies, the predicate must offer
+    /// Europe. A broken race predicate is otherwise indistinguishable in the UI
+    /// from a corpus that simply has no European rows.
     #[test]
     fn european_bodies_make_the_europe_plate_offerable() {
         let male_only = char_data(vec![row(14000, "CHAR_EU_MAN_FIGHTER")]);
@@ -1255,5 +1254,47 @@ mod tests {
         assert!(PLATE_DISABLED_FALLBACK.len() < 60);
         // maintainer-facing: still names the file that would unblock it
         assert!(PLATE_DISABLED_DIAGNOSIS.contains("characterdata"));
+    }
+
+    /// A frame without a 2d camera draws no board — it must not take the
+    /// schedule down with it.
+    ///
+    /// [`HoveredRegion`] is inserted before the `no 2d camera` early return,
+    /// while [`update_region_hover`] takes it as `ResMut<_>`. Bevy does not skip
+    /// a system whose resource is missing: it fails parameter validation and
+    /// panics the schedule (AGENTS.md). This builds exactly that shape — the
+    /// enter system with no `Camera2d` in the world, then the hover system —
+    /// and it must survive the update.
+    #[test]
+    fn the_hover_resource_is_there_even_when_the_2d_camera_is_not() {
+        use crate::scenes::intro_v2::assets::IntroV2Assets;
+
+        let mut app = App::new();
+        // TaskPoolPlugin before AssetPlugin, the fixture pairing of
+        // `crate::assets` — `Res<AssetServer>` is a parameter of the system
+        // under test.
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .insert_resource(IntroV2Assets::default())
+        .insert_resource(FontAssets::default())
+        .insert_resource(ClientUiStrings::default())
+        .insert_resource(char_data(vec![row(1907, "CHAR_CH_MAN_ADVENTURER")]))
+        .add_systems(Startup, enter_region_select)
+        .add_systems(Update, update_region_hover);
+
+        app.update();
+
+        let mut cameras = app.world_mut().query_filtered::<(), With<Camera2d>>();
+        assert_eq!(
+            cameras.iter(app.world()).count(),
+            0,
+            "this test is only meaningful without a 2d camera"
+        );
+        assert!(
+            app.world().contains_resource::<HoveredRegion>(),
+            "the hover resource must exist even when the board was not drawn"
+        );
     }
 }

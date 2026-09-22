@@ -137,7 +137,7 @@ impl Plugin for SroAssetStructsPlugin {
             .init_asset_loader::<BmsLoader>()
             .init_asset::<JMXVCPD>()
             .init_asset_loader::<CpdLoader>()
-            // resinfo (#477). Registered *before* `Textdata` on purpose: both
+            // resinfo. Registered *before* `Textdata` on purpose: both
             // loaders claim `txt`, and `AssetLoaders::find` only falls back to
             // the extension when the requested asset type is ambiguous, taking
             // the **last** registered loader for that extension
@@ -176,18 +176,17 @@ impl Plugin for SroAssetStructsPlugin {
     }
 }
 
-// `MusicAssets` (two hard-coded tracks, never registered with a loading state
-// and never played) lived here until #771: zone music is chosen by the
-// `effectenvsnd` table at run time, so a compile-time collection of two of the
-// 45 tracks cannot express it. Removed rather than revived.
+// Zone music is chosen by the `effectenvsnd` table at run time, so a
+// compile-time collection of two of the 45 tracks cannot express it; there is
+// no hard-coded music collection here.
 
 /// The original's UI faces, which ship in the user's own `Media.pk2` under
 /// `Media/fonts/` — three TrueType files beside the three `0/i/y.dat` bitmap
 /// stubs (100 / 88 / 124 bytes, three glyphs in total, so there is no `.dat`
-/// font to load; `docs/re/ui/localization-and-fonts.md` §3).
+/// font to load).
 ///
 /// Roles are read off the file names themselves, which is all the data
-/// supports: **which `FontIndex` selects which face is `[U]`** (§9-U1), so
+/// supports: **which `FontIndex` selects which face is unresolved**, so
 /// every slot below resolves through [`FontRole::path`] — a later resolution
 /// is a one-file change, and no size ladder is invented here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,32 +223,31 @@ impl FontRole {
 ///   Monotype file. This repository ships OFL faces only.
 /// * **It is variable** (`wght` axis). Bevy's [`FontWeight`] only synthesizes
 ///   on variable fonts, so one file now covers both the body text and the bold
-///   emphasis that used to need a second face.
-/// * **Its default is Regular (400)**, where the previous face was Fira Sans
-///   *Medium* (500). That one step is what makes the HUD read thinner at the
-///   7.5–9.5 px sizes it draws at.
+///   emphasis that would otherwise need a second face.
+/// * **Its default is Regular (400)**, one step thinner than a Medium (500)
+///   face, which is what the HUD wants at the 7.5–9.5 px sizes it draws at.
 ///
-/// ⚠️ **The axis is 400…700** — Arimo has no cut below Regular, so
+/// Note: **the axis is 400…700** — Arimo has no cut below Regular, so
 /// `FontWeight::LIGHT`/`THIN` clamp to 400. Regular is as thin as this face
 /// goes; a genuinely light Arial-metric face does not exist under OFL.
 ///
-/// ⚠️ **Latin only.** Arimo carries no Hangul, so a server whose item and NPC
+/// Note: **latin only.** Arimo carries no Hangul, so a server whose item and NPC
 /// names are Korean wants `fonts.pk2_faces: true` (see [`FontRole`]).
 ///
-/// History: the face before Fira was `assets/fonts/9.ttf`, removed in #637 —
-/// its `name` table carried an all-rights-reserved MorrisDesign notice
-/// (UTF-16BE, so a raw-ASCII grep does not find it) with no license entry, and
-/// git-tracking it in a GPL-3.0 repository was the exposure, independent of
-/// whether it was used.
+/// The repository ships OFL faces only; a face without a license entry in its
+/// `name` table cannot be git-tracked here.
 pub const BUNDLED_FALLBACK_FACE: &str = "fonts/Arimo-Variable.ttf";
 
 #[derive(AssetCollection, Resource)]
+// Test-only `Default`, same reason as [`IntroV2Assets`]: a system under test
+// needs the resource to exist for parameter validation, not to resolve.
+#[cfg_attr(test, derive(Default))]
 #[allow(dead_code)]
 pub struct FontAssets {
     // These four start on the bundled OFL face so text always renders, and are
     // swapped to the user's PK2 face by `apply_pk2_face` when that is asked
     // for. The slot names mirror the original's `FontIndex` values; the index
-    // -> face mapping itself is [U], so all four currently resolve to the same
+    // -> face mapping itself is unresolved, so all four resolve to the same
     // role rather than to an invented table.
     #[asset(path = "fonts/Arimo-Variable.ttf")]
     pub one: Handle<Font>,
@@ -324,7 +322,7 @@ mod tests {
 
     use super::*;
 
-    /// #637: the repository must ship only fonts it may redistribute. The
+    /// The repository must ship only fonts it may redistribute. The
     /// bundled face is the vendored OFL Arimo, an Arial-metric substitute; the
     /// original's own faces come from the user's PK2, never from this tree.
     #[test]
@@ -374,9 +372,8 @@ mod tests {
     }
 
     /// The three faces are addressed by role, read off the archive's own file
-    /// names. `FontIndex` -> face stays [U]
-    /// (`docs/re/ui/localization-and-fonts.md` §9-U1), so this mapping is the
-    /// single place a later resolution has to touch.
+    /// names. How `FontIndex` picks a face is unresolved, so this mapping is
+    /// the single place a later resolution has to touch.
     #[test]
     fn font_roles_point_into_the_users_pk2() {
         assert_eq!(FontRole::DefaultUi.path(), "media://fonts/기본서체.ttf");
@@ -390,14 +387,14 @@ mod tests {
         }
     }
 
-    /// #477: `InterfaceText` and its loader were registered but commented out,
-    /// so the resinfo loader was dead code no `AssetServer::load` could reach.
-    /// This asserts the wire is live — and, in the same breath, that turning it
-    /// on did not displace `Textdata`, which claims the same `txt` extension.
+    /// `InterfaceText` and its loader must stay registered: without the
+    /// registration the resinfo loader is dead code no `AssetServer::load` can
+    /// reach. This asserts the wire is live — and, in the same breath, that it
+    /// does not displace `Textdata`, which claims the same `txt` extension.
     #[test]
     fn resinfo_and_textdata_asset_types_are_both_registered() {
         let mut app = App::new();
-        // #665: `TaskPoolPlugin` first, then `AssetPlugin` — the order
+        // `TaskPoolPlugin` first, then `AssetPlugin` — the order
         // `MinimalPlugins`/`DefaultPlugins` use. `AssetPlugin` reaches the
         // process-global `IoTaskPool` `OnceLock` as soon as anything is loaded
         // *by path*, and that lock is shared by every test in the binary, so a
@@ -423,7 +420,7 @@ mod tests {
         );
     }
 
-    /// #665: the app-test fixtures build `AssetPlugin` directly instead of
+    /// The app-test fixtures build `AssetPlugin` directly instead of
     /// `MinimalPlugins`, and `AssetPlugin` alone does not create the global
     /// `IoTaskPool` — `AssetServer::load` (load *by path*) then panics unless
     /// some earlier test in the same binary happened to install the pool. This

@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(bytes.as_ref(), &[0x03, 0x03, 0x00, b'F', b'o', b'o']);
     }
 
-    /// #202: Restore (action 5) carries the name in exactly the same shape as
+    /// Restore (action 5) carries the name in exactly the same shape as
     /// Delete — one string for Delete/CheckName/Restore alike.
     #[test]
     fn restore_request_carries_name_without_flag_byte() {
@@ -580,10 +580,13 @@ mod tests {
     /// Why this matters: the `result == 2` gate reads a u16 unconditionally, so
     /// a server that answered a bare `05 02` would make the deserializer
     /// overrun. It does not — the tail is there for action 5 and 3 as well, and
-    /// both frames are exactly 4 bytes. Neither code appears anywhere else in
-    /// `docs/`; both fall into the generic arm of the original's dispatcher
-    /// (`idx = code - 0x402` is only valid up to `0x16`, i.e. `0x418`), so the
-    /// original shows `UIO_MSG_ERROR_SEVER_CONNECT` for them.
+    /// both frames are exactly 4 bytes. The two codes land on different arms:
+    /// `0x040B` is an in-range hole and takes the generic
+    /// `UIO_MSG_ERROR_SEVER_CONNECT` row, while `0x0419` is past the
+    /// 0x17-entry array (`idx = code - 0x402` is only valid up to `0x16`, i.e.
+    /// `0x418`) and therefore renders as the bare `(S1049)`
+    /// ([`LobbyErrorText::CodeOnly`]) — see
+    /// `the_lobby_error_table_keeps_its_five_classes_apart`.
     #[test]
     fn restore_and_delete_failures_carry_the_error_code_too() {
         for (raw, action, code) in [
