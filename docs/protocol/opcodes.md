@@ -42,6 +42,10 @@ table and the macro disagree, so coverage stays honest.
 | `0x6323` | LoginCaptchaConfirmRequest | C→S | wired |  |
 | `0xA323` | LoginCaptchaConfirmResponse | S→C | wired |  |
 | `0x2322` | LoginCaptchaChallenge | S→C | wired |  |
+| `0x6100` | PatchRequest | C→S | wired | the original launcher's version check (locale byte, `u16`-prefixed module name, build `u32`), as the v1.208 client sends it. OpenRoad's client does not send it — it does an `SV.T` preflight |
+| `0xA100` | PatchResponse | S→C | wired | patch verdict; `result == 1` is a single byte, `result == 2` carries a `PatchErrorCode` (+ the download triple on code `2`). The code-`2` file list is deliberately unmodelled — we never send it |
+| `0x6104` | NoticeRequest | C→S | wired | launcher news request, one content-id byte (`0x16` on the v1.208 client); sent a few ms after `0x6100` |
+| `0xA104` | NoticeResponse | S→C | wired | **only `noticeCount` is modelled**: the per-notice entries need a counted list of structs the derive cannot express, and the only answer we ever send is the empty one. The launcher blocks on this packet — with a dead notice service it never offers its Start button |
 | `0x6101` | ShardListRequest | C→S | wired |  |
 | `0xA101` | ShardListResponse | S→C | wired |  |
 | `0x6106` | ShardListPingRequest | C→S | wired |  |
