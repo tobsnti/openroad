@@ -91,11 +91,9 @@ impl Default for GraphicProfile {
 
 /// The three camera view modes of the original's Camera options pane.
 ///
-/// Idea: this is **not** an openroad invention, which is worth stating because
-/// `docs/re/ui/options-camera.md` §9 records "what each mode does geometrically"
-/// as UNKNOWN on the grounds that `ifoption_camera.txt` does not define it. The
-/// tree does not — but `textuisystem.txt` does, in the two description lines the
-/// pane itself renders next to each radio:
+/// Idea: this is **not** an openroad invention. `ifoption_camera.txt` does not
+/// say what each mode does geometrically, but `textuisystem.txt` does, in the two
+/// description lines the pane itself renders next to each radio:
 ///
 /// * `UIIT_STT_SIGHT_FREE_DESC1/2` — "Mouse oriented camera control" /
 ///   "Operates on multidirectional angle control and mouse movement"
@@ -136,11 +134,11 @@ impl SightMode {
 
 /// Camera view mode (`GDR_OPTION_WND_CAMERA`, #379).
 ///
-/// **Stated non-original storage.** `docs/re/ui/options-camera.md` §9 leaves it
-/// UNKNOWN whether any `SROptionSet` id covers the sight mode — our parser
-/// lumps `2001..=2028` (`sroptionset.rs`) with none broken out — so no id is
-/// invented here. It rides the `user_settings.yaml` path with the rest of
-/// [`GameOptions`] instead, which is what makes the radio survive a restart.
+/// **Stated non-original storage.** It is unknown whether any `SROptionSet` id
+/// covers the sight mode — our parser lumps `2001..=2028` (`sroptionset.rs`)
+/// with none broken out — so no id is invented here. It rides the
+/// `user_settings.yaml` path with the rest of [`GameOptions`] instead, which is
+/// what makes the radio survive a restart.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraOptions {
     #[serde(default)]

@@ -376,15 +376,12 @@ pub fn update_chrome_art(
 /// standing on the next one: click the data-blocked European plate on region
 /// select, pick the Chinese one instead, and its rejection ("Out of service
 /// area." / `region_select::PLATE_DISABLED_REASON`) rides along into
-/// character creation — reported from the playtest as "unten steht irgendwie
-/// out of service area". Clearing was per-screen handwork until now
+/// character creation. Clearing was per-screen handwork until now
 /// (`character_select`, `net`), so every new writer had to remember it.
 ///
-/// The original does empty the band on a screen change, and both frames of the
-/// same recorded session are on disk: a peer capture
-/// `22-after-delete.png` carries the three-line "The character's deletion is
-/// reserved." notice on the select screen, and `27-create-screen.png` a few
-/// clicks later shows the same band **empty**.
+/// The original does empty the band on a screen change: it shows the three-line
+/// "The character's deletion is reserved." notice on the select screen, and the
+/// same band is **empty** a few clicks later on the create screen.
 ///
 /// Why the clear cannot swallow a legitimate message: Bevy runs the
 /// `StateTransition` schedule *before* `Update`, so a message an `OnEnter`

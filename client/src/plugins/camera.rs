@@ -936,9 +936,9 @@ pub struct MouseCameraRoles {
 ///
 /// `mouse_shortcut_swapped` is the id-3101 bool. Which of its two values maps
 /// to which vanilla string is **ours to choose** — no default for id 3101
-/// exists anywhere in `resinfo/` (`docs/re/ui/options-controls.md` §9) — so we
-/// read the field's own name literally: *swapped* means the shortcut moved to
-/// the wheel, i.e. 918 `UIIT_STT_USE_WHEEL_TO_USE_SKILL`, and the right button
+/// exists anywhere in `resinfo/` — so we read the field's own name literally:
+/// *swapped* means the shortcut moved to the wheel, i.e. 918
+/// `UIIT_STT_USE_WHEEL_TO_USE_SKILL`, and the right button
 /// changes the view instead. Unswapped is 917
 /// `UIIT_STT_USE_WHEEL_TO_CHANGE_SIGHT`.
 ///

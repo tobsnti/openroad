@@ -39,8 +39,7 @@ enum ChardataFields {
     NameStrId = 5,
     // RefObjCommon DescStrID128. On growth-pet ladder rows this holds the *next*
     // stage's code name (`COS_P_WOLF_001` → `COS_P_WOLF_002`, `xxx` at the top) —
-    // the chain the 0x30C9 ModelChanged update walks. See
-    // docs/re/gamedata/textdata-characterdata.md §3.
+    // the chain the 0x30C9 ModelChanged update walks.
     DescStrId128 = 6,
     // TypeID1..4 (RefObjCommon schema, shared with itemdata): the character
     // family and its subtype. TID1 == 1 is the bionic/character family.
@@ -52,13 +51,12 @@ enum ChardataFields {
     Rarity = 15,
     // RefObjChar Speed1/Speed2: walk/run speed in world units per second
     // (players are 16/50; COS_C mounts run 90-150, COS_T transports 36-50).
-    // Column numbers per docs/re/gamedata/textdata-characterdata.md §3
-    // (SR_Db2Media/Settings.cs:43-51).
+    // Column numbers per `SR_Db2Media/Settings.cs:43-51`.
     Speed1 = 46,
     Speed2 = 47,
     // RefObjChar Scale, the column right after the two speeds: the character's
-    // size as a **percentage**, 100 = normal. Measured over every shipped
-    // `characterdata*.txt` in the user's Media.pk2 (2026-08-22): all 26
+    // size as a **percentage**, 100 = normal. Across every shipped
+    // `characterdata*.txt`, all 26
     // `CHAR_*` player rows are exactly 100, and the file-wide spread is
     // 25 … 400 with the `MOB_THIEF_NPC_*` families forming a clean size ladder
     // 94/96/98/100/102/104/106 — which is what a percentage looks like and a
@@ -69,15 +67,15 @@ enum ChardataFields {
     ResourcePath = 52,
     // RefObjCommon AssocFileIcon_128 — the object's own 32x32 UI icon, the
     // third of the `52-56 AssocFile{Obj,Drop,Icon,1,2}_128` run
-    // (docs/re/gamedata/textdata-characterdata.md §3, SR_Db2Media/Settings.cs).
-    // Corpus-checked against the user's Media.pk2: 5,579 of the 5,587 COS rows
+    // (`SR_Db2Media/Settings.cs`).
+    // 5,579 of the 5,587 COS rows
     // (TID 1/2/3/*) carry one, e.g. ref 6106 `COS_P_WOLF_001` ->
     // `cos\cos_p_wolf_01.ddj`. This is the only per-COS icon source there is —
     // the summon *item*'s icon does not reach the laddered growth stages,
     // which have no 1:1 item.
     AssocFileIcon = 54,
     // RefObjChar tail (after the shared RefObjCommon columns): Lvl(57),
-    // CharGender(58), MaxHP(59). Verified against Media.pk2 characterdata:
+    // CharGender(58), MaxHP(59). In the shipped characterdata:
     // MOB_CH_MANGNYANG lvl 1 / 54 HP, MOB_CH_TIGERWOMAN lvl 20 / 598720 HP,
     // NPCs 0 / 0. CharGender: CHAR_CH_MAN_* = 1, CHAR_CH_WOMAN_* = 0, 2 on
     // gender-neutral monsters — matches itemdata's Sex encoding.
@@ -91,8 +89,7 @@ enum ChardataFields {
     CanBeVehicle = 66,
     CanControl = 67,
     // RefObjChar Knockdown / KO_RecoverTime. These map 1:1 onto go-sro
-    // `model/ref_char.go:13-36` (`… ExpToGive, Knockdown, KORecoveryTime, …`),
-    // per docs/re/gamedata/textdata-characterdata.md §3.
+    // `model/ref_char.go:13-36` (`… ExpToGive, Knockdown, KORecoveryTime, …`).
     //
     // Read for the knockdown animation's prone dwell: the wire says a hit
     // knocked its target down (the displacement arms of 0xB070/0xB071) but
@@ -265,10 +262,9 @@ impl CharacterDataRow {
     /// `KO_RecoverTime`, col 82), in seconds — or `None` when the column is
     /// missing, zero, or reads as something other than a duration.
     ///
-    /// **The column's unit is `[U]`.** It maps 1:1 onto go-sro's
-    /// `KORecoveryTime`, but `docs/re/gamedata/textdata-characterdata.md` calls
-    /// it a "knockdown flag" and no census of its values exists, so this cannot
-    /// simply be trusted as milliseconds. Two guards make a wrong guess
+    /// **The column's unit is unknown.** It maps 1:1 onto go-sro's
+    /// `KORecoveryTime`, but it is elsewhere described as a "knockdown flag", so
+    /// it cannot simply be trusted as milliseconds. Two guards make a wrong guess
     /// harmless rather than absurd:
     ///
     /// - values of 0 or 1 are read as a **flag**, not a duration ("this body
@@ -314,8 +310,7 @@ impl CharacterDataRow {
 
     /// A COS (callable object summon): `TID1/2/3 == 1/2/3`, subtype in TID4.
     /// The tid3 gate is load-bearing — `1/2/4/*` holds `COS_GUARD_*` fortress
-    /// guards *and* `STRUCTURE_*`/`MOB_FW_*` rows, so tid4 alone is ambiguous
-    /// (corpus census 2026-08-14, docs/re/systems/pet-growth-cos.md).
+    /// guards *and* `STRUCTURE_*`/`MOB_FW_*` rows, so tid4 alone is ambiguous.
     pub fn cos_kind(&self) -> Option<CosKind> {
         match self.type_ids() {
             Some((1, 2, 3, tid4)) => CosKind::from_type_id4(tid4 as u8),

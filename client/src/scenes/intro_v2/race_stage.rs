@@ -10,11 +10,10 @@
 //! is exactly why the board looked like the character-select screen with
 //! pictures pasted on it.
 //!
-//! Every number below is measured out of `sro_client.exe` and written up with
-//! its VA in the RE notes§2. The two things that
-//! are *not* measured — the two middle waypoints of the original's four-point
-//! curve, and therefore the flight's shape — are called out at
-//! [`BOARD_FLIGHT`] rather than replaced by invented poses (ADR-0009).
+//! The two things this module does *not* know from the original — the two
+//! middle waypoints of its four-point curve, and therefore the flight's shape —
+//! are called out at [`BOARD_FLIGHT`] rather than replaced by invented poses
+//! (ADR-0009).
 
 use std::time::Duration;
 

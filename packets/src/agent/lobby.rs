@@ -286,18 +286,16 @@ pub fn lobby_error_text(code: u16) -> LobbyErrorText {
             true
         ),
         // jt[9], plain helper.
-        // Wire form of this one, byte for byte [V]: `packet_dump/proxy/0xb007.log`
-        // holds `04021004` at 2026-08-21T11:50:05.944Z — subaction `04`,
+        // Wire form of this one, byte for byte: `04021004` — subaction `04`,
         // result `02` (error), then the code as **u16 little endian**
-        // `10 04` = `0x0410` = 1040. The neighbouring `0401` lines at 11:49:45
-        // and 11:50:12 are the "name is free" answers and carry no code at all.
-        // This does not contradict the 1027 of commit 4baa6924: that is
+        // `10 04` = `0x0410` = 1040. A `0401` answer means "the name is free"
+        // and carries no code at all. Code 1027 is a different thing:
         // `0x0403` = `UIO_SMERR_INVALID_CHARGEN_INFO`, a *content* rejection of
-        // the Create body, and it sits in this same table two arms above.
+        // the Create body, two arms above in this same table.
         0x0410 => keyed!("UIO_MSG_ERROR_ID", "This ID already exists.", false),
         // jt[10], plain helper.
-        // Full shipped text [V] (`Media.pk2/textuisystem.txt`, column 9); the
-        // short form that stood here was a truncation, not the original string.
+        // The full shipped text; the short form that stood here was a
+        // truncation, not the original string.
         0x0411 => keyed!(
             "UIO_MSG_ERROR_OVERLAP",
             "This user is already connected. The user may still be connected \
@@ -575,16 +573,12 @@ mod tests {
         }
     }
 
-    /// The last two actions whose *failure* arm was an assumption are now
-    /// measured too — raw frames from our own clientless bot on account
-    /// `<account 1>`, in the lobby, against the operator's own server (2026-08-22,
-    /// a local packet dump; the requests are in
-    /// a local packet dump):
+    /// The failure arm of the last two actions has the same shape:
     ///
     /// | c2s | s2c | meaning |
     /// |---|---|---|
-    /// | `05 0400 "Devi"` (06:11:33.239Z) | `05 02 1904` (06:11:33.287Z) | Restore of a character that is **not** delete-scheduled -> code `0x0419` |
-    /// | `03 0800 "Nichtda1"` (06:11:45.253Z) | `03 02 0b04` (06:11:45.286Z) | Delete of a name that does not exist -> code `0x040B` |
+    /// | `05 0400 "<name>"` | `05 02 1904` | Restore of a character not delete-scheduled |
+    /// | `03 0800 "Missing1"` | `03 02 0b04` | Delete of a name that does not exist |
     ///
     /// Why this matters: the `result == 2` gate reads a u16 unconditionally, so
     /// a server that answered a bare `05 02` would make the deserializer

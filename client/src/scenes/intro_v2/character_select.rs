@@ -1540,28 +1540,26 @@ fn figure_top(entity: Entity, children: &Query<&Children>, aabbs: &Query<&Aabb>)
 // `is_deleting`/`deletion_time` have been parsed for months
 // (`packets/src/agent/lobby.rs:102-103`).
 //
-// Sources: geometry the local RE notes row
-// `GDR_STA_REMAINTIME (26)` (`x = (W-328)/2`, `y = barDown.top - 0x66`) and §3
-// (`GDR_STA_WREMINTIME1 0,14,328,12`, `GDR_PML_WREMINTIME2 0,36,328,12`,
-// `GDR_REMAINGBOX`/`GDR_REMAING 24,63,280,8`), strings §2.5 / keys 265+266.
+// Geometry comes from the data: `GDR_STA_REMAINTIME` (id 26) at
+// `x = (W-328)/2`, `y = barDown.top - 0x66`, with
+// `GDR_STA_WREMINTIME1 0,14,328,12`, `GDR_PML_WREMINTIME2 0,36,328,12` and
+// `GDR_REMAINGBOX`/`GDR_REMAING 24,63,280,8`; the strings are keys 265+266.
 //
-// Art: the three ddjs the data names are present in the user's own
-// `interface/outer/` — `delete_time_window.ddj` (`GDR_STA_REMAINTIME`,
-// resinfo `:691`), `delete_time_gauge.ddj` (`GDR_REMAING`, `:1094`) and
-// `delete_time_gauge_up.ddj` (`GDR_REMAINGBOX`, `:1075`) — verified by listing
-// the user's extracted `Media/interface/outer/`, and now loaded in
+// Art: the three ddjs the data names live in `interface/outer/` —
+// `delete_time_window.ddj` (`GDR_STA_REMAINTIME`, resinfo `:691`),
+// `delete_time_gauge.ddj` (`GDR_REMAING`, `:1094`) and
+// `delete_time_gauge_up.ddj` (`GDR_REMAINGBOX`, `:1075`) — and are loaded in
 // `IntroV2Assets`. The flat-rect substitute gauge and the plate-less window that
 // stood here were placeholders for exactly these three handles.
 //
-// One `[S]` decision remains: both gauge controls share the rect, so the arts
+// One open decision remains: both gauge controls share the rect, so the arts
 // are layered and only their *order* is a judgement call. `_up` is read as the
 // upper layer (its name, and a fill that is hidden behind its frame would make
 // the `CIFGauge` pointless), so the fill is drawn first and `_up` over it.
-// Settling it needs one original screenshot of a delete-pending lobby.
-/// `GDR_STA_REMAINTIME` `Rect="0,0,328,92"` (spec §3, resinfo id 687).
+/// `GDR_STA_REMAINTIME` `Rect="0,0,328,92"` (resinfo id 687).
 const REMAIN_W: f32 = 328.0;
 const REMAIN_H: f32 = 92.0;
-/// `y = base - 0x66` (spec §1.5, VA 0085ef69-c1): the window's **top** edge sits
+/// `y = base - 0x66` in the original: the window's **top** edge sits
 /// 102 px above the lower band's top edge, so with its own 92 px height its
 /// bottom edge clears the band by 10 px — which is how it is expressed here,
 /// because the anchor node's edge *is* `barDown.top`.

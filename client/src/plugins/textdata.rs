@@ -369,8 +369,8 @@ impl ClientUiStrings {
 ///
 /// Idea: a large minority of textuisystem's rows are authored for the original's
 /// `CIFPML` rich-text control, not for a plain label — they carry `<sml2>`,
-/// `<br>` and `<font …>` tags (`docs/re/ui/help-tooltip-widget.md`: 93 rows use
-/// the `sml2` dialect). A plain `Text` node renders those tags **literally**, so
+/// `<br>` and `<font …>` tags (93 rows use the `sml2` dialect). A plain `Text`
+/// node renders those tags **literally**, so
 /// the user sees the markup. We do not implement CIFPML; the honest reduction is
 /// to keep the authored line breaks (`<br>`) and drop the rest of the markup,
 /// which leaves markup-free rows byte-identical.
@@ -1013,8 +1013,7 @@ mod tests {
     }
 
     /// A markup row must reach a `Text` node as text, not as tags — this is the
-    /// only markup handling we have (`docs/re/ui/help-tooltip-widget.md` §8-5:
-    /// 93 rows use the `sml2` dialect).
+    /// only markup handling we have (93 rows use the `sml2` dialect).
     #[test]
     fn get_plain_or_resolves_markup_rows() {
         assert_eq!(

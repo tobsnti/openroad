@@ -120,8 +120,8 @@ impl DesignFit {
 
 /// Blur radius of the backdrop, as a fraction of the cover box's height.
 ///
-/// Chosen by eye against the real art at 16:9 and 21:9 (pictures in
-/// `artifacts/capture/loading-fill/`): below ~0.05 the backdrop still reads as
+/// Chosen by eye against the real art at 16:9 and 21:9: below ~0.05 the
+/// backdrop still reads as
 /// a second, wrongly-cropped picture competing with the painting; above ~0.12
 /// it is an even smear that no longer echoes the composition. The value is a
 /// fraction, not pixels, so the effect is the same on a 1280 and a 3440 window.

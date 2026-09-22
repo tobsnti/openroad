@@ -46,7 +46,7 @@ pub struct LoginError {
 }
 
 /// The `0xA102` failure reasons, named from the login-UI pump's switch
-/// (`corpus/client-dec/0086bfc0_FUN_0086bfc0.c:236-443`). The pump switches on
+/// (`corpus/client-dec/0086bfc0_the original's handler.c:236-443`). The pump switches on
 /// an internal id that is the wire `error_code` **+ 1** `[S]`, anchored by the
 /// three arms we already modelled: arm 2 is the password error (wire `1`), arm
 /// 3 the blocked/ban arm (wire `2`), arm 4 `UIO_MSG_ERROR_OVERLAP` — "already
@@ -69,7 +69,7 @@ pub enum LoginFailure {
     AlreadyConnected,
     /// `4`, `6`, `7`, `8`, `9` — five distinct server-connect failures that
     /// share one UI string. The client renders the raw id alongside it
-    /// (`FUN_00861890(..., 0x43, id)`, `:415`), so the code is kept.
+    /// (`the original's handler(..., 0x43, id)`, `:415`), so the code is kept.
     ServerConnect(u8),
     /// `5` — the server is busy.
     ServerBusy,
@@ -169,16 +169,14 @@ pub fn describe_login_error(code: u8) -> &'static str {
 /// `error_code`, as `(key, shipped English fallback)`.
 ///
 /// Idea: same split as [`crate::agent::lobby_error_text`] — `packets` owns the
-/// code -> key mapping (it is wire knowledge, recovered from the binary), the
+/// code -> key mapping (it is wire knowledge), the
 /// client owns the lookup against the loaded table, so `packets` keeps no
 /// dependency on a client string table. [`describe_login_error`] stays what it
 /// always was: short prose for logs.
 ///
-/// The mapping is the login-UI pump's switch, `FUN_0086bfc0:236-443`, whose
-/// internal id is the wire code **+ 1**; table and line numbers in
-/// `docs/re/net/login-gateway.md` §5.3. Every key below was re-verified to
-/// exist in the user's own `Media/server_dep/silkroad/textdata/textuisystem.txt`
-/// (5364 keyed rows, control key `ZZZ_NOPE` absent) [V].
+/// The mapping is the login-UI pump's switch, whose internal id is the wire
+/// code **+ 1**. Every key below exists in the shipped
+/// `Media/server_dep/silkroad/textdata/textuisystem.txt`.
 ///
 /// Two rows deserve their note:
 /// * `1` and `2` carry a payload (attempt counter / ban info) that only the
@@ -240,12 +238,11 @@ pub fn login_error_text(code: u8) -> Option<(&'static str, &'static str)> {
 
 /// Rendered as "Password entry has failed {cur} out of {max} times."
 ///
-/// ⚠️ **`[U]` on the wire.** The binary only shows the *internal* form — one
-/// `u32` split `lo16`/`hi16` into the two format arguments
-/// (`FUN_0086bfc0:243-255`) — so whether the wire carries `2 × u32` or a single
-/// packed `u32`, and whether max precedes cur, is unresolved. **What settles
-/// it:** one captured `0xA102` with `result == 2, error_code == 1`; all five
-/// captured `0xa102` lines are `result == 1`. Left unchanged deliberately
+/// ⚠️ **Unconfirmed on the wire.** The original's *internal* form is one
+/// `u32` split `lo16`/`hi16` into the two format arguments, so whether the
+/// wire carries `2 × u32` or a single packed `u32`, and whether max precedes
+/// cur, is unresolved. Only a real `0xA102` with
+/// `result == 2, error_code == 1` settles it. Left unchanged deliberately
 /// (#465) rather than guessed at.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct WrongAttempt {
@@ -300,9 +297,8 @@ pub struct LoginCaptchaChallenge {
 ///
 /// The one thing worth stating: it is a **u16-length-prefixed string**, not a
 /// raw byte or a fixed-width field, even when the answer is a single digit.
-/// [V] 2026-08-22 at the original client: answering "1" put `01 00 31` on the
-/// wire (`docs/re/ui/live-pregame-measurements.md` §5.3). Our `String` already
-/// serializes exactly that, so this is a verification, not a fix; the byte test
+/// At the original client, answering "1" puts `01 00 31` on the wire. Our
+/// `String` already serializes exactly that; the byte test
 /// `captcha_confirm_sends_a_length_prefixed_string` keeps it that way.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct LoginCaptchaConfirmRequest {
@@ -322,11 +318,10 @@ mod tests {
 
     use super::*;
 
-    /// The captcha answer travels as a u16-LE-length-prefixed string. [V]
-    /// 2026-08-22: the original client sent `01 00 31` for the answer "1"
-    /// (`docs/re/ui/live-pregame-measurements.md` §5.3). A single-character
-    /// answer is the case where a raw-byte model would look plausible, which is
-    /// exactly why it is pinned here.
+    /// The captcha answer travels as a u16-LE-length-prefixed string: the
+    /// original client sends `01 00 31` for the answer "1". A single-character
+    /// answer is the case where a raw-byte model would look plausible, which
+    /// is exactly why it is pinned here.
     #[test]
     fn captcha_confirm_sends_a_length_prefixed_string() {
         let request = LoginCaptchaConfirmRequest {
@@ -347,7 +342,7 @@ mod tests {
 
     /// #465: the client modelled `1` and `2` and nothing else, so `3`..=`0xF`
     /// rendered nothing. All 15 codes from the UI pump's switch
-    /// (`FUN_0086bfc0:236-443`) are now named, and anything else degrades to
+    /// (the original's login switch) are now named, and anything else degrades to
     /// `Unknown` instead of being silently dropped.
     #[test]
     fn every_login_error_code_is_classified() {
@@ -378,7 +373,7 @@ mod tests {
         }
     }
 
-    /// The key table is the pump's switch (`docs/re/net/login-gateway.md`
+    /// The key table is the pump's switch (the login-gateway notes
     /// §5.3), transcribed — not derived from a name rule. Pinned per code so a
     /// later "tidy-up" cannot silently re-map one, and pinned as *absence* for
     /// the two payload codes, whose line the caller formats itself.

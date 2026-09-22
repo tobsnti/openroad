@@ -61,9 +61,8 @@ pub enum IntroV2State {
     /// not a `SceneState` of its own** (settled for #645).
     ///
     /// In the original, create *is* its own screen — its own resinfo tree
-    /// `pscharactercreate{china,_europe}.txt` with its own red chrome
-    /// (`docs/re/ui/scene-intro-character-create.md` §3, honoured by
-    /// [`chrome::bar_tree`]). But a screen is not a scene: that tree draws
+    /// `pscharactercreate{china,_europe}.txt` with its own red chrome (honoured
+    /// by [`chrome::bar_tree`]). But a screen is not a scene: that tree draws
     /// `GDR_CWND_CHARACTER 0,0,1600,1200` over the *same* char-select stage, so
     /// creation shares this scene's terrain, world origin, cinematic camera and
     /// live agent connection (`character_select::disconnect_from_agent_server`
@@ -71,16 +70,14 @@ pub enum IntroV2State {
     /// tears all four down and rebuilds them, which changes behaviour rather
     /// than fixing it — the same call #372 made for the world scenes.
     ///
-    /// The RE data pushes the same way: `docs/re/ui/scene-intro-region-select.md`
-    /// §6 names "our code models region select as a separate scene state" the
-    /// *substantive defect* of that module. The direction of travel here is
-    /// fewer states over one stage, not more.
+    /// Region select points the same way: modelling it as a separate scene state
+    /// is a defect of that module. The direction of travel here is fewer states
+    /// over one stage, not more.
     CharacterCreate,
 }
 
 /// The original's five text slots, by resinfo `FontIndex`: 9/8/12/11/15 pt at
-/// 96 dpi, the order the client constructs them in (confirmed by the user's own
-/// `event/event_interface.txt:2`).
+/// 96 dpi, the order the client constructs them in (`event/event_interface.txt:2`).
 const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
 
 /// `FontSize::Px` of an intro control with resinfo `FontIndex` `font_index`.

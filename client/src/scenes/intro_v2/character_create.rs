@@ -224,19 +224,18 @@ const FEMALE_RECT: (f32, f32, f32, f32) = (166.0, 95.0, 70.0, 25.0);
 
 /// The gem baked into each gender button, in the control's own pixels.
 ///
-/// Measured on the user's own archive, not chosen: the four textures
+/// Not chosen: the four textures
 /// (`man_on/off`, `woman_on/off`) are 72x28 with 70x25 of content, and the
 /// alpha's full-height columns put the man plate at 20..68 and the woman plate
 /// at 1..49 — both 49 wide, both with a 20-column gem on the other side.
 ///
-/// The original agrees where it can be measured
-/// (`artifacts/capture/live-pregame-20260821/71-create-screen.png`, panel left
-/// x=78, 1:1): its "Female" ink runs 249..290, centre 269.5, against a drawn
+/// The original agrees: with its panel left at x=78 and 1:1 drawing, its
+/// "Female" ink runs 249..290, centre 269.5, against a drawn
 /// plate of 245..292.6, centre 268.8 — centred on the plate, six pixels clear
 /// of the gem. Ours centred on the control instead, which at 800x600 put
 /// "Female"'s ink at 207..244 with the plate ending at 238.6: 5.4 px *on* the
-/// gem, and "Male" 7.7 px left of its plate's centre. That is the reported
-/// "Female runs past its button".
+/// gem, and "Male" 7.7 px left of its plate's centre. That is the
+/// "Female runs past its button" defect.
 const GENDER_GEM_W: f32 = 20.0;
 
 /// The plate's span inside a gender button, `(left, right)` in control pixels.
@@ -285,15 +284,13 @@ const ROW_GEAR_TOPS: (f32, f32) = (224.0, 255.0);
 //
 // What the ORIGINAL does: all seven captions sit in `x=32, w=45` boxes
 // (`GDR_STATIC1..7`) drawn in Arial at FontIndex 2 = 16 px. At that size the
-// user's own `textuisystem.txt` strings do not fit: "Weapon" advances
+// `textuisystem.txt` strings do not fit: "Weapon" advances
 // **59.59 px into a 45 px box (+14.59, +32.4 %)** and "Volume" 54.25 (+9.25),
 // with "Height" (46.25) and "Figure" (45.35) grazing the edge. The original
 // simply lets them run out of the box and the slider's left arrow (`ROW_X`
-// 88) then paints over the tail — in
-// `artifacts/capture/live-pregame-20260821/71-create-screen.png` the original's
-// own "Weapon" is clipped mid-'n', exactly like ours was. `45` was never a
-// transcription error, and the previous lane was right not to "fix" it
-// (the layout notes).
+// 88) then paints over the tail — the original's own "Weapon" is clipped
+// mid-'n', exactly like ours was. `45` was never a transcription error, and it
+// should not be "fixed".
 //
 // What WE do instead: keep the boxes' geometry-defining right side clear of
 // the controls and grow leftwards. `LABEL_X` 32 -> 16 and `LABEL_W` 45 -> 66.
@@ -496,23 +493,20 @@ fn gear_row_tops(race: Race, tops: (f32, f32)) -> (f32, f32) {
 /// trees are byte-identical here, so there is no `_europe` variant to pick.
 const ROTATE_WINDOW_W: f32 = 152.0;
 const ROTATE_WINDOW_H: f32 = 56.0;
-/// Where that window sits — **measured, not authored.** The resinfo rect is
+/// Where that window sits — **not authored.** The resinfo rect is
 /// `0,0,152,56`: size only, no position (the original places all four of this
-/// screen's position-less panels from code). So the source for these two
-/// numbers is a photo of the running original, not a data citation:
-/// `artifacts/capture/live-pregame-20260821/71-create-screen.png`, client area
-/// 800x600, window outer edge x 635..786 / y 446..501 — i.e. **13 px off the
-/// right edge, 98 px off the bottom**. Cross-checked by adding the three
-/// authored child rects (12/57/99, y 11) onto that corner: predicted 650 /
-/// 695 / 737 and y 483, measured the same four black edges, 0 px error
-/// (the layout notes).
+/// screen's position-less panels from code). In the original's 800x600 client
+/// area the window's outer edge runs x 635..786 / y 446..501 — i.e. **13 px
+/// off the right edge, 98 px off the bottom**. Cross-check: adding the three
+/// authored child rects (12/57/99, y 11) onto that corner predicts 650 / 695 /
+/// 737 and y 483, and that is exactly where the original's four black edges
+/// sit, 0 px error.
 ///
 /// **Edge inset, not a scaled position — deliberate, and the one open call
-/// here (ADR-0009).** One original screenshot in one resolution cannot tell
-/// whether the original keeps the inset constant or scales the 635,446
-/// position; deciding that needs a second original capture at another
-/// resolution. We anchor to the edges because everything else measured on
-/// this screen points that way: all four position-less panels of this screen
+/// here (ADR-0009).** The original at a single resolution cannot tell whether
+/// it keeps the inset constant or scales the 635,446 position; deciding that
+/// needs the original at a second resolution. We anchor to the edges because
+/// everything else on this screen points that way: all four position-less panels
 /// draw their art 1:1 unscaled (only the two full-width bands are halved), so
 /// a constant pixel inset is the model that matches the art, and it keeps the
 /// buttons in the same bottom-right corner at 1600x900 and 3440x1440 instead
@@ -546,35 +540,31 @@ const PREVIEW_ROTATE_STEP: f32 = PI / 12.0;
 const PREVIEW_ZOOM_DOLLY: f32 = 15.0;
 
 /// The height/volume wire byte. It is **not** a 0..255 scale: the two axes
-/// share one byte, one **nibble per axis** [V] — four original-client captures
-/// give `0x22` (untouched screen: `openroad1` 2026-08-21T15:34:16 and `Penis`
-/// 13:13:19), `0x11` (`priavte`), `0x00` (`Devi`) and `0x20` (`nummer6`), i.e.
-/// the two nibbles move independently (`packet_dump/proxy/c2s/0x7007.log`,
-/// `packet_dump/proxy/0xb007.log`; the RE notes).
+/// share one byte, one **nibble per axis**. An untouched screen sends `0x22`;
+/// values such as `0x11`, `0x00` and `0x20` show that the two nibbles move
+/// independently.
 /// Each axis has five steps — `UIO_NEWCHAR_EXPLANATION_HEIGHT` ("one of 5
 /// levels from the thiniest to the tallest") and `_VOLUME` ("one of 5 types")
 /// in `textdata/textuisystem.txt` — so a nibble is `0..=4` and `0x22` is the
 /// middle step of both.
 ///
-/// **A1 (which nibble is which) is DECIDED [V]: low nibble = Height, high
-/// nibble = Volume.** Two single-step original-client runs with a counter-check
-/// (the RE notes 05:14-05:21Z):
-/// from the `0x22` default, Height +1 sends `0x23` and Volume +1 sends `0x32`.
-/// That is what makes the two rows safe to arm — a single run would have left
-/// open which nibble moved.
+/// **Which nibble is which: low nibble = Height, high nibble = Volume.** From
+/// the `0x22` default, a single Height step sends `0x23` and a single Volume
+/// step sends `0x32`, so each axis moves only its own nibble. That is what
+/// makes the two rows safe to arm.
 const SCALE_STEPS: u8 = 5;
 /// The middle of `0..=SCALE_STEPS - 1`, which is what an untouched screen sends.
 const SCALE_MIDDLE_STEP: u8 = SCALE_STEPS / 2;
 
 /// Packs the two axis steps the way the original serialises them (one nibble
 /// each, in the create struct): `high` is
-/// Volume, `low` is Height [V] (see [`SCALE_STEPS`]).
+/// Volume, `low` is Height (see [`SCALE_STEPS`]).
 const fn pack_scale(high: u8, low: u8) -> u8 {
     (high << 4) | (low & 0x0f)
 }
 
 /// The wire scale byte of a selection: Volume in the high nibble, Height in the
-/// low one [V].
+/// low one.
 fn selection_scale(selection: &CharCreateSelection) -> u8 {
     pack_scale(
         selection.volume.min(SCALE_STEPS - 1),
@@ -1428,35 +1418,33 @@ fn zoom_button_style(assets: &IntroV2Assets, zoomed_in: bool) -> ImageButtonStyl
 // Idea: like the other position-less widgets of this screen, `GDR_BTN_OK` and
 // `GDR_BTN_BACK` carry a size but no position (`pscharactercreate{china,
 // _europe}.txt:72,91` -> `Rect=RECT,"0,0,92,41"`); the original places them
-// from code. So the three numbers below are a MEASUREMENT of the running
-// original, not a data citation — read out of
-// `artifacts/capture/live-pregame-20260821/71-create-screen.png` (client area
-// 800x600, window offset 3,26), opaque pixel extents:
+// from code. So the three numbers below come from where the original puts the
+// row, not from a data citation. In an 800x600 client area its opaque pixel
+// extents are:
 //
 //   Confirm x 591..682, Cancel x 695..786, both y 542..582
 //   -> right inset 800-787 = 13, bottom inset 600-583 = 17, pitch 104
 //
 // Anchoring is by inset from the bottom-right corner rather than by a
-// fraction of the window: the measurement is an inset, and the same corner is
-// what `GDR_STA_ROTATE` is anchored to.
+// fraction of the window: the original's numbers are an inset, and the same
+// corner is what `GDR_STA_ROTATE` is anchored to.
 //
 // The inset is in the screen's own unit ([`cu`]), i.e. the same 1:1 pixels as
 // the art it separates — which is what the geometry tests below check.
 
 /// Distance from the window's bottom edge to the row's bottom edge.
-/// Measured (see above), 17 px. The 13 px right inset is shared with
-/// `GDR_STA_ROTATE`, whose frame ends at the same x=786 — that agreement
-/// between two independently measured widgets is what makes 13 credible.
+/// 17 px (see above). The 13 px right inset is shared with `GDR_STA_ROTATE`,
+/// whose frame ends at the same x=786 — that agreement between two
+/// independent widgets is what makes 13 credible.
 const CONTROL_ROW_BOTTOM_INSET: f32 = 17.0;
 /// Distance from the window's right edge to Cancel's right edge, 13 px.
 const CONTROL_ROW_RIGHT_INSET: f32 = 13.0;
-/// Gap between the two buttons. Derived, not chosen: the measured left edges
+/// Gap between the two buttons. Derived, not chosen: the original's left edges
 /// are 591 and 695, i.e. a pitch of 104 px, and our button art is 91 px wide
 /// (`interface/outer/button.ddj` is 91x40; the authored rect rounds it up to
 /// 92x41), so 104 - 91 = 13 puts both outer edges within 1 px of the original.
 const CONTROL_ROW_GAP: f32 = MAIN_BUTTON_PITCH - MAIN_BUTTON_W;
-/// Measured left-edge distance between Confirm and Cancel in the original
-/// photo: 695 - 591.
+/// Left-edge distance between Confirm and Cancel in the original: 695 - 591.
 const MAIN_BUTTON_PITCH: f32 = 104.0;
 /// Drawn width/height of the shared `button.ddj` widget, as every other
 /// intro-v2 screen spawns it.
@@ -1741,33 +1729,30 @@ fn create_camera_pose(
 
 /// How tall the body must be on screen, as a fraction of the client height.
 ///
-/// **Measured**, not chosen: in the original the body runs from crown y=62 to
-/// sole y=553 of 600 in
-/// `artifacts/capture/live-pregame-20260821/71-create-screen.png` — **82.0 %**
-/// of the client height. Ours was 43.4 %, confirmed independently at two
-/// resolutions (43.6 % / 43.2 %), i.e. the 1.89x the report asked for; that
-/// ratio is *derived* from this fraction, so the fraction is what the code
-/// carries. Error band from the correlation plateau: 1.83..1.94 on the ratio,
-/// i.e. 79.4..84.2 % here. Source: the layout notes
+/// Not chosen: in the original the body runs from crown y=62 to sole y=553 of
+/// 600 — **82.0 %** of the client height. Ours was 43.4 %, the same at two
+/// resolutions (43.6 % / 43.2 %), i.e. a 1.89x gap; that ratio is *derived*
+/// from this fraction, so the fraction is what the code carries. Error band:
+/// 1.83..1.94 on the ratio, i.e. 79.4..84.2 % here.
 const FIGURE_HEIGHT_FRACTION: f32 = 0.82;
 
 /// Where the body's sole sits, as a fraction of the client height.
 ///
-/// **Measured**: original sole y=553 of 600 = 92.17 %. That is deliberately
-/// *inside* the bottom band (which starts at y=515): the feet stand 38 px into
-/// the band, 5 px above its middle — the "standing on the red bar" the screen
-/// is supposed to show. Source: `CREATE-FIGURE-SPEC.md` §2.
+/// In the original the sole sits at y=553 of 600 = 92.17 %. That is
+/// deliberately *inside* the bottom band (which starts at y=515): the feet
+/// stand 38 px into the band, 5 px above its middle — the "standing on the red
+/// bar" the screen is supposed to show.
 const FIGURE_SOLE_Y_FRACTION: f32 = 0.9217;
 
 /// Where the body's axis sits, as a fraction of the client width.
 ///
-/// **Measured**: original head axis x=465.5, foot group x=460.5 of 800 → 57.9 %,
-/// i.e. 7.9 % right of centre, in the gap between the customise window (ends at
-/// x=335) and the info box (starts at x=575). Ours stood dead centre.
-/// Source: `CREATE-FIGURE-SPEC.md` §3.
+/// In the original the head axis sits at x=465.5 and the foot group at x=460.5
+/// of 800 → 57.9 %, i.e. 7.9 % right of centre, in the gap between the
+/// customise window (ends at x=335) and the info box (starts at x=575). Ours
+/// stood dead centre.
 const FIGURE_AXIS_X_FRACTION: f32 = 0.579;
 
-/// Solver passes of the framing. **Choice**, not a measurement: both loops
+/// Solver passes of the framing. **Choice**, not a given: both loops
 /// converge geometrically (the aim re-levels the horizon, which moves the target
 /// again by a second-order amount; the distance correction is a ratio that
 /// squares its error), and four passes put both residuals below a hundredth of a
@@ -2112,12 +2097,10 @@ pub fn tag_figure_overlay_meshes(
 /// The one rule that makes the overlay admissible: a modal dialog is in front
 /// of the figure, not behind it.
 ///
-/// Evidence: `artifacts/capture/live-pregame-20260821/21-modal-delete-confirm.png`
-/// — the figure's lower body disappears behind the dialog box. That shot is the
-/// selection screen, so it is evidence about this engine's layering rather than
-/// about this screen specifically; it is also the only shot that says anything
-/// at all about dialogs over the figure, and it says the opposite of "the figure
-/// is in front of everything" (`CREATE-FIGURE-SPEC.md` §4d).
+/// In the original's delete-confirm modal the figure's lower body disappears
+/// behind the dialog box. That is the selection screen, so it says how this
+/// engine layers dialogs over the figure in general — and it says the opposite
+/// of "the figure is in front of everything".
 pub fn hide_figure_overlay_behind_modal(
     modal: Query<(), With<CreateConfirmModal>>,
     mut overlay: Query<&mut Camera, With<FigureOverlayCamera>>,
@@ -3041,51 +3024,48 @@ mod tests {
         assert_eq!(framed.0, pose.0);
         assert_eq!(framed.1, pose.1);
 
-        let unmeasured = framed_create_camera_pose(
+        let unframed = framed_create_camera_pose(
             authored_pose(sole),
             sole,
             0.0,
             std::f32::consts::FRAC_PI_4,
             1.0,
         );
-        assert_eq!(unmeasured.0, authored_pose(sole).0);
-        assert_eq!(unmeasured.1, authored_pose(sole).1);
+        assert_eq!(unframed.0, authored_pose(sole).0);
+        assert_eq!(unframed.1, authored_pose(sole).1);
     }
 
     /// The Confirm/Cancel row is anchored by constant pixel inset, and the
-    /// insets are the ones measured in the original photo
-    /// (`artifacts/capture/live-pregame-20260821/71-create-screen.png`, client
-    /// area 800x600): opaque extents Confirm x 591..682, Cancel x 695..786,
-    /// both y 542..582.
+    /// insets are the original's own: in an 800x600 client area its opaque
+    /// extents are Confirm x 591..682, Cancel x 695..786, both y 542..582.
     ///
     /// Dropped onto an 800x600 client area our box must reproduce those edges
     /// (within the 1 px our 91-wide art is narrower than the authored 92).
     #[test]
-    fn the_control_row_sits_at_the_measured_bottom_right_inset() {
+    fn the_control_row_sits_at_the_bottom_right_inset() {
         let (confirm_left, cancel_right, top, bottom) = control_row_box(800.0, 600.0);
-        // right and bottom edge: exactly the measured ones
-        assert_eq!(cancel_right, 787.0, "measured last opaque column 786");
-        assert_eq!(bottom, 583.0, "measured last opaque row 582");
-        assert_eq!(top, 542.0, "measured first opaque row 542");
-        // left edge: 592 against the measured 591 — one pixel, and it is the
+        // right and bottom edge: exactly the original's
+        assert_eq!(cancel_right, 787.0, "last opaque column 786");
+        assert_eq!(bottom, 583.0, "last opaque row 582");
+        assert_eq!(top, 542.0, "first opaque row 542");
+        // left edge: 592 against the original's 591 — one pixel, and it is the
         // art's, not the anchor's.
         assert!(
             (confirm_left - 591.0).abs() <= 1.0,
-            "confirm left {confirm_left} is more than 1 px off the measured 591"
+            "confirm left {confirm_left} is more than 1 px off 591"
         );
         // Confirm's right edge, the one the pitch is there to preserve.
         assert_eq!(confirm_left + MAIN_BUTTON_W, 683.0);
     }
 
-    /// Playtest F3 ("viel zu groß skaliert"), pinned: the row is the same
-    /// 1:1 art at every window size, like the login form and the region
-    /// plates. Red control: the Vh unit this replaced drew the row 1.5x at
-    /// 1600x900 (buttons 137x62 instead of 91x41).
+    /// Pinned against a too-large scale: the row is the same 1:1 art at every
+    /// window size, like the login form and the region plates. The Vh unit this
+    /// replaced drew the row 1.5x at 1600x900 (buttons 137x62 instead of 91x41).
     #[test]
     fn the_control_row_is_drawn_1_to_1_at_every_window_size() {
         let (left_600, right_600, top_600, bottom_600) = control_row_box(800.0, 600.0);
         let (left_900, right_900, top_900, bottom_900) = control_row_box(1600.0, 900.0);
-        // the 800x600 case is the measurement itself
+        // the 800x600 case is the original's own layout
         assert_eq!(600.0 - bottom_600, 17.0);
         assert_eq!(800.0 - right_600, 13.0);
         // and at 1600x900 the same insets and the same button art
@@ -3488,40 +3468,32 @@ mod tests {
     /// hang; then drawing the file into the smaller resinfo rect (what we do)
     /// would squash the picture by up to 2.8 %.
     ///
-    /// That reading is wrong. Measured against the user's own capture
-    /// `artifacts/capture/live-pregame-20260821/71-create-screen.png` (806x629,
-    /// client area 1:1 at the (3,26) window offset), by minimising the mean
-    /// per-channel residual over the opaque texels of each candidate rendering:
+    /// That reading is wrong. The original draws each of these files into its
+    /// authored rect:
     ///
-    /// | art | file | drawn | residual /255 | 1:1 residual |
-    /// |---|---|---|---|---|
-    /// | `rotate_left.ddj` | 44x36 | **42x35** | 0.49 | 33.12 |
-    /// | `rotate_right.ddj` | 44x36 | **42x35** | 0.36 | 35.14 |
-    /// | `zoomin.ddj` | 40x36 | **39x35** | 0.36 | 37.54 |
-    /// | `zoomout.ddj` | 40x36 | **39x35** | 3.87 | 39.03 |
-    /// | `man_on.ddj` | 72x28 | **70x25** | 9.27 | 43.59 |
-    /// | `man_off.ddj` | 72x28 | **70x25** | 11.43 | 44.26 |
+    /// | art | file | drawn |
+    /// |---|---|---|
+    /// | `rotate_left.ddj` | 44x36 | **42x35** |
+    /// | `rotate_right.ddj` | 44x36 | **42x35** |
+    /// | `zoomin.ddj` | 40x36 | **39x35** |
+    /// | `zoomout.ddj` | 40x36 | **39x35** |
+    /// | `man_on.ddj` | 72x28 | **70x25** |
+    /// | `man_off.ddj` | 72x28 | **70x25** |
     ///
-    /// The gender residuals are the larger ones because the original draws its
-    /// caption over the plate; the rotate/zoom buttons carry no text and land
-    /// at 0.36–0.49, i.e. all but exactly. And the target size is not merely
-    /// *close*, it is *determined*: a raster search over 66..74 x 23..29 for
-    /// `man_on` has a unique minimum at 70x25 (9.27), the runner-up 71x25
-    /// scoring 18.04.
+    /// And the target size is not merely *close*, it is determined: for
+    /// `man_on` no other size in 66..74 x 23..29 fits the original's pixels
+    /// nearly as well as 70x25.
     ///
-    /// Counter-evidence in the same series makes it a rule rather than an
-    /// observation: `button.ddj` is 91x40 and the authored rect is 92x41, and
-    /// the capture prefers the *upscaled* 92x41 (33.63) over 1:1 (51.43). The
-    /// rule is "file -> authored rect", in both directions.
+    /// The rule is "file -> authored rect", in both directions: `button.ddj` is
+    /// 91x40 against an authored rect of 92x41, and there the original draws
+    /// the *upscaled* 92x41.
     ///
     /// So changing these rects to the file size would be a **deviation from**
-    /// the original (ADR-0009), not a fix — see
-    /// the layout notes for the full survey, the padding
-    /// table, and why the padding sizes cannot be derived from a rule.
+    /// the original (ADR-0009), not a fix.
     #[test]
     fn padded_art_is_drawn_at_the_authored_rect_not_the_file_size() {
-        // (art, file size, drawn size) — file sizes are the DDS header of the
-        // user's own `Media.pk2`, drawn sizes are the resinfo rects above.
+        // (art, file size, drawn size) — file sizes are the DDS headers in
+        // `Media.pk2`, drawn sizes are the resinfo rects above.
         const CASES: [(&str, (f32, f32), (f32, f32)); 4] = [
             (
                 "man_*/woman_*.ddj",
