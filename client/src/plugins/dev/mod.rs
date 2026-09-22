@@ -74,32 +74,51 @@ pub fn dev_windows_visible(visible: Res<DevWindowsVisible>) -> bool {
 /// | `Y` | *(free today)* | Alchemy |
 /// | `U` | nav snapshot / light adjust | Community |
 /// | `I` | light adjust | Inventory (bound already) |
+/// | `Z` | light adjust (`dev/lighting.rs:81`) | View Drop Item (3012, bound) |
+/// | `N` | vanilla/PBR switch (`environment/mod.rs:592`) | Sit/Stand (3014) |
+/// | `L` | time-of-day scrub (`environment/mod.rs:606`) | Academy (3033) |
 ///
 /// The `I` row is the reason this is not theoretical: the inventory toggle
-/// ships today and `dev/lighting.rs` reads the same key in `Update`.
-pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 5] = [
+/// ships today and `dev/lighting.rs` reads the same key in `Update`. `Z`, `N`
+/// and `L` are on the list because `SROptionSet.dat` gives ids 3012/3014/3033
+/// a default (`settings/keymap.rs`).
+pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 8] = [
     KeyCode::KeyQ,
     KeyCode::KeyE,
     KeyCode::KeyT,
     KeyCode::KeyU,
     KeyCode::KeyI,
+    KeyCode::KeyZ,
+    KeyCode::KeyN,
+    KeyCode::KeyL,
 ];
+
+/// The collisions the `dev_tools` gate does **not** cover: keys a dev system
+/// reads in every session, gated or not.
+///
+/// `Tab` is the only one today. `switch_mode` (below) is registered
+/// unconditionally, and `SROptionSet.dat` id 3009 `KeyBerserkerMode` now
+/// defaults to `Tab` (`settings/keymap.rs`). 3009 has no consumer yet
+/// (`keymap.rs`'s `NOT_YET_WIRED`), so the clash is latent — the first system
+/// that reads the berserk binding inherits a silent `AppMode` flip, which is
+/// why it is named here rather than discovered then.
+pub const DEV_UNGATED_HOTKEY_COLLISIONS: [KeyCode; 1] = [KeyCode::Tab];
 
 /// Whether the dev tooling may be registered at all — the key-driven systems
 /// **and** the egui windows and the corner button that toggles them.
 ///
 /// It is opt-in via `config.yaml`'s `dev_tools` (the same switch the egui
 /// inspectors use, `environment/mod.rs:550-563`), because the hotkeys read
-/// bare letters in `Update` with no gate: before this, a plain play session
-/// had `Q`/`E`/`T`/`U`/`I` silently claimed by wireframe, AABB lines, light
+/// bare letters in `Update` with no gate: ungated, a plain play session has
+/// `Q`/`E`/`T`/`U`/`I` silently claimed by wireframe, AABB lines, light
 /// tweaks and the nav snapshot. Gating on `AppMode::DebugMode` would not
 /// help — `AppMode` **defaults to `DebugMode`** (`main.rs:45-49`), so every
 /// session starts in it.
 ///
-/// The window half used to be ungated, which was the same bug one layer up:
+/// The window half rides the same gate, one layer up:
 /// `DevWindowsVisible` defaults to `true`, so the GM-command, COS-spawner,
 /// teleport, player-config and render-debug panels — and the "dev" button
-/// itself — rendered over a normal play session even with `dev_tools: false`.
+/// itself — would render over a normal play session even with `dev_tools: false`.
 fn dev_tools_enabled(config: Option<&ClientConfig>) -> bool {
     config.is_some_and(|config| config.dev_tools)
 }
@@ -112,7 +131,7 @@ impl Plugin for DevPlugin {
             .init_resource::<DevWindowsVisible>()
             // NOT in the gated block below: `RenderDebugSettings` is read as a
             // plain `Res<_>` by three shipping culling systems, so gating it on
-            // `dev_tools` panicked the client in the shipped default config.
+            // `dev_tools` would panic the client in the shipped default config.
             // See `RenderControlsPlugin` for the full rationale; only the
             // inspector half is dev-only.
             .add_plugins(RenderControlsPlugin)
@@ -128,8 +147,8 @@ impl Plugin for DevPlugin {
             ))
             // Always on: the mode switch (Tab — the way *into* debug mode),
             // which claims no letter a vanilla HUD toggle wants. The dev-window
-            // button moved into the gated block: it is chrome for tooling that
-            // no longer exists when `dev_tools` is off.
+            // which claims no letter a vanilla HUD toggle wants. The dev-window
+            // button is in the gated block: it is chrome for tooling that
             .add_systems(Update, switch_mode);
 
         // Everything key-driven or egui-driven: opt-in, so a play session keeps
@@ -294,7 +313,34 @@ mod test {
         ] {
             assert!(DEV_HOTKEY_COLLISIONS.contains(&key), "{key:?}");
         }
-        // Tab (the mode switch) stays ungated and must not be in the list
+        // Tab (the mode switch) is read by an *ungated* system, so it belongs
+        // in the other list, not here.
         assert!(!DEV_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+        assert!(DEV_UNGATED_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+    }
+
+    /// Every key a dev system reads must be listed once a keymap default
+    /// claims it — otherwise the clash is only visible to whoever
+    /// happens to press it. `Z`/`N`/`L` are read by `dev/lighting.rs` and
+    /// `environment/mod.rs`, `Tab` by the ungated `switch_mode`.
+    #[test]
+    fn the_keys_the_keymap_defaults_claim_are_all_listed() {
+        use crate::plugins::settings::keymap::KEY_ACTIONS;
+
+        for (key, list) in [
+            (KeyCode::KeyZ, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::KeyN, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::KeyL, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::Tab, &DEV_UNGATED_HOTKEY_COLLISIONS[..]),
+        ] {
+            // The premise: the key really is a keymap default now.
+            assert!(
+                KEY_ACTIONS
+                    .iter()
+                    .any(|action| action.default_key == Some(key)),
+                "no KEY_ACTIONS default binds {key:?} any more - drop it from the list"
+            );
+            assert!(list.contains(&key), "{key:?} is read by a dev system");
+        }
     }
 }

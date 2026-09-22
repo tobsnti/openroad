@@ -147,7 +147,7 @@ mod tests {
     }
 
     /// An empty string is not a tooltip. Four of the original's keys have no
-    /// row in this client (see `PREGAME-options-b2b3.md` §2), and a caller that
+    /// row in this client, and a caller that
     /// resolves one of them to "" must not leave a control claiming help it
     /// cannot show.
     #[test]

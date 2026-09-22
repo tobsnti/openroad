@@ -8,15 +8,14 @@ use std::env;
 /// The YAML spelling of the window mode, as its own enum rather than bevy's
 /// [`WindowMode`].
 ///
-/// Idea (#539): bevy's variants carry payloads —
+/// Idea: bevy's variants carry payloads —
 /// `BorderlessFullscreen(MonitorSelection)`, `Fullscreen(MonitorSelection,
 /// VideoModeSelection)` — and config-rs 0.14 cannot build a newtype variant
 /// from a bare YAML string: it hits an `unreachable!()`
 /// (`config-0.14.1/src/de.rs:337`) and the client dies before its window
-/// exists. Only `Windowed` survived, which is why the tracked `config.yaml`
-/// worked and `config.example.yaml` (`mode: BorderlessFullscreen`) panicked
-/// every fresh setup. Unit variants here keep the documented one-word values
-/// working and decouple the config file from bevy's enum shape.
+/// exists. Only `Windowed` survives as a bare string. Unit variants here keep
+/// the documented one-word values working and decouple the config file from
+/// bevy's enum shape.
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowModeConfig {
     #[default]
@@ -48,9 +47,8 @@ impl WindowModeConfig {
 ///
 /// Idea: this is the VSync switch, and it is also one half of the pipeline's
 /// shape. `immediate` presents as soon as a frame is ready (tearing, lowest
-/// latency, and the only mode that reports a true throughput number, which is
-/// why every reading in `docs/perf-baselines.md` was taken on it); `fifo` waits
-/// for the display's refresh, which is what most players mean by VSync.
+/// latency, and the only mode that reports a true throughput number); `fifo`
+/// waits for the display's refresh, which is what most players mean by VSync.
 ///
 /// **The configured value is a request, not a fact.** Bevy falls back silently
 /// when the surface does not support a mode — `Immediate` degrades to `Fifo`
@@ -117,15 +115,12 @@ pub struct WindowSettings {
     /// renderer has to wait for one to finish presenting.
     ///
     /// Idea: this is the other half of the pipeline's shape, and the reason it
-    /// is exposed at all. Measured 2026-09-05 at the wgpu default of 2, nothing
-    /// in the frame was saturated — the main thread waited 12.53 ms, the render
-    /// thread waited 10.80 ms in the swapchain acquire, and the GPU was busy
-    /// only ~13.9 ms of a 21.85 ms frame. A chain that shallow cannot start the
-    /// next frame's GPU work until the last one has been presented, so acquire
-    /// and GPU execution serialise instead of overlapping.
+    /// is exposed at all. A chain as shallow as wgpu's default of 2 cannot
+    /// start the next frame's GPU work until the last one has been presented,
+    /// so the swapchain acquire and GPU execution serialise instead of
+    /// overlapping.
     ///
-    /// `None` (the default) leaves wgpu's own default of 2, i.e. exactly the
-    /// behaviour every reading in `docs/perf-baselines.md` was taken on.
+    /// `None` (the default) leaves wgpu's own default of 2.
     ///
     /// **Restart-only.** Bevy reads this when it creates the surface and never
     /// again, so changing it in a running client does nothing at all — that is
@@ -172,12 +167,11 @@ impl WindowSettings {
 /// What the window should look like right now, as a value rather than a
 /// sequence of writes.
 ///
-/// Idea: the window used to be written by four systems in two plugins, each
-/// computing its own answer, so the last one to run decided — and the one that
-/// ran last read the *player options*, which is how `config.yaml`'s `mode:`
-/// came to do nothing. Resolving to a single comparable value instead makes
-/// "who wins" a property of [`window_intent`] alone, and lets the apply skip
-/// writing at all when nothing it owns actually changed.
+/// Idea: several writers each computing their own answer let the last one to
+/// run decide the window, and the one reading the *player options* would
+/// override `config.yaml`'s `mode:`. Resolving to a single comparable value
+/// instead makes "who wins" a property of [`window_intent`] alone, and lets
+/// the apply skip writing at all when nothing it owns actually changed.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WindowIntent {
     pub mode: WindowMode,
@@ -278,12 +272,9 @@ fn parse_resolution(value: &str) -> Option<(f32, f32)> {
 /// so a plain `set_scale_factor` would not stick.
 /// Log what the display is actually doing, once, at startup.
 ///
-/// Idea: every frame-time number is read against the refresh rate, and this
-/// machine has already produced two wrong answers for its own display —
-/// `Win32_VideoController` reported a stale 1920x1200 resolution, and
-/// `Screen.Bounds` reported the DPI-scaled 2752x1152 as if it were physical
-/// (see `docs/perf-baselines.md`). Bevy has the value winit actually got from
-/// the compositor, so print that rather than asking the OS a third time.
+/// Idea: every frame-time number is read against the refresh rate, and OS-level
+/// queries answer with stale or DPI-scaled values. Bevy has the value winit
+/// actually got from the compositor, so print that rather than asking the OS.
 ///
 /// `refresh_rate_millihertz` is `None` on some platforms/drivers; say so
 /// explicitly instead of substituting a plausible number.
@@ -332,7 +323,7 @@ pub(crate) fn setup_window(
 
 /// The **only** system that writes the live window's mode, title and size
 /// ([`crate::plugins::settings::live`]). Winit applies all three without a
-/// restart, so this group is `Live` in the audit rather than an apology in the
+/// restart, so this group applies live rather than as an apology in the
 /// options UI.
 ///
 /// It reads both settings resources because both can move the intent, and it
@@ -427,8 +418,7 @@ mod tests {
     /// Centring is windowed-only. Asking winit to centre a *fullscreen* window
     /// positions one of the configured size on the monitor instead of covering
     /// it, so a 1920x1080 config on a 1920x1200 panel lands offset down and
-    /// right with part of the view off-screen — which is what this reproduced
-    /// before the mode check.
+    /// right with part of the view off-screen — hence the mode check.
     #[test]
     fn fullscreen_boot_leaves_the_position_to_the_compositor() {
         let mut config = example_config();
@@ -455,11 +445,10 @@ mod tests {
         );
     }
 
-    /// The regression this whole change exists for: `mode: Windowed` in
-    /// `config.yaml` used to be overwritten on frame 1 by the options layer,
-    /// whose `window_mode` defaulted to "not windowed" — so a *fresh install
-    /// with no `user_settings.yaml` at all* still booted borderless
-    /// fullscreen, and the config key looked dead.
+    /// `mode: Windowed` in `config.yaml` must survive frame 1. An options
+    /// layer whose `window_mode` defaults to "not windowed" would boot a fresh
+    /// install — with no `user_settings.yaml` at all — into borderless
+    /// fullscreen and make the config key look dead.
     #[test]
     fn config_windowed_survives_boot_without_a_session_override() {
         let mut config = example_config();
@@ -495,8 +484,8 @@ mod tests {
         assert_eq!(window_of(&mut app).mode, WindowMode::Windowed);
     }
 
-    /// `apply_window_mode` hardcoded `MonitorSelection::Current`, so a
-    /// configured `monitor:` was discarded every time the mode was applied.
+    /// A hardcoded `MonitorSelection::Current` would discard a configured
+    /// `monitor:` every time the mode is applied.
     #[test]
     fn the_fullscreen_override_uses_the_configured_monitor() {
         let settings = WindowSettings {
@@ -565,7 +554,7 @@ mod tests {
     }
 
     /// The other half of the guard: narrowing the trigger must not cost the
-    /// `Liveness::Live` verdict the audit gives this group.
+    /// live application of the group.
     #[test]
     fn a_window_settings_edit_still_moves_the_window() {
         let mut config = example_config();
@@ -588,7 +577,7 @@ mod tests {
     }
 
     /// `RESOLUTION=` outranks the configured size, and a malformed value is
-    /// ignored rather than panicking the boot — it used to `unwrap()`.
+    /// ignored rather than panicking the boot.
     #[test]
     fn the_env_resolution_outranks_the_config_and_tolerates_junk() {
         let settings = WindowSettings {
@@ -616,6 +605,44 @@ mod tests {
         );
     }
 
+    /// The Video pane's saved size is the only way a stored resolution reaches
+    /// the window, and it sits *between* `RESOLUTION=` and `config.yaml`. All
+    /// three rungs of that ladder in one place, because a dropped `.or_else`
+    /// would be silent: the window would simply keep `config.yaml`'s size.
+    #[test]
+    fn a_chosen_size_beats_the_config_and_loses_to_the_env() {
+        let settings = WindowSettings {
+            width: 1920.0,
+            height: 1080.0,
+            mode: WindowModeConfig::Windowed,
+            title: "t".into(),
+            monitor: MonitorSelection::Primary,
+            present_mode: PresentModeConfig::default(),
+            max_frame_latency: None,
+        };
+
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), None).size,
+            Some((1280.0, 720.0)),
+            "the saved size has to win over config.yaml"
+        );
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), Some("1600x900")).size,
+            Some((1600.0, 900.0)),
+            "RESOLUTION= outranks the saved size"
+        );
+        assert_eq!(
+            window_intent(&settings, None, None, None).size,
+            Some((1920.0, 1080.0)),
+            "nothing saved, nothing in the env: config.yaml"
+        );
+        // Fullscreen still means the monitor owns the size.
+        assert_eq!(
+            window_intent(&settings, Some(false), Some((1280, 720)), None).size,
+            None
+        );
+    }
+
     /// Every documented spelling has to reach wgpu, because the fallback that
     /// makes this hard to verify at runtime is silent: a typo'd mode would not
     /// error, it would deserialize-fail or quietly behave as something else.
@@ -635,8 +662,8 @@ mod tests {
         }
     }
 
-    /// The default must be the behaviour this shipped with, or every frame-time
-    /// reading in docs/perf-baselines.md silently stops being comparable.
+    /// The default must stay the documented one, or frame-time readings stop
+    /// being comparable between runs.
     #[test]
     fn the_defaults_are_the_behaviour_this_shipped_with() {
         assert_eq!(

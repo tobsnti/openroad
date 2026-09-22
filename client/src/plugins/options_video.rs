@@ -488,7 +488,7 @@ pub(crate) enum ExtraRow {
     FoliageMode,
     /// `graphics.foliage.density`, the tuft-count multiplier.
     FoliageDensity,
-    /// `graphics.foliage.view_distance` — #366's "the single biggest win".
+    /// `graphics.foliage.view_distance`, the largest foliage cost lever.
     /// Named after the original's own *sight range* vocabulary, which is the
     /// closest thing it has to this concept.
     FoliageSightRange,
@@ -1141,7 +1141,7 @@ mod tests {
         }
     }
 
-    /// The two rows left unwired on purpose (`PREGAME-options-b2b3.md` §2):
+    /// The one row left unwired on purpose:
     /// id 8 `UIIT_STT_FILTERING`, whose candidate string `_15` describes edge
     /// smoothing and does not name the row, and nothing else. If a later change
     /// wires id 8, this test should be updated deliberately.
@@ -1269,9 +1269,9 @@ mod tests {
         }
     }
 
-    /// `off` is the faithful v1.188 setting (#366, #646): the default must
-    /// stay off, and the mode row must start there rather than at a mode that
-    /// renders grass the original never had.
+    /// `off` is the faithful v1.188 setting: the default must stay off, and
+    /// the mode row must start there rather than at a mode that renders grass
+    /// the original never had.
     #[test]
     fn the_shipped_default_is_the_vanilla_off_mode() {
         let config = test_config();
@@ -1309,8 +1309,8 @@ mod tests {
     }
 
     /// `config.example.yaml` through the loader `main()` uses — the same file a
-    /// fresh setup copies (#539) — so the rows are exercised against the real
-    /// shipped defaults rather than against a struct literal.
+    /// fresh setup copies — so the rows are exercised against the real shipped
+    /// defaults rather than against a struct literal.
     fn test_config() -> ClientConfig {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../config.example.yaml")

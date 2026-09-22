@@ -6,31 +6,18 @@
 //! id-keyed maps rather than dozens of hand-named fields (several CSV slots are
 //! unnamed anyway); the distinct scalar settings get real names.
 //!
-//! `Default` used to be openroad's own baseline throughout, on the stated
-//! grounds that "we never have a `SROptionSet.dat` to read". **That is no
-//! longer true (2026-08-20).** Two real files were measured on the user's own
-//! machine from two independent installs (a v1.188 client and a later-patch
-//! derivative), **681 bytes each, 105 records with no trailing bytes** under
-//! our own width table.
+//! `Default` is the shipped option set where `SROptionSet.dat` states it, and
+//! openroad's own baseline only where the file does not.
 //!
-//! What that changes here:
-//!
-//! * **KeyMap** — the block is byte-identical in both files, so it is the
-//!   shipped binding set, not one player's habit. [`super::keymap::KEY_ACTIONS`]
-//!   now cites a `.dat` id/VK per entry (the `textuisystem.txt` L2250-2274
-//!   literals from #657 agree with every one of them).
-//! * **Audio** — ids 1001/1002/1003 read 30 / 50 / 50 and 1004-1006 all read 1
-//!   in both files, so [`AudioOptions::default`] is those values (see there).
-//! * **The Setting toggles** — ids 2001..=2028 are byte-identical in both
-//!   files too (the diff is confined to offsets 13..238, i.e. the video block:
-//!   `third-party-tool-findings.md` §3), so they are adopted as well; see
-//!   [`SHIPPED_TOGGLES`]. This corrects the earlier text here, which lumped
-//!   the toggles in with the video block and left them at openroad's own
-//!   "everything on" guess.
-//! * **Video** is still *not* adopted: that is exactly the region where the
-//!   two files disagree, and the later-patch derivative is not v1.188 ground
-//!   truth. Those defaults stay openroad's own until a second v1.188 sample
-//!   confirms them.
+//! * **KeyMap** — the block is the shipped binding set, not one player's habit.
+//!   [`super::keymap::KEY_ACTIONS`] cites a `.dat` id/VK per entry (the
+//!   `textuisystem.txt` L2250-2274 literals agree with every one of them).
+//! * **Audio** — ids 1001/1002/1003 hold 30 / 50 / 50 and 1004-1006 all hold 1,
+//!   so [`AudioOptions::default`] is those values (see there).
+//! * **The Setting toggles** — ids 2001..=2028 are adopted from the file as
+//!   well; see [`SHIPPED_TOGGLES`] and `docs/formats/sroptionset.md`.
+//! * **Video** is *not* adopted: the video block differs between client
+//!   versions, so those defaults stay openroad's own.
 
 use std::collections::BTreeMap;
 
@@ -538,13 +525,37 @@ fn set_opt_bool(slot: &mut Option<bool>, value: OptionValue) {
 mod tests {
     use super::*;
 
-    /// B5: the shipped Setting-tab defaults are the *measured* ones, not
-    /// "everything on" — both real `SROptionSet.dat` (two real installs) are
-    /// byte-identical over the whole 2001..=2028 range, which is what makes
-    /// them the shipped set rather than one player's habit. Pinned here so a
-    /// later "looks nicer with everything on" edit has to argue with the file.
+    /// The startup restore path (`config::window`) asks this method, so the
+    /// three answers it can give are pinned here: nothing stored, a real
+    /// choice, and the documented blind spot (a player who picks exactly the
+    /// shipped default pair keeps `config.yaml`'s window - see the method's own
+    /// rationale and `docs/formats/sroptionset.md`).
     #[test]
-    fn the_setting_toggle_defaults_are_the_two_measured_dat_files() {
+    fn chosen_size_reports_only_a_size_that_differs_from_the_shipped_default() {
+        assert_eq!(GraphicProfile::default().chosen_size(), None);
+
+        let mut profile = GraphicProfile::default();
+        profile.width = 1280;
+        profile.height = 720;
+        assert_eq!(profile.chosen_size(), Some((1280, 720)));
+
+        // One axis is enough to count as chosen.
+        let mut tall = GraphicProfile::default();
+        tall.height = 1200;
+        assert_eq!(tall.chosen_size(), Some((default_width(), 1200)));
+
+        // The known cost, asserted so it cannot change unnoticed.
+        let mut shipped = GraphicProfile::default();
+        shipped.width = default_width();
+        shipped.height = default_height();
+        assert_eq!(shipped.chosen_size(), None);
+    }
+
+    /// The shipped Setting-tab defaults are the ones `SROptionSet.dat` holds,
+    /// not "everything on". Pinned here so a later "looks nicer with everything
+    /// on" edit has to argue with the file.
+    #[test]
+    fn the_setting_toggle_defaults_come_from_the_dat_files() {
         let off = [2018u16, 2019, 2020, 2021, 2022, 2023, 2024, 2026, 2028];
         let options = GameOptions::default();
 

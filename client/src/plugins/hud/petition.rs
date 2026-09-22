@@ -519,7 +519,7 @@ pub fn cleanup_petitions(
     pending.0 = None;
 }
 
-/// Self-registration for the shared petition popup (#558).
+/// Self-registration for the shared petition popup.
 pub struct PetitionPlugin;
 
 impl Plugin for PetitionPlugin {
@@ -541,8 +541,7 @@ impl Plugin for PetitionPlugin {
 mod test {
     use super::*;
     // Only the plate-size test inverts the interior; importing it at module
-    // scope would be an unused import in a non-test build, which `make
-    // warnings` rejects.
+    // scope would be an unused import in a non-test build.
     use crate::plugins::hud::modal_dialog::modal_interior;
     use packets::agent::party::PartySetup;
     use packets::Packet;
@@ -716,9 +715,31 @@ mod test {
         assert!(auto_refusal(PETITION_EXCHANGE, &GameOptions::default()).is_none());
     }
 
+    /// A fresh install answers nobody on its own: 2002 and 2003 ship as `1`
+    /// (`settings::options::SHIPPED_TOGGLES`), so no arm puts a C->S
+    /// 0x3080 on the wire before the player has touched a switch. Pinned
+    /// because the auto-refusal is the one path here that sends without a
+    /// click, and a flipped shipped default would make it silent traffic.
+    #[test]
+    fn default_options_refuse_nothing_at_all() {
+        let defaults = GameOptions::default();
+        for arm in [
+            PETITION_EXCHANGE,
+            PETITION_PARTY_CREATION,
+            PETITION_PARTY_INVITATION,
+            PETITION_RESURRECTION,
+            PETITION_GUILD,
+            PETITION_UNION,
+            PETITION_ACADEMY,
+        ] {
+            assert!(
+                auto_refusal(arm, &defaults).is_none(),
+                "arm {arm} answers on its own with shipped defaults"
+            );
+        }
+    }
+
     /// The hosted arms are the two party ones plus exchange; every other arm
-    /// is named, not silently dropped and not answered with an unverified
-    /// encoding.    /// The hosted arms are the two party ones plus exchange; every other arm
     /// is named, not silently dropped and not answered with an unverified
     /// encoding.
     #[test]
