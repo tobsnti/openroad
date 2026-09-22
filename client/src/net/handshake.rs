@@ -137,10 +137,16 @@ pub(crate) fn read_handshake_frame<R: Read>(
     loop {
         // Parse first: the carry buffer may already hold a whole frame from
         // the previous call, in which case there is nothing to read.
+        // Read the consumed length from the always-plaintext length prefix
+        // *before* parsing: `parse` reports a decrypt-relative size (4 bytes
+        // short for an encrypted frame), so deriving the carry position from it
+        // leaves filler bytes in `pending` and desynchronises every later read.
+        // `wire_len` is the one source of truth, as in `next_packet`.
+        let wire_len = SilkroadFrame::wire_len(pending);
         match SilkroadFrame::parse(pending, security.clone()) {
-            Ok((total_size, frame)) => {
-                // `parse` reports the size *behind* the 2-byte length prefix.
-                pending.drain(..total_size + 2);
+            Ok((_, frame)) => {
+                let consumed = wire_len.ok_or(InvalidFrame)?;
+                pending.drain(..consumed);
                 return Ok(frame);
             }
             // Not all of it arrived yet — read more rather than fail.
@@ -631,6 +637,80 @@ mod test {
             other => panic!("expected a packet, got {other:?}"),
         }
         assert!(pending.is_empty(), "both frames were consumed");
+    }
+
+    /// A security state with a blowfish key, as it stands once the handshake
+    /// completed — every later frame the gateway sends is encrypted.
+    fn established_security() -> Arc<RwLock<SilkroadSecurityState>> {
+        let mut state = SilkroadSecurityState::new();
+        state.state = SilkroadSecurity::Established;
+        state.context.blowfish = Some(Blowfish::new(&[0u8; 8]).expect("test key"));
+        Arc::new(RwLock::new(state))
+    }
+
+    /// **The desynchronised login stream.** `parse` reports a *decrypt-relative*
+    /// size for an encrypted frame — four bytes short of what is on the wire —
+    /// so draining `size + 2` left four filler bytes in the carry buffer. The
+    /// module-identification answer arrives encrypted right behind the last
+    /// handshake message, so those four bytes were handed to the receive loop
+    /// as the next frame header: length 0, opcode 0, and nothing after it ever
+    /// lined up again ("recv Packet[0x0][encrypted: 0]" and no login).
+    #[test]
+    fn an_encrypted_frame_leaves_the_carry_buffer_at_the_next_frame() {
+        let security = established_security();
+        // The last handshake message is cleartext; the module answer behind it
+        // is encrypted; a third frame stands in for whatever the gateway
+        // coalesced behind that.
+        let handshake = setup_frame_bytes(&[1, 2, 3, 4]);
+        let encrypted = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x2001,
+            encrypted: 1,
+            data: Bytes::from_static(&[b'G', b'a', b't', b'e', b'w', b'a', b'y']),
+        }
+        .serialize(security.clone())
+        .expect("serialize")
+        .to_vec();
+        assert_ne!(
+            encrypted.len(),
+            2 + 4 + 7,
+            "fixture must be blowfish-padded, or the defect cannot show"
+        );
+        let trailing = setup_frame_bytes(&[0xAB, 0xCD]);
+        let wire = [handshake, encrypted.clone(), trailing.clone()].concat();
+
+        let mut pending = Vec::new();
+        let frame = read_handshake_frame(
+            &mut ChunkedReader::new(&[&wire]),
+            security.clone(),
+            &mut pending,
+        )
+        .expect("the cleartext handshake frame parses");
+        assert!(matches!(
+            frame,
+            SilkroadFrame::Packet { opcode: 0x5000, .. }
+        ));
+        assert_eq!(
+            pending,
+            [encrypted.clone(), trailing.clone()].concat(),
+            "the carry buffer must stand exactly at the encrypted frame"
+        );
+
+        // Reading the encrypted frame is where the miscount happened.
+        let frame = read_handshake_frame(&mut ChunkedReader::new(&[]), security, &mut pending)
+            .expect("the encrypted frame parses from the buffer alone");
+        match frame {
+            SilkroadFrame::Packet { opcode, data, .. } => {
+                assert_eq!(opcode, 0x2001);
+                assert_eq!(data.as_ref(), b"Gateway");
+            }
+            other => panic!("expected a packet, got {other:?}"),
+        }
+        assert_eq!(
+            pending, trailing,
+            "the padding of the encrypted frame must be consumed with it"
+        );
     }
 
     /// An `Interrupted` read is a signal, not a protocol error: nothing was

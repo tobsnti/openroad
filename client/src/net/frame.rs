@@ -123,6 +123,9 @@ impl SilkroadFrame {
         Ok(buf.freeze())
     }
 
+    /// The returned `usize` is NOT the wire length: it is decrypt-relative and
+    /// four bytes short for an encrypted frame — use [`wire_len`](Self::wire_len)
+    /// to advance a buffer.
     pub fn parse(
         data: &mut [u8],
         security: Arc<RwLock<SilkroadSecurityState>>,
@@ -517,6 +520,47 @@ mod tests {
         };
         assert_eq!(data.len(), captured.len());
         assert_eq!(&data[..], captured);
+    }
+
+    /// `wire_len` and the size `parse` returns are NOT the same number: `parse`
+    /// answers relative to what it decrypted, which is four bytes short of the
+    /// wire for an encrypted frame and exact for a cleartext one. Anything that
+    /// advances a buffer must therefore use `wire_len` — pinned here, because
+    /// the handshake carry buffer used the parse value and desynchronised the
+    /// whole stream behind the first encrypted frame.
+    #[test]
+    fn wire_len_is_the_serialized_length_parse_is_not() {
+        for (with_key, encrypted) in [(false, 0u8), (true, 1u8)] {
+            let security = security(with_key);
+            let frame = SilkroadFrame::Packet {
+                count: 0,
+                crc: 0,
+                opcode: 0x2001,
+                encrypted,
+                data: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7]),
+            };
+            let mut wire = frame
+                .serialize(security.clone())
+                .expect("serialize")
+                .to_vec();
+
+            assert_eq!(
+                SilkroadFrame::wire_len(&wire),
+                Some(wire.len()),
+                "wire_len must match the serialized frame (encrypted: {encrypted})"
+            );
+
+            let (reported, _) = SilkroadFrame::parse(&mut wire, security).expect("parse");
+            let expected = if encrypted == 1 {
+                wire.len() - 2 - 4
+            } else {
+                wire.len() - 2
+            };
+            assert_eq!(
+                reported, expected,
+                "parse reports a decrypt-relative size (encrypted: {encrypted})"
+            );
+        }
     }
 
     /// The same slice also swallowed whatever followed in the buffer, so two
