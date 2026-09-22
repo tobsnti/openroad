@@ -141,64 +141,37 @@ pub struct FigureStoryTitle;
 #[derive(Component, Default, Clone)]
 pub struct FigureStoryText;
 
-// --- The screen's unit: one authored pixel of the 800x600 original ----------
+// --- The screen's unit: one authored pixel of the original -------------------
 //
-// # The idea
+// Every rect in this file is transcribed from the original's `resinfo` tree, and
+// the original draws all of them **1:1 in device pixels** on an 800x600 client
+// area; the two full-width bands are the one exception — 1600x172 art rendered
+// 800x85. The sibling pre-game screens do the same: the login form, the region
+// plates (`region_select::PLATE_SIZE`) and the character-select button row draw
+// their art at its native size, and `intro_font_px` is unscaled for the same
+// reason.
 //
-// Every rect in this file is transcribed from the original's `resinfo` tree,
-// and the original draws all of them **1:1 in device pixels on an 800x600
-// client area** (measured, the layout notes, the two
-// full-width bands are the one exception — 1600x172 art rendered 800x85). So
-// "264" is not a length, it is *264 of the 800x600 screen's 600 rows*.
-//
-// Written as `Val::Px(264.0)` that distinction is lost and the window keeps its
-// **pixel** size while the window grows: measured on this branch at two sizes,
-// the customize panel is 258 px of visible interior at 1024x768 **and** at
-// 1600x900, so its share of the width falls 25.2% -> 16.1%, while the bands
-// (percentage-based) hold their share to 0.04 percentage points. That is the
-// whole of the "everything is too small" playtest report — the screen is not
-// designed small, it fails to scale.
-//
-// [`cu`] restates each transcribed number in the unit it was authored in.
-// `Val::Vh` is the same class of mechanism the bands already use (a fraction of
-// the viewport), not a second scale factor beside `plugins::hud::scale`, which
-// is a *user setting* for the in-game HUD and has no window term at all.
-//
-// # Why the height decides, on both axes
-//
-// A percentage on each axis separately would stretch the art: the original is
-// 4:3 and the player's window is 16:9 or 21:9, so a `Vw` width with a `Vh`
-// height would draw a 264x316 panel as 352x316 at 1600x900. One factor on both
-// axes keeps the art's own proportions, and it is derived from the **height**
-// because that is the axis a wider-than-4:3 window does *not* gain: sizing off
-// the width would make every window a fifth larger again on 21:9 than on 16:9
-// at the same height. **This choice is ours** (ADR-0009); the numbers it
-// multiplies are the original's.
-//
-// At 800x600 `cu(v)` is exactly `v` logical pixels, which is why every geometry
-// test in this file still states the original's own numbers.
+// History, so nobody re-derives either end: this screen was drawn 1:1, then for
+// a while `cu` was `Val::Vh(v / 6)` — the art grew with the window height, 1.5x
+// at 1600x900 and 2.4x at 1440 rows, while every other pre-game surface stayed
+// 1:1. That scale was too large. One unit for the whole pre-game wins; if the
+// pre-game is ever scaled, it is scaled in one place for all its screens, not
+// here.
 
-/// The original client area this screen's rects are authored in: 800x600,
-/// measured from the reference screenshot (`CREATE-LAYOUT-SPEC.md` §1, client
-/// area at window offset 3,26). Only the height is needed — see the module
-/// note above on why one axis drives both.
-const DESIGN_CLIENT_H: f32 = 600.0;
-
-/// One authored pixel of the 800x600 design client area.
+/// One authored pixel.
 fn cu(v: f32) -> Val {
-    Val::Vh(100.0 * v / DESIGN_CLIENT_H)
+    Val::Px(v)
 }
 
-/// [`cu`] for text: the same unit, so a caption grows with the box it sits in.
+/// [`cu`] for text.
 fn cu_font(v: f32) -> FontSize {
-    FontSize::Vh(100.0 * v / DESIGN_CLIENT_H)
+    FontSize::Px(v)
 }
 
-/// [`cu`] resolved against a concrete window height — for the few places that
-/// need a number rather than a `Val` (the slider thumb's per-frame position,
-/// and the geometry tests).
-fn cu_at(v: f32, window_h: f32) -> f32 {
-    v * window_h / DESIGN_CLIENT_H
+/// [`cu`] as a number — for the slider thumb's per-frame position and the
+/// geometry tests.
+fn cu_at(v: f32) -> f32 {
+    v
 }
 
 /// `GDR_STA_TITLE` art (`text-custom.ddj`), `Rect=47,111,428,36` in both the
@@ -1467,14 +1440,8 @@ fn zoom_button_style(assets: &IntroV2Assets, zoomed_in: bool) -> ImageButtonStyl
 // fraction of the window: the measurement is an inset, and the same corner is
 // what `GDR_STA_ROTATE` is anchored to.
 //
-// The inset is stated in the screen's own unit ([`cu`]) — i.e. it scales with
-// the window like the buttons it separates. **This is a correction of the
-// earlier reading**, which held the inset at 13 *logical pixels* at every
-// window size on the argument that the art is drawn 1:1: with the art now
-// scaling, a fixed 13 px margin would be a twentieth of the original's
-// relative gap on a 3440-wide screen and the row would look glued to the edge.
-// At 800x600 the number is unchanged and still exactly the measured 13/17,
-// which is what the geometry tests below check.
+// The inset is in the screen's own unit ([`cu`]), i.e. the same 1:1 pixels as
+// the art it separates — which is what the geometry tests below check.
 
 /// Distance from the window's bottom edge to the row's bottom edge.
 /// Measured (see above), 17 px. The 13 px right inset is shared with
@@ -1500,16 +1467,14 @@ const MAIN_BUTTON_H: f32 = 41.0;
 /// `(confirm_left, cancel_right, top, bottom)`. Exists so the anchor can be
 /// checked against the measured original without a running app.
 fn control_row_box(w: f32, h: f32) -> (f32, f32, f32, f32) {
-    let cancel_right = w - cu_at(CONTROL_ROW_RIGHT_INSET, h);
-    let confirm_left = cancel_right
-        - cu_at(MAIN_BUTTON_W, h)
-        - cu_at(CONTROL_ROW_GAP, h)
-        - cu_at(MAIN_BUTTON_W, h);
-    let bottom = h - cu_at(CONTROL_ROW_BOTTOM_INSET, h);
+    let cancel_right = w - cu_at(CONTROL_ROW_RIGHT_INSET);
+    let confirm_left =
+        cancel_right - cu_at(MAIN_BUTTON_W) - cu_at(CONTROL_ROW_GAP) - cu_at(MAIN_BUTTON_W);
+    let bottom = h - cu_at(CONTROL_ROW_BOTTOM_INSET);
     (
         confirm_left,
         cancel_right,
-        bottom - cu_at(MAIN_BUTTON_H, h),
+        bottom - cu_at(MAIN_BUTTON_H),
         bottom,
     )
 }
@@ -3112,67 +3077,39 @@ mod tests {
         assert_eq!(confirm_left + MAIN_BUTTON_W, 683.0);
     }
 
-    /// The row keeps the *shape* it was measured in at any window size: the
-    /// buttons, the gap between them and the margin to the corner are all the
-    /// same multiple of the window height. This is the playtest defect
-    /// ("everything is too small") stated as an equation — before this change
-    /// the row was 195 logical pixels wide whether the window was 1024 or 1600
-    /// across.
-    ///
-    /// Note this **reverses** the older
-    /// `the_control_row_inset_does_not_scale_with_the_window`: the inset used
-    /// to be pinned at 13/17 px at every size, which was right while the art
-    /// was drawn 1:1 and is wrong now that it is not.
+    /// Playtest F3 ("viel zu groß skaliert"), pinned: the row is the same
+    /// 1:1 art at every window size, like the login form and the region
+    /// plates. Red control: the Vh unit this replaced drew the row 1.5x at
+    /// 1600x900 (buttons 137x62 instead of 91x41).
     #[test]
-    fn the_control_row_keeps_its_measured_shape_at_every_window_size() {
+    fn the_control_row_is_drawn_1_to_1_at_every_window_size() {
         let (left_600, right_600, top_600, bottom_600) = control_row_box(800.0, 600.0);
         let (left_900, right_900, top_900, bottom_900) = control_row_box(1600.0, 900.0);
         // the 800x600 case is the measurement itself
         assert_eq!(600.0 - bottom_600, 17.0);
         assert_eq!(800.0 - right_600, 13.0);
-        // and at 1600x900 every one of the four numbers is 900/600 = 1.5x it
-        assert_eq!(900.0 - bottom_900, 1.5 * (600.0 - bottom_600));
-        assert_eq!(1600.0 - right_900, 1.5 * (800.0 - right_600));
-        assert_eq!(bottom_900 - top_900, 1.5 * (bottom_600 - top_600));
-        assert_eq!(right_900 - left_900, 1.5 * (right_600 - left_600));
+        // and at 1600x900 the same insets and the same button art
+        assert_eq!(900.0 - bottom_900, 17.0);
+        assert_eq!(1600.0 - right_900, 13.0);
+        assert_eq!(bottom_900 - top_900, MAIN_BUTTON_H);
+        assert_eq!(bottom_900 - top_900, bottom_600 - top_600);
+        assert_eq!(right_900 - left_900, 2.0 * MAIN_BUTTON_W + CONTROL_ROW_GAP);
+        assert_eq!(right_900 - left_900, right_600 - left_600);
     }
 
-    /// The unit itself: `cu` is the original's own pixel at 800x600 and a
-    /// fraction of the viewport height everywhere else, on **both** axes, so
-    /// nothing is stretched by the window's aspect ratio.
+    /// The unit itself: one `cu` is one authored pixel, at every window size,
+    /// so the customize panel is the original's 264x316 at 1600x900 too (the
+    /// Vh unit drew it 396x474 there).
     #[test]
-    fn one_creation_unit_is_one_original_pixel_at_800x600() {
-        assert_eq!(cu(1.0), Val::Vh(100.0 / 600.0));
-        assert_eq!(cu_at(1.0, 600.0), 1.0);
-        assert_eq!(cu_at(CUSTOM_W, 600.0), 264.0);
-        // 4:3 -> 16:9 must not widen the panel: both axes take the same factor
-        assert_eq!(
-            cu_at(CUSTOM_W, 900.0) / CUSTOM_W,
-            cu_at(CUSTOM_H, 900.0) / CUSTOM_H
-        );
-        // and the aspect ratio of the art survives it
-        // f32, so compare within one ulp of the ratio rather than bit-exactly:
-        // 264/316 through two viewport conversions lands on 0.83544296 while
-        // the literal quotient is 0.835443. The claim is "the aspect survives",
-        // not "the float is reproduced bit for bit".
-        let seen = cu_at(CUSTOM_W, 1440.0) / cu_at(CUSTOM_H, 1440.0);
-        let want = CUSTOM_W / CUSTOM_H;
-        assert!(
-            (seen - want).abs() <= f32::EPSILON * want,
-            "aspect drifted: {seen} vs {want}"
-        );
-    }
-
-    /// The share of the screen the original gives these windows, which is the
-    /// target this change is measured against: 264/800 and 212/800 of the
-    /// width at 800x600. Stated as a test so a later "just make it a bit
-    /// bigger" cannot drift away from the reference unnoticed.
-    #[test]
-    fn the_windows_keep_the_originals_share_of_a_800x600_client() {
-        assert_eq!(cu_at(CUSTOM_W, 600.0) / 800.0, 264.0 / 800.0);
-        assert_eq!(cu_at(EXPLAIN_CH_SIZE.0, 600.0) / 800.0, 212.0 / 800.0);
-        assert_eq!(cu_at(ROTATE_WINDOW_W, 600.0) / 800.0, 152.0 / 800.0);
-        assert_eq!(cu_at(MAIN_BUTTON_W, 600.0) / 800.0, 91.0 / 800.0);
+    fn one_creation_unit_is_one_original_pixel() {
+        assert_eq!(cu(1.0), Val::Px(1.0));
+        assert_eq!(cu_font(12.0), FontSize::Px(12.0));
+        assert_eq!(cu_at(CUSTOM_W), 264.0);
+        assert_eq!(cu_at(CUSTOM_H), 316.0);
+        assert_eq!(cu(CUSTOM_W), Val::Px(264.0));
+        assert_eq!(cu_at(EXPLAIN_CH_SIZE.0), 212.0);
+        assert_eq!(cu_at(ROTATE_WINDOW_W), 152.0);
+        assert_eq!(cu_at(MAIN_BUTTON_W), 91.0);
     }
 
     /// `Section = Slider` is ONE authored template, transcribed verbatim, and
