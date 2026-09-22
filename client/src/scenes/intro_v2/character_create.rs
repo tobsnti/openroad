@@ -2013,6 +2013,21 @@ pub fn spawn_figure_overlay_camera(
             sky_reflection_env_light(&mut images),
         ))
         .id();
+    // The figure is alone on the `CreateFigure` layer, and a `DirectionalLight`
+    // only lights the layers it is on — the scene's sun is on the main layer,
+    // so without this the body would be lit by the sky probe alone and read as
+    // a flat silhouette. Same construction and the same illuminance as the paper
+    // doll's headlight (`plugins::hud::inventory::paperdoll`): a light parented
+    // to the camera with an identity transform shines wherever the camera
+    // looks, so the figure keeps its lighting through the camera flight.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 3_000.0,
+            ..default()
+        },
+        RenderLayers::layer(CameraLayers::CreateFigure.into()),
+        ChildOf(camera),
+    ));
     // Not for bloom's sake: bevy keys the shared main texture on
     // `(target, usage, format, msaa)`, so a `clear_color: None` camera whose
     // format disagrees with the others composites into an empty texture and
