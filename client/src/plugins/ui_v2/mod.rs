@@ -19,6 +19,10 @@ pub mod widgets;
 
 /// Widget library built on bevy 0.19's headless widgets (`bevy_ui_widgets`),
 /// styled with the game's own image assets. Used by the intro v2 scene.
+/// The design canvas every `resinfo` rect is authored in (`Rect="0,0,1600,1200"`
+/// on the full-screen statics).
+pub const RESINFO_CANVAS: (f32, f32) = (1600.0, 1200.0);
+
 pub struct UiV2Plugin;
 
 impl Plugin for UiV2Plugin {

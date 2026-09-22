@@ -75,6 +75,19 @@ pub enum IntroV2State {
     CharacterCreate,
 }
 
+/// The original's five text slots, by resinfo `FontIndex`: 9/8/12/11/15 pt at
+/// 96 dpi, the order the client constructs them in (confirmed by the user's own
+/// `event/event_interface.txt:2`).
+const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
+
+/// `FontSize::Px` of an intro control with resinfo `FontIndex` `font_index`.
+/// Unscaled on purpose: the intro draws its rects at the art's native size, so
+/// its text carries the same 1:1 factor as the box it sits in.
+pub(crate) const fn intro_font_px(font_index: usize) -> f32 {
+    let last = FONT_INDEX_PX.len() - 1;
+    FONT_INDEX_PX[if font_index > last { last } else { font_index }]
+}
+
 /// Marker for every UI root spawned by the intro v2 scene, used for cleanup.
 #[derive(Component, Default, Clone)]
 pub struct IntroV2Ui;
@@ -98,6 +111,7 @@ impl Plugin for IntroV2ScenePlugin {
                 LoadingStateConfig::new(SceneState::Loading).load_collection::<IntroV2Assets>(),
             )
             .init_resource::<server_select::SelectedShardV2>()
+            .init_resource::<server_select::ShardListScroll>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
                 (
@@ -143,12 +157,31 @@ impl Plugin for IntroV2ScenePlugin {
                         .run_if(crate::plugins::net::plugin::networking_enabled),
                     // Show a connect failure if one is already pending on entry.
                     net::surface_gateway_error,
+                    login_form::focus_id_input,
+                    // The Tab ring only exists while this screen is on show —
+                    // `hide_screen` leaves the tree alive and Bevy collects Tab
+                    // targets structurally, see `login_form::open_tab_ring`.
+                    login_form::open_tab_ring,
                 )
                     .chain(),
             )
             .add_systems(
+                Update,
+                (
+                    login_form::submit_on_enter,
+                    // The original greys Connect *and* Exit while the captcha
+                    // window is up.
+                    login_form::lock_exit_while_captcha_is_open,
+                )
+                    .run_if(in_state(IntroV2State::LoginForm)),
+            )
+            .add_systems(
                 OnExit(IntroV2State::LoginForm),
-                fade::hide_screen::<login_form::LoginFormRoot>,
+                (
+                    fade::hide_screen::<login_form::LoginFormRoot>,
+                    login_form::close_tab_ring,
+                    captcha::despawn_captcha_modal,
+                ),
             )
             .add_systems(
                 OnEnter(IntroV2State::CharacterList),
@@ -297,7 +330,21 @@ impl Plugin for IntroV2ScenePlugin {
                 (
                     server_select::update_shard_row_visuals
                         .run_if(in_state(IntroV2State::ServerSelection)),
+                    // the slider's missing half: wheel input, the thumb that
+                    // tracks the offset, and Select's disabled state
+                    server_select::scroll_shard_list_with_wheel
+                        .run_if(in_state(IntroV2State::ServerSelection)),
+                    server_select::update_slider_thumb
+                        .run_if(in_state(IntroV2State::ServerSelection)),
+                    server_select::update_select_button_enabled
+                        .run_if(in_state(IntroV2State::ServerSelection)),
                     server_select::update_shard_name_text
+                        .run_if(in_state(SceneState::IntroV2))
+                        .run_if(resource_exists::<ShardList>),
+                    // Displayed server and *selected* server used to drift
+                    // apart, and Connect's "select a server first" then read as
+                    // a lie about what the row shows.
+                    server_select::commit_remembered_shard
                         .run_if(in_state(SceneState::IntroV2))
                         .run_if(resource_exists::<ShardList>),
                 ),
@@ -314,6 +361,10 @@ impl Plugin for IntroV2ScenePlugin {
                     net::on_agent_login_response,
                     captcha::on_captcha_challenge,
                     captcha::on_captcha_confirm_response,
+                    // The modal is the only thing the screen takes input for
+                    // while it is up: caret into its one field, Enter confirms.
+                    captcha::focus_captcha_input,
+                    captcha::confirm_captcha_on_enter,
                 )
                     .run_if(in_state(SceneState::IntroV2)),
             )
@@ -393,6 +444,7 @@ fn spawn_chrome(
     mut commands: Commands,
     assets: Res<IntroV2Assets>,
     fonts: Res<crate::assets::FontAssets>,
+    ui_strings: Res<crate::plugins::textdata::ClientUiStrings>,
     cam_query: Query<Entity, With<Camera2d>>,
 ) {
     let Some(camera) = ui_camera(&cam_query) else {
@@ -409,16 +461,16 @@ fn spawn_chrome(
         .spawn_scene(chrome::footer(&assets))
         .insert((UiTargetCamera(camera), IntroV2Ui));
     commands
-        .spawn_scene(chrome::info_text())
+        .spawn_scene(chrome::info_text(&fonts))
         .insert((UiTargetCamera(camera), IntroV2Ui));
     commands
         .spawn_scene(splash::splash_logo(&assets))
         .insert((UiTargetCamera(camera), IntroV2Ui));
     commands
-        .spawn_scene(login_form::login_form(&assets, &fonts))
+        .spawn_scene(login_form::login_form(&assets, &fonts, &ui_strings))
         .insert((UiTargetCamera(camera), IntroV2Ui));
     commands
-        .spawn_scene(server_select::server_window(&assets, &fonts))
+        .spawn_scene(server_select::server_window(&assets, &fonts, &ui_strings))
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
@@ -631,6 +683,45 @@ fn start_background_audio(
     ));
 }
 
+/// Turns the **literal** two-character `\\n` that textdata rows carry into a
+/// real newline; a Bevy `Text` node renders the backslash literally.
+/// Deliberately not folded into `ClientUiStrings::get_or`: that accessor is used
+/// all over the client, and some rows carry a literal backslash as data.
+pub(super) fn unescape_newlines(text: &str) -> String {
+    text.replace("\\n", "\n")
+}
+
+/// Replaces the `%d` placeholders of a textdata string, in order, with
+/// `values`. Extra placeholders are left as-is rather than dropped, so a
+/// template with more fields than we can fill stays recognisable.
+pub(super) fn fill_placeholders(template: &str, values: &[u32]) -> String {
+    let mut out = String::with_capacity(template.len() + 8);
+    let mut rest = template;
+    let mut values = values.iter();
+    while let Some(at) = rest.find("%d") {
+        out.push_str(&rest[..at]);
+        match values.next() {
+            Some(v) => out.push_str(&v.to_string()),
+            None => out.push_str("%d"),
+        }
+        rest = &rest[at + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Plays the original's `snd_error` once, honouring the audio options. Shared
+/// by every pregame refusal (login, captcha retry, lobby actions).
+pub(super) fn play_error_sound(
+    commands: &mut Commands,
+    assets: &IntroV2Assets,
+    options: &GameOptions,
+) {
+    if let Some(playback) = options.audio.fx_playback() {
+        commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
+    }
+}
+
 /// Applies the audio options to the playing background music
 /// ([`crate::plugins::settings::live`]).
 ///
@@ -654,6 +745,30 @@ fn apply_background_music_options(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_intro_text_sizes_are_the_unscaled_font_ladder() {
+        assert_eq!(intro_font_px(0), 12.0);
+        assert_eq!(intro_font_px(2), 16.0, "every caption/button on the intro");
+        assert_eq!(intro_font_px(4), 20.0);
+        // a data index the binary has no slot for must not panic
+        assert_eq!(intro_font_px(7), intro_font_px(4));
+    }
+
+    #[test]
+    fn a_literal_backslash_n_becomes_a_line_break() {
+        assert_eq!(unescape_newlines("a\\nb"), "a\nb");
+        assert_eq!(unescape_newlines("plain"), "plain");
+    }
+
+    #[test]
+    fn placeholders_are_filled_in_order_and_extras_survive() {
+        assert_eq!(
+            fill_placeholders("failed %d out of %d", &[1, 6]),
+            "failed 1 out of 6"
+        );
+        assert_eq!(fill_placeholders("%d and %d", &[3]), "3 and %d");
+    }
 
     /// #645, ownership half: character creation lives *inside* the intro scene.
     /// The state graph is what makes creation share the char-select stage,
