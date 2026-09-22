@@ -88,6 +88,11 @@ pub fn reenable_connect_button(
 /// the code -> key mapping exists once, next to the wire type it belongs to.
 const CONNECT_PROGRESS_KEY: &str = "UIO_MSG_ERROR_CITATION";
 const PASSWORD_ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR";
+/// `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`, English column
+/// "Failed to connect to server." — the key's misspelling is the original's).
+/// The row the agent-connect failure path speaks; see that arm for why it goes
+/// to the status line and not to a message box.
+const AGENT_CONNECT_ERROR_KEY: &str = "UIO_MSG_ERROR_SEVER_CONNECT";
 
 /// `Activate` observer of the Connect button: sends the gateway login
 /// request. Port of the old `on_connect_button_clicked_system`.
@@ -340,9 +345,63 @@ pub fn on_gateway_login_response(
                 commands.spawn(AgentConnectionBundle::new(conn));
             }
             Err(err) => {
+                // The defect this repairs: this arm used to end here, in the
+                // log.
+                // The gateway connection is already despawned above and the
+                // buttons are still disabled from `on_connect_activate`, so the
+                // screen stayed on "...Requesting user confirmation..."
+                // forever — no timeout, no message, and further clicks did
+                // nothing at all.
+                //
+                // Same two halves as a rejected agent *login*
+                // (`on_agent_login_response`): say it, and give the screen
+                // back. The sentence is the shipped row for exactly this case,
+                // `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`,
+                // "Failed to connect to server."), not our prose.
+                //
+                // **No message box, on purpose.** The title screen has an
+                // authored error channel — `GDR_TEXT_MESSAGE`
+                // (`pstitle_europe.txt:634`), the orange status line we already
+                // draw — while a one-button message box is not authored
+                // anywhere in `ifmessagebox.txt`: its only generic section,
+                // `MsgBoxSimple`, is a yes/no box (`UIIT_CTL_YES`/`_NO`), and
+                // `ifconfirmbox.txt` is the image-code window, not a message
+                // box.
                 error!("failed to connect to agent server: {}", err);
+                report_agent_connect_failure(
+                    &mut commands,
+                    &mut info_text_writer,
+                    &ui_strings,
+                    connect_button,
+                    exit_button_query.single().ok(),
+                );
             }
         }
+    }
+}
+
+/// The two halves of the repair: say what happened, and give the screen back.
+///
+/// A named function rather than three lines in the match arm because that arm
+/// sits inside a closure-free `else` branch of a long system and because it is
+/// the only part of the agent-connect failure that a test can hold: the connect
+/// itself is a real socket. `on_agent_login_response` does the same two things
+/// for a *rejected* login; this is the same repair for a connection that never
+/// came up.
+fn report_agent_connect_failure(
+    commands: &mut Commands,
+    info_text_writer: &mut MessageWriter<InfoTextV2Update>,
+    ui_strings: &ClientUiStrings,
+    connect_button: Entity,
+    exit_button: Option<Entity>,
+) {
+    info_text_writer.write(InfoTextV2Update(
+        ui_strings.get_plain_or(AGENT_CONNECT_ERROR_KEY, "Failed to connect to server."),
+    ));
+    for entity in std::iter::once(connect_button).chain(exit_button) {
+        commands
+            .entity(entity)
+            .remove::<(InteractionDisabled, Pressed)>();
     }
 }
 
@@ -445,6 +504,77 @@ mod tests {
             fill_placeholders("Wrong password.", &[1, 5]),
             "Wrong password."
         );
+    }
+
+    /// A *failed agent connection* — not a rejected login — used to end in the
+    /// log. The screen
+    /// then stood on "...Requesting user confirmation..." with Connect disabled
+    /// for good, which is a client the user can only kill. So: the shipped
+    /// sentence on the status line, and both buttons back.
+    #[test]
+    fn a_failed_agent_connection_says_so_and_unlocks_the_screen() {
+        use bevy::ecs::system::SystemState;
+        use bevy::ui::{InteractionDisabled, Pressed};
+
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, ExitButton};
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>();
+        let connect = app
+            .world_mut()
+            .spawn((ConnectButton, InteractionDisabled, Pressed))
+            .id();
+        let exit = app
+            .world_mut()
+            .spawn((ExitButton, InteractionDisabled, Pressed))
+            .id();
+
+        // `SystemState` rather than `run_system_cached`: the call needs the two
+        // spawned entities, and a capturing closure is not a cacheable system.
+        let mut state = SystemState::<(
+            Commands,
+            MessageWriter<InfoTextV2Update>,
+            Res<ClientUiStrings>,
+        )>::new(app.world_mut());
+        {
+            let (mut commands, mut info, strings) =
+                state.get_mut(app.world_mut()).expect("valid system params");
+            super::report_agent_connect_failure(
+                &mut commands,
+                &mut info,
+                &strings,
+                connect,
+                Some(exit),
+            );
+        }
+        state.apply(app.world_mut());
+
+        for (entity, what) in [(connect, "Connect"), (exit, "Exit")] {
+            assert!(
+                app.world().get::<InteractionDisabled>(entity).is_none(),
+                "{what} is still disabled after a failed agent connection"
+            );
+            assert!(
+                app.world().get::<Pressed>(entity).is_none(),
+                "{what} still carries the pressed art"
+            );
+        }
+
+        let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+        let mut cursor = messages.get_cursor();
+        let line = cursor
+            .read(messages)
+            .next()
+            .expect("a failed connection must put a line on the status bar")
+            .0
+            .clone();
+        // The fallback is the data row verbatim
+        // (`UIO_MSG_ERROR_SEVER_CONNECT`, textuisystem.txt:166), so an empty
+        // string table renders the same sentence.
+        assert_eq!(line, "Failed to connect to server.");
     }
 
     /// The substance of the fix, not the message: after a rejected agent login
