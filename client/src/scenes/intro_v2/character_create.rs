@@ -168,8 +168,13 @@ fn cu_font(v: f32) -> FontSize {
     FontSize::Px(v)
 }
 
-/// [`cu`] as a number — for the slider thumb's per-frame position and the
-/// geometry tests.
+/// [`cu`] as a number — for the geometry tests.
+///
+/// Test-only: the screens themselves spawn `cu(..)` nodes, so the only callers
+/// of the bare number are the pinning tests below (and `control_row_box`,
+/// which exists for them). Without the gate the non-test build warns
+/// `never used`, which `clippy -D warnings` turns into an error.
+#[cfg(test)]
 fn cu_at(v: f32) -> f32 {
     v
 }
@@ -242,6 +247,11 @@ const GENDER_GEM_W: f32 = 20.0;
 ///
 /// The gem sits on the side the *other* button's gem does not: left for male,
 /// right for female (see [`GENDER_GEM_W`]).
+///
+/// Test-only, like [`control_row_box`]: the caption placement itself goes
+/// through [`gender_caption_margin`]; this is the span that margin is checked
+/// against.
+#[cfg(test)]
 fn gender_plate_span(gender: Gender) -> (f32, f32) {
     let w = MALE_RECT.2;
     match gender {
@@ -1453,7 +1463,9 @@ const MAIN_BUTTON_H: f32 = 41.0;
 
 /// Where the Confirm/Cancel row lands in a window of `w` x `h`, as
 /// `(confirm_left, cancel_right, top, bottom)`. Exists so the anchor can be
-/// checked against the measured original without a running app.
+/// checked against the original's numbers without a running app — and for
+/// nothing else, hence the gate.
+#[cfg(test)]
 fn control_row_box(w: f32, h: f32) -> (f32, f32, f32, f32) {
     let cancel_right = w - cu_at(CONTROL_ROW_RIGHT_INSET);
     let confirm_left =

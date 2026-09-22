@@ -198,7 +198,7 @@ fn generate_reader_for(field: &Field, ident: &Ident) -> TokenStream {
                 let size_field = args.size_field.as_deref();
                 match size_field {
                     Some(size_field_name) => {
-                        if let Ok(size_field_name) = syn::parse_str::<Expr>(&size_field_name) {
+                        if let Ok(size_field_name) = syn::parse_str::<Expr>(size_field_name) {
                             quote_spanned! { field.span() =>
                                 let size = #size_field_name;
                                 let mut items = Vec::with_capacity(size as usize);
