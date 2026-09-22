@@ -117,7 +117,7 @@ pub fn label_aligned(
         TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(font_size)} }
         TextColor(Color::NONE)
         TargetColor(Srgba::WHITE)
-        TextLayout::justify({justify})
+        TextLayout::justify(justify)
         Node {
             width: percent(100),
             justify_content: JustifyContent::FlexStart,

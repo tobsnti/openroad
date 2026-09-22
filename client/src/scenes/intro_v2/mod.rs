@@ -1033,8 +1033,8 @@ mod test {
             "an unknown slot must not be read as the biggest one"
         );
         // the ladder is genuinely unordered, which is the reason for the rule
-        assert!(FONT_INDEX_PX[1] < FONT_INDEX_PX[0]);
-        assert!(FONT_INDEX_PX[3] < FONT_INDEX_PX[2]);
+        const { assert!(FONT_INDEX_PX[1] < FONT_INDEX_PX[0]) };
+        const { assert!(FONT_INDEX_PX[3] < FONT_INDEX_PX[2]) };
     }
 
     #[test]

@@ -714,7 +714,6 @@ pub fn commit_remembered_shard(
 pub fn update_shard_name_text(
     selected_shard: Res<SelectedShardV2>,
     shard_list: Option<Res<ShardList>>,
-    options: Res<GameOptions>,
     mut query: Query<&mut Text, With<ShardNameText>>,
 ) {
     let Ok(mut text) = query.single_mut() else {
