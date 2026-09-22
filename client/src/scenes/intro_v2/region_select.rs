@@ -55,15 +55,15 @@ const PLATE_EUROPE_DDJ: &str = "media://interface/outer/europe.ddj";
 const TITLE_REGION_DDJ: &str = "media://interface/outer/text-region.ddj";
 
 /// Every rect this screen takes from the data, in one place so a test can pin
-/// them (#644).
+/// them.
 ///
 /// **What the data does and does not author.** All three plates —
 /// `GDR_STA_CHINA` (9), `GDR_STA_ISLAM` (10), `GDR_STA_EUROPE` (11) — declare
 /// `Rect="0,0,440,152"`: the **size** is authored, the **screen position is
 /// not**, exactly like the twelve other `0,0,w,h` controls in section
 /// `Select`. So the plate placement below is openroad's (a centered pair), and
-/// no amount of re-reading the resinfo will change that; it is `[U]`, not a
-/// gap. The title, in contrast, *is* placed by the data at `47,110`.
+/// no amount of re-reading the resinfo will change that; it is unauthored, not
+/// a gap. The title, in contrast, *is* placed by the data at `47,110`.
 ///
 /// Each plate's insides come from its own race section, and the label x
 /// genuinely differs per race — China `318`, Europe `250`.
@@ -433,15 +433,14 @@ mod tests {
 
     /// Every rect this screen takes from `resinfo/pscharacterselect.txt`
     /// section `Select` and its `China`/`Europe` sections, pinned so a later
-    /// edit cannot drift them (#644). Values re-read from the maintainer's own
-    /// Media.pk2 on 2026-08-15, cross-checked against the DDS headers of the
-    /// art they place.
+    /// edit cannot drift them. The values are the authored ones and match the
+    /// size of the art they place.
     #[test]
     fn the_board_rects_are_the_authored_ones() {
-        // GDR_STA_REGIONTITLE "47,110,292,36" — text-region.ddj measures 292x36
+        // GDR_STA_REGIONTITLE "47,110,292,36" — text-region.ddj is 292x36
         assert_eq!(TITLE_RECT, (47.0, 110.0, 292.0, 36.0));
         // GDR_STA_CHINA / _ISLAM / _EUROPE all "0,0,440,152"; all three arts
-        // measure 440x152
+        // are 440x152
         assert_eq!(PLATE_SIZE, (440.0, 152.0));
         // GDR_STATIC1 in each race section: 92x15 at y=9, x per race
         assert_eq!(
@@ -489,11 +488,10 @@ mod tests {
         ClientCharacterData::from_table(CharacterData(rows.into_iter().collect::<HashMap<_, _>>()))
     }
 
-    /// The maintainer's Media.pk2 as read through our own textdata parser
-    /// (#643): `characterdata_5000.txt` carries the 26 `CHAR_CH_*` player
-    /// bodies at ids 1907-1932 and **no** shard carries a `CHAR_EU_*` row —
-    /// the `MOB_EU_*`/`NPC_EU_*` rows in the other shards prove the `EU`
-    /// token itself reads fine, so the absence is data, not a decode bug.
+    /// A data set whose `characterdata_5000.txt` carries the `CHAR_CH_*`
+    /// player bodies while **no** shard carries a `CHAR_EU_*` row. The
+    /// `MOB_EU_*`/`NPC_EU_*` rows in the other shards show the `EU` token
+    /// itself reads fine, so the absence is data, not a decode bug.
     /// Consequence: Chinese is offerable, European is not.
     #[test]
     fn a_corpus_without_european_bodies_blocks_only_the_europe_plate() {

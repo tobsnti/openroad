@@ -60,10 +60,10 @@ const BOTTOM_BTN_Y: f32 = 379.0;
 // GDR_OPTION_BTN_{DEF,OK,CANC,APPLY} x positions from ifoption.txt.
 const BOTTOM_BTN_XS: [f32; 4] = [29.0, 113.0, 197.0, 281.0];
 // The rects in ifoption.txt carry no size, so it comes from the texture, and
-// the texture has to be *measured* rather than assumed: `interface/ifcommon/`
+// the texture decides it rather than the button's role: `interface/ifcommon/`
 // ships four differently sized footer arts (com_button 76x24, com_mid_button
-// 88x24, com_mid_button02 112x24, com_red_button 56x24), so a button's role
-// does not tell you its size. `com_button.ddj` measures **76x24** (#597).
+// 88x24, com_mid_button02 112x24, com_red_button 56x24). `com_button.ddj` is
+// **76x24**.
 const BTN_W: f32 = 76.0;
 const BTN_H: f32 = 24.0;
 
@@ -76,15 +76,14 @@ const BUTTON_FONT: &str = crate::assets::BUNDLED_FALLBACK_FACE;
 /// Tab-strip art. The data models a tab as a **texture swap** with three
 /// states, not as a recoloured label on a generic push-button, and that
 /// mechanism is generation-independent — so it is what we build even though
-/// *which* generation v1.188 renders is still UNKNOWN
-/// (`docs/re/ui/options-screen.md` §9-1).
+/// *which* generation v1.188 renders is still UNKNOWN.
 ///
 /// The art is the 4th-gen `opt_long_tab_*` triple, and it is named as such:
-/// the classic tree has no tab strip at all (the original draws it in code,
-/// §9-U3), so there is no classic art to prefer and no classic rect to
-/// transcribe. At its native 120x24 a five-tab strip would need 5x125 = 625px
-/// against a 386px hull, so it is drawn at the strip's existing width — the
-/// geometry stays the `[U]`-fill it already was, only the *signal* changes.
+/// the classic tree has no tab strip at all (the original draws it in code), so
+/// there is no classic art to prefer and no classic rect to transcribe. At its
+/// native 120x24 a five-tab strip would need 5x125 = 625px against a 386px hull,
+/// so it is drawn at the strip's existing width — the geometry stays the fill it
+/// already was, only the *signal* changes.
 /// The window's own caption key, taken from the window's own block:
 /// `ifsystemwnd.txt` `GDR_OPTION:CIFOption` carries `Text="UIIT_PAG_OPTION"`
 /// (textuisystem 805). We resolved `UIIT_CTL_OPTION` (802) with an invented
@@ -509,13 +508,12 @@ fn on_close(
 mod test {
     use super::*;
 
-    /// #597-1. `ifoption.txt` gives the footer buttons no size, so the size
-    /// comes from the texture — and the texture has to be measured, not
-    /// inferred from the button's role: `interface/ifcommon/` ships four
+    /// `ifoption.txt` gives the footer buttons no size, so the size comes from
+    /// the texture, not from the button's role: `interface/ifcommon/` ships four
     /// differently sized footer arts (76x24, 88x24, 112x24, 56x24). This is
-    /// `com_button.ddj`'s measured extent; it had drifted to 22 high.
+    /// `com_button.ddj`'s extent; it had drifted to 22 high.
     #[test]
-    fn the_footer_button_is_the_measured_com_button_extent() {
+    fn the_footer_button_matches_the_com_button_extent() {
         assert_eq!((BTN_W, BTN_H), (76.0, 24.0));
     }
 

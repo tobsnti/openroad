@@ -13,9 +13,9 @@ pub struct ShardListRequest;
 
 /// 0xA106 — the gateway's answer to the farm ping: a `u8`-counted list of
 /// farms, nothing else. The original parses it inline in the login-UI pump as
-/// a plain loop (`0086bfc0:142` reads the count, `:146-147` each entry's id
-/// and address, `:208` bounds the loop), so a count of `0` is an empty list and
-/// the packet ends there — there is no success flag and no error code.
+/// a plain loop: it reads the count, then each entry's id and address, so a
+/// count of `0` is an empty list and the packet ends there — there is no
+/// success flag and no error code.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ShardListPingResponse {
     pub farms: Vec<Farm>,
@@ -24,8 +24,8 @@ pub struct ShardListPingResponse {
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct Farm {
     pub id: u8,
-    /// Four octets in wire order: the original's dotted-quad formatting at
-    /// `0086bfc0:161-162` prints the first wire byte as the first octet.
+    /// Four octets in wire order: the original's dotted-quad formatting
+    /// prints the first wire byte as the first octet.
     pub ip: Ipv4Addr,
 }
 
@@ -61,9 +61,8 @@ mod tests {
     use super::*;
     use bytes::Bytes;
 
-    /// The maintainer's capture, all 9 lines of `packet_dump/0xa106.log`:
-    /// `01` count, `14` farm id, `7f 00 00 01` = 127.0.0.1 — the first wire
-    /// byte is the first octet (`0086bfc0:161-162`).
+    /// A real answer: `01` count, `14` farm id, `7f 00 00 01` = 127.0.0.1 —
+    /// the first wire byte is the first octet.
     const CAPTURED: &[u8] = &[0x01, 0x14, 0x7f, 0x00, 0x00, 0x01];
 
     #[test]
@@ -85,8 +84,8 @@ mod tests {
 
     #[test]
     fn a_two_farm_body_decodes_to_two_entries() {
-        // Synthetic: the maintainer's server only ever has one farm, which is
-        // exactly why the old bool-plus-optional model round-tripped.
+        // Synthetic: a server with a single farm is exactly why the old
+        // bool-plus-optional model round-tripped.
         let body = Bytes::from_static(&[
             0x02, 0x14, 0x7f, 0x00, 0x00, 0x01, 0x15, 0xc0, 0xa8, 0x01, 0x0a,
         ]);

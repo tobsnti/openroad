@@ -59,10 +59,8 @@ pub struct CelestialPosition {
     /// `m_wDay`, the in-game **day counter** — not a moon phase. The original's
     /// handler feeds this `u16` straight into
     /// `m_LocalTime.InitTimer(pM->dwRealTime, pM->m_wDay, pM->m_byHour,
-    /// pM->m_byMin, 0)`, the source expression carried in its own assert
-    /// (`corpus/client-handlers/008a6dc0_FUN_008a6dc0.c:16-31`). The capture
-    /// agrees: `packet_dump/0x3020.log` gives 471 then 503 across ~15 h of wall
-    /// clock, which no phase index would do.
+    /// pM->m_byMin, 0)`. The value climbs steadily (471 to 503 across ~15 h of
+    /// wall clock), which no phase index would do.
     pub day: u16,
     pub hour: u8,
     pub minute: u8,
@@ -72,8 +70,8 @@ pub struct CelestialPosition {
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct CelestialUpdate {
     /// `m_wDay`, the in-game day counter — see [`CelestialPosition::day`]. The
-    /// `0x3027` handler reads the same three fields without the leading `u32`
-    /// (`corpus/client-handlers/008a6e80_FUN_008a6e80.c:20-22`).
+    /// `0x3027` handler reads the same three fields without the leading
+    /// `u32`.
     pub day: u16,
     pub hour: u8,
     pub minute: u8,
@@ -84,9 +82,8 @@ pub struct CelestialUpdate {
 /// (`0x3020`/`0x3027`): this is the wall clock the original feeds into a C
 /// `tm` and `mktime`.
 ///
-/// The bit layout is read straight off the handler
-/// (`corpus/client-handlers/0089a250_FUN_0089a250.c`), which is a single
-/// 4-byte read followed by:
+/// The bit layout is read straight off the handler, which is a single 4-byte
+/// read followed by:
 ///
 /// ```text
 /// tm_year = (v & 0x3F) + 100      // years since 1900 -> 2000 + (v & 0x3F)
@@ -97,10 +94,8 @@ pub struct CelestialUpdate {
 /// tm_sec  = v >> 26               // top 6 bits
 /// ```
 ///
-/// [V] — the six captured samples in `packet_dump/0x34be.log` decode to
-/// 2026-08-10 11:29:22 … 12:19:22, exactly ten minutes apart and matching the
-/// dump's own timestamps to the second (the server's clock runs 7 h behind the
-/// capture host's UTC). See `docs/net-celestial-0x3020.md`.
+/// Confirmed: real samples decode to timestamps exactly ten minutes apart,
+/// matching the wall clock to the second. See `docs/net-celestial-0x3020.md`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ServerTime {
     pub packed: u32,
@@ -140,9 +135,8 @@ impl ServerTime {
 pub struct GameReady;
 
 /// 0x34B5 — server → client SERVER_AGENT_GAME_RESET: tear the world down and
-/// reload (sent after a teleport commits). Capture-VERIFIED vSRO 1.188
-/// (2026-08-07, `packet_dump/0x34b5.log`: `a7 61` = destination region
-/// 0x61A7 — exactly where the relog landed). The server then goes COMPLETELY
+/// reload (sent after a teleport commits). The body is the destination region
+/// the client lands in. The server then goes COMPLETELY
 /// silent (even HP ticks stop) until the client answers with
 /// [`GameResetComplete`], after which it replays the CHARACTER_DATA stream
 /// and waits for a second [`GameReady`].
@@ -205,9 +199,7 @@ impl From<CharacterDataBody> for Bytes {
 // prior field, so these are hand-written.
 
 /// Whether a region id denotes a dungeon (4-byte coords) vs the overworld
-/// (2-byte coords). Bit 15 is the dungeon flag (go-sro/RSBot convention; xBot's
-/// two helpers disagree at 0x7FFF and are not evidence — see
-/// `docs/re/systems/dungeon-teleport-in.md`).
+/// (2-byte coords). Bit 15 is the dungeon flag.
 pub fn is_dungeon(region: u16) -> bool {
     region & 0x8000 != 0
 }
@@ -291,8 +283,8 @@ fn put_coords(buf: &mut BytesMut, region: u16, x: i32, y: i32, z: i32) {
 }
 
 /// 0x7021 — client → server move order to a location (click-to-move). `x/y/z`
-/// are raw region-local units (a capture showed ×10 scaling made the server
-/// wrap the destination several regions over).
+/// are raw region-local units: scaling them by ten makes the server wrap the
+/// destination several regions over.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct MovementRequest {
     pub region: u16,
@@ -415,13 +407,10 @@ pub struct MovementPositionUpdate {
 /// target) keeps its old facing until its next move order.
 ///
 /// 6-byte body, taken from the original's parser, which reads a `u32` then a
-/// `u16` and stops (`PacketParser.EntityMovementAngle`). `angle` is the same
-/// `0..=u16::MAX → 0..2π` heading encoding used everywhere else on the wire,
-/// as in [`MovementPositionUpdate`].
+/// `u16` and stops. `angle` is the same `0..=u16::MAX → 0..2π` heading encoding
+/// used everywhere else on the wire, as in [`MovementPositionUpdate`].
 ///
-/// No capture exists yet (`packet_dump/0xb024.log` is absent), so the layout
-/// rests on the parser alone and the heading mapping is cross-checked only
-/// against our other heading fields — not against live bytes for this opcode.
+/// The layout rests on that parser alone and is unconfirmed on the wire.
 ///
 /// The C→S half (0x7024 `CLIENT_CHARACTER_MOVEMENT_ANGLE`) is deliberately
 /// **not** modelled: the original has no builder for it and its dispatch arm
@@ -433,8 +422,8 @@ pub struct MovementAngleResponse {
 }
 
 /// 0x30D0 — server → client movement-speed change for one entity (buffs, GM
-/// speed command, mounts). Layout per go-sro's `EntityUpdateMovementSpeed`
-/// writer: unique id + walk/run speeds in game units per second.
+/// speed command, mounts): unique id + walk/run speeds in game units per
+/// second.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EntitySpeedUpdate {
     pub unique_id: u32,
@@ -447,7 +436,7 @@ pub struct EntitySpeedUpdate {
 // These three feed the player mini-info HUD: 0x3057 moves the HP/MP bars,
 // 0x304E fills the hwan/berserk pips, and 0x303D is the only packet on the
 // wire that carries max HP/MP (neither CHARACTER_DATA nor the bar update do).
-// Layouts verified against skrillax's silkroad-protocol (vSRO 1.188).
+// Layouts target vSRO 1.188.
 
 /// [`EntityBarsUpdate::source`] display hints.
 pub const BARS_SOURCE_DAMAGE: u16 = 0x01;
@@ -463,45 +452,38 @@ pub const BARS_FLAG_UNKNOWN16: u8 = 0x08;
 
 /// Which [`EntityBarsUpdate::bad_status`] bits carry a trailing `u8` level.
 ///
-/// Recovered from the original's `FUN_009d2220`, which reads one level byte per
-/// set bit that also lies in this mask (`docs/re/net/inbound/entity.md`). The
-/// level-less bits are exactly the six elemental/DoT states plus Petrify —
-/// which is independent corroboration of the SPEC bit ORDER in [`BadStatus`],
-/// since two unrelated artifacts have to agree for that partition to line up.
+/// The original reads one level byte per set bit that also lies in this mask.
+/// The level-less bits are exactly the six elemental/DoT states plus Petrify,
+/// which independently corroborates the bit order in [`BadStatus`].
 pub const BAD_STATUS_LEVELED: u32 = 0x017F_EFC0;
 
 /// 0x3057 — server → client vitals update for one entity. Values are absolute,
 /// not deltas.
 ///
-/// **`flag` is a BITMASK, not an enum.** The original's `FUN_008a9e30` runs
-/// four independent `if ((flag & bit) != 0)` blocks in this order: `0x01` HP
-/// u32, `0x02` MP u32, `0x08` u16, `0x04` bad-status `u32` mask followed by
-/// `popcount(mask & `[`BAD_STATUS_LEVELED`]`)` level bytes
-/// (`docs/re/net/inbound/entity.md`).
+/// **`flag` is a BITMASK, not an enum.** The original runs four independent
+/// `if ((flag & bit) != 0)` blocks in this order: `0x01` HP u32, `0x02` MP u32,
+/// `0x08` u16, `0x04` bad-status `u32` mask followed by
+/// `popcount(mask & `[`BAD_STATUS_LEVELED`]`)` level bytes.
 ///
-/// This corrects an earlier enum reading (xBot `SRTypes.cs`: HP=1, MP=2,
-/// HPMP=3, BadStatus=4, EntityHPMP=5) which happened to round-trip because
-/// `flag=5` = `HP|BAD_STATUS` carries two u32s, exactly like `flag=3`'s
-/// HP+MP — so the shapes are indistinguishable by LENGTH, only by MEANING.
-/// The capture decides it, and it now decides against the enum:
+/// This corrects an earlier enum reading (HP=1, MP=2, HPMP=3, BadStatus=4,
+/// EntityHPMP=5) which happened to round-trip because `flag=5` =
+/// `HP|BAD_STATUS` carries two u32s, exactly like `flag=3`'s HP+MP — so the
+/// shapes are indistinguishable by LENGTH, only by MEANING. The real wire
+/// decides against the enum:
 ///
-/// - `packet_dump/0x3057.log` grew to 870 bodies and **`flag=0x04` now
-///   occurs** (`b1640200 0301 04 08000000`) — a value the enum reading calls
-///   BadStatus-with-no-HP but which the old code left entirely unparsed. Its
-///   body is 11 bytes with **no** trailing level byte, which is precisely what
-///   [`BAD_STATUS_LEVELED`] predicts for bit 3 — so that RE-derived rule is now
-///   capture-confirmed too.
-/// - Its uid `0x000264b1` is a **monster** (in the 0x3019 spawn stream, yields
-///   EXP on death), and the mask `0x8` is Burn. For the next 7 s every
-///   `flag=05` body for that uid carries `08000000` in the trailing u32 while
-///   its HP drains to 0 — i.e. the burn ticking. Under the enum reading that
-///   monster was reported as having **MP = 8**.
-/// - Every other `flag=05` body in the corpus carries `0` there. As "no bad
-///   status" that is unremarkable; as "MP" it was an unexplained constant the
-///   old doc comment had to hedge about.
+/// - `flag=0x04` occurs (`b1640200 0301 04 08000000`) — a value the enum
+///   reading calls BadStatus-with-no-HP but which the old code left entirely
+///   unparsed. Its body is 11 bytes with **no** trailing level byte, which is
+///   precisely what [`BAD_STATUS_LEVELED`] predicts for bit 3.
+/// - That uid is a **monster** and the mask `0x8` is Burn. For the next 7 s
+///   every `flag=05` body for that uid carries `08000000` in the trailing u32
+///   while its HP drains to 0 — i.e. the burn ticking. Under the enum reading
+///   that monster was reported as having **MP = 8**.
+/// - Every other `flag=05` body carries `0` there. As "no bad status" that is
+///   unremarkable; as "MP" it was an unexplained constant.
 ///
 /// Body lengths corroborate the bitmask exactly: 11 bytes for flags 1/2/4
-/// (one block) and 15 for 3/5 (two blocks), matching the corpus census.
+/// (one block) and 15 for 3/5 (two blocks).
 ///
 /// Decoded by hand rather than by the derive: the level tail's length is a
 /// popcount of a value read earlier in the same body, which `#[sro_packet]`
@@ -550,10 +532,10 @@ impl TryFrom<Bytes> for EntityBarsUpdate {
             .transpose()?;
         let mut bad_status_levels = Vec::new();
         if let Some(mask) = bad_status {
-            // A short/absent tail is tolerated rather than fatal: the level
-            // rule is RE-derived and only its no-level case is capture-proven,
-            // so a body that ends early yields fewer levels instead of losing
-            // the mask that names the ailments.
+            // A short/absent tail is tolerated rather than fatal: only the
+            // no-level case of the level rule is confirmed, so a body that
+            // ends early yields fewer levels instead of losing the mask that
+            // names the ailments.
             for _ in 0..(mask & BAD_STATUS_LEVELED).count_ones() {
                 match r.u8() {
                     Ok(level) => bad_status_levels.push(level),
@@ -611,14 +593,12 @@ impl ByteSize for EntityBarsUpdate {
 
 /// The 0x3057 abnormal-state bitmask.
 ///
-/// **The bit → ailment mapping is `[S]` SPEC-derived**, from ducksoup's
-/// `GlobalEnums.cs` (`docs/re/notes/death-resurrect.md`,
-/// `docs/re/DRAFT_LAYOUTS.md`). Only **Burn (`0x8`) is capture-confirmed** —
-/// see the [`EntityBarsUpdate`] doc. The ordering is independently corroborated
-/// by [`BAD_STATUS_LEVELED`], whose level-less bits land exactly on the six
-/// elemental/DoT states plus Petrify; that agreement between the RE'd read rule
-/// and the SPEC enum is why the order is trusted enough to act on, but no
-/// individual name below except Burn should be called verified.
+/// **The bit → ailment mapping is unconfirmed.** Only **Burn (`0x8`)** is
+/// certain — see the [`EntityBarsUpdate`] doc. The ordering is independently
+/// corroborated by [`BAD_STATUS_LEVELED`], whose level-less bits land exactly
+/// on the six elemental/DoT states plus Petrify; that agreement is why the
+/// order is trusted enough to act on, but no individual name below except Burn
+/// should be called confirmed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct BadStatus(pub u32);
 
@@ -678,15 +658,13 @@ impl Ailment {
     /// The archive's own name for this ailment's authored debuff effect, as
     /// `battle/status_bad_<name>.efp`.
     ///
-    /// **Every name below is a real file**, enumerated from the user's
-    /// `Particles.pk2` (26 `battle/status_bad_*` entries). Six are additionally
-    /// corroborated by the matching `status_cure_*` set documented in
-    /// `docs/re/notes/item-use.md` (`blind`, `burn`, `eshock`, `frostbite`,
-    /// `poison`, `zombie`).
+    /// **Every name below is a real file** in `Particles.pk2` (26
+    /// `battle/status_bad_*` entries). Six have a matching `status_cure_*`
+    /// entry (`blind`, `burn`, `eshock`, `frostbite`, `poison`, `zombie`).
     ///
     /// The bit → file pairing is an inference over two independent naming
-    /// schemes (the SPEC enum's English names vs. the artists' filenames) and
-    /// is **not capture-verified for any bit except Burn**. Where the pairing
+    /// schemes (the enum's English names vs. the artists' filenames) and
+    /// is **unconfirmed for every bit except Burn**. Where the pairing
     /// is not obvious it returns `None` and that ailment plays no effect —
     /// borrowing a neighbouring file's art would be exactly the unsourced
     /// invention ADR-0009 forbids. Unpaired files, kept here so the next person
@@ -728,13 +706,13 @@ impl Ailment {
 
     /// The authored HUD icon for this ailment, under `icon/StateOdd/`.
     ///
-    /// **Every name is a real file**, enumerated from the user's `Media.pk2`,
-    /// and this set is what raises confidence in the SPEC bit ORDER from
-    /// "plausible" to "well corroborated": all nineteen bits below pair to a
-    /// distinct authored icon, and the last two land on `s_decay_icon` and
-    /// `s_weakness_icon` at exactly the positions the enum puts Decay and
-    /// Weaken. Three independent artifacts — the enum, the RE'd
-    /// [`BAD_STATUS_LEVELED`] partition, and this icon set — agree.
+    /// **Every name below is a real file** in `Media.pk2`, and this set is
+    /// what raises confidence in the bit ORDER from "plausible" to "well
+    /// corroborated": all nineteen bits pair to a distinct authored icon, and
+    /// the last two land on `s_decay_icon` and `s_weakness_icon` at exactly
+    /// the positions the enum puts Decay and Weaken. Three independent
+    /// artifacts — the enum, the [`BAD_STATUS_LEVELED`] partition, and this
+    /// icon set — agree.
     ///
     /// Names are given lowercase because `bevy_pk2` lowercases every path as
     /// it indexes the archive, so that is what a lookup must use — the
@@ -825,23 +803,18 @@ pub struct CharacterStatsUpdate {
     pub intelligence: u16,
 }
 
-// --- Misc captured world-join server pushes (EXPERIMENTAL) ------------------
+// --- Misc world-join server pushes (EXPERIMENTAL) ---------------------------
 //
-// Four small S→C pushes seen in a single live world-join capture against the
-// maintainer's own vSRO 1.188 server (2026-08-07; see
-// docs/net-captured-opcodes.md and PR #179). Bodies were decoded from the
-// pre-deserialization bytes in packet_dump/ and cross-referenced against the
-// go-sro opcode filter and skrillax's silkroad-protocol. Only empty-list
-// branches were observed for the two roster/cooldown packets, so their entry
-// shapes are UNVERIFIED and kept as best-effort targets — the empty case (the
-// only captured one) round-trips exactly.
+// Four small S→C pushes a vSRO 1.188 server sends at world join (PR #179).
+// Only the empty-list branch of the two roster/cooldown packets is known, so
+// their entry shapes are UNVERIFIED and kept as best-effort targets — the
+// empty case round-trips exactly.
 
 /// 0x3153 — SERVER_AGENT_SILK_UPDATE: account silk balances (Joymax premium
-/// currency). Three u32 balances, little-endian. Capture-VERIFIED: the 12-byte
-/// body `F4 CB 9A 3B 50 C3 00 00 00 00 00 00` decodes to own 1,000,000,500 /
-/// gift 50,000 / point 0 on the admin test account. The own/gift/point label
-/// order follows the skrillax/SilkroadDoc convention (not on-wire labelled).
-/// Confidence: HIGH.
+/// currency). Three u32 balances, little-endian. Confirmed: the 12-byte body
+/// `F4 CB 9A 3B 50 C3 00 00 00 00 00 00` decodes to own 1,000,000,500 / gift
+/// 50,000 / point 0. The own/gift/point label order is a convention; the wire
+/// does not label them.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct SilkUpdate {
     /// Regular (purchased) silk.
@@ -853,29 +826,26 @@ pub struct SilkUpdate {
 }
 
 /// 0x3809 — SERVER_AGENT_ENVIRONMENT_WEATHER_UPDATE: the zone weather sent on
-/// world-enter. Captured body was exactly 2 bytes (`01 B4` → type 1 = clear,
+/// world-enter. The body is exactly 2 bytes (`01 B4` → type 1 = clear,
 /// intensity 180 in the Jangan start zone). The `weather_type` enum and the
-/// `intensity` scale need weather-change captures to confirm; relevant to
-/// EP-27 (environment / weather). Confidence: HIGH on name/direction, field
-/// semantics SPEC-derived.
+/// `intensity` scale are unconfirmed; relevant to EP-27 (environment /
+/// weather).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct WeatherUpdate {
-    /// 1 = clear/fine (only value observed).
+    /// 1 = clear/fine (the only value known).
     pub weather_type: u8,
-    /// Severity / particle amount (only 180 observed).
+    /// Severity / particle amount (only 180 is known).
     pub intensity: u8,
 }
 
-/// 0x3305 — SERVER_AGENT_COMMUNITY_FRIEND_INFO: the join-time friend roster
-/// (skrillax `FriendList`). The captured body was a single `00` count byte —
-/// an empty roster — so only the count-prefixed shell is capture-VERIFIED. The
-/// per-entry [`FriendEntry`] record is not capture-backed (no friends to
-/// observe) but is read off the original's own parser (#546); the empty case
-/// round-trips exactly. Relevant to EP-32 / #154
-/// (social / friends). Confidence: HIGH on name/direction, entry layout SPEC.
+/// 0x3305 — SERVER_AGENT_COMMUNITY_FRIEND_INFO: the join-time friend roster.
+/// Only the empty roster (a single `00` count byte) has ever been seen, so only
+/// the count-prefixed shell is confirmed. The per-entry [`FriendEntry`] record
+/// is read off the original's own parser (#546) and is unconfirmed; the empty
+/// case round-trips exactly. Relevant to EP-32 / #154 (social / friends).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct FriendListInfo {
-    /// Number of roster entries that follow (0 in the only capture).
+    /// Number of roster entries that follow.
     pub count: u8,
     #[sro_packet(list_type = "by-size-field", size_field = "count")]
     pub friends: Vec<FriendEntry>,
@@ -883,42 +853,35 @@ pub struct FriendListInfo {
 
 /// One friend roster entry: `u32, u16 len + ASCII, u32, u8` — **four** fields.
 ///
-/// Read straight off the original's parser `FUN_009993b0`
-/// (`docs/re/net/inbound/chat-social.md`, 0x3305): it reads id (`:50`), name
-/// length (`:51`), the name bytes (`:63`), then a `u32` (`:64`) and a `u8`
-/// (`:65`), and hands exactly those four to the roster ctor
-/// `FUN_009971c0(id, name, u32, u8)` (`:68`). The roster node it builds is
-/// 0x28 bytes with slots for precisely those four, and no fifth.
+/// Read straight off the original's parser: it reads the id, the name length,
+/// the name bytes, then a `u32` and a `u8`, and hands exactly those four to the
+/// roster constructor. The roster node it builds has slots for precisely those
+/// four, and no fifth.
 ///
-/// This used to carry a `group_id: u16` taken from skrillax' community record.
-/// It is not on this wire, so every entry after the first shifted by two bytes
-/// as soon as the roster was non-empty (#546). It stayed invisible because
-/// the only capture (`packet_dump/0x3305.log`, 5/5 lines `00`) is an empty
-/// roster and nothing in `client/src` consumes the list yet.
+/// This used to carry a `group_id: u16`. It is not on this wire, so every entry
+/// after the first shifted by two bytes as soon as the roster was non-empty
+/// (#546). It stayed invisible because the roster is empty in practice and
+/// nothing in `client/src` consumes the list yet.
 ///
-/// UNKNOWN: the *names* of the two trailing scalars. The parser names neither
-/// and `FUN_009971c0` is not in the corpus; a model/ref-object id and an
-/// online flag are the obvious reading (and the node's `+0x24` is mutated by
-/// the status setter `FUN_00997350`), but that is inference, so the layout is
-/// closed while the semantics are not.
+/// UNKNOWN: the *names* of the two trailing scalars. A model/ref-object id and
+/// an online flag are the obvious reading, but that is inference, so the layout
+/// is closed while the semantics are not.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct FriendEntry {
     pub char_id: u32,
     pub name: String,
-    /// Trailing `u32` — very likely the character's ref-object id. [U]
+    /// Trailing `u32` — very likely the character's ref-object id. Unknown.
     pub char_model: u32,
-    /// Trailing `u8` — nonzero = online, per the roster node's status slot. [U]
+    /// Trailing `u8` — nonzero = online, per the roster node's status slot.
+    /// Unknown.
     pub is_online: u8,
 }
 
 /// 0x3077 — CharacterFinished: the join-time cooldown replay. Two
-/// count-prefixed lists — item cooldowns then skill cooldowns, keyed by ref-id
-/// (openroad RE wave A3 / skrillax `item_cooldowns` + `skill_cooldowns`).
-/// Captured body was `00 00` — both lists empty (a fresh char with nothing on
-/// cooldown) — so only the two-empty-list shell is capture-VERIFIED. The
-/// per-entry [`Cooldown`] record is UNVERIFIED (no on-cooldown capture).
-/// Relevant to EP-07 (item use / cooldowns). Confidence: MEDIUM (name from
-/// openroad RE only; join-timing and the two-list shape are confirmed).
+/// count-prefixed lists — item cooldowns then skill cooldowns, keyed by ref-id.
+/// Only the both-lists-empty body (`00 00`) has ever been seen, so only the
+/// two-empty-list shell is confirmed; the per-entry [`Cooldown`] record is
+/// UNVERIFIED. Relevant to EP-07 (item use / cooldowns).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct CharacterFinished {
     pub item_cooldown_count: u8,
@@ -929,8 +892,8 @@ pub struct CharacterFinished {
     pub skill_cooldowns: Vec<Cooldown>,
 }
 
-/// One cooldown entry — UNVERIFIED `{ ref_id, cooldown }` (per the A3 RE
-/// prediction); no non-empty capture exists to confirm it.
+/// One cooldown entry — UNVERIFIED `{ ref_id, cooldown }`; a non-empty body
+/// has never been seen.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct Cooldown {
     pub ref_id: u32,
@@ -950,11 +913,11 @@ pub struct SelectEntityRequest {
 ///
 /// After the `result`/`unique_id` header the body depends on the *target's*
 /// type, which is not encoded in the packet — so the tail stays raw and the
-/// consumer interprets it against what it knows the entity to be. Per go-sro's
-/// `select_entity.go` (the reference server; layouts unverified against vSRO):
-///   * monster: `u8` (=1), `u32` current HP (go-sro hardcodes 0), `u8`, `u8`
+/// consumer interprets it against what it knows the entity to be. The shapes
+/// are unconfirmed against vSRO:
+///   * monster: `u8` (=1), `u32` current HP, `u8`, `u8`
 ///   * player:  `u32`, `u8` trader lvl, `u8` hunter lvl, `u8` thief lvl, `u8`
-///   * NPC:     go-sro never sends the response at all (handler bug) — the
+///   * NPC:     the reference server never sends the response at all, so the
 ///     client must treat this packet as optional enrichment, never a gate.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct SelectEntityResponse {
@@ -968,7 +931,7 @@ pub struct SelectEntityResponse {
 
 impl SelectEntityResponse {
     /// Interpret the tail as the monster shape and return the current HP, if
-    /// the shape matches and the server filled it in (go-sro sends 0 = unknown).
+    /// the shape matches and the server filled it in (0 means unknown).
     pub fn monster_hp(&self) -> Option<u32> {
         if self.result != 1 || self.tail.len() < 5 || self.tail[0] != 1 {
             return None;
@@ -1010,10 +973,8 @@ impl From<SelectEntityResponse> for Bytes {
 // action loop (the server paths the character into range and repeats basic
 // attacks until a Cancel or the target dies); each swing/cast arrives as a
 // 0xB070 [`ObjectActionUpdate`] carrying the per-target damage list — the
-// 0xB074 ack itself is only accept/reject. Layouts follow skrillax's
-// `combat.rs` (reverse-engineered from vSRO 1.188 captures) adjusted to our
-// own dumps: our server omits skrillax's extra u32 before `target` (every
-// `packet_dump/0xb070.log` line is 20 bytes), and the 0xB074 ack is the
+// 0xB074 ack itself is only accept/reject. On this wire a 0xB070 body is
+// 20 bytes with no extra u32 before `target`, and the 0xB074 ack is the
 // 2-byte `phase code` shape documented on [`ObjectActionResponse`]. Both
 // still decode tolerantly into an `Unknown { result, tail }` fallback for
 // unrecognized shapes — consumers must treat those as log-only.
@@ -1051,18 +1012,16 @@ pub enum ActionTarget {
     Entity { unique_id: u32 },
 }
 
-/// Action error codes seen in [`ObjectActionResponse`] / [`ObjectActionUpdate`]
-/// failures (vSRO 1.188 via skrillax's `PerformActionError`).
+/// Action error codes for [`ObjectActionResponse`] / [`ObjectActionUpdate`]
+/// failures, as vSRO 1.188 defines them.
 ///
 /// ⚠️ These are **not** the codes this server sends. The original reads the
-/// failure field as a `u16` and hands it straight to its message-box helper
-/// (`FUN_008a5fd0:179-180`, `FUN_00880b60:12-14`), and our own captures carry
-/// `0x3006`, `0x3010` (0xB070) and `0x4004` (0xB074) — string/notice ids, not
-/// small ordinals. The low byte of `0x3006` coinciding with `0x06` here is
-/// suggestive but **UNVERIFIED**; nothing maps the two encodings yet, so these
-/// two constants stay as the skrillax reference and no code compares against
-/// them. Resolving read: the client's message-id table for the id passed as
-/// `0xffdbc99b`'s format argument.
+/// failure field as a `u16` and hands it straight to its message-box helper,
+/// and the values on this wire are `0x3006`, `0x3010` (0xB070) and `0x4004`
+/// (0xB074) — string/notice ids, not small ordinals. The low byte of `0x3006`
+/// coinciding with `0x06` here is suggestive but **UNVERIFIED**; nothing maps
+/// the two encodings yet, so these two constants are reference only and no
+/// code compares against them.
 pub const ACTION_ERROR_INVALID_TARGET: u16 = 0x06;
 pub const ACTION_ERROR_INVALID_DISTANCE: u16 = 0x07;
 
@@ -1072,29 +1031,24 @@ pub const ACTION_ERROR_INVALID_DISTANCE: u16 = 0x07;
 /// then per-command **typed** args. Only the account-privileged commands the
 /// server honours do anything; a normal account gets a failure [`GmResponse`].
 ///
-/// The original binds each command *name* to its own builder in a registry at
-/// `0x00558e00`–`0x00559100`, and each builder writes its fields individually
-/// through `FUN_00508fe0(&value, size)`. There is no generic
-/// "`u16` + ASCII message" envelope — xBot's `SendGMCommand` writes one, but
-/// that is a bot-side helper, not this client, and the `docs/re` builder census
-/// agrees: 34 distinct 0x7010 builders, every one `{u16 sub_id, …typed args}`
-/// (`docs/re/net/outbound/session-lifecycle.md` §0x7010).
+/// The original binds each command *name* to its own builder in a registry, and
+/// each builder writes its fields individually. There is no generic
+/// "`u16` + ASCII message" envelope: all 34 builders write
+/// `{u16 sub_id, …typed args}`.
 ///
 /// The two toggles carry no args; the server flips the state and echoes it back
 /// as a 0x30BF body-state update rather than in the ack.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum GmCommand {
     /// `/loadmonster` (0x06) — spawn `count` of `ref_id` at the caller.
-    /// Builder `0x00547eb0`, 8-byte body `{u16, u32, u8, u8}`. [V]
+    /// 8-byte body `{u16, u32, u8, u8}`.
     ///
     /// This sub-id is why [`GmCommand::MakeItem`] must not use it: 0x06 was
-    /// wrongly assigned to MakeItem here (a skrillax-derived `[U]` guess), so
-    /// every "make item" we sent was a *monster spawn* one byte short of its
-    /// own layout.
+    /// once assigned to MakeItem, so every "make item" sent was a *monster
+    /// spawn* one byte short of its own layout.
     LoadMonster { ref_id: u32, count: u8, rarity: u8 },
-    /// `/makeitem` (0x07) — create an item in the GM's inventory. Builder
-    /// `0x005483c0`, 7-byte body `{u16, u32, u8}` written at
-    /// `0x00548507`–`0x0054853a`. [V]
+    /// `/makeitem` (0x07) — create an item in the GM's inventory. 7-byte body
+    /// `{u16, u32, u8}`.
     ///
     /// `value` stays a neutral name because the one byte means two different
     /// things by item class. The original parses argument 2 with
@@ -1102,9 +1056,9 @@ pub enum GmCommand {
     /// clamped to `[1, MaxStack]` when the row is stackable (`TypeID2 == 3`),
     /// passed through untouched for equipment.
     ///
-    /// The server's reading was `[U]` here until a live test settled it
-    /// (2026-08-18): for **equipment it is the enchantment level**, and for a
-    /// stackable it is the quantity — which is what the client's own two-branch
+    /// The server reads it two ways: for **equipment it is the enchantment
+    /// level**, for a stackable it is the quantity — which is what the
+    /// client's own two-branch
     /// clamp already implied. It is a *request*, not a guarantee: the server
     /// clamps to the item's own ceiling, and a sent `255` came back as `+8`.
     ///
@@ -1112,35 +1066,30 @@ pub enum GmCommand {
     /// the item ref-object table by codename and puts the resulting u32 on the
     /// wire, so a codename never reaches the server.
     MakeItem { ref_id: u32, value: u8 },
-    /// `/zoe` **and** `/zoe2` (0x0C) — spawn `count` of a monster. Builders
-    /// `0x005481c0` (Zoe) and `0x005516f0` (Zoe2), 7-byte body `{u16,u32,u8}`.
-    /// [V]
+    /// `/zoe` **and** `/zoe2` (0x0C) — spawn `count` of a monster. 7-byte body
+    /// `{u16,u32,u8}`.
     ///
     /// **Both commands emit this one sub-id.** `Zoe2` is not a distinct packet:
     /// it is a client-side batching wrapper that splits a large count into
     /// chunks of 200 and paces them, and every chunk is an ordinary `0x000C`.
-    /// So the 34 recovered 0x7010 builders cover only 33 distinct sub-ids.
+    /// So the 34 builders cover only 33 distinct sub-ids.
     ///
     /// The monster is named by codename and resolved client-side against the
     /// same unified ref-object map `MakeItem` uses; the gate is `TypeID 1/2/1`
     /// (character / NPC / monster) where `MakeItem`'s is `TypeID1 == 3`.
     ///
-    /// That the server then *kills* what it spawned is `[U]` — the client only
-    /// builds this body. The suggestion comes from the drain routine's own log
-    /// strings (`[CF Kill]`), which is not proof.
+    /// Whether the server then *kills* what it spawned is unknown — the client
+    /// only builds this body.
     Zoe { ref_id: u32, count: u8 },
-    /// `/invisible` (0x0E) — toggle GM invisibility. Builder `0x0053dd80`,
-    /// 2-byte body. [V], and the only sub-command we have ever captured
-    /// (`packet_dump/c2s/0x7010.log`).
+    /// `/invisible` (0x0E) — toggle GM invisibility. 2-byte body.
     Invisible,
-    /// `/invincible` (0x0F) — toggle GM invincibility. Builder `0x0053dea0`,
-    /// 2-byte body. [V]
+    /// `/invincible` (0x0F) — toggle GM invincibility. 2-byte body.
     Invincible,
 }
 
 impl GmCommand {
-    /// The u16 sub-command selector. Sourced from the original's own command
-    /// registry, not from a bot table — see the variant docs for each VA.
+    /// The u16 sub-command selector, as the original's own command registry
+    /// defines it.
     pub fn code(&self) -> u16 {
         match self {
             GmCommand::LoadMonster { .. } => 0x06,
@@ -1208,8 +1157,7 @@ impl From<GmCommand> for Bytes {
     }
 }
 
-/// 0xB010 — server → client GM command result (`FUN_008743a0`;
-/// `docs/re/net/inbound/misc-debug.md` §0xb010).
+/// 0xB010 — server → client GM command result.
 ///
 /// `result` is 1 = ok / 2 = fail, and the `u16` after it is an **echo of the
 /// request's sub-command**, read on *both* arms — not an error code. The proof
@@ -1222,8 +1170,8 @@ impl From<GmCommand> for Bytes {
 /// [`GmCommand::MakeItem`] nor [`GmCommand::LoadMonster`] is among them — for
 /// those the whole body is the 3-byte head.
 ///
-/// Confirmed against our own capture: every body in `packet_dump/0xb010.log`
-/// is `01 0e 00` — ok, echoing the `/invisible` we sent.
+/// On the wire a body reads e.g. `01 0e 00` — ok, echoing the `/invisible`
+/// that was sent.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct GmResponse {
     pub result: u8,
@@ -1271,19 +1219,16 @@ impl From<GmResponse> for Bytes {
 
 /// 0xB074 — server → client ack for [`ObjectActionRequest`].
 ///
-/// Capture-VERIFIED vSRO 1.188 (2026-08-06, the whole `packet_dump/0xb074.log`
-/// corpus: `01 01`×703, `02 00`×693, `01 02`×150, `02 01`×134, `01 00`×6,
-/// `03 xx 04 40`×20). The shape is two bytes, `phase code`:
+/// Confirmed for vSRO 1.188. The shape is two bytes, `phase code`:
 /// - `01 <code>` — action start ack: code 0 = skill cast accepted (every
 ///   `01 00` is followed <60 ms by a successful kind-None 0xB070), code 1 =
 ///   attack accepted, code 2 = **rejected** (server action slot busy — a cast
 ///   sent mid-auto-attack; no 0xB070 ever follows).
-/// - `02 <code>` — the running action ended (0/1 observed; meaning of the
-///   code not yet pinned).
+/// - `02 <code>` — the running action ended (code 0 or 1; the meaning of the
+///   code is not pinned).
 /// - `03 <code> <error u16>` — the request was **refused with a message**: the
 ///   handler reads the same `code` byte, then a `u16` it hands to the
-///   message-box helper (`FUN_00880b60:12-14`). Captured seven times as
-///   `03 00 04 40`, i.e. code 0, error `0x4004` (#232).
+///   message-box helper, e.g. `03 00 04 40` = code 0, error `0x4004` (#232).
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ObjectActionResponse {
     /// `01 <code>` — start ack; see [`Self::is_rejected`].
@@ -1375,15 +1320,14 @@ impl From<ObjectActionResponse> for Bytes {
 /// internally (1 hit / 2 miss / 4 crit / 5 block / 6 parry / 8 defense,
 /// `docs/combat-math-server-spec.md` §2) whose numbering is NOT the numbering
 /// of this wire byte — on the wire, `2` is the critical marker. Only `1` and
-/// `2` have ever been captured (169 hit records, spec §5), so any other value
-/// is an outcome we have never seen: collapsing it to a bool would rewrite it
-/// as an ordinary hit on the way back out.
+/// `2` have ever been seen, so any other value is an unknown outcome:
+/// collapsing it to a bool would rewrite it as an ordinary hit on the way back
+/// out.
 ///
-/// Both fields come out of a single packed little-endian `u32`
-/// (`FUN_00a55e00:29, :66-67`): the low byte is this `kind` (the original's
-/// "damage state"), the upper **24 bits** are the amount. Reading the byte
-/// and then a full `u32` agrees only while the following unnamed field is
-/// zero, which it is in every capture we hold.
+/// Both fields come out of a single packed little-endian `u32`: the low byte is
+/// this `kind` (the original's "damage state"), the upper **24 bits** are the
+/// amount. Reading the byte and then a full `u32` agrees only while the
+/// following unnamed field is zero, which it always is so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamageValue {
     /// Wire `kind` byte: 1 = standard, 2 = critical, other = UNKNOWN outcome.
@@ -1395,27 +1339,24 @@ pub struct DamageValue {
 impl DamageValue {
     /// Wire kind for an ordinary hit.
     pub const KIND_NORMAL: u8 = 1;
-    /// Wire kind for a critical hit ([S]: skrillax `combat.rs`, and the only
-    /// non-1 value in our captures).
+    /// Wire kind for a critical hit — the only non-1 value seen so far.
     pub const KIND_CRITICAL: u8 = 2;
 
     pub fn is_critical(&self) -> bool {
         self.kind == Self::KIND_CRITICAL
     }
 
-    /// True for a `kind` neither of the two we have ever captured — an
-    /// outcome the presentation layer must treat as log-only rather than as
-    /// a plain hit.
+    /// True for a `kind` that is neither of the two known ones — an outcome
+    /// the presentation layer must treat as log-only rather than as a plain
+    /// hit.
     pub fn is_unknown_kind(&self) -> bool {
         !matches!(self.kind, Self::KIND_NORMAL | Self::KIND_CRITICAL)
     }
 }
 
-/// The 14-byte position tail carried by hit arms 4 and 5
-/// (`FUN_00a55e00:41-45` / `:51-57`): a region id plus three `i32`
-/// coordinates the original converts to floats at read time. Kept as the
-/// wire's integers — no capture of these arms exists yet, so any scaling
-/// would be a guess.
+/// The 14-byte position tail carried by hit arms 4 and 5: a region id plus
+/// three `i32` coordinates the original converts to floats at read time. Kept
+/// as the wire's integers, because the scaling is unconfirmed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HitPosition {
     pub region: u16,
@@ -1427,16 +1368,14 @@ pub struct HitPosition {
 /// The payload of one hit record, selected by `flags & 0x7F`.
 ///
 /// The original is a `switch (flags & 0x7f)` over four listed arms plus a
-/// catch-all (`FUN_00a55e00:26-34`), not a set of bit tests: arms 0 and 7 are
-/// 9 bytes, arms 4 and 5 are 23, and every other value reads nothing at all.
-/// A bit test on `0x08` agrees with the catch-all only by luck and reads
-/// arms 4/5 fourteen bytes short, desynchronising the rest of the packet
-/// (`docs/re/net/inbound/skill-combat.md`, 0xB070).
+/// catch-all, not a set of bit tests: arms 0 and 7 are 9 bytes, arms 4 and 5
+/// are 23, and every other value reads nothing at all. A bit test on `0x08`
+/// agrees with the catch-all only by luck and reads arms 4/5 fourteen bytes
+/// short, desynchronising the rest of the packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitEffect {
     /// Arm 0 — plain damage: the packed damage word plus one unnamed `u32`
-    /// (zero in all 145 captured `0xb070` lines, kept so a non-zero value
-    /// survives a round trip).
+    /// (always zero so far, kept so a non-zero value survives a round trip).
     Damage { value: DamageValue, unknown: u32 },
     /// Arms 4 and 5 — arm 0 plus a position tail (knockback / knockdown).
     /// The original stores the two arms in *different* record slots
@@ -1449,7 +1388,7 @@ pub enum HitEffect {
         pos: HitPosition,
     },
     /// Arm 7 — the packed damage word plus two unnamed `u16`s. The original
-    /// force-clears its killing-blow flag on this arm (`:63`).
+    /// force-clears its killing-blow flag on this arm.
     Arm7 {
         value: DamageValue,
         unknown_a: u16,
@@ -1462,8 +1401,7 @@ pub enum HitEffect {
 
 /// One hit against one entity: the `0x80` bit of the flag byte plus the arm
 /// payload it selects. The original keeps exactly this split — `0x80` goes to
-/// a separate bool at `rec+8` (`FUN_00a55e00:16-24`) while `flags & 0x7F`
-/// drives the switch.
+/// a separate bool while `flags & 0x7F` drives the switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SkillPartDamage {
     /// Wire bit `0x80`. Kept verbatim even on arm 7, where the original
@@ -1473,8 +1411,7 @@ pub struct SkillPartDamage {
 }
 
 impl SkillPartDamage {
-    /// An ordinary arm-0 hit — the shape practically every captured record
-    /// takes.
+    /// An ordinary arm-0 hit — the shape practically every record takes.
     pub fn hit(value: DamageValue) -> Self {
         SkillPartDamage {
             killing_blow: false,
@@ -1512,19 +1449,14 @@ impl SkillPartDamage {
 }
 
 /// Hit arm 2 — **the defender took no damage**. The record is the flag byte
-/// alone; the original reads no damage word and zeroes its damage field
-/// (`FUN_00a55e00:32-34`).
+/// alone; the original reads no damage word and zeroes its damage field.
 ///
-/// `[V]` from the whole of `packet_dump/0xb070.log` (1121 lines, 987 hit
-/// records): 95 arm-2 records, **every one of them on a player-class defender**
-/// (the local character plus four party members) and never once on a monster,
-/// appearing independently in either instance slot of a two-instance monster
-/// skill — `0,0` ×82, `0,2` ×31, `2,0` ×29, i.e. a per-hit roll at ~25%, not a
-/// tail filler. Contrast [`HIT_ARM_DEAD_TARGET`].
+/// It lands on player-class defenders only, never on a monster, and appears
+/// independently in either instance slot of a two-instance skill — a per-hit
+/// roll at roughly 25 %, not a tail filler. Contrast [`HIT_ARM_DEAD_TARGET`].
 ///
-/// **Which** avoidance it is stays `[U]`. The original's internal resolver enum
-/// numbers `2 = MISS`, `5 = BLOCK`, `6 = PARRY`, `8 = defense`
-/// (`docs/re/gamedata/combat-outcome-resolver.md` §3′), but that enum is not
+/// **Which** avoidance it is stays unknown. The original's internal resolver
+/// numbers `2 = MISS`, `5 = BLOCK`, `6 = PARRY`, `8 = defense`, but that is not
 /// this wire byte's numbering — the wire carries no discriminator and no
 /// amount, so miss, parry and block are indistinguishable here. The client
 /// presents it as BLOCK (`docs/combat-math-server-spec.md` §5).
@@ -1532,9 +1464,9 @@ pub const HIT_ARM_AVOIDED: u8 = 2;
 
 /// Hit arm 8 — **no hit: the target was already dead**. Also payload-less.
 ///
-/// `[V]` from the same dump: 28 records, **28 of 28** the second instance of a
-/// two-instance basic attack whose *first* instance carried the `0x80` killing
-/// blow. Unlike [`HIT_ARM_AVOIDED`] it never appears in the first slot and
+/// It only ever appears as the second instance of a two-instance basic attack
+/// whose *first* instance carried the `0x80` killing blow. Unlike
+/// [`HIT_ARM_AVOIDED`] it never appears in the first slot and
 /// never on a contested roll, so it is a filler, not an outcome, and it
 /// correctly produces no popup.
 pub const HIT_ARM_DEAD_TARGET: u8 = 8;
@@ -1561,7 +1493,7 @@ pub struct DamageContent {
 /// What kind of action a 0xB070 update describes (wire byte 0 / 1 / 8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionKind {
-    /// Self-casts / buffs — no damage payload observed.
+    /// Self-casts / buffs — no damage payload.
     None,
     /// A swing/cast that dealt damage; `None` damage = swing without payload.
     Attack {
@@ -1574,16 +1506,16 @@ pub enum ActionKind {
 /// swing or skill cast). This is where per-hit damage arrives; the matching
 /// [`SkillEnd`] later echoes `instance`.
 ///
-/// Layout = skrillax's `PerformActionUpdate` minus its `unknown_4` u32: our
-/// live captures (`packet_dump/0xb070.log`, all 20 bytes, e.g.
+/// The body is 20 bytes, e.g.
 /// `01 0030 c6980000 90890500 27060000 00000000 00` = self-buff, target 0,
-/// kind none) only fit without it. The all-zero tail can't fully disambiguate
-/// the two layouts — re-adding the u32 before `target` is the first thing to
-/// try if real attack captures land in [`Self::Unknown`].
+/// kind none. A variant with an extra `u32` before `target` exists in some
+/// descriptions but does not fit here; an all-zero tail cannot fully
+/// disambiguate the two, so re-adding that `u32` is the first thing to try if
+/// a real attack body lands in [`Self::Unknown`].
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ObjectActionUpdate {
     Success {
-        /// Observed 0x3000 in captures (skrillax: 0x3002 | 0x3000).
+        /// Seen as 0x3000; some sources describe it as `0x3002 | 0x3000`.
         unknown: u16,
         /// Ref skill id (basic attacks use the weapon's base-attack skill).
         skill_id: u32,
@@ -1597,9 +1529,9 @@ pub enum ObjectActionUpdate {
     },
     /// `02 <error u16>` — the action failed and the original pops a message
     /// box. The handler's non-success branch is a single 2-byte read followed
-    /// by `FUN_00778190(4, error, ...)` (`FUN_008a5fd0:178-181`), so the tail
-    /// is exactly one `u16` — which is why the captured `02 06 30` / `02 10 30`
-    /// used to fall into `Unknown` against the old 1-byte model (#232).
+    /// by the message-box call, so the tail is exactly one `u16` — which is
+    /// why real bodies like `02 06 30` / `02 10 30` used to fall into
+    /// `Unknown` against the old 1-byte model (#232).
     Failure { error: u16 },
     /// Any shape the typed parse doesn't fit — kept raw, log-only.
     Unknown { result: u8, tail: Bytes },
@@ -1657,8 +1589,8 @@ impl ObjectActionUpdate {
         })
     }
 
-    /// One hit record — `FUN_00a55e00`. The flag byte splits into a
-    /// killing-blow bit (`0x80`) and an arm selector (`flags & 0x7F`) whose
+    /// One hit record. The flag byte splits into a killing-blow bit (`0x80`)
+    /// and an arm selector (`flags & 0x7F`) whose
     /// arms have four different lengths.
     fn parse_hit(r: &mut Reader) -> Option<SkillPartDamage> {
         let flags = r.u8().ok()?;
@@ -1822,14 +1754,14 @@ impl From<ObjectActionUpdate> for Bytes {
     }
 }
 
-/// 0xB071 — server → client: the cast instance ends. Capture-verified vSRO
+/// 0xB071 — server → client: the cast instance ends. Confirmed on vSRO
 /// 1.188: `01 <instance u32> <target u32> <kind u8> [DamageContent]` — the
 /// same trailing layout as [`ObjectActionUpdate`]. This server delivers
 /// TARGETED SKILL DAMAGE here (~0.5 s after the kind-None 0xB070 cast
 /// start, roughly the visual hit moment); the 10-byte majority shape is the
 /// same layout with target 0, kind 0 (self-buffs / auto-attack ends).
 /// Anything else — error shapes, other server builds — lands in
-/// [`Self::Unknown`] raw. No Failure variant: none was ever captured.
+/// [`Self::Unknown`] raw. No Failure variant: none has ever been seen.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum SkillEnd {
     Success {
@@ -1909,11 +1841,10 @@ impl From<SkillEnd> for Bytes {
 
 // --- Skill / mastery learning (0x70A1/0x70A2) -------------------------------
 //
-// Skill/mastery learning. No longer EXPERIMENTAL (#125, 2026-08-15): the two
-// requests are read off the original's builders (0x70A1 `@0081dc60`, 0x70A2
-// `@0081dd20`) and both acks are capture-dated (2026-08-05). Only the ERROR
-// shapes stay assumed — no capture has produced a non-`01` result, so those
-// paths keep their bytes raw and warn.
+// Skill/mastery learning. No longer EXPERIMENTAL (#125): the two requests are
+// read off the original's builders and both acks are confirmed. Only the ERROR
+// shapes stay assumed — a non-`01` result has never been seen, so those paths
+// keep their bytes raw and warn.
 
 /// 0x70A1 — client → server "learn this skill" (AGENT_SKILL_LEARN) (the skilldata ref id of the
 /// next rung of the ladder).
@@ -1924,11 +1855,11 @@ pub struct SkillLearnRequest {
 
 /// 0xB0A1 — server → client ack for [`SkillLearnRequest`].
 ///
-/// Capture-verified on vSRO 1.188: `01 <ref_skill_id u32>` — the ack is the
-/// ONLY learn notification (no character-data refresh follows), so the
-/// client applies it to the skill book directly. Error shape assumed
-/// `02 <code u16>` by analogy with other acks (uncaptured); anything else
-/// lands in [`Self::Unknown`] raw.
+/// Confirmed on vSRO 1.188: `01 <ref_skill_id u32>` — the ack is the ONLY
+/// learn notification (no character-data refresh follows), so the client
+/// applies it to the skill book directly. The error shape is assumed to be
+/// `02 <code u16>` by analogy with other acks; anything else lands in
+/// [`Self::Unknown`] raw.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum SkillLearnResponse {
     Success { ref_skill_id: u32 },
@@ -1980,8 +1911,8 @@ impl From<SkillLearnResponse> for Bytes {
     }
 }
 
-/// 0x70A2 — client → server "raise this mastery" (AGENT_SKILL_MASTERY_LEARN) by `amount` levels (the
-/// vanilla client always sends 1).
+/// 0x70A2 — client → server "raise this mastery" (AGENT_SKILL_MASTERY_LEARN)
+/// by `amount` levels (the vanilla client always sends 1).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MasteryLearnRequest {
     pub mastery_id: u32,
@@ -1990,9 +1921,9 @@ pub struct MasteryLearnRequest {
 
 /// 0xB0A2 — server → client ack for [`MasteryLearnRequest`].
 ///
-/// Capture-verified on vSRO 1.188: `01 <mastery_id u32> <new_level u8>`
-/// (e.g. `01 01010000 05` = Bicheon raised to 5). Error shape assumed
-/// `02 <code u16>` (uncaptured); anything else lands in [`Self::Unknown`].
+/// Confirmed on vSRO 1.188: `01 <mastery_id u32> <new_level u8>`
+/// (e.g. `01 01010000 05` = Bicheon raised to 5). The error shape is assumed
+/// to be `02 <code u16>`; anything else lands in [`Self::Unknown`].
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MasteryLearnResponse {
     Success { mastery_id: u32, new_level: u8 },
@@ -2050,17 +1981,16 @@ impl From<MasteryLearnResponse> for Bytes {
 
 // --- Server notice push (0x300C) --------------------------------------------
 //
-// The discriminator is **one u16**, not `u8 type` + `u8 unk01`. The original's
-// handler `FUN_00874ea0` does a single read at `:53` and then
-// `switch (code & 0xffff)` over eighteen `0x0Cxx` labels; xBot's second "unk01"
-// byte is simply that u16's high byte, constant `0x0C` in every sample — which
-// is why it looked like a stable but meaningless field. The capture pins it:
-// `05 0c 43 95 00 00` is six bytes, so u16 `0x0C05` + u32 ref id, and a u32
-// discriminator would leave two bytes and read the id as 0.
+// The discriminator is **one u16**, not `u8 type` + `u8 unk01`. The original
+// does a single read and then `switch (code & 0xffff)` over eighteen `0x0Cxx`
+// labels; a second "unk01" byte is simply that u16's high byte, constant `0x0C`
+// everywhere — which is why it looked like a stable but meaningless field. The
+// wire settles it: `05 0c 43 95 00 00` is six bytes, so u16 `0x0C05` + u32 ref
+// id, and a u32 discriminator would leave two bytes and read the id as 0.
 //
 // Only the two codes with a recorded meaning are modelled — `0x0C05` (unique
 // appeared) and `0x0C06` (unique killed) — plus `0x0C18`, whose two leading
-// bytes the capture pins. The other fifteen codes decode to `Raw`: the original's
+// bytes are known. The other fifteen codes decode to `Raw`: the original's
 // `default:` arm reads nothing either, so raw is the faithful behaviour and
 // inventing widths for them is exactly the defect ADR-0009 names. See
 // docs/net-misc-0x2113.md §0x300C.
@@ -2069,26 +1999,26 @@ impl From<MasteryLearnResponse> for Bytes {
 // assumed shape does not consume the body exactly falls through to `Raw` rather
 // than being misread.
 
-/// `0x0C05` — a unique monster appeared. Capture-verified.
+/// `0x0C05` — a unique monster appeared. Confirmed.
 pub const NOTICE_UNIQUE_APPEARED: u16 = 0x0C05;
-/// `0x0C06` — a unique monster was killed. Stated by the original's parser
-/// (one scalar + one string), never captured.
+/// `0x0C06` — a unique monster was killed. The original's parser reads one
+/// scalar and one string; unconfirmed on the wire.
 pub const NOTICE_UNIQUE_KILLED: u16 = 0x0C06;
-/// `0x0C18` — meaning unknown; its two leading bytes are capture-pinned.
+/// `0x0C18` — meaning unknown; only its two leading bytes are known.
 pub const NOTICE_0C18: u16 = 0x0C18;
 
 /// 0x300C — server → client notice push.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum NoticeUpdate {
     /// [`NOTICE_UNIQUE_APPEARED`] — `ref_id` is a ref-data object id, not a
-    /// model id: the original hands it to `FUN_0093f630()`, the ref-data
-    /// lookup. Capture-verified: `05 0c 43 95 00 00` → 38211.
+    /// model id: the original hands it to the ref-data lookup. Confirmed:
+    /// `05 0c 43 95 00 00` → 38211.
     UniqueAppeared { ref_id: u32 },
     /// [`NOTICE_UNIQUE_KILLED`] — same lookup plus the killer's name.
     UniqueKilled { ref_id: u32, player: String },
-    /// [`NOTICE_0C18`] — two bytes the capture pins (`18 0c 02 03` → 2, 3) and
-    /// then, on a condition the decompile lost, eight more. Since the gate is
-    /// [U], whatever follows is kept verbatim rather than gated on a guess.
+    /// [`NOTICE_0C18`] — two known bytes (`18 0c 02 03` → 2, 3) and then, on
+    /// an unknown condition, eight more. Since that gate is unknown, whatever
+    /// follows is kept verbatim rather than gated on a guess.
     Code0C18 { a: u8, b: u8, tail: Bytes },
     /// Any other code — kept whole, code included, because no source records
     /// its field widths.
@@ -2168,10 +2098,10 @@ impl From<NoticeUpdate> for Bytes {
 
 // --- Mastery / skill level-DOWN (0x7202/0x7203, 0xB202/0xB203) --------------
 //
-// The mirror of the level-UP flow above. Both responses are [V] — read statically
-// from the original's parsers — but neither *request* has a builder there, so their
-// bodies are spec-derived from the level-UP siblings and stay [U] until a capture
-// lands. See docs/net-mastery-teleport-0x7202.md.
+// The mirror of the level-UP flow above. Both responses are read from the
+// original's parsers, but neither *request* has a builder there, so their
+// bodies are mirrored from the level-UP siblings and stay unconfirmed. See
+// docs/net-mastery-teleport-0x7202.md.
 //
 // The response enums reuse the level-UP shapes verbatim, including the
 // `pos == len` guard. That guard matters more here than it does above: the
@@ -2182,9 +2112,9 @@ impl From<NoticeUpdate> for Bytes {
 
 /// 0x7202 — client → server "lower this skill by one level".
 ///
-/// **[U] body.** The original has no builder for this opcode; the single `u32` is
-/// mirrored from the level-UP sibling [`SkillLearnRequest`]. Confirm with
-/// `packet_dump/0x7202.log` before anything sends it.
+/// **Unknown body.** The original has no builder for this opcode; the single
+/// `u32` is mirrored from the level-UP sibling [`SkillLearnRequest`]. Confirm
+/// it before anything sends it.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct SkillLevelDownRequest {
     pub ref_skill_id: u32,
@@ -2193,7 +2123,8 @@ pub struct SkillLevelDownRequest {
 /// 0xB202 — server → client ack for [`SkillLevelDownRequest`].
 ///
 /// `01 <new_skill_id u32>` on success — a level-down returns the id of the skill at
-/// its new, lower level. Failure shape uncaptured; see the section comment.
+/// its new, lower level. The failure shape is unconfirmed; see the section
+/// comment.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MasterySkillLevelDownResponse {
     Success { new_skill_id: u32 },
@@ -2248,11 +2179,10 @@ impl From<MasterySkillLevelDownResponse> for Bytes {
 
 /// 0x7203 — client → server "lower this mastery by one level".
 ///
-/// **[U] body.** No builder in the original. The level-UP sibling
+/// **Unknown body.** No builder in the original. The level-UP sibling
 /// [`MasteryLearnRequest`] carries a trailing `amount: u8`; whether the DOWN
-/// request does too is unresolved, so it is **not** included here — the doc's build
-/// plan defers that byte to a capture rather than assuming it. Resolve with
-/// `packet_dump/0x7203.log`.
+/// request does too is unresolved, so it is **not** included here rather than
+/// assumed.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MasteryLevelDownRequest {
     pub mastery_id: u32,
@@ -2261,7 +2191,8 @@ pub struct MasteryLevelDownRequest {
 /// 0xB203 — server → client ack for [`MasteryLevelDownRequest`].
 ///
 /// `01 <mastery_id u32> <new_level u8>` on success — the exact mirror of
-/// [`MasteryLearnResponse`]. Failure shape uncaptured; see the section comment.
+/// [`MasteryLearnResponse`]. The failure shape is unconfirmed; see the section
+/// comment.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum MasteryLevelDownResponse {
     Success { mastery_id: u32, new_level: u8 },
@@ -2319,12 +2250,11 @@ impl From<MasteryLevelDownResponse> for Bytes {
 
 // --- Stat point allocation (0x7050/0x7051) ----------------------------------
 //
-// Capture-VERIFIED on vSRO 1.188 (2026-08-06): empty 0x7050 requests ack
-// `01` on success and `02 7406` when the wallet is empty
-// (docs/net-stats-0x7050-0x7051.md). The stat-point balance and the new
-// STR/INT arrive separately (0x304E StatPoints, 0x303D stats refresh), so
-// the acks carry no payload on success. 0x7051 (INT) shares the shape but
-// is uncaptured.
+// Confirmed on vSRO 1.188: empty 0x7050 requests ack `01` on success and
+// `02 7406` when the wallet is empty (docs/net-stats-0x7050-0x7051.md). The
+// stat-point balance and the new STR/INT arrive separately (0x304E StatPoints,
+// 0x303D stats refresh), so the acks carry no payload on success. 0x7051 (INT)
+// shares the shape but is unconfirmed.
 
 /// 0x7050 — client → server "spend one stat point on strength".
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -2401,7 +2331,7 @@ stat_ack_wire!(IncreaseIntResponse);
 
 // --- NPC talk (0x7046/0xB046, 0x704B/0xB04B) --------------------------------
 //
-// 0x7046 and 0x704B capture-VERIFIED on vSRO 1.188 (2026-08-06): the talk
+// 0x7046 and 0x704B are confirmed on vSRO 1.188: the talk
 // acks `01` plus the echoed talk flag, with errors `02 0500` (out of range /
 // unselected) and `02 0b1c` (session already open — cleared by sending the
 // close first); the close acks a bare `01` (docs/net-npc-talk-0x7046.md).
@@ -2415,7 +2345,7 @@ pub struct TalkRequest {
 }
 
 /// 0xB046 — server → client ack for [`TalkRequest`]. Only the result byte is
-/// interpreted; a success' payload (if any) stays raw until captured.
+/// interpreted; a success' payload (if any) stays raw.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum TalkResponse {
     Success { tail: Bytes },
@@ -2502,12 +2432,11 @@ impl From<TeleportRecallResponse> for Bytes {
     }
 }
 
-/// 0x705A — client → server "teleport me via this teleporter" (per
-/// SilkroadDoc AGENT_TELEPORT_USE). The `kind` discriminator is 2 for a
+/// 0x705A — client → server "teleport me via this teleporter"
+/// (AGENT_TELEPORT_USE). The `kind` discriminator is 2 for a
 /// designated-destination teleport; the destination is the teleportdata id as
-/// a **u32** — the 2026-08-06 playtest proved the u16 guess wrong the hard
-/// way: the server read 2 bytes past the 7-byte body and reset the
-/// connection without any 0xB05A.
+/// a **u32**, not a u16: with a u16 the server reads 2 bytes past the 7-byte
+/// body and resets the connection without any 0xB05A.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct TeleportRequest {
     pub npc_unique_id: u32,
@@ -2515,17 +2444,15 @@ pub struct TeleportRequest {
     pub destination_id: u32,
 }
 
-/// 0xB05A — server → client ack for [`TeleportRequest`]. Capture-VERIFIED
-/// vSRO 1.188 (2026-08-07, the first successful teleport,
-/// `packet_dump/0xb05a.log`): a TWO-PHASE ack — `02 01 00` (begin, with the
-/// zone-teardown despawns sandwiched after it) then `01` 43 ms later
-/// (committed, right before the 0x34B5 GameReset). The earlier
-/// `stat_ack_wire!` guess read the `02 …` phase as a Failure, which it
-/// plainly is not. Logging-only either way.
+/// 0xB05A — server → client ack for [`TeleportRequest`]. Confirmed on vSRO
+/// 1.188: a TWO-PHASE ack — `02 01 00` (begin, with the zone-teardown despawns
+/// sandwiched after it) then `01` about 40 ms later (committed, right before
+/// the 0x34B5 GameReset). The earlier `stat_ack_wire!` guess read the `02 …`
+/// phase as a Failure, which it plainly is not. Logging-only either way.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum TeleportResponse {
-    /// `02 <code u16>` — teleport accepted, teardown starting (code 1
-    /// observed; error codes may share this shape — unknown until seen).
+    /// `02 <code u16>` — teleport accepted, teardown starting (code 1 is the
+    /// known value; error codes may share this shape).
     Begin { code: u16 },
     /// `01` — teleport committed; 0x34B5 GameReset follows.
     Committed,
@@ -2575,15 +2502,13 @@ impl From<TeleportResponse> for Bytes {
 
 /// 0x705B — client → server "abort the cast I am in the middle of". Empty body.
 ///
-/// The cancel behind `GDR_DI_CANCEL`, the button on the cast/delay gauge. `[V]`
-/// from the original client: `FUN_0081ee60` builds it twice, both times
-/// `FUN_00841780(0x705b, 0)` with no payload, and the surrounding UI strings are
+/// The cancel behind `GDR_DI_CANCEL`, the button on the cast/delay gauge. The
+/// original builds it with no payload at all; the surrounding UI strings are
 /// `UIIT_STT_TRANSITION_CANCEL` (the button) and
-/// `UIIT_MSG_TRANSITION_CANCEL_RESULT` (the ack's message). See
-/// `docs/re/net/outbound/progression-teleport.md`.
+/// `UIIT_MSG_TRANSITION_CANCEL_RESULT` (the ack's message).
 ///
 /// ⚠️ **vSRO never writes the [`TransitionCastingCancelResponse`]**, so a
-/// go-sro-derived server is expected to ignore this. Do not read silence as a
+/// server is expected to ignore this. Do not read silence as a
 /// malformed request — read it as an unimplemented one. Distinct from
 /// [`ObjectActionRequest::Cancel`] (`0x7074`, byte `02`), which aborts the
 /// object-action loop and has no bearing on a `0x704C` item cast.
@@ -2594,12 +2519,12 @@ empty_packet!(TransitionCastingCancelRequest);
 
 /// 0xB05B — server → client: result of [`TransitionCastingCancelRequest`].
 ///
-/// `[V]` from the original's handler `FUN_008727a0`: `result == 1` is bare and
-/// shows `UIIT_MSG_TRANSITION_CANCEL_RESULT`; `result == 2` carries a `u16` the
+/// Per the original's handler: `result == 1` is bare and shows
+/// `UIIT_MSG_TRANSITION_CANCEL_RESULT`; `result == 2` carries a `u16` the
 /// original reads but never displays. Same shape as [`LogoutCancelResponse`],
 /// which is the other "cancel a pending countdown" pair.
 ///
-/// Unobserved in any capture of ours — see the request's note.
+/// Never seen on the wire — see the request's note.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct TransitionCastingCancelResponse {
     pub result: u8,
@@ -2629,33 +2554,30 @@ pub const STATE_KIND_LIFE: u8 = 0;
 /// [`EntityStateUpdate::kind`]: the entity's motion state changed.
 pub const STATE_KIND_MOTION: u8 = 1;
 /// [`EntityStateUpdate::kind`]: the entity's body state changed (invisibility,
-/// invincibility, stealth, berserk — skrillax `UpdatedState::Body`).
+/// invincibility, stealth, berserk).
 pub const STATE_KIND_BODY: u8 = 4;
 /// Life-state values (kind 0).
 pub const LIFE_STATE_ALIVE: u8 = 1;
 pub const LIFE_STATE_DEAD: u8 = 2;
 
-/// Motion-state values (kind 1), from live 0x30BF captures: monsters toggling
-/// their wander gait send `2` when they start strolling and `3` when they run
-/// (`packet_dump/0x30bf.log`: 15 walk vs 41 run lines in one session). The
-/// same byte is the `motion_state` of every spawn/state block.
+/// Motion-state values (kind 1): a monster toggling its wander gait sends `2`
+/// when it starts strolling and `3` when it runs. The same byte is the
+/// `motion_state` of every spawn/state block.
 pub const MOTION_STATE_WALK: u8 = 2;
 pub const MOTION_STATE_RUN: u8 = 3;
 
-/// A state kind the census found on the wire but no source names: a clean 1/0
-/// toggle that appears **only on the local player's uid** (16 of the 120
-/// `packet_dump/0x30bf.log` bodies), goes `1` when a fight starts, and whose
-/// `→ 0` transition lands in the same millisecond as a death in 6 of 8 cases —
-/// i.e. at every captured death. Read as the in-combat flag the spawn record
-/// also carries; `[S]` inference, see `docs/net-death-resurrect.md` §4.
+/// A state kind that is on the wire but that no source names: a clean 1/0
+/// toggle that appears **only on the local player's uid**, goes `1` when a
+/// fight starts, and whose `→ 0` transition lands in the same millisecond as a
+/// death. Read as the in-combat flag the spawn record also carries; this is an
+/// inference, see `docs/net-death-resurrect.md` §4.
 pub const STATE_KIND_COMBAT: u8 = 8;
 
-/// Body-state values (kind 4), from skrillax's `BodyState`. The three that
-/// hide the entity are grouped in [`body_state_is_invisible`].
+/// Body-state values (kind 4). The three that hide the entity are grouped in
+/// [`body_state_is_invisible`].
 pub const BODY_STATE_NONE: u8 = 0;
-/// Post-resurrect invulnerability (skrillax: `Untouchable`). All three captured
-/// revives set it in the same millisecond as life→alive and clear it after
-/// 6.13–6.29 s; it occurs nowhere else in the capture
+/// Post-resurrect invulnerability. A revive sets it in the same millisecond as
+/// life→alive and clears it after about 6.2 s; it occurs nowhere else
 /// (`docs/net-death-resurrect.md` §2).
 pub const BODY_STATE_UNTOUCHABLE: u8 = 2;
 pub const BODY_STATE_GM_INVINCIBLE: u8 = 3;
@@ -2682,14 +2604,13 @@ pub enum HiddenRender {
 
 /// Resolve [`HiddenRender`] for another character's body state.
 ///
-/// **Caveat, and the reason callers must scope this to players.** A census of
-/// `packet_dump/0x30bf.log` (2982 bodies, all 6 bytes) finds kind 4 on **217
-/// distinct unique ids**, 229 of those events carrying value 4 — and only 4 of
-/// those ids ever emit a life state, so most are not monsters in combat. If
+/// **Caveat, and the reason callers must scope this to players.** Kind 4 with
+/// value 4 arrives for hundreds of distinct unique ids, almost none of which
+/// ever emit a life state, so most of them are not monsters in combat. If
 /// value 4 really meant GM-invisible for all of them, applying this to every
-/// entity would hide two hundred of them from a non-GM. What value 4 means for
-/// a **non-player** entity is therefore **UNKNOWN**, and this must be asked
-/// only about characters until a capture settles it.
+/// entity would hide hundreds of them from a non-GM. What value 4 means for a
+/// **non-player** entity is therefore **UNKNOWN**, so this must be asked only
+/// about characters.
 pub fn hidden_render(body_state: u8, viewer_is_gm: bool) -> HiddenRender {
     match body_state {
         // A GM's own invisibility: fellow GMs see the ghost, nobody else sees
@@ -2703,9 +2624,9 @@ pub fn hidden_render(body_state: u8, viewer_is_gm: bool) -> HiddenRender {
     }
 }
 
-/// 0xB0BD — server → client: a buff landed on an entity. Capture-verified
-/// vSRO 1.188 (`packet_dump/0xb0bd.log`, fixed 12-byte payloads; the server
-/// self-casts skill 39110 on every join and announces it here). No duration
+/// 0xB0BD — server → client: a buff landed on an entity. Confirmed on vSRO
+/// 1.188 (fixed 12-byte payloads; the server self-casts skill 39110 on every
+/// join and announces it here). No duration
 /// on the wire — the client derives it from skilldata's `'dura'` param.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct BuffAdd {
@@ -2719,20 +2640,15 @@ pub struct BuffAdd {
 /// 0xB0BD's counterpart, 0xB072 — buffs removed by instance id. The leading
 /// byte is a **COUNT, not a result**: the body is a list.
 ///
-/// Read from the original's handler (`sro_client.exe@008a4de0`, table A):
-/// `FUN_004f7220(&param_1,1)` takes one byte, then
-/// `cVar3 = (char)param_1; while (cVar3 != 0) { cVar3--; FUN_004f7220(&uStack_4,4); … }`
-/// consumes exactly that many u32 ids, resolving each to its ref skill id
-/// locally (`FUN_00a56620`). The server writer agrees: `0059ecd0` derives the
-/// byte from a vector size (`(*(int *)(p+0x2a0) - *(int *)(p+0x29c)) >> 2`)
-/// and writes one u32 per element, while the five single-removal writers
-/// (`0059bfe0`, `0059f020`, `0059f8b0`, `005a16c0`, `005a1ce0`) hard-code it to 1.
+/// The original's handler takes one byte and then consumes exactly that many
+/// u32 ids, resolving each to its ref skill id locally. The server writer
+/// agrees: it derives the byte from a vector size and writes one u32 per
+/// element, while its five single-removal writers hard-code it to 1.
 ///
-/// Every captured line so far is a one-element list (`packet_dump/0xb072.log`,
-/// 6 lines 2026-08-11/2026-08-15, e.g. `01 8c030000`) — which is exactly why the
-/// earlier "result byte" reading survived: a single-removal capture cannot tell
-/// `{result:1, id}` from `{count:1, [id]}`. The decompile can, so a multi-removal
-/// push no longer loses every id but the first.
+/// Every body seen so far is a one-element list (e.g. `01 8c030000`) — which is
+/// exactly why the earlier "result byte" reading survived: a single removal
+/// cannot tell `{result:1, id}` from `{count:1, [id]}`. With the list reading a
+/// multi-removal push no longer loses every id but the first.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct BuffRemove {
     /// Instance ids to drop, in wire order (count-prefixed, never empty in practice).
@@ -2765,18 +2681,15 @@ impl From<BuffRemove> for Bytes {
 
 /// 0x70A7 — client → server: the hwan (jahwan / berserk) activation request.
 ///
-/// One byte. The original's builder writes exactly one
-/// (`sro_client.exe@0081e690`: `FUN_00841780(0x70a7,…)` opens the packet at
-/// `:21` and `FUN_00508fe0(&stack0x00000004,1)` at `:30` writes the byte it was
-/// handed by its caller). **What that byte enumerates is `[U]`** — the corpus
-/// has no caller of `FUN_0081e690`, so the value space is unbounded; skrillax
-/// is the only source for `1 = berserk`, which is the sole value we send.
+/// One byte. The original's builder writes exactly one, handed to it by its
+/// caller. **What that byte enumerates is unknown** — the value space is
+/// unbounded, and `1 = berserk` is the only value we send.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct HwanActionRequest {
     pub action: u8,
 }
 
-/// The only 0x70A7 action value with a source ([S], skrillax): activate.
+/// The only known 0x70A7 action value: activate.
 pub const HWAN_ACTION_BERSERK: u8 = 1;
 
 impl HwanActionRequest {
@@ -2789,9 +2702,8 @@ impl HwanActionRequest {
 
 /// 0xB0A7 — the server's answer to 0x70A7.
 ///
-/// The handler (`sro_client.exe@008a7a20`) reads one byte, and **only when it
-/// is not `1`** reads a `u16` and hands it to the message box
-/// (`FUN_00778190(0x1a, code, …)`). So the error code is conditional, not a
+/// The handler reads one byte, and **only when it is not `1`** reads a `u16`
+/// and hands it to the message box. So the error code is conditional, not a
 /// fixed trailer: a success body is a single byte.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct HwanActionResponse {
@@ -2808,10 +2720,10 @@ impl HwanActionResponse {
 
 /// 0x30DF — server → client HWANLEVEL: an entity's hwan level changed.
 ///
-/// `sro_client.exe@008a7630` reads a `u32` and a `u8` (`:8-9`), then resolves
-/// the `u32` through the object registry (`NetProcessInObject.cpp:0xa7d`)
-/// before applying the byte — so the `u32` is a unique id and the `u8` is the
-/// level. What the level drives visually (the hwan aura tier) is not modelled
+/// The original reads a `u32` and a `u8`, then resolves the `u32` through the
+/// object registry before applying the byte — so the `u32` is a unique id and
+/// the `u8` is the level. What the level drives visually (the hwan aura tier)
+/// is not modelled
 /// on our side yet.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct HwanLevelUpdate {
@@ -2828,8 +2740,8 @@ pub fn body_state_is_invisible(body_state: u8) -> bool {
     )
 }
 
-/// 0x30BF — server → client entity state change. Verified against live vSRO
-/// 1.188 captures: `kind` 0 = life state (1 alive, **2 dead — arrives when a
+/// 0x30BF — server → client entity state change. Confirmed on vSRO
+/// 1.188: `kind` 0 = life state (1 alive, **2 dead — arrives when a
 /// monster dies, before its despawn**), `kind` 1 = motion state (2 walk,
 /// 3 run — monsters toggling their wander gait). `kind` 4 = body state
 /// (invisibility/invincibility/stealth), which the GM `/invisible` toggle
@@ -2848,9 +2760,8 @@ impl EntityStateUpdate {
     }
 
     /// The entity just revived (life state → alive) — the local player's
-    /// respawn/get-up signal (#143). SPEC-derived: a live capture must confirm
-    /// the server sends this to the reviving player itself (see
-    /// docs/re/notes/death-resurrect.md).
+    /// respawn/get-up signal (#143). Unconfirmed: whether the server sends
+    /// this to the reviving player itself is not settled.
     pub fn is_revive(&self) -> bool {
         self.kind == STATE_KIND_LIFE && self.value == LIFE_STATE_ALIVE
     }
@@ -2871,7 +2782,7 @@ impl EntityStateUpdate {
     }
 
     /// `Some(is_walking)` when this is a motion-state update naming a gait,
-    /// else `None`. Only the two observed gaits answer: an unknown motion
+    /// else `None`. Only the two known gaits answer: an unknown motion
     /// value must not be guessed into "running" and silently pick an
     /// animation.
     pub fn motion_walking(&self) -> Option<bool> {
@@ -2888,30 +2799,20 @@ impl EntityStateUpdate {
 
 /// 0x3053 — client → server CLIENT_CHARACTER_AUTORESURRECTION: the death
 /// window's resurrect request. Carries a single option byte selecting the
-/// resurrect mode. The old empty-body model was flagged SPEC-derived pending a
-/// selector check; the xBot 1.188 source settles it — `ResurrectAtPresentPoint`
-/// writes exactly `WriteByte(2)` (vSRO xBot `PacketBuilder.cs:498-503`), so the
-/// body is one option byte, not empty.
+/// resurrect mode — the body is one byte, not empty.
 ///
-/// Two option values are now sourced:
+/// Two option values are known:
 ///
-/// - `2` [V] present resurrection point — xBot `PacketBuilder.cs:498-503`.
-/// - `1` [S] return to the designated resurrection point (town) — the vSRO
-///   clientless bot "Vsro Multi Tool" answers the post-death `0x30D2` push with
-///   `new Packet(0x3053); WriteUInt8(1)` under the comment *"ress pvp or back
-///   to town if dead"* (`tools/Vsro Multi Tool/Clientless_login/Agent.cs:135-141`).
-///   Single source, behavioural rather than symbolic, hence [S] not [V] — but it
-///   is the only always-available option, and it is what the present-point value
-///   is not: `packet_dump/c2s/0x3053.log` shows five `02` sends on 2026-08-15
-///   at 10:50:00–10:50:11 that the live server answered with *nothing*, because
-///   vSRO gates present-point resurrect (level/scroll).
+/// - `2` present resurrection point. vSRO gates this one (level/scroll), and a
+///   server that refuses it answers with *nothing at all*.
+/// - `1` return to the designated resurrection point (town). Unconfirmed, but
+///   it is the only always-available option.
 ///
 /// The "wait for other player's help" case sends no packet at all (it is the
 /// server's default: stay dead), so it has no option byte.
 ///
 /// Direction caveat: 0x3053 sits in the 0x3xxx range this repo otherwise treats
-/// as S→C, but death/resurrect is the documented C→S exception (two independent
-/// sources agree). See docs/re/notes/death-resurrect.md.
+/// as S→C, but death/resurrect is the documented C→S exception.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, Default, PartialEq)]
 pub struct GetUpRequest {
     pub option: u8,
@@ -2921,7 +2822,7 @@ impl GetUpRequest {
     /// Return to the designated resurrection point / town (value `1`).
     pub const RETURN_TO_TOWN: u8 = 1;
 
-    /// Free resurrect at the present resurrection point (xBot value `2`).
+    /// Free resurrect at the present resurrection point (value `2`).
     pub const PRESENT_POINT: u8 = 2;
 
     /// Resurrect at the designated resurrection point (the town return): the
@@ -2941,19 +2842,18 @@ impl GetUpRequest {
 }
 
 /// 0x3054 — server → client: the entity leveled up (play the level-up
-/// effect on it). Verified against a live capture: bare unique id.
+/// effect on it). Confirmed: a bare unique id.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EntityLevelUp {
     pub unique_id: u32,
 }
 
 /// 0x3011 — server → client: the local character died (drives the death
-/// window / respawn UI). One byte, witnessed twice over: the original reads
-/// exactly one byte and stops, and all three `packet_dump/0x3011.log` samples
-/// are a single `04`.
+/// window / respawn UI). One byte: the original reads exactly one byte and
+/// stops, and every real body is a single `04`.
 ///
 /// UNKNOWN: the value space of [`Self::death_cause`]. Only `0x04` has ever
-/// been observed, and the original's own comment merely guesses at it
+/// been seen, and the original's own comment merely guesses at it
 /// ("4 = Dead by mob?"), so the raw byte is exposed rather than branched on.
 /// It is **not** the `LifeState` discriminator carried by spawn/state-update
 /// — do not conflate the two.
@@ -2965,11 +2865,11 @@ pub struct CharacterDied {
 /// 0x304D — server → client: a dropped item's owner-lock has expired, so
 /// anyone may pick it up now. Body is the drop entity's unique id.
 ///
-/// Layout is **supported, not verified**: the original has no parser for this
-/// opcode (an enum entry only), so the sole witness is one live capture —
-/// `packet_dump/0x304d.log` = `aa600100` → `0x000160AA` — which reads cleanly
-/// as the `u32` unique id that drop spawns and their owner field both use.
-/// With a single sample trailing fields cannot be ruled out; the generated
+/// Layout is **supported, not confirmed**: the original has no parser for this
+/// opcode (an enum entry only), so the only witness is a real body like
+/// `aa600100` → `0x000160AA`, which reads cleanly as the `u32` unique id that
+/// drop spawns and their owner field both use. Trailing fields cannot be ruled
+/// out; the generated
 /// decode ignores a tail, so a longer real body degrades to "unique id only"
 /// rather than failing.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -2978,11 +2878,11 @@ pub struct DropUnlocked {
 }
 
 /// 0x3056 — server → client experience delta: a gain from a kill, or the
-/// negative EXP penalty charged on death (see [`Self::experience`]). Verified against
-/// live vSRO 1.188 captures (21-byte bodies, empty tail); a level-up appends
-/// a trailing u16 that is the character's **total stat points**, NOT the new
-/// level — the values seen (3, 6, 9, 12) are 3×(level-1), i.e. the 3
-/// stat-points-per-level award (skrillax mislabels it `new_level`). The level
+/// negative EXP penalty charged on death (see [`Self::experience`]). Confirmed
+/// on vSRO 1.188 (21-byte bodies, empty tail); a level-up appends a trailing
+/// u16 that is the character's **total stat points**, NOT the new level — the
+/// values seen (3, 6, 9, 12) are 3×(level-1), i.e. the 3 stat-points-per-level
+/// award, which some sources mislabel `new_level`. The level
 /// itself is derived from the exp curve (leveldata), so this is exposed only
 /// as the stat-point total.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -2990,13 +2890,12 @@ pub struct ReceiveExperience {
     /// Unique id of the entity that provided the experience.
     pub exp_origin: u32,
     /// Experience delta — **signed**: a kill grants a positive value, death
-    /// charges the EXP penalty as a negative one (`packet_dump/0x3056.log`
-    /// carries `5df3ffffffffffff` = −3235 on both captured deaths, with
-    /// `exp_origin` set to the dying player's own uid).
+    /// charges the EXP penalty as a negative one (e.g. `5df3ffffffffffff` =
+    /// −3235, with `exp_origin` set to the dying player's own uid).
     pub experience: i64,
     /// Skill-experience points gained (400 sp-exp = 1 SP).
     pub sp_exp: u64,
-    /// Flag for extra trailing data (0 in all captures so far).
+    /// Flag for extra trailing data (always 0 so far).
     pub unknown: u8,
     /// Raw remainder, see [`Self::stat_points`].
     pub tail: Bytes,
@@ -3184,9 +3083,8 @@ pub struct AcademyInviteRequest {
 ///
 /// The tail is **selected by the result byte**, which is why this is not a
 /// plain derive: `result == 1` carries the target's `u32 uniqueID`, anything
-/// else carries a `u16` error code (`docs/re/notes/stall-exchange-storage.md`
-/// L173, matching xBot `PacketParser.cs:1213-1221` via
-/// `docs/net-invite-0x3080.md` §4). Reading both as one fixed 5-byte body made
+/// else carries a `u16` error code (see `docs/net-invite-0x3080.md` §4).
+/// Reading both as one fixed 5-byte body made
 /// every *refused* invite fail to decode — a 3-byte body is short, not
 /// malformed.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -3301,8 +3199,8 @@ empty_packet!(LogoutSuccess);
 // entity (remote players, NPCs, monsters, item drops) as a batch: a
 // `GroupEntitySpawnBegin` marker (spawn vs despawn + entity count), one
 // `GroupEntitySpawnData` packet carrying all `count` records, then a
-// `GroupEntitySpawnEnd` marker. (0x3018 is the empty end and 0x3019 the data —
-// verified against a live capture.) The per-record layout is version- and
+// `GroupEntitySpawnEnd` marker. (0x3018 is the empty end and 0x3019 the data,
+// not the other way round.) The per-record layout is version- and
 // itemdata-dependent (a player's equipment list writes an extra byte only for
 // equipment items), the same reason `CharacterDataBody` is a raw passthrough, so
 // the data packet is carried unparsed and decoded in the client where itemdata
@@ -3402,12 +3300,10 @@ mod test {
         assert_eq!(decoded.minute, 42);
     }
 
-    /// #213: `0x34BE` was captured six times and never decoded. It is the
-    /// real-world server clock packed into one `u32`, per the handler
-    /// (`0089a250_FUN_0089a250.c`). Fixture = every line of
-    /// `packet_dump/0x34be.log` (2026-08-10), which is what proves the layout:
-    /// the decoded minute/second track the dump's own timestamps exactly, ten
-    /// minutes apart, across an hour rollover.
+    /// #213: `0x34BE` is the real-world server clock packed into one `u32`.
+    /// The fixture is six real bodies, and it is what proves the layout: the
+    /// decoded minute/second land exactly ten minutes apart, across an hour
+    /// rollover.
     #[test]
     fn server_time_decodes_the_captured_clock_pushes() {
         let captured: [(&[u8; 4], (u16, u8, u8, u8, u8, u8)); 6] = [
@@ -3441,7 +3337,7 @@ mod test {
 
     #[test]
     fn select_entity_response_roundtrips_and_reads_mob_hp() {
-        // go-sro mob shape: result=1, unique id, then u8(1) u32(hp) u8 u8.
+        // mob shape: result=1, unique id, then u8(1) u32(hp) u8 u8.
         let wire = Bytes::from_static(&[1, 0x39, 0x30, 0, 0, 1, 0xA0, 0x0F, 0, 0, 1, 5]);
         let decoded: SelectEntityResponse = wire.clone().try_into().unwrap();
         assert_eq!(decoded.result, 1);
@@ -3450,7 +3346,7 @@ mod test {
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
 
-        // go-sro sends hp=0 (stub) — must read as "unknown", not "dead".
+        // a server that sends hp=0 means "unknown", not "dead".
         let stub = Bytes::from_static(&[1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 5]);
         let decoded: SelectEntityResponse = stub.try_into().unwrap();
         assert_eq!(decoded.monster_hp(), None);
@@ -3499,7 +3395,7 @@ mod test {
 
     #[test]
     fn object_action_response_decodes_captured_shapes() {
-        // the four 2-byte bodies that make up 99% of packet_dump/0xb074.log
+        // the four 2-byte bodies that make up 99 % of this ack
         for (wire, expected) in [
             (
                 Bytes::from_static(&[1, 0]),
@@ -3556,8 +3452,8 @@ mod test {
             assert_eq!(back, wire);
         }
 
-        // the `03` family varies only in its code byte (`03 xx 04 40` ×20 in
-        // the 2026-08-06 corpus), and every one of them is now typed
+        // the `03` family varies only in its code byte (`03 xx 04 40`), and
+        // every one of them is now typed
         let decoded: ObjectActionResponse =
             Bytes::from_static(&[3, 9, 4, 0x40]).try_into().unwrap();
         assert_eq!(
@@ -3571,8 +3467,8 @@ mod test {
 
     #[test]
     fn teleport_ack_and_game_reset_decode_captured_lines() {
-        // real packet_dump/0xb05a.log lines (first successful teleport,
-        // 2026-08-07): phase 1 `02 01 00`, phase 2 `01`
+        // real lines of a successful teleport: phase 1 `02 01 00`,
+        // phase 2 `01`
         let begin = Bytes::from_static(&[0x02, 0x01, 0x00]);
         let decoded: TeleportResponse = begin.clone().try_into().unwrap();
         assert_eq!(decoded, TeleportResponse::Begin { code: 1 });
@@ -3585,7 +3481,7 @@ mod test {
         let back: Bytes = decoded.into();
         assert_eq!(back, committed);
 
-        // real packet_dump/0x34b5.log line: destination region 0x61A7
+        // a real game-reset line: destination region 0x61A7
         let reset = Bytes::from_static(&[0xa7, 0x61]);
         let decoded: GameReset = reset.try_into().unwrap();
         assert_eq!(decoded.region, 0x61A7);
@@ -3597,7 +3493,7 @@ mod test {
     #[test]
     fn get_up_request_carries_the_option_byte() {
         // 0x3053: one option byte. Present-point (free resurrect) = 2, the
-        // only value confirmed against xBot (PacketBuilder.cs:498-503).
+        // only confirmed value.
         let wire: Bytes = GetUpRequest::present_point().into();
         assert_eq!(&wire[..], &[2u8]);
         let decoded: GetUpRequest = wire.try_into().unwrap();
@@ -3606,11 +3502,9 @@ mod test {
     }
 
     /// The town return is the option a dead character always has; its byte is
-    /// `1` per the vSRO clientless "Vsro Multi Tool"
-    /// (`Clientless_login/Agent.cs:135-141`, "ress pvp or back to town if
-    /// dead"). Pinned by a test because the live server silently ignores the
-    /// present-point value (`packet_dump/c2s/0x3053.log`, five `02` sends with
-    /// no answer), so a regression here is invisible until someone dies.
+    /// `1`. Pinned by a test because a live server silently ignores the
+    /// present-point value, so a regression here is invisible until someone
+    /// dies.
     #[test]
     fn get_up_request_town_return_is_option_one() {
         let wire: Bytes = GetUpRequest::return_to_town().into();
@@ -3622,7 +3516,7 @@ mod test {
 
     #[test]
     fn buff_remove_decodes_captured_line() {
-        // real packet_dump/0xb072.log line (2026-08-11): count 01, instance 0x38c
+        // a real buff-remove line: count 01, instance 0x38c
         let wire = Bytes::from_static(&[0x01, 0x8c, 0x03, 0x00, 0x00]);
         let decoded: BuffRemove = wire.clone().try_into().unwrap();
         assert_eq!(decoded.buff_instance_ids, vec![0x38c]);
@@ -3630,10 +3524,10 @@ mod test {
         assert_eq!(back, wire);
     }
 
-    /// The capture cannot separate `{result, id}` from `{count, [id]}` — every
-    /// captured line removes exactly one buff. `008a4de0` can: it loops the
-    /// leading byte. Pin the multi-element case, which is the one the old
-    /// reading silently dropped.
+    /// A single-removal body cannot separate `{result, id}` from
+    /// `{count, [id]}`. The original's handler can: it loops the leading byte.
+    /// Pin the multi-element case, which is the one the old reading silently
+    /// dropped.
     #[test]
     fn buff_remove_reads_the_leading_byte_as_a_count() {
         let wire = Bytes::from_static(&[
@@ -3649,7 +3543,7 @@ mod test {
 
     #[test]
     fn object_action_update_decodes_live_self_cast() {
-        // real packet_dump/0xb070.log line (self-buff, no target, no damage)
+        // a real 0xB070 line (self-buff, no target, no damage)
         let wire = Bytes::from_static(&[
             0x01, 0x00, 0x30, 0xC6, 0x98, 0x00, 0x00, 0x90, 0x89, 0x05, 0x00, 0x27, 0x06, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -3669,7 +3563,7 @@ mod test {
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
 
-        // the matching 0xB071 capture: same instance, no target, kind none
+        // the matching 0xB071 body: same instance, no target, kind none
         let wire = Bytes::from_static(&[0x01, 0x27, 0x06, 0, 0, 0, 0, 0, 0, 0]);
         let decoded: SkillEnd = wire.clone().try_into().unwrap();
         assert_eq!(
@@ -3686,8 +3580,8 @@ mod test {
 
     #[test]
     fn skill_end_decodes_live_damage_capture() {
-        // real packet_dump/0xb071.log line (2026-08-05 19:58:12): the skill
-        // cast's damage — killing blow, 151 damage on target 0xc40c
+        // a real 0xB071 line: the skill cast's damage — killing blow,
+        // 151 damage on target 0xc40c
         let wire = Bytes::from_static(&[
             0x01, 0x3B, 0x00, 0x00, 0x00, 0x0C, 0xC4, 0x00, 0x00, 0x01, 0x01, 0x01, 0x0C, 0xC4,
             0x00, 0x00, 0x80, 0x01, 0x97, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -3727,10 +3621,9 @@ mod test {
         }
     }
 
-    /// Real `packet_dump/0xb070.log` lines (vSRO 1.188, 2026-08-11), one
-    /// critical killing blow and one ordinary hit, plus a synthetic line
-    /// carrying an outcome byte we have never captured. The census behind the
-    /// "only 1 and 2 exist so far" claim is in
+    /// Real 0xB070 lines (vSRO 1.188), one critical killing blow and one
+    /// ordinary hit, plus a synthetic line carrying an outcome byte that has
+    /// never been seen. The reasoning behind "only 1 and 2 exist so far" is in
     /// `docs/combat-math-server-spec.md` §5.
     #[test]
     fn damage_kind_byte_is_preserved_from_captured_lines() {
@@ -3765,7 +3658,7 @@ mod test {
         assert_eq!(back, wire);
 
         // same line with the outcome byte the resolver would call PARRY
-        // (never captured): it must survive the round trip as itself, not be
+        // (never seen): it must survive the round trip as itself, not be
         // rewritten into an ordinary hit
         let mut unknown_kind = wire.to_vec();
         unknown_kind[27] = 0x06;
@@ -3790,11 +3683,10 @@ mod test {
 
     /// #547 — the per-hit record is a tagged record whose damage is a `u24`
     /// packed behind a state byte, and whose arm is `flags & 0x7F`, not a bit
-    /// test (`FUN_00a55e00`, `docs/re/net/inbound/skill-combat.md` 0xB070).
+    /// test.
     #[test]
     fn hit_record_damage_is_a_u24_behind_a_state_byte() {
-        // real packet_dump/0xb071.log line: one hit, state 1, damage 0x5F = 95
-        // — the value the capture's own annotation records.
+        // a real 0xB071 line: one hit, state 1, damage 0x5F = 95
         let wire = Bytes::from_static(&[
             0x01, 0xb9, 0x03, 0x00, 0x00, 0x80, 0xab, 0x01, 0x00, 0x01, 0x01, 0x01, 0x80, 0xab,
             0x01, 0x00, 0x00, 0x01, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -3856,7 +3748,7 @@ mod test {
     /// read them as 9 and desynchronised everything after them.
     #[test]
     fn hit_record_arms_4_and_5_carry_a_position_tail() {
-        // captured 0xb071 line above with its single hit rewritten to arm 4
+        // the 0xB071 line above with its single hit rewritten to arm 4
         // (killing blow) + a position tail, and a second 9-byte arm-0 hit
         // appended: a short read of the first record would swallow the second.
         let mut wire = vec![
@@ -3938,11 +3830,10 @@ mod test {
         assert_eq!(back, abort);
     }
 
-    /// A real captured 0xB070: a monster's two-instance skill on the local
-    /// character where instance 1 landed 6 damage and instance 2 was
-    /// **avoided** — the arm the client now shows as BLOCK. Taken verbatim
-    /// from `packet_dump/0xb070.log`; see [`HIT_ARM_AVOIDED`] for why the arm
-    /// is a defender outcome and not a filler.
+    /// A real 0xB070: a monster's two-instance skill on the local character
+    /// where instance 1 landed 6 damage and instance 2 was **avoided** — the
+    /// arm the client now shows as BLOCK. See [`HIT_ARM_AVOIDED`] for why the
+    /// arm is a defender outcome and not a filler.
     #[test]
     fn a_captured_avoided_hit_decodes_as_arm_2() {
         let line = Bytes::from_static(&[
@@ -3975,7 +3866,7 @@ mod test {
 
     #[test]
     fn object_action_update_attack_damage_roundtrips() {
-        // synthetic (skrillax-shaped) basic-attack swing: two damage
+        // synthetic basic-attack swing: two damage
         // instances on one target, a critical hit + a killing blow.
         let packet = ObjectActionUpdate::Success {
             unknown: 0x3002,
@@ -4019,9 +3910,8 @@ mod test {
         let decoded: ObjectActionUpdate = bytes.try_into().unwrap();
         assert_eq!(decoded, whiff);
 
-        // #232: the failure tail is a u16, not a u8. Both captured
-        // `packet_dump/0xb070.log` failure lines, which used to land in
-        // `Unknown`.
+        // #232: the failure tail is a u16, not a u8. Both real failure
+        // bodies, which used to land in `Unknown`.
         for (wire, error) in [([2u8, 0x06, 0x30], 0x3006u16), ([2, 0x10, 0x30], 0x3010)] {
             let bytes = Bytes::copy_from_slice(&wire);
             let decoded: ObjectActionUpdate = bytes.clone().try_into().unwrap();
@@ -4041,9 +3931,8 @@ mod test {
     }
 
     /// #232: `0xB074 result=3` is `code u8 + error u16` — the handler reads the
-    /// same code byte as results 1/2 and then a `u16` for its message box
-    /// (`FUN_00880b60:12-14`). Fixture: the seven identical captured lines in
-    /// `packet_dump/0xb074.log` (2026-08-12).
+    /// same code byte as results 1/2 and then a `u16` for its message box.
+    /// The fixture is the real refusal body.
     #[test]
     fn object_action_response_decodes_the_captured_refusal() {
         let wire = Bytes::from_static(&[0x03, 0x00, 0x04, 0x40]);
@@ -4074,7 +3963,7 @@ mod test {
 
     #[test]
     fn buff_add_decodes_live_capture() {
-        // real packet_dump/0xb0bd.log line: join-time auto-buff, skill 39110
+        // a real buff-add line: join-time auto-buff, skill 39110
         let wire = Bytes::from_static(&[
             0x90, 0x89, 0x05, 0x00, 0xC6, 0x98, 0x00, 0x00, 0x27, 0x06, 0x00, 0x00,
         ]);
@@ -4100,14 +3989,14 @@ mod test {
 
     #[test]
     fn learn_acks_decode_live_captures() {
-        // real packet_dump/0xb0a1.log line: skill 3 (SWORD_SMASH_A_01) learned
+        // a real 0xB0A1 line: skill 3 (SWORD_SMASH_A_01) learned
         let wire = Bytes::from_static(&[0x01, 0x03, 0x00, 0x00, 0x00]);
         let decoded: SkillLearnResponse = wire.clone().try_into().unwrap();
         assert_eq!(decoded, SkillLearnResponse::Success { ref_skill_id: 3 });
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
 
-        // real packet_dump/0xb0a2.log line: Bicheon (257) raised to level 5
+        // a real 0xB0A2 line: Bicheon (257) raised to level 5
         let wire = Bytes::from_static(&[0x01, 0x01, 0x01, 0x00, 0x00, 0x05]);
         let decoded: MasteryLearnResponse = wire.clone().try_into().unwrap();
         assert_eq!(
@@ -4148,8 +4037,7 @@ mod test {
 
     #[test]
     fn gm_command_invisible_roundtrips() {
-        // 0x7010 body = 2-byte LE sub-command; /invisible = 0x000E. These are
-        // the only bytes we have ever actually sent (packet_dump/c2s/0x7010).
+        // 0x7010 body = 2-byte LE sub-command; /invisible = 0x000E.
         let bytes: Bytes = GmCommand::Invisible.into();
         assert_eq!(&bytes[..], &[0x0E, 0x00]);
         assert_eq!(GmCommand::try_from(bytes).unwrap(), GmCommand::Invisible);
@@ -4220,7 +4108,7 @@ mod test {
     /// the ok and fail arms — not an error code.
     #[test]
     fn gm_response_decodes_the_command_echo() {
-        // every body in packet_dump/0xb010.log is exactly this: ok, /invisible
+        // a real 0xB010 body: ok, echoing /invisible
         let captured = Bytes::from_static(&[0x01, 0x0E, 0x00]);
         let decoded: GmResponse = captured.clone().try_into().unwrap();
         assert!(decoded.is_success());
@@ -4328,10 +4216,9 @@ mod test {
         }
     }
 
-    /// 0x3057's flag is a BITMASK. Every body below is a real
-    /// `packet_dump/0x3057.log` line. This replaces an earlier test that
-    /// asserted the opposite (an enum, per xBot `SRTypes.cs`) — see the
-    /// [`EntityBarsUpdate`] doc for why the capture now settles it: `flag=0x04`
+    /// 0x3057's flag is a BITMASK. Every body below is a real 0x3057 line.
+    /// This replaces an earlier test that asserted the opposite (an enum) —
+    /// see the [`EntityBarsUpdate`] doc for what settles it: `flag=0x04`
     /// appears, and its uid is a monster whose trailing u32 tracks a burn.
     ///
     /// Note flags 3 and 5 are byte-identical in LENGTH under either reading
@@ -4358,9 +4245,9 @@ mod test {
         let decoded = EntityBarsUpdate::try_from(wire).unwrap();
         assert_eq!((decoded.hp, decoded.mp), (Some(206), Some(751)));
 
-        // flag=5 = HP|BAD_STATUS: the trailing u32 is the ailment mask, NOT MP.
-        // A healthy monster's is 0 — which is what every such body in the
-        // corpus carries, and what the enum reading had to explain as "MP 0".
+        // flag=5 = HP|BAD_STATUS: the trailing u32 is the ailment mask, NOT
+        // MP. A healthy monster's is 0 — which the enum reading had to explain
+        // as "MP 0".
         let wire = Bytes::from_static(&[
             0x30, 0x61, 0x01, 0x00, 0x01, 0x00, 0x05, 0xBA, 0, 0, 0, 0, 0, 0, 0,
         ]);
@@ -4371,10 +4258,10 @@ mod test {
         assert!(decoded.bad_status().unwrap().is_empty());
     }
 
-    /// The body that settles it: `packet_dump/0x3057.log` line 447, a monster
-    /// catching fire. 11 bytes, `flag=0x04`, mask `0x8` = Burn, and — because
-    /// bit 3 is NOT in `BAD_STATUS_LEVELED` — no trailing level byte, which is
-    /// what makes the RE-derived level rule capture-confirmed.
+    /// The body that settles it: a monster catching fire. 11 bytes,
+    /// `flag=0x04`, mask `0x8` = Burn, and — because bit 3 is NOT in
+    /// `BAD_STATUS_LEVELED` — no trailing level byte, which confirms the level
+    /// rule.
     ///
     /// Under the old enum reading this monster reported **MP = 8**.
     #[test]
@@ -4397,8 +4284,8 @@ mod test {
     }
 
     /// A level-carrying bit pulls one `u8` per set `BAD_STATUS_LEVELED` bit.
-    /// Synthetic — no capture has such a bit set yet, so this pins the
-    /// structure the RE describes, not an observed body.
+    /// Synthetic — no real body with such a bit set is known, so this pins the
+    /// described structure rather than a real one.
     #[test]
     fn leveled_bad_status_bits_pull_one_level_byte_each() {
         // Stun (bit 14) and Bleed (bit 11) are both in the leveled mask; Burn
@@ -4445,8 +4332,8 @@ mod test {
 
     #[test]
     fn motion_updates_name_the_gait() {
-        // Verbatim `packet_dump/0x30bf.log` lines: uid 0x1ab9c starts walking,
-        // uid 0x16130 starts running (kind 1, values 2 and 3).
+        // Real 0x30BF lines: uid 0x1ab9c starts walking, uid 0x16130 starts
+        // running (kind 1, values 2 and 3).
         let walk = Bytes::from_static(&[0x9c, 0xab, 0x01, 0x00, 0x01, 0x02]);
         let decoded: EntityStateUpdate = walk.try_into().unwrap();
         assert_eq!(decoded.unique_id, 0x1ab9c);
@@ -4456,7 +4343,7 @@ mod test {
         let decoded: EntityStateUpdate = run.try_into().unwrap();
         assert_eq!(decoded.motion_walking(), Some(false));
 
-        // A life-state update is not a gait, and an unobserved motion value
+        // A life-state update is not a gait, and an unknown motion value
         // stays unanswered rather than being guessed into a gait.
         let dead = Bytes::from_static(&[0x30, 0x61, 0x01, 0x00, 0x00, 0x02]);
         let decoded: EntityStateUpdate = dead.try_into().unwrap();
@@ -4495,9 +4382,8 @@ mod test {
     /// 0xB024 is a 6-byte body: u32 uid then u16 angle, exactly what the
     /// original's parser reads before it stops.
     ///
-    /// No capture exists (`packet_dump/0xb024.log` is absent), so this fixture
-    /// is built from that parser layout rather than from live bytes — the
-    /// widths and their order are what it pins.
+    /// This fixture is built from that parser layout rather than from real
+    /// bytes — the widths and their order are what it pins.
     #[test]
     fn movement_angle_decodes_the_parser_layout() {
         let body = Bytes::from_static(&[0x56, 0xAF, 0x05, 0x00, 0x00, 0x40]);
@@ -4615,8 +4501,8 @@ mod test {
         assert!(ExchangeInviteResponse::try_from(Bytes::new()).is_err());
     }
 
-    /// Real `packet_dump/0x3011.log` lines. All three captured samples are the
-    /// same single byte `04`, and the original's parser reads exactly one byte.
+    /// Every real 0x3011 body is the same single byte `04`, and the original's
+    /// parser reads exactly one byte.
     #[test]
     fn character_died_decodes_live_capture() {
         let body = Bytes::from_static(&[0x04]);
@@ -4631,7 +4517,7 @@ mod test {
         }
     }
 
-    /// The single real `packet_dump/0x304d.log` line: `aa600100`.
+    /// A real 0x304D body: `aa600100`.
     #[test]
     fn drop_unlocked_decodes_live_capture() {
         let body = Bytes::from_static(&[0xAA, 0x60, 0x01, 0x00]);
@@ -4640,9 +4526,9 @@ mod test {
         assert_eq!(decoded.unique_id, 90282);
     }
 
-    /// Only one 0x304D sample exists, so a longer real body is possible. The
+    /// The 0x304D body is unconfirmed, so a longer real one is possible. The
     /// decode must ignore a tail rather than fail, leaving the unique id
-    /// usable (docs/net-entity-events-0x3011.md marks this [S], not [V]).
+    /// usable.
     #[test]
     fn drop_unlocked_tolerates_an_unknown_tail() {
         let body = Bytes::from_static(&[0xAA, 0x60, 0x01, 0x00, 0xDE, 0xAD]);
@@ -4652,7 +4538,7 @@ mod test {
 
     #[test]
     fn receive_experience_decodes_live_capture() {
-        // real packet_dump/0x3056.log line: kill grants 23 exp, 119 sp-exp
+        // a real 0x3056 line: kill grants 23 exp, 119 sp-exp
         let wire = Bytes::from_static(&[
             0xA8, 0x47, 0x01, 0x00, 0x17, 0, 0, 0, 0, 0, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0,
         ]);
@@ -4674,8 +4560,8 @@ mod test {
 
     #[test]
     fn receive_experience_death_penalty_is_negative() {
-        // real packet_dump/0x3056.log death line (09:45:51.937Z): the EXP
-        // penalty arrives as a negative i64 on the player's own uid. Read as
+        // a real 0x3056 death line: the EXP penalty arrives as a negative
+        // i64 on the player's own uid. Read as
         // u64 this is 18446744073709548381, which saturated the underbar's
         // exp offset and walked the level to the leveldata maximum (#306).
         let wire = Bytes::from_static(&[
@@ -4952,8 +4838,8 @@ mod test {
     }
 
     /// A truncated level tail must not lose the mask that names the ailments:
-    /// the level rule is RE-derived and only its no-level case is captured, so
-    /// a short body yields fewer levels rather than failing the whole decode.
+    /// only the no-level case of the level rule is confirmed, so a short body
+    /// yields fewer levels rather than failing the whole decode.
     #[test]
     fn a_short_level_tail_keeps_the_mask() {
         let mask = Ailment::Stun.bit() | Ailment::Bleed.bit();
@@ -5029,11 +4915,11 @@ mod test {
         assert_eq!(decoded.countdown, None);
     }
 
-    // --- Captured world-join server pushes (live vSRO 1.188, PR #179) --------
+    // --- World-join server pushes (vSRO 1.188, PR #179) ----------------------
 
     #[test]
     fn silk_update_decodes_captured_body() {
-        // packet_dump/0x3153.log: F4 CB 9A 3B 50 C3 00 00 00 00 00 00
+        // a real 0x3153 body: F4 CB 9A 3B 50 C3 00 00 00 00 00 00
         let body = Bytes::from_static(&[
             0xF4, 0xCB, 0x9A, 0x3B, // own = 1_000_000_500
             0x50, 0xC3, 0x00, 0x00, // gift = 50_000
@@ -5054,7 +4940,7 @@ mod test {
 
     #[test]
     fn weather_update_decodes_captured_body() {
-        // packet_dump/0x3809.log: 01 B4
+        // a real 0x3809 body: 01 B4
         let body = Bytes::from_static(&[0x01, 0xB4]);
         let decoded: WeatherUpdate = body.clone().try_into().unwrap();
         assert_eq!(
@@ -5070,7 +4956,7 @@ mod test {
 
     #[test]
     fn friend_list_info_decodes_empty_roster() {
-        // packet_dump/0x3305.log: 00 (empty roster)
+        // a real 0x3305 body: 00 (empty roster)
         let body = Bytes::from_static(&[0x00]);
         let decoded: FriendListInfo = body.clone().try_into().unwrap();
         assert_eq!(decoded.count, 0);
@@ -5080,13 +4966,12 @@ mod test {
     }
 
     /// The record the original's parser reads is `u32, u16 len + ASCII, u32,
-    /// u8` — four fields (`FUN_009993b0`, `docs/re/net/inbound/chat-social.md`
-    /// §0x3305). We modelled a fifth (`group_id: u16`) that is not on the
-    /// wire, so from the *second* entry onwards everything shifted by two
+    /// u8` — four fields. We modelled a fifth (`group_id: u16`) that is not on
+    /// the wire, so from the *second* entry onwards everything shifted by two
     /// bytes (#546). Two entries is the smallest roster that shows it, which
     /// is why the empty-roster test above never could.
     ///
-    /// Synthetic bytes: the only live capture of 0x3305 is an empty roster.
+    /// Synthetic bytes: a real 0x3305 roster is always empty.
     #[test]
     fn friend_list_info_decodes_two_entries_without_drift() {
         let body = Bytes::from_static(&[
@@ -5129,7 +5014,7 @@ mod test {
 
     #[test]
     fn character_finished_decodes_two_empty_lists() {
-        // packet_dump/0x3077.log: 00 00 (no item + no skill cooldowns)
+        // a real 0x3077 body: 00 00 (no item + no skill cooldowns)
         let body = Bytes::from_static(&[0x00, 0x00]);
         let decoded: CharacterFinished = body.clone().try_into().unwrap();
         assert_eq!(decoded.item_cooldown_count, 0);
@@ -5140,9 +5025,9 @@ mod test {
         assert_eq!(reencoded, body);
     }
 
-    // --- Server notice push (0x300C) — real packet_dump bytes (#267) ---------
+    // --- Server notice push (0x300C) — real wire bytes (#267) ----------------
 
-    /// packet_dump/0x300c.log line 2: `05 0c 43 95 00 00` — code 0x0C05, ref id
+    /// A real 0x300C body: `05 0c 43 95 00 00` — code 0x0C05, ref id
     /// 0x9543 = 38211. Six bytes is what pins the discriminator as a u16: a
     /// second u8 field would have to be part of it.
     #[test]
@@ -5157,8 +5042,8 @@ mod test {
         assert_eq!(back, body);
     }
 
-    /// The very next captured line differs only in the ref id (38212), which is
-    /// what pins the field as a little-endian u32 rather than a wider/narrower one.
+    /// The next body differs only in the ref id (38212), which is what pins
+    /// the field as a little-endian u32 rather than a wider or narrower one.
     #[test]
     fn notice_update_reads_the_second_captured_spawn_ref_id() {
         let body = Bytes::from_static(&[0x05, 0x0c, 0x44, 0x95, 0x00, 0x00]);
@@ -5169,9 +5054,9 @@ mod test {
         );
     }
 
-    /// packet_dump/0x300c.log line 1: `18 0c 02 03` — code 0x0C18 with the two
-    /// bytes the capture pins, and no tail (both are >= 2, so the conditional
-    /// 8-byte run is absent).
+    /// A real 0x300C body: `18 0c 02 03` — code 0x0C18 with its two known
+    /// bytes and no tail (both are >= 2, so the conditional 8-byte run is
+    /// absent).
     #[test]
     fn notice_update_decodes_the_captured_0c18_code() {
         let body = Bytes::from_static(&[0x18, 0x0c, 0x02, 0x03]);
@@ -5303,7 +5188,7 @@ mod test {
         assert_eq!(&back[..], &wire[..]);
     }
 
-    /// The failure branch is uncaptured: the original reads no error code. Both
+    /// The failure branch is unconfirmed: the original reads no error code. Both
     /// candidate shapes must survive — `02 <code>` parses as `Failure`, while a
     /// lone `02` falls through to `Unknown` rather than being misread. That is the
     /// `pos == len` guard doing its job, and it is why cloning the level-UP shape
@@ -5420,9 +5305,9 @@ mod test {
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
     }
-    /// Real `packet_dump/0x30bf.log` bodies from the 2026-08-12 death capture
-    /// (`docs/net-death-resurrect.md`): the four state deltas a death and the
-    /// following resurrection produce for the local player `111483`.
+    /// Real 0x30BF bodies (`docs/net-death-resurrect.md`): the four state
+    /// deltas a death and the following resurrection produce for the local
+    /// player `111483`.
     #[test]
     fn death_and_resurrect_state_deltas_decode_from_the_capture() {
         let decode = |hex: &[u8; 6]| {
@@ -5454,7 +5339,7 @@ mod test {
     }
 
     /// The EXP penalty rides the same opcode as an EXP gain, with a negative
-    /// value — `packet_dump/0x3056.log`, both captured deaths.
+    /// value.
     #[test]
     fn death_charges_a_negative_experience_delta() {
         let body = Bytes::from_static(&[

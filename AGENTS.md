@@ -14,18 +14,18 @@
 
 ## Reference doctrine (ADR 0009 — clone, not replica)
 - OpenRoad is a **clone** of the v1.188 client, not a byte-for-byte replica. The original
-  client and the user's own PK2/vSRO data are the **default reference and tie-breaker** —
+  client and the player's own PK2/vSRO data are the **default reference and tie-breaker** —
   that is what stops us inventing numbers.
 - A **deliberate deviation with a stated rationale** (modern rendering, UX, accessibility,
   cross-platform portability, testability) is legitimate and wanted. The defect is an
   **unsourced, unexplained magic number**, not a deviation as such: every value must have
-  either its origin (which data file or measurement it came from) or its rationale written down.
+  either its origin (which data file it came from) or its rationale written down.
 - Non-negotiable regardless: wire compatibility with a real vSRO server, and the Safety
   rules below.
 
 ## Project Context
 - OpenRoad is a **clone** of the Silkroad Online client, **not a 1:1 replica**. The original
-  v1.188 client and the user's own PK2 data are the default reference and the tie-breaker when
+  v1.188 client and the player's own PK2 data are the default reference and the tie-breaker when
   there is no reason to deviate, but building something more modern and simply better (data
   structures, architecture, rendering, UX) is wanted, not a defect. A deliberate improvement is
   legitimate; an unsourced, unexplained magic number is not. State either a value's origin or
@@ -35,9 +35,6 @@
 - The primary client lives in `client/`.
 - PK2 reading is implemented in `bevy_pk2/`.
 - Tools and CLIs live in `tools/`.
-- Every received network packet is dumped to `packet_dump/<opcode>.log` (one timestamped
-  hex line per packet, gitignored). Use these dumps to analyze packet payloads offline
-  instead of requiring a live server session.
 - **Every system under `client/src/plugins/net/**` must run without the HUD.** The headless
   netcheck harness builds `MinimalPlugins + NetworkCorePlugin` and registers no HUD
   resources, and Bevy does not skip a system whose `Res`/`ResMut` is missing — it fails
@@ -92,7 +89,7 @@
 - Circumvention detail: key material, key-derivation walkthroughs, anti-cheat internals,
   passcode mechanics.
 - Third-party proprietary data, including "Silkroad Origin" mobile extracts.
-- Process documents: roadmaps, dashboards, backlogs, session reports, RE worklogs. Keep
+- Process documents: roadmaps, dashboards, backlogs, session reports, worklogs. Keep
   them local; the issue tracker carries what is planned.
 - Rationale and the full policy: `CONTRIBUTING.md` § "What this repository does not publish".
 
@@ -102,4 +99,4 @@
 - SRO-scene downloads (clients, server files, tools) are frequently trojaned: never execute
   them and never download binaries/archives during research — catalog links only.
 - PK2/data files are read as pure data via our own parsers only.
-- Network testing only against the user's own local stubs — never against live official servers.
+- Network testing only against your own local stubs — never against live official servers.

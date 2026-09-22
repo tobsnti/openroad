@@ -232,7 +232,7 @@ pub(crate) fn deleting_control_buttons(
     let cancel_font = fonts.nine.clone();
     let restore_sound = assets.sound_button_sound_a.clone();
     let cancel_sound = restore_sound.clone();
-    // Captions come from the user's own PK2 (`UIO_STT_CHAR_RECOVERY` =
+    // Captions come from the PK2 (`UIO_STT_CHAR_RECOVERY` =
     // "Restore"), not from invented wording.
     let restore_label = ui_strings
         .get_or("UIO_STT_CHAR_RECOVERY", "Restore")
@@ -386,11 +386,9 @@ pub fn on_char_selection_action_response(
             origin.to_render(char_select_scene.0.cam_base() * Vec3::new(-1.0, 1.0, 1.0)) + begin;
         if let Some(characters) = &res.characters {
             for (i, char) in characters.characters.iter().enumerate() {
-                // Passive RE evidence (EP-RE #239): log every lobby char's
-                // server-sent scale byte + stats. Growing the scale corpus is
-                // what pins the still-UNKNOWN height/volume nibble packing
-                // (docs/net-char-select-0x7007.md); the hex byte matters, the
-                // decimal is for quick reading.
+                // Log the server-sent scale byte and the stats: how the byte
+                // packs height and volume is still unknown, so the hex form
+                // matters; the decimal is for quick reading.
                 info!(
                     "lobby char '{}': ref {}, scale 0x{:02X} ({}), level {}, str {}, int {}, hp {}, mp {}",
                     char.name,
@@ -716,16 +714,14 @@ pub(crate) fn info_box(
 
     // The lobby packet carries current HP/MP but no maximum, so the bars used
     // to be pinned full. The maximum is reproducible offline from the same
-    // `1.02^(level-1) * stat * 10` curve the server uses — capture-verified
-    // against all 20 of our 0x303D bodies (`docs/stat-derivation-server-spec.md`
-    // §5) — and the lobby's `str`/`int` are the base primaries with no equip or
-    // buff modifiers, which is exactly what that curve wants.
+    // `1.02^(level-1) * stat * 10` curve the server uses, and the lobby's
+    // `str`/`int` are the base primaries with no equip or buff modifiers,
+    // which is exactly what that curve wants.
     //
-    // APPROX: the curve itself is `[S]` (community-derived; only its
-    // `1.02^(lvl-1)` shape is `[V]` from the binary), and whether v1.188's
-    // char-select ever draws a partial bar at all is still `[U]` — one original
-    // screenshot settles it. If it turns out the original always shows a full
-    // bar, delete the two fractions, not the formula.
+    // APPROX: only the `1.02^(lvl-1)` shape of the curve is certain, the rest
+    // is community-derived, and whether v1.188's char-select ever draws a
+    // partial bar at all is still open. If it turns out the original always
+    // shows a full bar, delete the two fractions, not the formula.
     let hp_fill = gauge_fill(info.hp, max_hp_or_mp(info.level, info.str));
     let mp_fill = gauge_fill(info.mp, max_hp_or_mp(info.level, info.int));
 
@@ -1466,7 +1462,7 @@ mod tests {
         assert_eq!(max_hp_or_mp(1, 20), 200);
         assert_eq!(gauge_fill(200, max_hp_or_mp(1, 20)), 1.0);
         assert_eq!(gauge_fill(100, max_hp_or_mp(1, 20)), 0.5);
-        // the captured level-17 sheet: STR 36 -> 494, INT 84 -> 1153
+        // a level-17 character: STR 36 -> 494, INT 84 -> 1153
         assert_eq!(max_hp_or_mp(17, 36), 494);
         assert_eq!(max_hp_or_mp(17, 84), 1153);
         assert_eq!(gauge_fill(247, 494), 0.5);

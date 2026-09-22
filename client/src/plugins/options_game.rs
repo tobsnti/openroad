@@ -13,9 +13,8 @@
 //! holds a 4th-generation Options window (20 `CNIFGameOptionSlot` instances
 //! under four sub-tabs `UIIT_STT_DISPLAY` / `_COMMUNITY` / `_NAMEVIEW` /
 //! `_SILKMALL_ETC`), and `APPLY_UI_4TH` is uncommented in `Media/config/define.txt`
-//! (line 15; the file is CP949, so grep it accordingly). Which generation v1.188
-//! actually renders is still UNKNOWN
-//! (`docs/re/ui/newinterface-window-catalog.md` §9-U3).
+//! (line 15; the file is CP949, so grep it accordingly). Which generation
+//! v1.188 actually renders is still UNKNOWN.
 //!
 //! What tips it here is that the two files above carry **no `#ifdef` at all** —
 //! unlike `ifoption.txt`, `ifoption_video.txt` and `ifvideooptionslot.txt`, which
@@ -79,8 +78,7 @@ enum Backing {
 
 /// One checkbox row.
 struct ToggleRow {
-    /// `SROptionSet` id, or `None` for a vanilla row whose id we have not
-    /// identified (see the UNKNOWNs in `docs/re/ui/options-gameplay.md`).
+    /// `SROptionSet` id, or `None` for a vanilla row whose id is not known.
     id: Option<u16>,
     key: &'static str,
     english: &'static str,
@@ -301,7 +299,7 @@ fn spawn_toggle_row(
 
     // The hit target is the whole row, not the 16x16 box: vanilla's checkbox is
     // under the WCAG 2.2 AA minimum, and widening only the click area changes no
-    // vanilla geometry (docs/re/ui/options-gameplay.md:95). `options_video.rs`
+    // vanilla geometry. `options_video.rs`
     // rows work the same way. The row carries its own `GameToggle` so the
     // observer can read the id off the entity it fired on; the box keeps a copy
     // because `refresh_game_toggles` repaints by `(&GameToggle, &mut ImageNode)`,
@@ -481,7 +479,7 @@ mod test {
 
     /// Vanilla's classic pane is two sections of six and seven rows — the row
     /// count is the label block's, not the tooltip block's (five tooltips
-    /// against seven labels, per `docs/re/ui/options-gameplay.md`).
+    /// against seven labels).
     #[test]
     fn section_row_counts_match_the_label_blocks() {
         assert_eq!(NAME_VIEW_ROWS.len(), 6);

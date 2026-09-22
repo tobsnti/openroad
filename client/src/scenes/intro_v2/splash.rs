@@ -37,10 +37,9 @@ pub fn splash_logo(assets: &IntroV2Assets) -> impl Scene {
     }
 }
 
-/// How the original advanced splash -> login is **UNKNOWN** — no string or
-/// control for it was found in the data (`docs/re/ui/scene-intro-splash.md` §9).
-/// Advancing on a left click is therefore an openroad affordance, not a
-/// reproduction.
+/// How the original advanced splash -> login is **UNKNOWN** — the data carries
+/// no string or control for it. Advancing on a left click is therefore an
+/// openroad affordance, not a reproduction.
 pub fn on_splash_click(
     mut next_state: ResMut<NextState<IntroV2State>>,
     buttons: Res<ButtonInput<MouseButton>>,

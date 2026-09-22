@@ -9,7 +9,7 @@ corpus sample and forced by internal geometric consistency. Upstream reference
 `SilkroadDoc.wiki/JMXVCAMR1002` —
 https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/JMXVCAMR1002
 
-## Decoded layout (openroad, 2026-08-12)
+## Decoded layout (openroad)
 
 `Map/config.ifo` is the only CAMR in the corpus: 111 bytes, EOF-exact. The raw
 dump above is now fully named — every field below is forced by internal
@@ -45,7 +45,7 @@ roll. The basis is **left-handed (D3D)**, matching `D3DXMatrixLookAtLH`.
 
 **Our client hardcoded all three projection constants and all three disagreed**
 (`client/src/plugins/camera.rs:104-106`): near 0.500 vs **1.0**, far 200000.0 vs
-**5500.0**, fov 1.0 rad (≈57.3°) vs **45°**. See EP-26 / #108.
+**5500.0**, fov 1.0 rad (≈57.3°) vs **45°**. See #108.
 
 **What #108 adopted, and what it did not.** `near` and `fov` are taken verbatim.
 `far` is **not**: our fog fades from `VISIBLE_RANGE * REGION_SIZE` (3840) to

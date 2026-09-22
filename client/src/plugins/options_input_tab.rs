@@ -1,7 +1,7 @@
 //! The options window's **Key Map** tab: rebind the `OptionSet.csv` shortcuts.
 //!
 //! Idea: the row list is generated from [`KEY_ACTIONS`] — the 32 shortcut actions
-//! `OptionSet.csv` names — so the tab's contents are grounded in the user's own
+//! `OptionSet.csv` names — so the tab's contents are grounded in the game's own
 //! data file rather than a hand-written menu. Clicking a row's key button arms a
 //! capture; the next key press is translated to a Win32 VK code and stored in
 //! [`GameOptions`], which the settings plugin persists on change. A binding that
@@ -31,9 +31,9 @@ use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
-/// The pane's own rects, pane-local, from `resinfo/ifoption_input.txt:6,25,44`
-/// (`docs/re/ui/options-controls.md` §2): the mouse frame, its `UIIT_STT_MOUSE`
-/// title, the two-state radio box, and the key list below the section header.
+/// The pane's own rects, pane-local, from `resinfo/ifoption_input.txt:6,25,44`:
+/// the mouse frame, its `UIIT_STT_MOUSE` title, the two-state radio box, and the
+/// key list below the section header.
 const MOUSE_FRAME: (f32, f32, f32, f32) = (14.0, 13.0, 337.0, 80.0);
 const MOUSE_TITLE: (f32, f32) = (14.0, 20.0);
 const MOUSE_RADIO: (f32, f32, f32, f32) = (29.0, 43.0, 326.0, 39.0);
@@ -41,7 +41,7 @@ const KEY_LIST: (f32, f32, f32, f32) = (14.0, 133.0, 336.0, 161.0);
 
 const RADIO_ON: &str = "media://interface/ifcommon/com_radiobutton_on.ddj";
 const RADIO_OFF: &str = "media://interface/ifcommon/com_radiobutton_off.ddj";
-/// `com_radiobutton_off.ddj` is 16x16 (`options-controls.md` §5).
+/// `com_radiobutton_off.ddj` is 16x16.
 const RADIO_SIZE: f32 = 16.0;
 /// Gap between the box and its caption. **Ours**: the classic control carries
 /// `Text=""` and no per-state geometry at all, so only the 39px box as a whole
@@ -99,8 +99,8 @@ impl Plugin for OptionsInputTabPlugin {
 /// One position of the mouse two-state radio: the value of id 3101 it selects.
 ///
 /// Vanilla's pair is *which device changes the view* — `textuisystem` 917
-/// `UIIT_STT_USE_WHEEL_TO_CHANGE_SIGHT` vs 918 `UIIT_STT_USE_WHEEL_TO_USE_SKILL`
-/// (`docs/re/ui/options-controls.md` §2). `camera.rs::mouse_camera_roles` is the
+/// `UIIT_STT_USE_WHEEL_TO_CHANGE_SIGHT` vs 918
+/// `UIIT_STT_USE_WHEEL_TO_USE_SKILL`. `camera.rs::mouse_camera_roles` is the
 /// reader, so this control is a behaviour and not another dead wire (#605).
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MouseSwapRadio {
@@ -581,7 +581,7 @@ mod tests {
 
     /// The capture systems must be able to actually run in a schedule — a
     /// conflicting query would only panic at run time, which no plain unit test
-    /// would reach (runbook §4b).
+    /// would reach.
     #[test]
     fn the_tab_systems_run_in_a_schedule_without_query_conflicts() {
         let mut app = App::new();

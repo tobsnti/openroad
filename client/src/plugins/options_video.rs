@@ -7,7 +7,7 @@
 //! shipped client draws. Geometry is page-local to the pane rect
 //! `11,62,364,313` from `ifoption.txt`.
 //!
-//! Two things are deliberately **not** invented here, because the user's data
+//! Two things are deliberately **not** invented here, because the game data
 //! does not carry them:
 //!
 //! * **Defaults.** No `Default=`/`Min=`/`Max=` key exists anywhere in
@@ -61,7 +61,7 @@ const LIST_Y: f32 = 103.0;
 const LIST_W: f32 = 336.0;
 const LIST_H: f32 = 191.0;
 /// Row pitch of the 4th-gen slot list; the classic tree carries no pitch, and
-/// the row inventory there is `[U]`.
+/// its row inventory is unknown.
 const ROW_H: f32 = 22.0;
 
 const BOARD_DDJ: &str = "media://interface/option/opt_video_control_03.ddj";
@@ -106,9 +106,9 @@ pub(crate) struct RowValue {
 struct DetailRow {
     /// Graphic 1 id (`docs/formats/sroptionset.md`); Graphic 2 is `+100`.
     id: u16,
-    /// textuisystem key, `[V]` from the resinfo tree.
+    /// textuisystem key, from the resinfo tree.
     key: &'static str,
-    /// English fallback, matching the user's own textuisystem line.
+    /// English fallback, matching the textuisystem line.
     english: &'static str,
     /// Whether a real feature backs this row today.
     backing: Backing,
@@ -123,10 +123,10 @@ enum Backing {
     Missing,
 }
 
-/// The 13 named quality rows. Ids and names are `[S]` from the SROptionSet
-/// table (`docs/formats/sroptionset.md:62-99`); the label keys are `[V]` from
-/// the resinfo tree. Ids 14/15 exist in the id space but their CSV name cells
-/// are blank, so they are left out rather than captioned by guess.
+/// The 13 named quality rows. Ids and names come from the SROptionSet table
+/// (`docs/formats/sroptionset.md:62-99`); the label keys from the resinfo tree.
+/// Ids 14/15 exist in the id space but their CSV name cells are blank, so they
+/// are left out rather than captioned by guess.
 const DETAIL_ROWS: [DetailRow; 13] = [
     DetailRow {
         id: 1,
@@ -360,8 +360,7 @@ pub(crate) fn spawn_video_pane(
 // ---------------------------------------------------------------------------
 // openroad extras
 //
-// #366 checked the user's own PK2 before assuming: there is no grass /
-// vegetation / foliage control anywhere in v1.188 — not in
+// There is no grass / vegetation / foliage control anywhere in v1.188 — not in
 // `resinfo/ifoption_video.txt`, not in `ifvideooptionslot.txt`, not in
 // `textuisystem`. Our foliage layer is an openroad addition built on authored-
 // but-unused tile data, so per ADR-0009 these rows are presented as a *stated*
@@ -827,9 +826,9 @@ mod tests {
         );
     }
 
-    /// The grass rows are openroad additions, and #366 is the reason: the
-    /// user's own PK2 has no grass/vegetation/foliage control in
-    /// `ifoption_video.txt`, `ifvideooptionslot.txt` or `textuisystem`. A row
+    /// The grass rows are openroad additions: v1.188 has no
+    /// grass/vegetation/foliage control in `ifoption_video.txt`,
+    /// `ifvideooptionslot.txt` or `textuisystem`. A row
     /// that borrowed an original caption would be claiming fidelity we do not
     /// have, so every extra row has to say "openroad" in its label.
     #[test]

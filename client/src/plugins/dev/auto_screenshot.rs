@@ -1,8 +1,8 @@
 //! Idea: headless-friendly visual debugging. When `OPENROAD_SCREENSHOT=/path/prefix` is set,
 //! this plugin saves periodic screenshots of the primary window via bevy's built-in
-//! `Screenshot` entity and exits the app after the last one. This lets an agent (or CI) launch
-//! the real client, capture what actually renders, and inspect the PNGs — no human at the
-//! window, no compositor-specific capture tools. Inert unless the env var is set.
+//! `Screenshot` entity and exits the app after the last one. This lets a script or CI
+//! launch the real client, record what actually renders, and inspect the PNGs — no human
+//! at the window, no compositor-specific tools. Inert unless the env var is set.
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};

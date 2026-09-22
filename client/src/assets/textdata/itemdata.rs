@@ -273,10 +273,10 @@ impl ItemDataRow {
     /// undivided. World units are what every position and distance in the
     /// client is expressed in, so this is the form combat consumes directly.
     ///
-    /// Corpus-verified across all 10 `itemdata*.txt`, one value per weapon
-    /// class: dagger 3, sword/blade/axe/rod/staff/harp 6, spear/glaive/2h
-    /// sword 18, **bow and crossbow 180**. Note these measure reach past the
-    /// bodies, not centre to centre — see `EquippedWeapon::engagement_reach`,
+    /// One value per weapon class across all 10 `itemdata*.txt`: dagger 3,
+    /// sword/blade/axe/rod/staff/harp 6, spear/glaive/2h sword 18, **bow and
+    /// crossbow 180**. Note these are reach past the bodies, not centre to
+    /// centre — see `EquippedWeapon::engagement_reach`,
     /// which floors them for that reason.
     pub fn attack_reach(&self) -> Option<f32> {
         let range = self.numeric_field(ItemdataFields::Range as usize)?;
@@ -338,13 +338,13 @@ impl ItemDataRow {
     /// Items whose `0x704C` body carries a `u8 targetSlot` — they act on
     /// **another inventory item** rather than on the user or a world entity.
     ///
-    /// Six TIDs share the tail (`docs/re/notes/item-use.md` §1.2): COS revive
+    /// Six TIDs share the tail: COS revive
     /// ("Grass of life", `3,3,1,6`), plus transgender, reinforce, COS
     /// extension, pet helper and nasrun extension under `3,3,13,*`. One
     /// predicate rather than a revive special-case, because the wire shape is
     /// what they have in common.
     ///
-    /// The tail itself is `[U]` — see
+    /// The tail itself is not fully understood — see
     /// [`ItemUseRequest::WithSlot`](packets::agent::inventory::ItemUseRequest).
     pub fn needs_target_slot(&self) -> bool {
         matches!(

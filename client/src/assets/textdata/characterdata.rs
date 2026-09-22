@@ -16,7 +16,8 @@ pub struct CharacterData(pub HashMap<i32, CharacterDataRow>);
 
 /// Ceiling on a knockdown's prone dwell, in seconds.
 ///
-/// Not a gameplay value — a **sanity clamp** on an `[U]` column. If
+/// Not a gameplay value — a **sanity clamp** on a column whose unit is
+/// unknown. If
 /// `KO_RecoverTime` turns out to be ticks or tenths rather than milliseconds,
 /// the raw number could pin a body to the floor for minutes; this bounds the
 /// damage from that misreading to something a player would call "a long
@@ -90,10 +91,9 @@ enum ChardataFields {
     // is the right granularity, since lying on the ground is a property of the
     // body that fell, not of the skill that felled it.
     //
-    // The **unit is `[U]`**: the doc calls both columns "knockdown flags" and
-    // no census of their value distribution exists. `ClientCharacterData::
-    // knockdown_recover_secs` therefore refuses implausible values rather than
-    // trusting the column blindly — see there.
+    // The **unit is unknown**: both columns are described only as "knockdown
+    // flags". `ClientCharacterData::knockdown_recover_secs` therefore refuses
+    // implausible values rather than trusting the column blindly — see there.
     Knockdown = 81,
     KoRecoverTime = 82,
 }

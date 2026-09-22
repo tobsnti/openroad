@@ -80,8 +80,8 @@ pub struct SpawnedEntity {
     /// for dropped items, which carry no state block).
     pub state: Option<EntityState>,
     /// The per-instance rarity byte at the end of a monster record (`None` for
-    /// every other kind). go-sro fills it from characterdata's rarity column;
-    /// the spawn system logs a mismatch but keys the badge off characterdata.
+    /// every other kind). The spawn system logs a mismatch against
+    /// characterdata's rarity column but keys the badge off characterdata.
     pub spawn_rarity: Option<u8>,
     /// Interaction option ids of a talkable NPC (empty for everything else) —
     /// the entries of its talk dialog (talk/store/storage/teleport…, see
@@ -258,9 +258,10 @@ pub fn parse_group_spawn(
                         continue;
                     }
                 }
-                // Rich diagnostics so a live capture pins the record layout: the
-                // ref id, what it resolved to, where the record began, how far the
-                // parse got, and the record's own bytes (not just the head).
+                // Rich diagnostics so an unknown record layout can be pinned
+                // down: the ref id, what it resolved to, where the record
+                // began, how far the parse got, and the record's own bytes
+                // (not just the head).
                 let ref_id = raw
                     .get(record_start..record_start + 4)
                     .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
@@ -293,9 +294,9 @@ pub fn parse_group_spawn(
 /// *width* is still decidable from the payload: assume the record's body is
 /// `n` bytes, parse the records that must follow it, and keep `n` only if they
 /// all parse and land exactly on the end of the payload — a group-spawn body
-/// holds whole records and nothing else (verified over
-/// `packet_dump/0x3019.log`: every spawn payload is consumed to its last byte
-/// by its `GroupEntitySpawnBegin` count). A wrong `n` shifts every following
+/// holds whole records and nothing else: every spawn payload is consumed to
+/// its last byte by its `GroupEntitySpawnBegin` count. A wrong `n` shifts
+/// every following
 /// record, so it practically never survives that. Accepted only when exactly
 /// one `n` does; anything else keeps the batch-abort behaviour.
 fn recover_unknown_record(
@@ -339,8 +340,8 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
     }
 }
 
-/// Gate-building record — 36 bytes, captured 40× in `packet_dump/0x3019.log`
-/// (Jangan dimensional gate, always its own count-1 batch):
+/// Gate-building record — 36 bytes (Jangan dimensional gate, always its own
+/// count-1 batch):
 /// `2e080000 0c000000 a861 00c09c44 0000c0c0 00c0ab44 0000` + 12-byte tail
 /// `01 00 00 01 00 00 00 00 00 00 00 00` = ref 2094, uid 12, region 25000,
 /// (1254, -6, 1374), heading 0 — exactly the teleportbuilding.txt row's
@@ -437,8 +438,8 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
     r.skip_movement(position.region)?;
     let state = r.character_state()?;
     // Interaction options: a tag byte (0 = none), and for a talkable entity a
-    // `u8` option count followed by that many 1-byte option ids. (Verified
-    // against a live capture: tag=2, count=4, then 4 option bytes.)
+    // `u8` option count followed by that many 1-byte option ids (e.g. tag=2,
+    // count=4, then 4 option bytes).
     let mut talk_options = Vec::new();
     if r.u8()? != 0 {
         let option_count = r.u8()?;
@@ -464,8 +465,8 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
     })
 }
 
-/// COS record ([S] xBot `PacketParser.cs:791-807`): the shared NPC head
-/// (uid, position, movement, state, talk options), then an owner tail selected
+/// COS record: the shared NPC head (uid, position, movement, state, talk
+/// options), then an owner tail selected
 /// by the ref's characterdata tid4 — the wire carries **no** subtype byte.
 /// Ride-only horses (tid4 1) have no tail; everything else ends in
 /// `OwnerUniqueID`, with pets prefixing their given name, pick pets omitting
@@ -716,7 +717,7 @@ mod test {
         assert_eq!(
             e.kind,
             SpawnKind::Player {
-                // the sword's +3 opt byte is captured; non-equipment has none
+                // the sword carries a +3 opt byte; non-equipment has none
                 equipment: vec![(SWORD, 3), (NECKLACE, 0)],
                 riding_uid: None,
             }
@@ -758,9 +759,9 @@ mod test {
 
     #[test]
     fn parses_talkable_npc_with_options() {
-        // A talkable NPC carries interaction options: tag=2, then a u8 count and
-        // that many 1-byte option ids (values from a live capture). A second NPC
-        // follows so the option list's length must be consumed exactly.
+        // A talkable NPC carries interaction options: tag=2, then a u8 count
+        // and that many 1-byte option ids. A second NPC follows so the option
+        // list's length must be consumed exactly.
         const NPC_REF: u32 = 1900;
         let res = resolver(&[(NPC_REF, RefType::Npc)]);
         let body = Body::default()
@@ -857,12 +858,10 @@ mod test {
         assert_eq!(parsed.spawns[0].unique_id, 11);
     }
 
-    /// Verbatim `packet_dump/0x3019.log` payload (2026-08-11 09:43:45.339Z,
-    /// 98 bytes) whose `GroupEntitySpawnBegin` of the same instant is
+    /// A real 98-byte spawn payload whose `GroupEntitySpawnBegin` is
     /// `01 02 00` — spawn, 2 records. Record 0 is ref 9252 (in `npcpos.txt`,
-    /// in NO `characterdata_*.txt` of either of the user's Media.pk2 — the
-    /// ids jump 8984 -> 9264), record 1 is ref 3861 NPC_CH_EVENT_KISAENG1.
-    /// Each record is 49 bytes.
+    /// in no `characterdata_*.txt` — the ids jump 8984 -> 9264), record 1 is
+    /// ref 3861 NPC_CH_EVENT_KISAENG1. Each record is 49 bytes.
     const LIVE_UNKNOWN_NPC_BATCH: &[u8] = &[
         0x24, 0x24, 0x00, 0x00, 0x6b, 0x01, 0x00, 0x00, 0xa8, 0x61, 0xec, 0x51, 0x74, 0x44, 0x7f,
         0x6f, 0x02, 0xc2, 0x52, 0xe8, 0x35, 0x44, 0xb4, 0xc0, 0x00, 0x01, 0x00, 0xb4, 0xc0, 0x01,
@@ -894,7 +893,7 @@ mod test {
     #[test]
     fn unknown_ref_still_stops_the_batch_when_no_width_fits() {
         // The skip is only allowed when a width makes the remaining records
-        // parse to the payload's last byte. Cut the capture's last byte off
+        // parse to the payload's last byte. Cut the payload's last byte off
         // and none does, so the batch must abort as before instead of
         // inventing a boundary.
         let res = resolver(&[(3861, RefType::Npc)]);
@@ -918,8 +917,8 @@ mod test {
 
     #[test]
     fn parses_captured_gate_building_record() {
-        // verbatim packet_dump/0x3019.log payload (Jangan dimensional gate,
-        // ref 2094 = STORE_CH_GATE, captured 40x as its own count-1 batch)
+        // a real spawn payload (Jangan dimensional gate, ref 2094 =
+        // STORE_CH_GATE, always its own count-1 batch)
         const GATE_REF: u32 = 2094;
         let body: &[u8] = &[
             0x2e, 0x08, 0x00, 0x00, // ref 2094
@@ -1127,9 +1126,8 @@ mod test {
 
     /// Build a one-player spawn body whose guild block carries `guild_name` and
     /// `nick`. Guildless players send the same block with an empty name — the
-    /// block is never omitted (go-sro `WriteGuild`, corroborated by the vSRO
-    /// client parser; see `Reader::guild`). `riding_uid` inserts the mounted
-    /// player's conditional COS uid between the state flags.
+    /// block is never omitted (see `Reader::guild`). `riding_uid` inserts the
+    /// mounted player's conditional COS uid between the state flags.
     fn player_body(
         player_ref: u32,
         guild_name: &str,
@@ -1175,7 +1173,7 @@ mod test {
     }
 
     /// A mounted player inserts a `u32` mount uid; the old flat skip desynced
-    /// the batch, so a follower record proves the boundary ([S] until F7).
+    /// the batch, so a follower record proves the boundary.
     #[test]
     fn parses_mounted_player_and_keeps_the_boundary() {
         const PLAYER_REF: u32 = 1907;

@@ -63,8 +63,7 @@ pub fn dev_windows_visible(visible: Res<DevWindowsVisible>) -> bool {
 }
 
 /// The letters dev tooling claims while it is enabled, and the vanilla
-/// shortcut each one would steal (`docs/re/ui/scene-game-hud-composition.md`
-/// §6 — the original binds these HUD toggles):
+/// shortcut each one would steal (the original binds these HUD toggles):
 ///
 /// | key | dev use | vanilla shortcut |
 /// |---|---|---|
@@ -270,8 +269,7 @@ mod test {
     use super::*;
 
     /// The key-driven dev systems must be opt-in: they read bare letters in
-    /// `Update`, and five of them are vanilla HUD shortcuts
-    /// (`docs/re/ui/scene-game-hud-composition.md` §6). Gating on
+    /// `Update`, and five of them are vanilla HUD shortcuts. Gating on
     /// `AppMode::DebugMode` would be a no-op — `AppMode` defaults to
     /// `DebugMode` — so the gate is `config.yaml`'s `dev_tools`. The egui
     /// windows and the "dev" button ride the same gate: `DevWindowsVisible`

@@ -213,7 +213,8 @@ const LABEL_HEIGHT_TOP: f32 = 167.0;
 const LABEL_VOLUME_TOP: f32 = 198.0;
 const LABEL_GEAR_TOPS: (f32, f32) = (229.0, 260.0);
 /// Name-check feedback line. `GDR_TEXT_MESSAGE` (`:196-214`) has rect
-/// `0,0,0,0` — the original places its message sink from code (UNKNOWN).
+/// `0,0,0,0` — the original places its message sink from code, so its position
+/// is unknown.
 /// **openroad choice:** the panel's free strip below the last row (which ends
 /// at 260+15=275), so the answer appears next to the field it is about.
 const FEEDBACK_TOP: f32 = 285.0;
@@ -278,7 +279,7 @@ const WCREATE_CANCEL_RECT: (f32, f32, f32, f32) = (130.0, 75.0, 76.0, 32.0);
 
 /// `GDR_STA_EXPLAIN` (`:101-119`) and its `Section = Explain` children
 /// (`:582-622`): the description panel right of the customize window.
-/// **The one rect/art mismatch in the tree** (RE doc §9-U7): the European tree
+/// **The one rect/art mismatch in the tree**: the European tree
 /// declares `0,0,212,250` but ships `explain-window_02.ddj` at 220x236. We
 /// draw the ART at its own size, because a stretched 9-slice-less sprite would
 /// visibly distort; the declared rect is recorded here and not silently lost.
@@ -501,8 +502,8 @@ impl Race {
 }
 
 /// The figure-variant body rows for a (race, gender), ordered by ref id (the
-/// data's own creation order — 1907.. = ADVENTURER first, matching the
-/// capture). Empty when the corpus lacks the race (EU here). `pub(crate)`:
+/// data's own creation order — 1907.. = ADVENTURER first, as the original
+/// sends it). Empty when the data lacks the race (EU here). `pub(crate)`:
 /// the region-select board uses it to grey out data-blocked races.
 pub(crate) fn figure_variants(
     char_data: &ClientCharacterData,
@@ -539,7 +540,7 @@ fn figure_label_key(race: Race, gender: Gender, code_name: &str) -> String {
     format!("UIO_NEWCHAR_{race_part}{gender_part}_{suffix}")
 }
 
-/// The weapon options of `race` that actually resolve on this corpus:
+/// The weapon options of `race` that actually resolve in this data:
 /// (ref id, caption key, fallback).
 fn weapon_choices(
     race: Race,
@@ -565,7 +566,7 @@ struct StarterRefs {
     weapon: u32,
 }
 
-/// Resolves the current selection to ref-obj-ids; `None` if the corpus lacks
+/// Resolves the current selection to ref-obj-ids; `None` if the data lacks
 /// the race's bodies, the picked garment set, or every weapon option. Indices
 /// are clamped so a stale figure/weapon index (e.g. after a race switch)
 /// still resolves.
@@ -761,7 +762,7 @@ fn create_panel(
             ( slider_row(assets, SliderRow::Weapon, weapon_row) ),
             // Name-check feedback. `GDR_TEXT_MESSAGE` (`:196-214`) is the
             // original's message sink and its rect is `0,0,0,0` — placed by
-            // client code, so UNKNOWN. **openroad choice:** the line goes in
+            // client code, so unknown. **openroad choice:** the line goes in
             // the panel's free strip below the last row, next to the field it
             // is about, rather than into an invented floating box.
             (
@@ -1305,8 +1306,8 @@ pub fn update_preview(
     mut feedback: Query<&mut Text, With<NameFeedback>>,
     mut commands: Commands,
 ) {
-    // Resolve before despawning: an unresolvable selection (e.g. European on
-    // a corpus without EU rows) keeps the previous preview on stage and
+    // Resolve before despawning: an unresolvable selection (e.g. European in
+    // data without EU rows) keeps the previous preview on stage and
     // reports the gap in-UI instead of silently emptying the podium.
     let Some(refs) = resolve_starter(&selection, &char_data, &item_index) else {
         warn!(
@@ -1528,7 +1529,7 @@ pub fn on_check_name_response(
 /// Idea: this is char-select's delete-confirm shape, reused rather than
 /// re-derived — a full-screen scrim that eats the clicks behind it, carrying
 /// the warning frame at its native size. The frame's own rect is `0,0,248,128`,
-/// i.e. code-placed in the original (UNKNOWN), so centring it is our choice and
+/// i.e. code-placed in the original and unknown, so centring it is our choice and
 /// matches the sibling modal already on screen one step earlier.
 fn create_confirm_modal(
     character_name: &str,

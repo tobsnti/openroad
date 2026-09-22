@@ -40,8 +40,7 @@ pub enum HandshakeError {
     MissingKeyExchange(u8),
 }
 
-/// The handshake flag byte, as the original branches on it
-/// (`corpus/client-dec/004b1da0_FUN_004b1da0.c:39,42,47,49`).
+/// The handshake flag byte, as the original branches on it.
 pub(crate) const FLAG_BLOWFISH: u8 = 0x02;
 pub(crate) const FLAG_SECURITY_BYTES: u8 = 0x04;
 pub(crate) const FLAG_KEY_EXCHANGE: u8 = 0x08;
@@ -53,12 +52,11 @@ pub(crate) const FLAG_CHALLENGE: u8 = 0x10;
 /// below are `Bytes::get_*`, which **panic** on a short buffer — so a peer that
 /// truncates a frame could kill the client before any validation ran. The
 /// original guards the same boundary with an explicit size check and its own
-/// log line (`:143-147`).
+/// log line.
 ///
 /// Each set flag contributes exactly what its branch reads: blowfish key `u64`
-/// (`:40` = 8 bytes), the two EDC seeds (`:44-45` = 2 × `u32`), the key
-/// exchange's `u64 + 3 × u32` (`:57`, `setup_handshake` below), and the
-/// challenge `u64` (`:84-85`).
+/// (8 bytes), the two EDC seeds (2 × `u32`), the key exchange's
+/// `u64 + 3 × u32` (`setup_handshake` below), and the challenge `u64`.
 pub(crate) fn expected_body_len(flags: u8) -> usize {
     let mut len = 1; // the flag byte itself
     if flags & FLAG_BLOWFISH != 0 {
@@ -78,15 +76,15 @@ pub(crate) fn expected_body_len(flags: u8) -> usize {
 
 /// Reject a `0x5000` body that does not match its own flag byte.
 ///
-/// `setup_flags` is what the *previous* phase announced, the original's
-/// accumulator at `+0x200` (`:120,162`). A challenge is only meaningful if a
-/// key exchange preceded it, so `FLAG_CHALLENGE` without a prior
-/// `FLAG_KEY_EXCHANGE` is rejected — the client-side half of the original's
-/// "all of `0x02|0x04|0x08` must have been seen" gate (`:138-141`).
+/// `setup_flags` is what the *previous* phase announced, the original's own
+/// accumulator. A challenge is only meaningful if a key exchange preceded it,
+/// so `FLAG_CHALLENGE` without a prior `FLAG_KEY_EXCHANGE` is rejected — the
+/// client-side half of the original's "all of `0x02|0x04|0x08` must have been
+/// seen" gate.
 ///
 /// **Deviation:** we do *not* require `FLAG_BLOWFISH`/`FLAG_SECURITY_BYTES`.
 /// That check lives in the original's **server** role (the branch that receives
-/// the client's 12-byte reply, `:127-148`), and whether a live v1.188 gateway
+/// the client's 12-byte reply), and whether a live v1.188 gateway
 /// always sends the full `0x0E` or a subset is an open UNKNOWN — failing a
 /// login on an unproven constant would be the worse defect.
 pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeError> {
@@ -181,8 +179,8 @@ fn setup_handshake(
         let remote_public = data.get_u32_le();
 
         // Fresh private exponent per session. The original draws
-        // `NextUInt32() & 0x7FFFFFFF` (xBot `Security.cs:589`); the fixed
-        // literal this replaces made our public key and the shared secret
+        // `NextUInt32() & 0x7FFFFFFF`; the fixed literal this replaces made
+        // our public key and the shared secret
         // deterministic for any given set of server parameters.
         let private_exponent = rand::random::<u32>() & 0x7FFF_FFFF;
         let local_public = g_pow_x_mod_p(generator, private_exponent, prime);
@@ -291,8 +289,7 @@ fn derive_final_key(
         // The server's signature is the MIRROR of ours: it concatenates
         // `remote_public ‖ local_public` and keys the transform on
         // `remote_public & 7`, where our own signature used
-        // `local_public ‖ remote_public` with `local_public & 7`
-        // (xBot `Security.cs:608-615`).
+        // `local_public ‖ remote_public` with `local_public & 7`.
         //
         // This used to recompute our *own* signature and compare it against
         // our own stored copy — identical inputs, so the comparison could
@@ -349,7 +346,7 @@ pub fn calc_key(common_secret: u32, secret1: u32, secret2: u32) -> Bytes {
 /// The challenge value we expect the server to send back, proving it derived
 /// the same shared secret: `blowfish(key_transform(A‖B, K, A & 7))` with
 /// `A = remote_public`, `B = local_public` — the mirror of the signature we
-/// sent (xBot `Security.cs:608-615`).
+/// sent.
 ///
 /// Uses the handshake blowfish (keyed from [`calc_key`]), which is still the
 /// active one at this point; the final session key is derived only after this
@@ -479,7 +476,7 @@ mod test {
     }
 
     /// The expected value matches the original's formula:
-    /// `blowfish(key_transform(A‖B, K, A & 7))` (xBot `Security.cs:608-615`).
+    /// `blowfish(key_transform(A‖B, K, A & 7))`.
     #[test]
     fn server_challenge_follows_the_original_formula() {
         let sec = session(0xF2E1_5D3A, 0x7FFF_FFC3, 0x1234_5678, 0x0BAD_C0DE);

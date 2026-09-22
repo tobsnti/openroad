@@ -35,7 +35,7 @@ impl Plugin for LoadingScenePlugin {
 /// Design space of the loading chrome. The rects below are authored in
 /// **1600x1200** (`ginterface.txt:268` gives `GDR_LOADING` `Rect="0,0,1600,1200"`,
 /// and the caption's `top=1025 + 35` already overruns a 768-tall canvas), while
-/// every background art measures **1024x768** and is stretched to fill. Mixing
+/// every background art is **1024x768** and is stretched to fill. Mixing
 /// the two spaces is the trap this screen is built around: transcribing these
 /// rects into a 1024x768 canvas mislays the gauge (y=985) and the caption
 /// (y=1025) off-screen.

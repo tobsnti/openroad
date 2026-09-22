@@ -314,7 +314,7 @@ impl ClientUiStrings {
 
     /// Lookup with a hardcoded fallback for when the table is missing the key
     /// (or has not loaded, e.g. in offline preview scenes). Fallback hits on a
-    /// loaded table are logged so stale keys surface during playtests.
+    /// loaded table are logged so stale keys surface early.
     pub fn get_or<'a>(&'a self, key: &str, fallback: &'a str) -> &'a str {
         match self.get(key) {
             Some(value) => value,
@@ -915,7 +915,7 @@ fn add_resource_when_textdata_loaded(
 mod tests {
     use super::*;
 
-    /// Rows :3969 and :1753 verbatim from the user's
+    /// Rows :3969 and :1753 verbatim from
     /// `media://server_dep/silkroad/textdata/textuisystem.txt` — 10 tab-separated
     /// columns with the English text last. The first is authored for the
     /// original's `CIFPML` control and carries markup; the second does not.
@@ -967,9 +967,9 @@ mod tests {
         assert_eq!(plain_text("a<br/>b<BR>c"), "a\nb\nc");
     }
 
-    /// The two `UI / SND_BUTTON_CLICK` rows verbatim from the user's
-    /// `media://server_dep/silkroad/textdata/effectsound.txt` (2026-08-16),
-    /// preceded by the file's own legend line.
+    /// The two `UI / SND_BUTTON_CLICK` rows verbatim from
+    /// `media://server_dep/silkroad/textdata/effectsound.txt`, preceded by the
+    /// file's own legend line.
     const EFFECTSOUND_ROWS: &str = concat!(
         "//\tobject\thandle\tskill_ID\tevent1\tevent2\tevent3\tblank\tfolder\tfilename\tvolume\tdescription1\t\r\n",
         "\tUI\tSND_BUTTON_CLICK\t-\t-\t-\t-\t0\tui\\\tuibutton_a.wav\t80\tclick#1\t\r\n",

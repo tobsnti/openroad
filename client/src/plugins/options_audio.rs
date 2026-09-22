@@ -16,7 +16,7 @@
 //!
 //! Note what is *not* here: there is no voice channel, and no `*VOICE*` key
 //! exists anywhere in `textuisystem.txt`. Three is the whole feature, so a
-//! fourth would be non-original behaviour (`docs/re/ui/options-audio.md` §8.5).
+//! fourth would be non-original behaviour.
 //!
 //! **All three channels are live.** `AudioOptions::bgm_playback_settings` and
 //! `fx_playback` are read at every playback site (#373/#478) and by
@@ -30,14 +30,14 @@
 //!
 //! 1. The value range is **ours**. No `Min`/`Max`/`Step` key exists in the
 //!    tree's 16-key grammar and `define.txt` carries no volume symbols
-//!    (`options-audio.md` §9), so 0..=100 is picked to match `AudioOptions`'
+//!    so 0..=100 is picked to match `AudioOptions`'
 //!    existing `u32` percent scale — a choice, not a transcription.
 //! 2. `CIFFrame` draws a nine-slice border from the `opt_inner_box_*` kit
 //!    (eight DDJs). We draw the frame's `342x62` rect as a plain bordered
 //!    panel; the art is not transcribed.
 //! 3. The whole row drags the slider and the whole mute strip toggles it:
 //!    vanilla's 44x12 button and 16x16 checkbox are both under the WCAG 2.2 AA
-//!    24x24 target minimum (§8.7). No vanilla geometry moves.
+//!    24x24 target minimum. No vanilla geometry moves.
 
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::picking::hover::Hovered;
@@ -48,8 +48,7 @@ use crate::plugins::settings::options::{AudioOptions, GameOptions};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `interface\ifcommon\com_radiobutton_off.ddj` — vanilla uses the *radio*
-/// asset for a mute toggle. That is the original's own choice, not a slip
-/// (`docs/re/ui/options-audio.md` §3).
+/// asset for a mute toggle. That is the original's own choice, not a slip.
 const CHECK_OFF: &str = "media://interface/ifcommon/com_radiobutton_off.ddj";
 const CHECK_ON: &str = "media://interface/ifcommon/com_radiobutton_on.ddj";
 /// `interface\option\opt_volume.ddj`, the slider track art (248x28).
@@ -286,7 +285,7 @@ fn fill_percent(channel: AudioChannel, audio: &AudioOptions) -> f32 {
 }
 
 /// The `CIFButton` ("Off") and `CIFCheckBox` are two affordances whose
-/// relationship the grammar does not express (§9). We treat them as one
+/// relationship the grammar does not express. We treat them as one
 /// control — the strip from the button's left edge to the box's right edge
 /// toggles the channel — because two independent mute states for one channel
 /// is the reading that cannot be right.
