@@ -856,6 +856,24 @@ pub(super) fn lobby_error_line(
     }
 }
 
+/// [`lobby_error_line`] for an *optional* code, with the caller's own row as
+/// the last resort.
+///
+/// Idea: a `0xB007` refusal may arrive without an `error_code` (the field is
+/// gated on `result == 2`), and `0x0401` is the code the original deliberately
+/// swallows. Neither case may leave the screen silent where the old code
+/// always had a sentence, so the caller names the row it used to print and
+/// this keeps the table for everything else.
+pub(super) fn lobby_error_line_or(
+    code: Option<u16>,
+    ui_strings: &crate::plugins::textdata::ClientUiStrings,
+    fallback_key: &str,
+    fallback: &str,
+) -> String {
+    code.and_then(|code| lobby_error_line(code, ui_strings))
+        .unwrap_or_else(|| ui_strings.get_plain_or(fallback_key, fallback))
+}
+
 /// Plays the original's `snd_error` once, honouring the audio options. Shared
 /// by every pregame refusal (login, captcha retry, lobby actions).
 pub(super) fn play_error_sound(
@@ -920,6 +938,45 @@ mod test {
         assert_eq!(
             lobby_error_line(0x0419, &strings).as_deref(),
             Some("(S1049)")
+        );
+    }
+
+    /// The create screen's two answers (`CheckName`, `Create`) are two of the
+    /// four callers of the shared table, and they used to print one hard-coded
+    /// row each: "This ID already exists." for *every* name refusal and
+    /// "Failed to create a character." for *every* create refusal. So the two
+    /// rows the original really shows there — `0x0404` "Select a Weapon." and
+    /// `0x0405` "A maximum of %d characters can be created." — were reported as
+    /// the wrong reason. Pinned per code, plus the two arms that must keep the
+    /// caller's own row: no code at all, and the silent `0x0401`.
+    #[test]
+    fn the_create_screen_answers_render_the_shipped_row_for_their_code() {
+        let strings = crate::plugins::textdata::ClientUiStrings::default();
+        let check_name = |code| {
+            lobby_error_line_or(code, &strings, "UIO_MSG_ERROR_ID", "This ID already exists.")
+        };
+        let create = |code| {
+            lobby_error_line_or(
+                code,
+                &strings,
+                "UIO_SMERR_FAILED_TO_CREATE_CHARACTER",
+                "Failed to create a character. Please try to connect again.",
+            )
+        };
+
+        assert_eq!(create(Some(0x0404)), "Select a Weapon.");
+        assert_eq!(
+            create(Some(0x0405)),
+            "A maximum of %d characters can be created."
+        );
+        assert_eq!(check_name(Some(0x0410)), "This ID already exists.");
+        assert_eq!(check_name(Some(0x040d)), "Invalid character name.");
+        // no code on the wire, and the code the dispatcher swallows: the
+        // caller's own row stays
+        assert_eq!(check_name(None), "This ID already exists.");
+        assert_eq!(
+            create(Some(0x0401)),
+            "Failed to create a character. Please try to connect again."
         );
     }
 

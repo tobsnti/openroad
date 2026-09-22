@@ -2486,9 +2486,18 @@ pub fn on_check_name_response(
             text.0 = ui_strings.get_plain_or("UIO_MSG_ERROR_ADMISSON", "Valid ID");
             continue;
         }
-        // The per-code error catalogue arrives with the lobby slice; until
-        // then every refusal shows the only row this action was ever seen with.
-        text.0 = ui_strings.get_plain_or("UIO_MSG_ERROR_ID", "This ID already exists.");
+        // The refusal goes through the one dispatcher the original uses for
+        // every lobby error ([`super::lobby_error_line`]) — the create screen
+        // is one of its four callers, and a private copy of a single row would
+        // put the wrong sentence on screen for every code but `0x0410`. A
+        // refusal without a code (or the silent `0x0401`) keeps the row this
+        // action actually uses.
+        text.0 = super::lobby_error_line_or(
+            res.error_code,
+            &ui_strings,
+            "UIO_MSG_ERROR_ID",
+            "This ID already exists.",
+        );
         play_error_sound(&mut commands, &assets, &options);
     }
 }
@@ -2705,13 +2714,17 @@ pub fn on_character_create_response(
         if res.result == 1 {
             next_state.set(IntroV2State::CharacterList);
         } else {
-            // The per-code error catalogue (0x0404 "Select a Weapon.", 0x0405
-            // "A maximum of %d characters ...") arrives with the lobby slice;
-            // until then the code goes to the log and the band shows the
-            // generic create failure.
+            // The per-code catalogue is in this PR, so use it: `0x0404`
+            // "Select a Weapon.", `0x0405` "A maximum of %d characters ..."
+            // and `0x0410` "This ID already exists." are all rows the original
+            // shows here, and the generic create failure is only what the
+            // table itself falls back to. Same renderer as delete/restore and
+            // world join ([`super::lobby_error_line`]).
             let code = res.error_code.unwrap_or_default();
             warn!("character create rejected (error {:#06x})", code);
-            info_text_writer.write(InfoTextV2Update(ui_strings.get_plain_or(
+            info_text_writer.write(InfoTextV2Update(super::lobby_error_line_or(
+                res.error_code,
+                &ui_strings,
                 "UIO_SMERR_FAILED_TO_CREATE_CHARACTER",
                 "Failed to create a character. Please try to connect again.",
             )));
