@@ -56,6 +56,16 @@ enum ChardataFields {
     // (SR_Db2Media/Settings.cs:43-51).
     Speed1 = 46,
     Speed2 = 47,
+    // RefObjChar Scale, the column right after the two speeds: the character's
+    // size as a **percentage**, 100 = normal. Measured over every shipped
+    // `characterdata*.txt` in the user's Media.pk2 (2026-08-22): all 26
+    // `CHAR_*` player rows are exactly 100, and the file-wide spread is
+    // 25 … 400 with the `MOB_THIEF_NPC_*` families forming a clean size ladder
+    // 94/96/98/100/102/104/106 — which is what a percentage looks like and a
+    // flag or an id does not. The original client reads the same value and
+    // converts it in exactly the shape [`CharacterDataRow::scale_factor`]
+    // copies.
+    Scale = 48,
     ResourcePath = 52,
     // RefObjCommon AssocFileIcon_128 — the object's own 32x32 UI icon, the
     // third of the `52-56 AssocFile{Obj,Drop,Icon,1,2}_128` run
@@ -110,7 +120,7 @@ impl Display for CharacterDataRow {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut s = String::new();
         self.0.iter().enumerate().for_each(|(i, e)| {
-            s.push_str(&*format!("{} -> '{}'", i, e));
+            s.push_str(&format!("{} -> '{}'", i, e));
         });
         f.write_str(&s)
     }
@@ -136,6 +146,35 @@ impl CharacterDataRow {
             return None;
         }
         Some(format!("data://res/{}", path.replace("\\", "/")))
+    }
+
+    /// The row's size as a plain multiplier: `Scale` is a percentage with 100 =
+    /// normal, so this is `percent / 100`.
+    ///
+    /// The original does the same division and shortcuts the common case
+    /// literally — `v == 100 ? 1.0 : v / 100.0` — before handing the factor to
+    /// its model scale setter, whose product *model extent × scale × 20* is the
+    /// camera's character height (`camera::character_height`).
+    ///
+    /// An unreadable or non-positive column falls back to 1.0 rather than
+    /// collapsing a character to nothing: this feeds a transform scale, and a
+    /// bad row must not make a model disappear.
+    ///
+    /// Do **not** confuse this with the `scale` byte on the wire (character
+    /// create/list and the player spawn record): that one is two nibbles,
+    /// Height and Volume of the creation sliders, 0..4 each
+    /// (`packets::agent::lobby::CharacterCreate::scale`). Feeding `0x11`
+    /// through this conversion would draw a 17 % character.
+    pub fn scale_factor(&self) -> f32 {
+        let percent = self
+            .0
+            .get(ChardataFields::Scale as usize)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .unwrap_or(100.0);
+        if percent == 100.0 || !percent.is_finite() || percent <= 0.0 {
+            return 1.0;
+        }
+        percent / 100.0
     }
 
     pub fn code_name(&self) -> &String {
@@ -288,6 +327,15 @@ impl CharacterDataRow {
     }
 
     /// RefObjChar `InventorySize` — transport cargo capacity, `None` when 0.
+    ///
+    /// **Not dead code, keep it:** its consumer is the transport cargo grid
+    /// — a 7×4 = 28-cell lattice with
+    /// `ceil(size / 28)` pages, which is the only way job goods can be carried
+    /// (`UIIT_MSG_COS_CANNOT_BUY_SPECIALTY_TO_INVENTORY`). The column is also
+    /// not COS-only: across `characterdata*.txt` (all 10 shards, 13,685 rows)
+    /// the 39 transports hold 32…177 (→ 2…7 pages), the 13 grab
+    /// pets a uniform 140 (→ 5 pages), the 26 `CHAR_CH_*` player rows 45 (the
+    /// 5×9 player inventory) and two `MOB_SD_*` rows 255; every other row is 0.
     pub fn inventory_size(&self) -> Option<u8> {
         let size: u8 = self
             .0
@@ -298,6 +346,15 @@ impl CharacterDataRow {
     }
 
     /// RefObjChar `CanBeVehicle` — whether players can board this character.
+    ///
+    /// **Kept although [`CosKind::is_rideable`] looks equivalent**: in the
+    /// shipped tables the flag is 1 on exactly the 63 tid4-1 and 39 tid4-2 rows
+    /// and 0 on all other 13,583 rows (all 10 `characterdata*.txt` shards) — so
+    /// today the two agree, but that
+    /// is a property of *this* data, not of the format. The column is the
+    /// client's own ride gate (`UIIT_MSG_COSERR_CANT_RIDE`); a vSRO shard that
+    /// clears it on a `COS_C_*` row would still be answered correctly here,
+    /// while deriving rideability from the type nibble alone could not see it.
     pub fn can_be_vehicle(&self) -> bool {
         self.0
             .get(ChardataFields::CanBeVehicle as usize)
@@ -316,6 +373,39 @@ mod test {
         fields[11] = tid.2.to_string();
         fields[12] = tid.3.to_string();
         CharacterDataRow(fields)
+    }
+
+    /// The shape of the column (see the enum comment): players are exactly 100,
+    /// the thief-NPC ladder walks around it in steps of 2, and the file-wide
+    /// spread is 25 … 400.
+    #[test]
+    fn the_scale_column_is_a_percentage_with_100_as_normal() {
+        let row = |percent: &str| {
+            let mut fields = vec![String::new(); 53];
+            fields[ChardataFields::Scale as usize] = percent.to_string();
+            CharacterDataRow(fields)
+        };
+
+        // Every shipped CHAR_* row: 100, and the original shortcuts this case.
+        assert_eq!(row("100").scale_factor(), 1.0);
+
+        // The MOB_THIEF_NPC_* ladder and the extremes of the corpus.
+        assert_eq!(row("94").scale_factor(), 0.94);
+        assert_eq!(row("106").scale_factor(), 1.06);
+        assert_eq!(row("25").scale_factor(), 0.25);
+        assert_eq!(row("400").scale_factor(), 4.0);
+
+        // A broken row must not make a character vanish.
+        for broken in ["", "xxx", "0", "-5"] {
+            assert_eq!(
+                row(broken).scale_factor(),
+                1.0,
+                "'{broken}' must fall back to normal size"
+            );
+        }
+
+        // Short rows (the index files are one column wide) must not panic.
+        assert_eq!(CharacterDataRow(vec![String::new(); 3]).scale_factor(), 1.0);
     }
 
     fn recover_row(raw: &str) -> CharacterDataRow {

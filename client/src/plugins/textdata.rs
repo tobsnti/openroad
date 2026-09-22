@@ -310,6 +310,33 @@ impl ClientCollectionBook {
 pub struct ClientUiStrings(Option<UiSystemText>);
 
 impl ClientUiStrings {
+    /// Test-only table built from explicit rows. Exists so a caller's key logic
+    /// can be pinned against **transcribed** keys instead of against its own
+    /// output — the failure mode of the old Explain-box test, which asserted
+    /// `explanation_key(..).starts_with("UIO_NEWCHAR_EXPLANATION_")`, a
+    /// tautology of `str::replace`.
+    #[cfg(test)]
+    pub(crate) fn from_rows(rows: &[(&str, &str)]) -> Self {
+        Self(Some(crate::assets::textdata::uisystem::UiSystemText(
+            rows.iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )))
+    }
+
+    /// Test-only table parsed from **real** `textuisystem.txt` rows
+    /// (`enabled \t KEY \t … \t English`) through the production parser.
+    ///
+    /// Complements [`from_rows`]: that one pins explicit key/value pairs, this
+    /// one pins the *file format* too, so a test cannot pass because it
+    /// hand-fed the pairs the code already produces.
+    #[cfg(test)]
+    pub(crate) fn from_tsv(content: &str) -> Self {
+        Self(Some(
+            crate::assets::textdata::uisystem::UiSystemText::parse(content),
+        ))
+    }
+
     /// Localized UI string for a `UIIT_*`-style key, from textuisystem.txt.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.as_ref().and_then(|strings| strings.get(key))
