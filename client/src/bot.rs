@@ -2358,7 +2358,7 @@ mod tests {
 
         // The default is the game data's own floor, not a round number: the
         // shortest castable player action in v1.188 skilldata is 210 ms.
-        assert!(DEFAULT_COMMAND_INTERVAL >= 0.210);
+        const { assert!(DEFAULT_COMMAND_INTERVAL >= 0.210) };
     }
 
     /// A control method nobody documents is a method nobody can call, and
