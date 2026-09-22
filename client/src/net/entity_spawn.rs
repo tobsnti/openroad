@@ -14,16 +14,15 @@
 //! unknown type or short read we stop the batch and return what parsed so far
 //! (fail-safe, mirroring `character_data.rs`) rather than desync.
 //!
-//! Layout is calibrated against a live vSRO 1.88 capture: the player and
-//! NPC records (incl. the `tag + u8 count + option bytes` interaction list) are
-//! verified; the monster rarity tail and the dropped-item branch are still
-//! cross-referenced with skrillax and pending a capture.
+//! The player and NPC records (incl. the `tag + u8 count + option bytes`
+//! interaction list) are confirmed, and so is the dropped-item branch, which
+//! ends after the rarity byte (see `parse_item`). The monster rarity tail is
+//! still unconfirmed.
 //!
-//! COS (pet/mount) records and the mounted-player conditional are [S]
-//! spec-derived from xBot `PacketParser.cs:735-807` (no capture yet — promoted
-//! to [V] by CAPTURE_LIST F3/F7/F8): a COS record is the NPC record plus a
-//! tid4-dependent owner tail, and a riding player inserts a `u32` mount uid
-//! between its state flags — both used to desync the whole batch.
+//! COS (pet/mount) records and the mounted-player conditional are unconfirmed:
+//! a COS record is the NPC record plus a tid4-dependent owner tail, and a
+//! riding player inserts a `u32` mount uid between its state flags — both used
+//! to desync the whole batch.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -434,31 +433,35 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     let state = r.character_state()?;
     let name = r.string()?;
     // job_type selects the guild block's shape below, so it must be read, not
-    // skipped: 0 = no job, 1 TRADER / 2 THIEF / 3 HUNTER
-    // (the local RE notes).
+    // skipped: 0 = no job, 1 TRADER / 2 THIEF / 3 HUNTER.
     let job_type = r.u8()?;
     // job_level, pk_state
     r.skip(2)?;
     // A mounted player inserts its COS's unique id between the riding and
-    // scroll flags ([S] xBot PacketParser.cs:744-747; the old flat skip(8)
-    // desynced the batch by 4 bytes whenever a rider was in view).
+    // scroll flags; a flat skip(8) desyncs the batch by 4 bytes whenever a
+    // rider is in view.
     let riding = r.u8()? != 0;
     let _in_combat = r.u8()?;
     let riding_uid = if riding { Some(r.u32()?) } else { None };
     // scroll, interact, unk
     r.skip(3)?;
     // A job-suited player's guild block is the name string and nothing else
-    // ([S] xBot, see `Reader::guild`); guildless players send an empty name,
-    // not an absent block. The wire flag is `job_type`; the equipment we just
-    // read is an independent second opinion on the same fact, so a mismatch is
-    // logged instead of silently picking one — that log line is what a live
-    // capture needs to promote the branch from [S] to [V].
-    let job_mode = job_type != 0;
+    // (see `Reader::guild`); guildless players send an empty name, not an
+    // absent block.
+    //
+    // The predicate is the **equipment**, not the `job_type` byte: job mode in
+    // the original is the suit being worn, and the two are not the same fact.
+    // A player record can carry `job_type = 1` with no job suit equipped and
+    // still send the full `GuildID…authority` sub-block; branching on the byte
+    // leaves 20 bytes of it standing and desyncs the batch. A suit implies a
+    // nonzero `job_type`, so keying off the suit is the narrower of the two
+    // rules. The mismatch is logged rather than silently resolved.
     let wears_job_suit = equipment
         .iter()
         .filter_map(|(id, _)| resolver.item_type_ids(*id))
         .any(is_job_suit);
-    if wears_job_suit != job_mode {
+    let job_mode = wears_job_suit;
+    if wears_job_suit != (job_type != 0) {
         // Rate-limited: a town gate puts dozens of players in a single batch and
         // every one of them would repeat the same layout question, drowning the
         // log the line exists for.
@@ -466,8 +469,8 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         if should_log_job_mismatch(SEEN.fetch_add(1, Ordering::Relaxed)) {
             bevy::log::warn!(
                 "entity_spawn: player {} has job_type={} but {} a job suit equipped; \
-                 parsing the guild block as job_mode={} (the wire flag). If the record \
-                 desyncs from here, the branch predicate is the equipment, not the flag \
+                 parsing the guild block as job_mode={} (the equipment). If the record \
+                 desyncs from here, the branch predicate is the flag, not the equipment \
                  (docs/net-entity-spawn-0x3019.md, \"job mode\")",
                 name,
                 job_type,
@@ -617,12 +620,43 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     })
 }
 
-/// Dropped item record. Layout follows skrillax's `ItemSpawnData` (owner as a
-/// flagged optional), corrected against live vSRO 1.188 captures
-/// (`packet_dump/0x3015.log`, 2026-07-24): the drop-source tail is present on
-/// **every** dropped item, gold included —
-/// `ref u32, [amount u32 | upgrade u8], uid u32, pos, owner flag(+u32),
-/// rarity u8, drop source u8, dropper uid u32`.
+/// Whether a dropped item's record starts with an extra owner-name string.
+///
+/// True for the quest/event family `TID (3,3,9,*)` and only for it. The drop
+/// of ref 3862 `ITEM_ETC_E050618_TREASUREBOX` is on the wire as
+/// `160f0000 | 0700 "Player1" | c75f0200 | a860 …` — a u16-length-prefixed
+/// character name between the ref id and the unique id. Without the string the
+/// record's uid, position, owner flag and rarity are all read 9 bytes early
+/// and every later record of the batch is lost.
+///
+/// The *class* is the narrowest itemdata grouping that holds that ref (694
+/// rows, all `(3,3,9,0)`: quest and event items); widening or narrowing it is
+/// unconfirmed either way. What the string means is unknown — it is a
+/// character name, but the record already carries a numeric owner id, so it is
+/// skipped rather than guessed at.
+fn carries_owner_name(type_ids: Option<ItemTypeIds>) -> bool {
+    matches!(type_ids, Some((3, 3, 9, _)))
+}
+
+/// Dropped item record (owner as a flagged optional):
+/// `ref u32, [quest/event item: owner name string], [amount u32 | upgrade u8],
+/// uid u32, pos, owner flag(+u32), rarity u8` — and the record **ends there**.
+///
+/// **Why there is no drop-source tail here.** The five bytes behind `rarity`
+/// that used to be read as `drop source u8 + dropper uid u32` belong to the
+/// 0x3015 *frame*, not to the item record: in a 0x3019 batch they are simply
+/// not on the wire. A spawn batch that carries item records consumes its body
+/// to the last byte **only** without the tail, and does not parse with it. The
+/// same item shows both shapes: ref 6 uid 154 759 is 26 bytes inside a 0x3019
+/// batch and 31 bytes inside a 0x3015 frame.
+///
+/// In 0x3015 every record leaves a frame-level remainder that the single-spawn
+/// path ignores: one byte (0x01/0x04) behind a monster, player or COS record,
+/// and `0x05|0x06 + u32 dropper uid` behind an item — the drop reason with its
+/// dropper. Reading it inside the record was only invisible because 0x3015
+/// carries exactly one; the earlier "is the tail there?" heuristic (classify
+/// the next four bytes as a ref id) fails on a drop whose dropper uid is 0,
+/// where those bytes read `05 00 00 00` = ref 5 `ITEM_ETC_HP_POTION_02`.
 fn parse_item(
     r: &mut Reader,
     ref_id: u32,
@@ -630,6 +664,9 @@ fn parse_item(
     gold: bool,
     resolver: &impl RefResolver,
 ) -> Option<SpawnedEntity> {
+    if carries_owner_name(resolver.item_type_ids(ref_id)) {
+        let _owner_name = r.string()?;
+    }
     let mut amount = None;
     if equipment {
         r.skip(1)?; // upgrade / opt level
@@ -649,29 +686,6 @@ fn parse_item(
     // colour. Values beyond 0/1 are UNKNOWN and are carried through unmapped
     // rather than guessed at.
     let rarity = r.u8()?;
-    // Drop source (u8) + dropper uid (u32) — present when something *dropped*
-    // the item, absent when nothing did. A GM-created item (0x7010 sub-command
-    // 7 `MakeItem`) has no dropper: the live record is 26 bytes and ends after
-    // the rarity byte (capture 2026-08-19, ref 6 = ITEM_ETC_HP_POTION_03,
-    // `06000000 875C0200 A860 0D746244 CF4F29BE 2C83C844 6879 00 00`).
-    // Requiring the tail aborted the whole spawn batch, so the item never
-    // appeared and could not be picked up.
-    //
-    // Whether the tail is there is a *per record* question, but the reader
-    // spans the whole group-spawn body, so `remaining()` cannot answer it: a
-    // GM item with a follower record still has bytes left and a blind skip(5)
-    // would eat the next record's head. The follower's first field is its own
-    // ref id, so the client tables decide: if the four bytes under the cursor
-    // classify, the next record starts here and this item has no tail. With a
-    // tail those four bytes are `drop source u8 + the low 3 bytes of the
-    // dropper uid`, i.e. >= 0x01000000 for any real dropper — no ref id of the
-    // client tables reaches that far.
-    let next_record_starts_here = r
-        .peek_u32()
-        .is_some_and(|id| resolver.resolve(id) != RefType::Unknown);
-    if !next_record_starts_here && r.remaining() >= 5 {
-        r.skip(5)?;
-    }
     Some(SpawnedEntity {
         ref_id,
         unique_id,
@@ -927,9 +941,14 @@ mod test {
         assert!(parsed.spawns[1].talk_options.is_empty());
     }
 
+    /// A gold pile as it is on the wire, byte for byte: ref 1
+    /// `ITEM_ETC_GOLD_01`, 84 coins, reserved for owner jid 2. The five
+    /// bytes behind the rarity (`05 30610100` = drop reason 5, dropper uid
+    /// 90 416) are the 0x3015 frame's, not the record's, and the single-spawn
+    /// path ignores what the record leaves.
     #[test]
     fn parses_gold_drop() {
-        const GOLD_REF: u32 = 3000;
+        const GOLD_REF: u32 = 1;
         let res = resolver(&[(
             GOLD_REF,
             RefType::Item {
@@ -937,29 +956,16 @@ mod test {
                 gold: true,
             },
         )]);
-        // mirrors a live 0x3015 gold line: gold carries the drop-source tail
-        let body = Body::default()
-            .u32(GOLD_REF)
-            .u32(5000) // amount
-            .u32(77) // unique id
-            .u16(0x60A8)
-            .f32(1.0)
-            .f32(2.0)
-            .f32(3.0)
-            .u16(0) // position
-            .u8(1) // owner flag: present
-            .u32(4) // owner jid
-            .u8(0) // rarity
-            .u8(5) // drop source
-            .u32(0x147A8) // dropper uid
-            .0;
-        let parsed = parse_group_spawn(&body, true, 1, &res);
+        let body: Vec<u8> = vec![
+            0x01, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x31, 0x61, 0x01, 0x00, 0xa8, 0x60,
+            0x45, 0x24, 0x3d, 0x44, 0x08, 0xd9, 0x89, 0xc1, 0x24, 0xbd, 0x7a, 0x44, 0xea, 0x79,
+            0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x30, 0x61, 0x01, 0x00,
+        ];
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
         assert_eq!(parsed.spawns.len(), 1);
-        assert_eq!(parsed.spawns[0].unique_id, 77);
-        assert_eq!(
-            parsed.spawns[0].kind,
-            SpawnKind::Item { amount: Some(5000) }
-        );
+        assert_eq!(parsed.spawns[0].unique_id, 90_417);
+        assert_eq!(parsed.spawns[0].position.region, 0x60A8);
+        assert_eq!(parsed.spawns[0].kind, SpawnKind::Item { amount: Some(84) });
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
@@ -1530,12 +1536,14 @@ mod test {
         assert_eq!(parsed.spawns[1].guild, None);
     }
 
-    /// A GM-created item (0x7010 sub-command 7) arrives with no dropper, so its
-    /// record ends after the rarity byte. The captured 26-byte body below used
-    /// to abort the whole batch because the parser demanded the 5-byte
-    /// drop-source tail every dropped item carries.
+    /// An item record ends after its rarity byte — 26 bytes here (ref 6
+    /// `ITEM_ETC_HP_POTION_03`, uid 154 759). The very same drop is 31 bytes
+    /// inside a 0x3015 frame, where `05 00000000` follows: those five bytes
+    /// are the single-spawn frame's drop reason and dropper uid, not part of
+    /// the record. Demanding them here aborted the whole batch, so the item
+    /// never appeared and could not be picked up.
     #[test]
-    fn a_gm_made_item_has_no_drop_source_tail() {
+    fn an_item_record_ends_after_the_rarity_byte() {
         let raw: Vec<u8> = vec![
             0x06, 0x00, 0x00, 0x00, // ref 6 (ITEM_ETC_HP_POTION_03)
             0x87, 0x5C, 0x02, 0x00, // uid 154759
@@ -1576,48 +1584,140 @@ mod test {
         assert!(should_log_job_mismatch(128));
     }
 
-    /// The tailless GM item in the *middle* of a batch: `remaining()` is
-    /// batch-wide, so a blind 5-byte skip here eats the head of the record
-    /// behind it and desyncs exactly what the tail fix was meant to prevent.
+    /// **The record behind an item drop.** A real spawn batch of 4 records:
+    /// monster 1933, two gold piles, monster 1956. The trailing monster is the
+    /// proof — its uid only comes out right if neither item read a byte past
+    /// its rarity. With a 5-byte drop-source tail per item the batch does not
+    /// parse at all.
     #[test]
-    fn a_gm_made_item_does_not_eat_the_next_record() {
-        const POTION: u32 = 6;
+    fn a_batch_keeps_the_record_behind_an_item_drop() {
+        let body: Vec<u8> = vec![
+            0x8d, 0x07, 0x00, 0x00, 0x9e, 0x5d, 0x02, 0x00, 0xa8, 0x60, 0x0e, 0xf2, 0x60, 0x44,
+            0x9a, 0xc5, 0xac, 0xc1, 0x68, 0xc0, 0x86, 0x44, 0x9f, 0xfd, 0x01, 0x00, 0xa8, 0x60,
+            0x83, 0x03, 0xeb, 0xff, 0x36, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x41,
+            0x00, 0x00, 0x04, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x00, 0x02, 0x01, 0x05, 0x01, 0x01,
+            0x00, 0x00, 0x00, 0xc2, 0x00, 0x00, 0x00, 0xfc, 0x5f, 0x02, 0x00, 0xa8, 0x60, 0x58,
+            0xc7, 0x55, 0x44, 0xef, 0x6b, 0x5b, 0xc1, 0x73, 0x66, 0x8c, 0x44, 0xb2, 0xc9, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x91, 0x00, 0x00, 0x00, 0xfd, 0x5f, 0x02, 0x00, 0xa8,
+            0x60, 0x50, 0x12, 0x54, 0x44, 0xd7, 0xc6, 0x4f, 0xc1, 0xd4, 0x31, 0x8d, 0x44, 0x2c,
+            0xb6, 0x00, 0x00, 0xa4, 0x07, 0x00, 0x00, 0x07, 0x60, 0x02, 0x00, 0xa8, 0x60, 0x00,
+            0x00, 0x2b, 0x44, 0x85, 0x48, 0x13, 0x40, 0x00, 0x40, 0x9b, 0x44, 0x60, 0xbc, 0x01,
+            0x00, 0xa8, 0x60, 0xac, 0x02, 0x02, 0x00, 0xda, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xb4, 0x41, 0x00, 0x00, 0xa5, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x00, 0x02, 0x01,
+            0x05, 0x01,
+        ];
+        let res = resolver(&[
+            (1933, RefType::Monster),
+            (1956, RefType::Monster),
+            (
+                1,
+                RefType::Item {
+                    equipment: false,
+                    gold: true,
+                },
+            ),
+        ]);
+
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 4, &res);
+        assert_eq!(parsed.spawns.len(), 4, "all four records must parse");
+        assert_eq!(parsed.spawns[0].unique_id, 155_038);
+        assert_eq!(parsed.spawns[1].kind, SpawnKind::Item { amount: Some(194) });
+        assert_eq!(parsed.spawns[1].unique_id, 155_644);
+        assert_eq!(parsed.spawns[2].kind, SpawnKind::Item { amount: Some(145) });
+        assert_eq!(parsed.spawns[2].unique_id, 155_645);
+        assert_eq!(
+            parsed.spawns[3].unique_id, 155_655,
+            "the monster behind the two drops keeps its boundary"
+        );
+        assert_eq!(parsed.spawns[3].kind, SpawnKind::Monster);
+        assert!(parsed.unresolved.is_empty());
+    }
+
+    /// **A quest/event item leads with an owner name.** Byte for byte off the
+    /// wire: ref 3862 `ITEM_ETC_E050618_TREASUREBOX`, itemdata TID (3,3,9,0),
+    /// then `0700 "Player1"` before the unique id. Without the string every
+    /// field behind it is read 9 bytes early.
+    #[test]
+    fn a_quest_item_drop_carries_a_leading_owner_name() {
+        let body: Vec<u8> = vec![
+            0x16, 0x0f, 0x00, 0x00, 0x07, 0x00, 0x50, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x31, 0xc7,
+            0x5f, 0x02, 0x00, 0xa8, 0x60, 0xc0, 0xad, 0x5f, 0x44, 0xff, 0xcc, 0x40, 0xbe, 0x29,
+            0x83, 0xc8, 0x44, 0x22, 0x37, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
+            0x00, 0x00,
+        ];
         let res = resolver(&[(
-            POTION,
+            3862,
             RefType::Item {
                 equipment: false,
                 gold: false,
             },
-        )]);
-        let body = Body::default()
-            // record 1: GM-made, no dropper -> ends after the rarity byte
-            .u32(POTION)
-            .u32(154_759)
-            .u16(0x60A8)
-            .f32(905.8)
-            .f32(-0.165)
-            .f32(1604.1)
-            .u16(0x7968)
-            .u8(0) // owner flag: nobody
-            .u8(0) // rarity
-            // record 2: an ordinary drop, dropper tail present
-            .u32(POTION)
-            .u32(154_760)
-            .u16(0x60A8)
-            .f32(1.0)
-            .f32(2.0)
-            .f32(3.0)
-            .u16(0)
-            .u8(0) // owner flag: nobody
-            .u8(1) // rarity
-            .u8(5) // drop source
-            .u32(0x147A8) // dropper uid
-            .0;
+        )])
+        .with_item_tids(&[(3862, (3, 3, 9, 0))]);
 
-        let parsed = parse_group_spawn(&body, true, 2, &res);
-        assert_eq!(parsed.spawns.len(), 2, "both records must parse");
-        assert_eq!(parsed.spawns[0].unique_id, 154_759);
-        assert_eq!(parsed.spawns[1].unique_id, 154_760);
-        assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
+        assert_eq!(parsed.spawns.len(), 1, "the record must parse");
+        let drop = &parsed.spawns[0];
+        assert_eq!(drop.ref_id, 3862);
+        assert_eq!(
+            drop.unique_id, 155_079,
+            "uid comes after the name string, not in place of it"
+        );
+        assert_eq!(drop.position.region, 0x60A8);
+        assert_eq!(drop.spawn_rarity, Some(0));
+    }
+
+    /// **`job_type != 0` does not omit the guild sub-block.** Byte for byte
+    /// off the wire: player ref 1931, "Test", job type 1 / job level 2, seven
+    /// pieces of ordinary clothing — no job suit — and behind the empty guild
+    /// name the full `GuildID…authority` sub-block. Branching on the byte
+    /// leaves 20 bytes of it standing.
+    #[test]
+    fn a_job_flagged_player_without_a_suit_keeps_its_guild_sub_block() {
+        let body: Vec<u8> = vec![
+            0x8b, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x6d, 0x06, 0x0b, 0x06, 0x00, 0x00,
+            0x00, 0x77, 0x06, 0x00, 0x00, 0x00, 0x53, 0x06, 0x00, 0x00, 0x00, 0xc6, 0x06, 0x00,
+            0x00, 0x03, 0x9b, 0x06, 0x00, 0x00, 0x00, 0xea, 0x06, 0x00, 0x00, 0x01, 0x05, 0x01,
+            0x9f, 0x24, 0x00, 0x00, 0x00, 0x00, 0x13, 0xfb, 0x01, 0x00, 0xa8, 0x61, 0xee, 0x0e,
+            0x9d, 0x43, 0x96, 0xac, 0x25, 0xbf, 0x00, 0x52, 0x9b, 0x40, 0xd7, 0x30, 0x01, 0x01,
+            0xa8, 0x61, 0x49, 0x01, 0xff, 0xff, 0x2b, 0x00, 0x01, 0x00, 0x03, 0x04, 0x9a, 0x99,
+            0x19, 0x42, 0x01, 0x00, 0xf0, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x01, 0xc6, 0x98, 0x00,
+            0x00, 0xd4, 0x07, 0x00, 0x00, 0x04, 0x00, 0x54, 0x65, 0x73, 0x74, 0x01, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xff, 0x04,
+        ];
+        let mut entries: Vec<(u32, RefType)> = vec![(1931, RefType::Player)];
+        entries.extend([1547, 1655, 1619, 1734, 1691, 1770, 9375].map(|id| {
+            (
+                id,
+                RefType::Item {
+                    equipment: true,
+                    gold: false,
+                },
+            )
+        }));
+        // the worn clothes are (3,1,1,*) armor and a (3,1,13,4) flag — the
+        // itemdata rows of these refs, none of them a job suit
+        let res = resolver(&entries).with_item_tids(&[
+            (1547, (3, 1, 1, 1)),
+            (1655, (3, 1, 1, 3)),
+            (1619, (3, 1, 1, 2)),
+            (1734, (3, 1, 1, 5)),
+            (1691, (3, 1, 1, 4)),
+            (1770, (3, 1, 1, 6)),
+            (9375, (3, 1, 13, 4)),
+        ]);
+
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
+        assert_eq!(parsed.spawns.len(), 1, "the player record must parse");
+        let player = &parsed.spawns[0];
+        assert_eq!(player.name.as_deref(), Some("Test"));
+        assert_eq!(player.unique_id, 129_811);
+        assert_eq!(
+            player.guild_affiliation,
+            Some(GuildAffiliation::default()),
+            "the sub-block is on the wire (all-zero for a guildless player)"
+        );
+        assert_eq!(player.guild, None, "empty guild name = guildless");
     }
 }

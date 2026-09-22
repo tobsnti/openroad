@@ -82,12 +82,6 @@ impl<'a> Reader<'a> {
         (pos <= self.buf.len()).then(|| self.pos = pos)
     }
 
-    /// Bytes left in the buffer. Used where a record's *tail* is optional and
-    /// only the payload length can say whether it is there.
-    pub fn remaining(&self) -> usize {
-        self.buf.len().saturating_sub(self.pos)
-    }
-
     pub fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let end = self.pos.checked_add(n)?;
         let slice = self.buf.get(self.pos..end)?;
@@ -109,15 +103,6 @@ impl<'a> Reader<'a> {
 
     pub fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
-    /// The next `u32` without consuming it. Used where a record's optional
-    /// tail can only be told apart from the *following* record's head
-    /// (see `entity_spawn::parse_item`).
-    pub fn peek_u32(&self) -> Option<u32> {
-        let end = self.pos.checked_add(4)?;
-        let bytes = self.buf.get(self.pos..end)?;
-        Some(u32::from_le_bytes(bytes.try_into().unwrap()))
     }
 
     pub fn f32(&mut self) -> Option<f32> {
@@ -203,25 +188,11 @@ impl<'a> Reader<'a> {
     ///   `crest_rev:u32`, `union_id:u32`, `union_crest_rev:u32`,
     ///   `is_friendly:u8`, `siege_authority:u8`.
     ///
-    /// **Why the branch, and where the old "always present" came from.** This
-    /// used to consume `u32 + string + 14` unconditionally with a comment
-    /// claiming the block is always there. That claim is traceable to go-sro's
-    /// zero-writer `WriteGuild` (`model/packetutils_entity.go:331-342`) — the
-    /// stub server our dumps were captured against, which has **no job mode at
-    /// all** and therefore cannot ever omit it. The original client's own
-    /// third-party parser branches: xBot reads the guild name and then skips
-    /// the whole id…authority sub-block when its job-mode predicate holds
-    /// (`PacketParser.cs:750-766`, `SRPlayer.cs:49-54`; job players render as
-    /// `*Name`). One job-suited player in view desynced the entire spawn batch
-    /// (the local RE notes).
-    ///
-    /// Confidence: `[S]` — the *branch* is spec-derived from xBot (no licence;
-    /// facts and field layout only) and not yet seen on real bytes: probing all 868
-    /// frames of `packet_dump/0x3019.log` for the little-endian ref id of every
-    /// player row in `characterdata*.txt` (26 ids) turns up no player record
-    /// (positive control on the identical probe: NPC ref 2013 = `dd070000`
-    /// appears in 14 frames). A capture of a job-suited player spawn closes
-    /// it; if it comes back the other way, delete the branch, not the fields.
+    /// **Why the branch.** Consuming `u32 + string + 14` unconditionally
+    /// desyncs the rest of a spawn batch as soon as one job-suited player is
+    /// in view. The caller's predicate is the worn job suit rather than the
+    /// record's `job_type` byte (`entity_spawn::parse_player`): a record with
+    /// `job_type = 1` and no suit equipped still carries the full sub-block.
     ///
     /// `None` (a short read) aborts the record like every other parse failure
     /// here.

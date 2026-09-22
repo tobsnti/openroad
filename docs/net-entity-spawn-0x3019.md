@@ -1,17 +1,15 @@
 # Entity spawn / despawn (0x3017 begin / 0x3019 data / 0x3018 end, 0x3015 / 0x3016)
 
-Status: layout decoded from the client parser and its byte-array unit tests
-(`client/src/net/entity_spawn.rs`), calibrated against live vSRO 1.188 captures.
-The player and NPC records (incl. the interaction-option list) are
-capture-verified; the monster rarity tail and the dropped-item drop-source tail
-are cross-referenced with skrillax's `silkroad-protocol` and corrected against
-`packet_dump/0x3015.log` (2026-07-24); the gate-building record is verified
-against 40 identical captures of the Jangan dimensional gate. Fields the parser
-skips without interpreting are marked *(unverified)* — their names are inferred,
-not observed.
+Status: the layout is implemented by the client parser and pinned by its
+byte-array unit tests (`client/src/net/entity_spawn.rs`) against vSRO 1.188.
+The player and NPC records (incl. the interaction-option list) are confirmed.
+The item-drop record ends after its rarity byte; the five bytes once read as a
+drop-source tail are a 0x3015 frame field. The monster rarity tail is
+unconfirmed. Fields the parser skips without interpreting are marked
+*(unverified)* — their names are inferred.
 
-All five opcodes are **S→C** (`0x3xxx`). Direction is confirmed by the macro's
-section comment and the range convention in `docs/protocol/opcodes.md`.
+All five opcodes are **S→C** (`0x3xxx`). Direction follows the macro's section
+comment and the range convention in `docs/protocol/opcodes.md`.
 
 The framing structs live in `packets/src/agent/ingame.rs`
 (`GroupEntitySpawnBegin`/`Data`/`End`, `SingleEntitySpawn`,
@@ -158,26 +156,27 @@ position (16 B)
 movement (variable)
 character-state (variable)
 name:string
-job_type:u8, job_level:u8, pk_state:u8, riding:u8, in_combat:u8, [riding: riding_uid:u32], scroll:u8, interact:u8, unk:u8   (names unverified; the conditional riding_uid is [S] from xBot PacketParser.cs:744-747, promoted by F7)
+job_type:u8, job_level:u8, pk_state:u8, riding:u8, in_combat:u8, [riding: riding_uid:u32], scroll:u8, interact:u8, unk:u8   (names unverified; the conditional riding_uid is unconfirmed)
 guild: name:string, guild_id:u32, member_nick:string, 14 B (crest_rev:u32, union_id:u32, union_crest_rev:u32, is_friendly:u8, siege_authority:u8)   (UNVERIFIED — see below)
 equipment_cooldown:u8, pk_flag:u8 (0xFF)
 ```
 
-**The guild block has never been observed.** `packet_dump/0x3019.log` contains
-no player spawn record at all — no name string and no player ref id appears in
-any of its 182 payloads (nor in `0x3015.log`), so the guild read has never run
-against real bytes. Its layout comes from go-sro's `WriteGuild` — the server
-these dumps were captured against — corroborated field-for-field by the vSRO
-client-side parser, which also names the 14-byte tail (the earlier "3×u32
-crest/union revs" label was wrong: it is crest-rev, union-id, union-crest-rev).
-Tagged `[S]`, not `[V]`.
+**The guild block's 14-byte tail is unconfirmed.** Its fields are crest-rev,
+union-id, union-crest-rev, is_friendly and siege_authority (the earlier "3×u32
+crest/union revs" label was wrong).
 
 The block is **not** conditional on guild membership: a guildless player sends a
 zero-length name plus the same zeroed tail. There is a conditional in this region,
 but it is **job mode** — a player wearing job equipment omits everything after the
-guild name (vSRO `hasJobMode()`, go-sro's spec `if(Inventory.ContainsJobEquipment == false)`).
-We do not implement that branch: go-sro never emits it, so it cannot be tested
-locally.
+guild name.
+
+`parse_player` implements that branch, and its predicate is the **worn job
+suit**, not the record's `job_type` byte. The two differ on real bytes: a player
+record can carry `job_type = 1` with no job suit equipped and still send the
+full `GuildID…authority` sub-block — keying the branch off the byte leaves 20
+bytes standing and desyncs the batch. A suit implies a nonzero `job_type`, so
+this is the narrower of the two rules; a mismatch between byte and equipment is
+logged (rate-limited).
 
 Fixed head:
 
@@ -230,30 +229,53 @@ Identical to the NPC record, plus a trailing per-instance rarity byte:
 
 ```text
 ref_id:u32
+[itemdata TID (3,3,9,*): owner_name:string]
 [equipment item: opt_level:u8]  |  [gold item: amount:u32]  |  [other: nothing]
 unique_id:u32
 position (16 B)
 owner_flag:u8, [owner_flag != 0: owner_jid:u32]
 rarity:u8
-drop_source:u8, dropper_uid:u32
 ```
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | +0x00 | ref_id | u32 | itemdata ref |
-| +0x04 | opt_level **or** amount | u8 / u32 | present only for equipment (`u8`) or gold (`u32`); absent otherwise. ► |
+| +0x04 | [TID (3,3,9,\*)] owner_name | string | quest/event items only — see below ► |
+| — | opt_level **or** amount | u8 / u32 | present only for equipment (`u8`) or gold (`u32`); absent otherwise |
 | — | unique_id | u32 | |
 | — | position | 16 B | no movement/state block for a drop |
 | — | owner_flag | u8 | 0 = free-for-all pickup |
 | — | [owner_flag ≠ 0] owner_jid | u32 | reserving player's job/char id |
-| — | rarity | u8 | item rarity |
-| — | drop_source | u8 | how it dropped |
-| — | dropper_uid | u32 | uid of the entity that dropped it |
+| — | rarity | u8 | item rarity — **the record ends here** |
 
-Only gold's `amount` is surfaced (`SpawnKind::Item { amount }`); the drop-source
-tail (`rarity, drop_source, dropper_uid`) is present on **every** dropped item,
-gold included — confirmed against `packet_dump/0x3015.log` (2026-07-24). The
-owner block is skrillax's `ItemSpawnData` shape (owner as a flagged optional).
+Only gold's `amount` is surfaced (`SpawnKind::Item { amount }`). The owner block
+is a flagged optional.
+
+**There is no drop-source tail inside the record.** The `drop_source:u8 +
+dropper_uid:u32` this table used to list belongs to the **0x3015 frame**, not to
+the item record: a spawn batch that carries item records consumes its body to
+the last byte only *without* the tail, several with a follower record behind the
+drop. The same drop appears both ways: ref 6 uid 154 759 is 26 bytes inside a
+0x3019 batch and 31 bytes inside a 0x3015 frame.
+
+What 0x3015 appends is a frame-level spawn reason that every record kind gets:
+one byte behind a monster (0x01/0x04), player or COS record, and
+`0x05|0x06 + dropper_uid:u32` behind an item. The single-spawn path
+(`on_single_spawn`) parses one record and ignores the remainder; nothing reads
+the dropper yet.
+
+The earlier "is the tail there?" heuristic — classify the next four bytes, and
+if they are a known ref id the next record starts there — fails on a drop with
+`dropper_uid = 0`, where those bytes read `05 00 00 00` = ref 5
+`ITEM_ETC_HP_POTION_02`, a valid itemdata id.
+
+**Quest/event items lead with a name string.** Ref 3862
+`ITEM_ETC_E050618_TREASUREBOX`, itemdata TID (3,3,9,0), is on the wire as
+`160f0000 | 0700 "Player1" | c75f0200 | a860 …`: a u16-length-prefixed character
+name between the ref id and the unique id. The gate is the TID class
+`(3,3,9,*)` — the narrowest itemdata grouping holding that ref (694 quest/event
+rows); the class boundary itself is unconfirmed, and what the string means is
+unknown (the record already carries a numeric owner id).
 
 ### Structure — teleport gate building (`parse_structure`)
 
