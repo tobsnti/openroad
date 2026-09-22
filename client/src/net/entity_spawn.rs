@@ -152,10 +152,8 @@ pub type ItemTypeIds = (u32, u32, u32, u32);
 /// Whether an itemdata TypeID tuple is a **job suit** (the trader/thief/hunter
 /// outfit that puts a player into job mode).
 ///
-/// `[V]` from our own `Media/server_dep/silkroad/textdata/itemdata*.txt`
-/// (12 079 rows, all files; `docs/re/systems/job-trade-system.md` §3):
-/// the suits are exactly `TID (3, 1, 7, t4)` with `t4 ∈ {1, 2, 3, 6, 7}` —
-/// 98 items, no false positive:
+/// The suits are exactly `TID (3, 1, 7, t4)` with `t4 ∈ {1, 2, 3, 6, 7}` —
+/// 98 items in `itemdata*.txt`, no false positive:
 ///
 /// | `t4` | rows | codename family |
 /// |---|---|---|
@@ -435,7 +433,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     let name = r.string()?;
     // job_type selects the guild block's shape below, so it must be read, not
     // skipped: 0 = no job, 1 TRADER / 2 THIEF / 3 HUNTER
-    // (`docs/re/systems/job-trade-system.md` §3).
+    // (the local RE notes).
     let job_type = r.u8()?;
     // job_level, pk_state
     r.skip(2)?;

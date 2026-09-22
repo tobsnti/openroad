@@ -35,12 +35,12 @@ pub struct GuildTag {
 /// `GuildMemberAuthorityType:u8` — xBot `PacketParser.cs:759-765` /
 /// `SRPlayer.cs:222-231`, field-for-field the same set go-sro's zero-writer
 /// `WriteGuild` (`model/packetutils_entity.go:331-342`) emits. Little-endian
-/// like the whole wire. Table: `docs/re/systems/guild.md` §4.
+/// like the whole wire. Table: the local RE notes.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GuildAffiliation {
     pub id: u32,
     /// Crest revision the *sender* holds; a client with an older one refetches
-    /// the emblem out of band (`docs/re/systems/guild.md` §12).
+    /// the emblem out of band (the local RE notes).
     pub crest_rev: u32,
     pub union_id: u32,
     pub union_crest_rev: u32,
@@ -140,7 +140,7 @@ impl<'a> Reader<'a> {
     /// standing turn (`u8, heading:u16`). The destination coordinates are u16
     /// in the overworld and i32 in a dungeon, keyed by the entity's *current*
     /// position region — read immediately before this block — not the
-    /// destination region (`docs/re/systems/dungeon-teleport-in.md`).
+    /// destination region.
     pub fn skip_movement(&mut self, current_region: u16) -> Option<()> {
         let has_dest = self.u8()? != 0;
         let _move_type = self.u8()?;
@@ -207,17 +207,15 @@ impl<'a> Reader<'a> {
     /// whole `GuildID…authority` sub-block when `hasJobMode()` holds
     /// (`PacketParser.cs:750-766`, `SRPlayer.cs:49-54`; job players render as
     /// `*Name`). One job-suited player in view desynced the entire spawn batch
-    /// (`docs/re/systems/guild.md` §4 hazard 1, §13 D1).
+    /// (the local RE notes).
     ///
     /// Confidence: `[S]` — the *branch* is spec-derived from xBot (GPL-3.0,
     /// portable with citation) and not yet seen on real bytes: probing all 868
     /// frames of `packet_dump/0x3019.log` for the little-endian ref id of every
     /// player row in `characterdata*.txt` (26 ids) turns up no player record
     /// (positive control on the identical probe: NPC ref 2013 = `dd070000`
-    /// appears in 14 frames). Capture C1 in `docs/re/systems/guild.md` §14 and
-    /// order `artifacts/capture/orders/070-jobsuit-player-spawn-record.json`
-    /// close it; if it comes back the other way, delete the branch, not the
-    /// fields.
+    /// appears in 14 frames). A capture of a job-suited player spawn closes
+    /// it; if it comes back the other way, delete the branch, not the fields.
     ///
     /// `None` (a short read) aborts the record like every other parse failure
     /// here.

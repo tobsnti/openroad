@@ -153,6 +153,17 @@ packets! {
     0xA323 => LoginCaptchaConfirmResponse,
     0x2322 => LoginCaptchaChallenge,
 
+    // The original launcher's version check, which OpenRoad's own client does
+    // not send (it uses an SV.T preflight). Modelled so a proxy or test peer
+    // can read a real client's request and, behind a flag, answer it.
+    0x6100 => PatchRequest,
+    0xA100 => PatchResponse,
+
+    // The launcher's news request/answer. It blocks on 0xA104: with a dead
+    // notice service the launcher never offers its Start button.
+    0x6104 => NoticeRequest,
+    0xA104 => NoticeResponse,
+
     0x6101 => ShardListRequest,
     0xA101 => ShardListResponse,
     0x6106 => ShardListPingRequest,

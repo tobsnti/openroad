@@ -8,7 +8,7 @@ table and the macro disagree, so coverage stays honest.
 
 - **Wired opcode count:** not written down here on purpose — it is derived.
   `python3 scripts/check_opcode_ledger.py` prints it (`OK (N opcodes match)`), and
-  the gate rejects a hand-maintained number reappearing in this prose (#558).
+  the gate rejects a hand-maintained number reappearing in this prose.
 - **Original client's opcode surface:** the v1.188 client dispatches roughly 320
   server→client handlers and 169 client→server builders (10 opcodes appear in both
   directions). Use 320 as the S→C denominator when quoting coverage: it counts
@@ -42,6 +42,10 @@ table and the macro disagree, so coverage stays honest.
 | `0x6323` | LoginCaptchaConfirmRequest | C→S | wired |  |
 | `0xA323` | LoginCaptchaConfirmResponse | S→C | wired |  |
 | `0x2322` | LoginCaptchaChallenge | S→C | wired |  |
+| `0x6100` | PatchRequest | C→S | wired | the original launcher's version check (locale byte, `u16`-prefixed module name, build `u32`), as the v1.208 client sends it. OpenRoad's client does not send it — it does an `SV.T` preflight |
+| `0xA100` | PatchResponse | S→C | wired | patch verdict; `result == 1` is a single byte, `result == 2` carries a `PatchErrorCode` (+ the download triple on code `2`). The code-`2` file list is deliberately unmodelled — we never send it |
+| `0x6104` | NoticeRequest | C→S | wired | launcher news request, one content-id byte (`0x16` on the v1.208 client); sent a few ms after `0x6100` |
+| `0xA104` | NoticeResponse | S→C | wired | **only `noticeCount` is modelled**: the per-notice entries need a counted list of structs the derive cannot express, and the only answer we ever send is the empty one. The launcher blocks on this packet — with a dead notice service it never offers its Start button |
 | `0x6101` | ShardListRequest | C→S | wired |  |
 | `0xA101` | ShardListResponse | S→C | wired |  |
 | `0x6106` | ShardListPingRequest | C→S | wired |  |
@@ -107,7 +111,7 @@ table and the macro disagree, so coverage stays honest.
 | `0x70A7` | HwanActionRequest | C→S | wired | jahwan/berserk activation; action byte unknown |
 | `0xB0A7` | HwanActionResponse | S→C | wired | error code only when `result != 1` |
 | `0x30DF` | HwanLevelUpdate | S→C | wired | HWANLEVEL push |
-| `0x7050` | IncreaseStrRequest | C→S | wired | stat-spend (feat/ui-windows, PR #81) |
+| `0x7050` | IncreaseStrRequest | C→S | wired | stat-spend |
 | `0xB050` | IncreaseStrResponse | S→C | wired |  |
 | `0x7051` | IncreaseIntRequest | C→S | wired |  |
 | `0xB051` | IncreaseIntResponse | S→C | wired |  |
@@ -221,7 +225,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 
 ## NPC interaction (talk / teleport / storage / repair)
 
-Landed with `feat/ui-windows` (PR #81): NPC dialog, teleporter, storage, repair.
+NPC dialog, teleporter, storage, repair.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
@@ -350,7 +354,7 @@ on both sides). Details: . `0x3109`
 | `0xB112` | GuildWarEndAck | S→C | experimental | shared ack form |
 | `0xB114` | GuildWarRewardAck | S→C | experimental | `u32` compensation on success |
 
-## Fortress war (wire only — no consumer yet, see #156)
+## Fortress war (wire only — no consumer yet)
 
 `0x385F` is a `u8` sub-command family (0x35 arms). Two arms are decoded; the
 other 52 keep their bytes. Five record fields have a known width and no name, so
@@ -361,7 +365,7 @@ they are carried as `unk_*`; outside a war they are all zero. Arithmetic:
 |---|---|---|---|---|
 | `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, everything else raw |
 
-## Party (wire only — no consumer yet, see EP-14 #96)
+## Party (wire only — no consumer yet, see EP-14)
 
 Read from the original client's parser and builder; none of them is confirmed
 on the wire, so all are `experimental`. `0xB067` stays unwired because its body
@@ -389,7 +393,7 @@ is recorded nowhere.
 | `0xB062` | PartyInviteResponse | S→C | experimental | the invite ack; empty on success, the invitation itself is `0x3080` |
 | `0xB06D` | PartyMatchJoinAck | S→C | experimental | branches on `result == 1`, not `== 2` — both tails are `u16` |
 
-## Quest marks (wire only — the quest system itself is #37)
+## Quest marks (wire only — the quest system itself is not built yet)
 
 The only two confirmed opcodes of the quest family. Everything else the family
 has is listed unwired, with its reason — including the correction that
@@ -400,7 +404,7 @@ has is listed unwired, with its reason — including the correction that
 | `0x30D6` | QuestMarkAdd | S→C | wired | 24 bytes; `mark_id` is a server pool handle, the four trailing `u32`s are unknown |
 | `0x30D7` | QuestMarkRemove | S→C | wired | whole body is a `mark_id` an earlier `0x30D6` introduced |
 
-## Player stall / private shop (wire only — no consumer yet, see EP-16 / Trading #36)
+## Player stall / private shop (wire only — no consumer yet, see EP-16 / Trading)
 
 None of these is confirmed on the wire, so all are `experimental`.
 
@@ -449,7 +453,7 @@ original's opcode enum but it has no parser and no dispatch case at all),
 `0x7508 CLIENT_CONSIGNMENT_REGISTER_REQUEST` and `0x7509
 CLIENT_CONSIGNMENT_UNREGISTER_REQUEST` (enum-only, no builder).
 
-## Pet / COS (consumed by `client/src/plugins/cos/`, EP-19 #101)
+## Pet / COS (consumed by `client/src/plugins/cos/`, EP-19)
 
 Layouts come from the original client's own handlers and builders, cross-checked
 against the vSRO server's writers where one exists.
