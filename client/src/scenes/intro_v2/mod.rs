@@ -35,6 +35,8 @@ pub mod fade;
 pub mod login_form;
 pub mod model;
 pub mod net;
+pub mod race_catalog;
+pub mod race_stage;
 pub mod region_select;
 pub mod scene_data;
 pub mod server_select;
@@ -112,6 +114,9 @@ impl Plugin for IntroV2ScenePlugin {
             )
             .init_resource::<server_select::SelectedShardV2>()
             .init_resource::<server_select::ShardListScroll>()
+            // What the create screen's camera frames on: measured off the body
+            // that is actually on stage (`character_create::measure_create_figure`).
+            .init_resource::<character_create::CreateFigureMetrics>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
                 (
@@ -224,13 +229,26 @@ impl Plugin for IntroV2ScenePlugin {
                 )
                     .run_if(in_state(IntroV2State::CharacterList)),
             )
+            // Leaving the list has two destinations, and only one of them is
+            // "off the stage". Going deeper into the pregame flow (race board,
+            // creation) stays on the very same 3D stage, so the stage and its
+            // camera survive that exit; only leaving for the shard list takes
+            // them down. `EnteringCharacterCreate` is the marker the Create
+            // button already sets for the connection (see
+            // `character_select::disconnect_from_agent_server`).
             .add_systems(
                 OnExit(IntroV2State::CharacterList),
                 (
                     character_select::despawn_controls,
                     character_select::despawn_selection_ui,
-                    character_select::despawn_characters,
                     character_select::disconnect_from_agent_server,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                OnExit(IntroV2State::CharacterList),
+                (
+                    character_select::despawn_characters,
                     despawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera>,
                     // the world origin moved to the char-select anchor on enter, so
@@ -239,13 +257,17 @@ impl Plugin for IntroV2ScenePlugin {
                     set_origin_to_intro,
                     start_camera_animation,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(not(resource_exists::<
+                        character_create::EnteringCharacterCreate,
+                    >)),
             )
             // The region-select board sits between the list and creation: race
-            // plates over the held creation camera pose; picking one cuts to
-            // the original loading screen and enters CharacterCreate. The
-            // agent connection is kept alive across the whole sub-flow (see
-            // `disconnect_from_agent_server`) so Create/CheckName can use it.
+            // plates over the idols on the stage; picking one flies the camera
+            // to the chosen figure, shows the race loading art and enters
+            // CharacterCreate. The agent connection is kept alive across the
+            // whole sub-flow (see `disconnect_from_agent_server`) so
+            // Create/CheckName can use it.
             .add_systems(
                 OnEnter(IntroV2State::RegionSelect),
                 (
@@ -253,26 +275,76 @@ impl Plugin for IntroV2ScenePlugin {
                     disable_camera::<CinematicCamera>,
                     spawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera2>,
-                    character_create::set_create_camera_pose,
+                    race_stage::fly_camera_to_race_board,
+                    // The props the camera is flying *to* — without them the
+                    // pose frames empty sky.
+                    race_stage::spawn_race_board_props,
                     region_select::enter_region_select,
                 )
                     .chain(),
             )
+            // The race plates are a hover state on the idols, not furniture:
+            // the original picks the idol under the cursor, ramps that plate's
+            // alpha in, hangs it on the idol's projected point and confirms on
+            // a left click. Chained because the click has to see this frame's
+            // hover, not last frame's.
+            .add_systems(
+                Update,
+                (
+                    region_select::update_region_hover,
+                    region_select::update_region_plates,
+                    region_select::confirm_hovered_region,
+                )
+                    .chain()
+                    .run_if(in_state(IntroV2State::RegionSelect)),
+            )
+            // Cancel on the board flies the camera home; the state follows
+            // when the flight lands.
+            .add_systems(
+                Update,
+                race_stage::tick_return_flight
+                    .run_if(in_state(IntroV2State::RegionSelect))
+                    .run_if(resource_exists::<race_stage::RaceBoardReturn>),
+            )
+            // After the click, in the original's order: the camera move to the
+            // chosen figure, then the race loading art with its gauge at zero,
+            // then `CharacterCreate` once the creation screen's assets loaded.
+            .add_systems(
+                Update,
+                region_select::tick_region_confirm
+                    .run_if(in_state(IntroV2State::RegionSelect))
+                    .run_if(resource_exists::<region_select::RegionConfirm>),
+            )
             .add_systems(
                 OnExit(IntroV2State::RegionSelect),
                 (
+                    race_stage::clear_race_board_flight,
+                    region_select::clear_region_confirm,
+                    race_stage::despawn_race_board_props,
                     region_select::despawn_region_select,
-                    despawn_cinematic_camera::<CinematicCamera2>,
                 ),
+            )
+            // Board -> creation is a move on one stage, so the camera survives
+            // it; only Cancel back to the list takes it down.
+            .add_systems(
+                OnExit(IntroV2State::RegionSelect),
+                despawn_cinematic_camera::<CinematicCamera2>.run_if(not(resource_exists::<
+                    character_create::EnteringCharacterCreate,
+                >)),
             )
             .add_systems(
                 OnEnter(IntroV2State::CharacterCreate),
                 (
-                    character_select::set_origin_to_char_select,
+                    // Not the char-select anchor: creation stands in its own
+                    // world region, one per race.
+                    character_create::set_origin_to_create_stage,
                     disable_camera::<CinematicCamera>,
                     spawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera2>,
                     character_create::set_create_camera_pose,
+                    // The figure renders in its own pass, after the UI, so it
+                    // stands in front of the screen's bands like the original's.
+                    character_create::spawn_figure_overlay_camera,
                     character_create::enter_character_create,
                 )
                     .chain(),
@@ -300,6 +372,20 @@ impl Plugin for IntroV2ScenePlugin {
                     character_create::on_check_name_response,
                     character_create::on_character_create_response,
                     region_select::tick_loading_cut,
+                    // The overlay pass: it follows the create camera, owns the
+                    // figure's meshes, and steps aside for the confirm modal.
+                    character_create::sync_figure_overlay_camera,
+                    character_create::tag_figure_overlay_meshes,
+                    character_create::hide_figure_overlay_behind_modal,
+                    // The frame is solved against the body actually on stage,
+                    // so the body is sized first and the camera set after.
+                    // Running every frame is what makes a window resize
+                    // re-solve it.
+                    (
+                        character_create::measure_create_figure,
+                        character_create::frame_create_camera,
+                    )
+                        .chain(),
                 )
                     .run_if(in_state(IntroV2State::CharacterCreate)),
             )
@@ -307,6 +393,7 @@ impl Plugin for IntroV2ScenePlugin {
                 OnExit(IntroV2State::CharacterCreate),
                 (
                     character_create::despawn_character_create,
+                    character_create::despawn_figure_overlay_camera,
                     region_select::despawn_loading_cut,
                     despawn_cinematic_camera::<CinematicCamera2>,
                 ),
@@ -420,6 +507,15 @@ impl Plugin for IntroV2ScenePlugin {
             .add_systems(
                 Update,
                 dev_fast_login::join_first_character
+                    .run_if(in_state(IntroV2State::CharacterList))
+                    .run_if(dev_fast_login::enabled),
+            )
+            // Dev hook (`OPENROAD_INTRO_JUMP`), inert unless the env var is
+            // set: the race board and the creation screen are otherwise only
+            // reachable by hand.
+            .add_systems(
+                Update,
+                dev_fast_login::jump_to_requested_screen
                     .run_if(in_state(IntroV2State::CharacterList))
                     .run_if(dev_fast_login::enabled),
             )
