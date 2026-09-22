@@ -11,6 +11,7 @@
 
 pub mod components;
 pub mod material;
+pub mod options;
 pub mod rare;
 pub mod spawn;
 pub mod systems;
@@ -88,8 +89,8 @@ impl Default for EffectLdrAdditive {
 /// counts, thinned by `density`. Default ON — the original engine's
 /// StaticEmit is an unconditional effect-level source (exe RE), and
 /// treating leaf emitters as single plates makes their whole effect replay
-/// its envelope once per loop (the talisman "starts and dies after ~1s"
-/// report: its steady glow IS 5+5+20 staggered wisp copies). The
+/// its envelope once per loop (a leaf whose steady glow is 5+5+20 staggered
+/// wisp copies would otherwise start and die after about a second). The
 /// render-debug toggle (`leaf_emit_global`) remains the live A/B off
 /// switch; emission counts stay bounded by the authored `max_alive` caps
 /// plus particle pooling.
@@ -159,6 +160,9 @@ impl Plugin for EffectsPlugin {
                     .run_if(effects_enabled)
                     .before(TransformSystems::Propagate),
             )
+            // Outside the `effects_enabled` gate on purpose: this is the
+            // system that can turn the gate back on (Video pane row 13).
+            .add_systems(Update, options::apply_effect_quality_option)
             // outside the effects_enabled gate: entities keep despawning
             // (and their assets keep freeing) while effects are toggled off
             .add_systems(
