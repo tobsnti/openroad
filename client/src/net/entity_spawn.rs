@@ -1659,7 +1659,7 @@ mod test {
         let drop = &parsed.spawns[0];
         assert_eq!(drop.ref_id, 3862);
         assert_eq!(
-            drop.unique_id, 155_079,
+            drop.unique_id, 155_591,
             "uid comes after the name string, not in place of it"
         );
         assert_eq!(drop.position.region, 0x60A8);

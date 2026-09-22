@@ -416,16 +416,25 @@ struct ActionDriver {
 }
 
 /// Minimal [`RefResolver`] for headless spawn parsing: with no itemdata tables
-/// we cannot classify ref ids, so treat every record as a monster/NPC — the
-/// leading `unique_id` + position are read before any itemdata-dependent
-/// branch, which is all we need to pick a select target. Player/item/structure
-/// records simply fail to parse and are skipped (`parse_group_spawn` never
-/// panics), so a wrong guess costs at most a skipped target.
+/// we cannot classify ref ids, so treat every record as an NPC — the leading
+/// `unique_id` + position are read before any itemdata-dependent branch, which
+/// is all we need to pick a select target. Player/item/structure records simply
+/// fail to parse and are skipped (`parse_group_spawn` never panics), so a wrong
+/// guess costs at most a skipped target.
+///
+/// NPC and **not** monster: the two records are identical up to the monster's
+/// trailing rarity byte, so the NPC shape is the common prefix. Guessing
+/// "monster" lost every NPC record — the record ends after its talk block and
+/// the demanded rarity byte is a short read (`0x3015` single spawns, where the
+/// frame's own trailing byte can make it succeed with the *wrong* value, or a
+/// genuine truncation at the end of a batch). Guessing "NPC" reads the same
+/// uid and position from either kind and leaves a monster's rarity byte for
+/// the caller, which the harness ignores anyway.
 struct HeadlessResolver;
 
 impl RefResolver for HeadlessResolver {
     fn resolve(&self, _ref_id: u32) -> RefType {
-        RefType::Monster
+        RefType::Npc
     }
     fn item_is_equipment(&self, _ref_id: u32) -> bool {
         false
@@ -635,14 +644,45 @@ mod tests {
         v
     }
 
-    /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
-    /// one plausible position is REFUSED by the id-less scan
-    /// (`packets/src/agent/character_data.rs:696-703` — "a second match means we
-    /// can't tell the real spawn from a coincidence"). That is correct
-    /// behaviour, and it is why the headless driver never started: on the live
-    /// server the body (0x3013) beats `CelestialPosition` (0x3020) by ~20 ms, so
-    /// the scan always ran without the id. The real 2026-08-16 body offers 46
-    /// candidates; two are enough to reproduce it.
+    /// The headless resolver must guess NPC, not monster. An NPC record is the
+    /// monster record without the trailing rarity byte, so guessing "monster"
+    /// demands a byte that is not there and the whole record — and with it the
+    /// select target — is lost. The `Monster` arm below is the control: same
+    /// bytes, no spawn.
+    #[test]
+    fn the_headless_resolver_reads_an_npc_record() {
+        const NPC_BATCH: &[u8] = &[
+            0xd5, 0x07, 0x00, 0x00, 0xf3, 0x00, 0x00, 0x00, 0xa8, 0x61, 0x8f, 0x02, 0xc6, 0x44,
+            0x00, 0x00, 0x00, 0x00, 0x48, 0xe9, 0xaf, 0x44, 0xb5, 0x80, 0x00, 0x01, 0x00, 0xb5,
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xc8, 0x42, 0x00, 0x02, 0x02, 0x01, 0x02,
+        ];
+
+        let parsed = parse_group_spawn(NPC_BATCH, true, 1, &HeadlessResolver);
+        let entity = parsed
+            .spawns
+            .first()
+            .expect("the headless resolver must read an NPC record");
+        assert_eq!(entity.unique_id, 243);
+        assert_eq!(entity.position.region, 0x61A8);
+
+        struct MonsterGuess;
+        impl RefResolver for MonsterGuess {
+            fn resolve(&self, _ref_id: u32) -> RefType {
+                RefType::Monster
+            }
+            fn item_is_equipment(&self, _ref_id: u32) -> bool {
+                false
+            }
+        }
+        assert!(
+            parse_group_spawn(NPC_BATCH, true, 1, &MonsterGuess)
+                .spawns
+                .is_empty(),
+            "the old monster guess loses the record on its missing rarity byte"
+        );
+    }
+
     #[test]
     fn a_body_without_the_unique_id_cannot_be_pinned() {
         let mut raw = vec![0u8; 8];
