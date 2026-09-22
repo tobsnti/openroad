@@ -153,6 +153,32 @@ scenes:
 
 `dungeons` and `skills` are the other two offline scenes.
 
+## 8. Your settings file
+
+What you change in the in-game options window lands in `user_settings.yaml`,
+written next to the client in the directory you start it from. It holds the
+Video / Audio / Setting / KeyMap / Camera options and the window positions;
+`config.yaml` stays the authority for everything the player cannot change in
+game.
+
+Two environment variables belong to it:
+
+| Variable | What it does |
+|---|---|
+| `USER_SETTINGS_PATH` | write and read the settings file somewhere else — needed to run **two** clients at once, because both would otherwise stamp the same file |
+| `SROPTIONSET_IMPORT` | path to an original client's `setting/SROptionSet.dat`; read once at startup, decoded through our own parser, and written into `user_settings.yaml` |
+
+The import is also available in game, in the Setting pane ("Import
+SROptionSet.dat"). That one is reversible — Cancel puts the previous values
+back — and without `SROPTIONSET_IMPORT` it reads `SROptionSet.dat` from the
+directory you started the client from. What the file carries, and which of its
+blocks openroad adopts, is in
+[`docs/formats/sroptionset.md`](https://github.com/ferdoran/openroad/blob/main/docs/formats/sroptionset.md).
+
+The resolution you pick in the Video pane is restored on the next launch, with
+one exception: exactly 1920x1080 reads as "never chosen" and leaves the window
+to `config.yaml` (same doc, "Known limitation of the resolution restore").
+
 ## Troubleshooting
 
 | Symptom | Cause |

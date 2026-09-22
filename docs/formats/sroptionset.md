@@ -52,9 +52,71 @@ truncated value ends parsing gracefully. No read ever panics on file input.
 Notes / UNKNOWNs:
 - The header fields are opaque; their exact meaning is UNKNOWN.
 - The `Type` / `Brightness` value scales and the volume slider range are
-  UNKNOWN. openroad's `GameOptions::default()` is an openroad baseline, not a
-  reverse-engineered original default (we never have a real `.dat` here).
+  UNKNOWN. openroad's `GameOptions::default()` is an openroad baseline for the
+  **video** block only; the keymap, audio and Setting-tab defaults come from a
+  real `.dat` — see "Shipped defaults" below.
 - KeyMap VK→Bevy `KeyCode` translation is deferred to the UI layer.
+
+## Shipped defaults
+
+A real `SROptionSet.dat` is **681 bytes**, **105 records**, with no trailing
+bytes under the width table above — the same 681 the arithmetic below predicts.
+Only offsets 13..238 (the video block: ids 1..=15 / 101..=115 and the two
+`Graphic` profiles) differ between client versions; everything after that is
+stable.
+
+What is therefore adopted as a shipped default, and what is not:
+
+| block | ids | adopted? | why |
+|---|---|---|---|
+| KeyMap | `3001`-`3035` | **yes** | stable across installs: the shipped binding set |
+| Audio | `1001`-`1006` | **yes** | `30 / 50 / 50` volumes, `1004`-`1006` all `1` |
+| Setting toggles | `2001`-`2028` | **yes** | `2018`-`2024`, `2026`, `2028` read `0`, the rest `1` |
+| Video | `1`-`15`, `101`-`115`, `501`-`504`, `601`-`604` | **no** | differs between client versions; openroad's own values stay |
+
+The keymap values the code now cites per entry
+(`client/src/plugins/settings/keymap.rs`), raw Win32 VK byte as stored:
+
+| id | name | VK | openroad `KeyCode` |
+|---|---|---|---|
+| `3008` | `KeyWorldMap` | `0x4D` | `KeyM` |
+| `3009` | `KeyBerserkerMode` | `0x09` | `Tab` |
+| `3011` | `KeyHelp` | `0x48` | `KeyH` |
+| `3012` | `KeyViewDropItem` | `0x5A` | `KeyZ` |
+| `3013` | `KeyMouseQuickSlot` | `0x58` | `KeyX` |
+| `3014` | `KeySitStand` | `0x4E` | `KeyN` |
+| `3015` | `KeyAutoPickup` | `0x47` | `KeyG` |
+| `3016` | `KeyCOSInfo` | `0x2D` | `Insert` |
+| `3019` | `KeyCOSFollow` | `0x2E` | `Delete` |
+| `3020` | `KeyCOSAttack` | `0x23` | `End` |
+| `3023` | `KeyReplyWhisper` | `0x52` | `KeyR` |
+| `3025` | `KeyCOSSelection` | `0x57` | `KeyW` |
+| `3029` | `KeyTargetEnemy` | `0x00` | `None` |
+| `3030` | `KeyTargetRecent` | `0x00` | `None` |
+| `3031` | `KeyTargetSupport` | `0x00` | `None` |
+| `3032` | `KeyTargetSee` | `0x00` | `None` |
+| `3034` | `KeyHideFriends` | `0x00` | `None` |
+| `3035` | `KeyHideEnemies` | `0x00` | `None` |
+
+The other 14 keymap ids (`3001`-`3007`, `3017`, `3018`, `3021`, `3024`, `3026`,
+`3027`, `3033`) keep the binding openroad already had, each sourced from the
+`textuisystem.txt` L2250-2274 literals instead — the `.dat` agrees with every
+one of them.
+
+**What the repository does not hold.** A `.dat` file itself is the player's own
+game data and is not committed (see the Safety rules in `AGENTS.md`). Checking
+these values needs an original install:
+`stat -f%z SROptionSet.dat` for the size, and `cargo run -p client` with
+`SROPTIONSET_IMPORT=<path>` (or the Setting pane's import button) to decode it
+through our own parser.
+
+### Known limitation of the resolution restore
+
+`GraphicProfile::chosen_size()` treats the *shipped default pair* (1920x1080) as
+"nobody chose a size", because `width`/`height` are plain `u32` with no "unset"
+state. A player who deliberately picks 1920x1080 therefore keeps the window size
+from `config.yaml`. Deliberate and stated per ADR 0009; the clean fix is an
+`Option<(u32, u32)>` in the serialized type.
 
 # OptionSet.csv
 |ID  |OptionTab|OptionScope          |Name                            |ValueType     |
@@ -198,12 +260,10 @@ checkout, `docs/client_startup.md` line 223 reads
 = 681
 ```
 
-and the keymap id list (3001-3009, 3011-3021, 3023-3027, 3029-3035) re-counts to exactly
-**32** records, which is the term the identity depends on. So the claim stands as `[V]`
-and is **not** downgraded. What remains genuinely outside this repository is the 681-byte
-file itself: the byte count is quoted from the reference doc, and nobody has re-measured a
-`SROptionSet.dat` on disk here. If that file is ever supplied, `stat -f%z` is the whole
-confirmation.
+and the keymap id list (3001-3009, 3011-3021, 3023-3027, 3029-3035) re-counts to
+exactly **32** records, which is the term the identity depends on. A real file is
+**681 bytes / 105 records**, which matches this identity (see "Shipped defaults"
+above).
 
 Caveat on the source: `client_startup.md` frames the records as
 `[2-byte ID][4-byte value]`, which is wrong — read as the TLV documented above,
