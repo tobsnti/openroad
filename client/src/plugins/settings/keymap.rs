@@ -569,6 +569,12 @@ mod tests {
     /// the id, nothing happens and the UI has lied. Wiring one is a few lines;
     /// the point of this test is that *forgetting* it cannot be silent — a new
     /// window either consumes its id or says out loud that it does not yet.
+    ///
+    /// **What it does not prove.** The scan reads source text, so it shows
+    /// that shipping code *names* the id — not that the system reading it is
+    /// registered in a schedule. Deleting the registration line leaves this
+    /// test green. Registration is asserted per window instead, by the guard
+    /// tests next to each toggle, and those do fail when the line goes away.
     #[test]
     fn every_bound_key_is_either_consumed_or_declared_unwired() {
         let sources = client_sources();

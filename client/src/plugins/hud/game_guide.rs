@@ -723,11 +723,18 @@ mod keybind_test {
     /// The text-field guard belongs on the toggle itself.
     #[test]
     fn the_toggle_carries_the_text_field_guard() {
+        // Sliced to the plugin's own body: the file's test modules mention
+        // every name below, so a search over the whole text finds them in this
+        // very test and proves nothing. Deleting the registration line left
+        // this green until the slice was cut here (measured).
         let source = include_str!("game_guide.rs");
         let plugin = source
             .find("impl Plugin for GameGuidePlugin")
             .expect("the plugin is declared");
-        let after = &source[plugin..];
+        let after = source[plugin..]
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields a first part");
         let toggle = after
             .find("toggle_game_guide_window")
             .expect("the toggle is registered");

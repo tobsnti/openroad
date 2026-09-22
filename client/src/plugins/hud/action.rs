@@ -638,11 +638,19 @@ mod keybind_test {
         // Searched from the plugin, not from the file head: this file keeps
         // its registration *after* a test module, which is exactly the shape
         // that used to hide a call site from the dead-wire scan.
+        // Sliced to the plugin's own body: the file's test modules mention
+        // every name below, so a search over the whole text finds them in this
+        // very test and proves nothing. Deleting the registration line left
+        // this green until the slice was cut here (measured).
         let source = include_str!("action.rs");
         let plugin = source
             .find("impl Plugin for ActionPlugin")
             .expect("the plugin is declared");
-        let registration = &source[plugin..];
+        let body = &source[plugin..];
+        let registration = body
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields a first part");
         let update = registration
             .find("Update,")
             .expect("the plugin registers Update systems");
