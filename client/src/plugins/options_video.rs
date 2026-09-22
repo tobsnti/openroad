@@ -221,6 +221,119 @@ const DETAIL_ROWS: [DetailRow; 13] = [
 /// Id of the bloom row within a profile bank.
 const BLOOM_ID: u16 = 11;
 
+// --- Window Mode (id 2015) ----------------------------------------------------
+//
+// The classic `resinfo/` tree carries no window-mode control at all, so its
+// placement here is ours. The control itself is not: the 4th-generation
+// `res_ui/optionwnd.2dt` puts one in the Video pane — a `UIIT_STT_WINDOWMODE`
+// label with `UIIT_STT_WINDOWMODE_FULLDISPLAY` / `_WINDOWDISPLAY` beside it —
+// and the captions below are those three strings. The rects there belong to a
+// wider window than the 386px hull this pane transcribes, so they are not
+// copied; the row rides the detail list like every other row.
+//
+// Stated deviation (ADR 0009): `window_mode_override` is session-only by
+// design, because `config.yaml` stays the one authority that survives a
+// restart (`settings::options::VideoOptions`). The row says so rather than
+// implying the choice is kept.
+
+/// Marks the Window Mode value text.
+#[derive(Component)]
+pub(crate) struct WindowModeValue;
+
+const WINDOW_MODE_LABEL: (&str, &str) = ("UIIT_STT_WINDOWMODE", "Window Mode");
+const WINDOW_MODE_WINDOWED: (&str, &str) = ("UIIT_STT_WINDOWMODE_WINDOWDISPLAY", "Window screen");
+const WINDOW_MODE_FULL: (&str, &str) = ("UIIT_STT_WINDOWMODE_FULLDISPLAY", "Full screen");
+/// What `None` shows: the config file decides, and that is the state a fresh
+/// launch is always in.
+const WINDOW_MODE_UNSET: &str = "config.yaml";
+
+/// The three states of `video.window_mode_override`, in click order.
+///
+/// `None` is reachable on purpose: it is the only value that lets the player
+/// hand the window back to `config.yaml` without restarting.
+fn next_window_mode(current: Option<bool>) -> Option<bool> {
+    match current {
+        None => Some(true),
+        Some(true) => Some(false),
+        Some(false) => None,
+    }
+}
+
+fn window_mode_text(ui_strings: &ClientUiStrings, current: Option<bool>) -> String {
+    match current {
+        None => WINDOW_MODE_UNSET.to_string(),
+        Some(true) => format!(
+            "{} {SESSION_ONLY}",
+            ui_strings.get_or(WINDOW_MODE_WINDOWED.0, WINDOW_MODE_WINDOWED.1)
+        ),
+        Some(false) => format!(
+            "{} {SESSION_ONLY}",
+            ui_strings.get_or(WINDOW_MODE_FULL.0, WINDOW_MODE_FULL.1)
+        ),
+    }
+}
+
+fn spawn_window_mode_row(
+    list: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    ui_strings: &ClientUiStrings,
+    options: &GameOptions,
+) {
+    let mut entity = list.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(ROW_H),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            padding: UiRect::horizontal(Val::Px(4.0)),
+            ..default()
+        },
+        Button,
+        Hovered::default(),
+        Pickable::default(),
+    ));
+    entity.observe(
+        |_activate: On<Activate>, mut options: ResMut<GameOptions>| {
+            let next = next_window_mode(options.video.window_mode_override);
+            options.video.window_mode_override = next;
+        },
+    );
+    entity.with_children(|r| {
+        r.spawn((
+            Text::new(
+                ui_strings
+                    .get_or(WINDOW_MODE_LABEL.0, WINDOW_MODE_LABEL.1)
+                    .to_string(),
+            ),
+            TextFont {
+                font: font.clone().into(),
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
+            TextColor(LABEL_COLOR),
+            Node {
+                width: Val::Px(196.0),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+        r.spawn((
+            WindowModeValue,
+            Text::new(window_mode_text(
+                ui_strings,
+                options.video.window_mode_override,
+            )),
+            TextFont {
+                font: font.clone().into(),
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
+            TextColor(VALUE_COLOR),
+            Pickable::IGNORE,
+        ));
+    });
+}
+
 /// The original's hover help for the quality rows: `UIIT_STT_VIDIO_TTDESC_*`
 /// (textuisystem :968-984, **17** strings). The key block is spelled
 /// `VIDIO`, not `VIDEO` — a typo in the original's own data, and the reason a
@@ -452,6 +565,7 @@ pub(crate) fn spawn_video_pane(
         Pickable::IGNORE,
     ))
     .with_children(|list| {
+        spawn_window_mode_row(list, &font, ui_strings, options);
         for row in &DETAIL_ROWS {
             spawn_detail_row(list, &font, ui_strings, row, options);
         }
@@ -645,6 +759,23 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
     });
 }
 
+/// Keeps the Window Mode row showing the live override.
+pub(crate) fn refresh_window_mode_row(
+    options: Res<GameOptions>,
+    ui_strings: Res<ClientUiStrings>,
+    mut rows: Query<&mut Text, With<WindowModeValue>>,
+) {
+    if !options.is_changed() {
+        return;
+    }
+    let wanted = window_mode_text(&ui_strings, options.video.window_mode_override);
+    for mut text in rows.iter_mut() {
+        if text.0 != wanted {
+            *text = Text::new(wanted.clone());
+        }
+    }
+}
+
 /// Keeps the openroad rows showing the live `ClientConfig`.
 ///
 /// Runs every frame like [`refresh_row_values`] rather than on
@@ -828,12 +959,14 @@ fn spawn_resolution_control(
     ui_strings: &ClientUiStrings,
     profile: &crate::plugins::settings::options::GraphicProfile,
 ) {
+    // The pane opens on Graphic 1 (`VideoPane::default`), so the initial text
+    // and colour are that bank's; `apply_profile_tab` follows the tab.
     let mut value = spawn_value_text(
         pane,
         font,
-        &resolution_text(profile.width, profile.height),
+        &resolution_text(profile.width, profile.height, GraphicProfileTab::One),
         RESOLUTION_VALUE_Y,
-        VALUE_COLOR,
+        resolution_color(GraphicProfileTab::One),
     );
     value.insert((ResolutionValue, Button, Hovered::default()));
     value.observe(
@@ -875,8 +1008,23 @@ fn spawn_resolution_control(
 #[derive(Component)]
 pub(crate) struct ResolutionValue;
 
-fn resolution_text(width: u32, height: u32) -> String {
-    format!("{width} x {height}")
+/// The row text. Only Graphic 1 reaches the window (`config::window` reads
+/// `graphic1.chosen_size()`), so the Graphic 2 value is stored and kept but
+/// does not resize anything — the row says so rather than letting a click look
+/// ignored.
+fn resolution_text(width: u32, height: u32, profile: GraphicProfileTab) -> String {
+    match profile {
+        GraphicProfileTab::One => format!("{width} x {height}"),
+        GraphicProfileTab::Two => format!("{width} x {height} (window follows Graphic 1)"),
+    }
+}
+
+/// Dimmed on Graphic 2 for the same reason, matching the unbacked quality rows.
+fn resolution_color(profile: GraphicProfileTab) -> Color {
+    match profile {
+        GraphicProfileTab::One => VALUE_COLOR,
+        GraphicProfileTab::Two => UNBACKED_COLOR,
+    }
 }
 
 /// Every distinct resolution the attached monitors report, ascending.
@@ -921,13 +1069,15 @@ fn next_resolution(modes: &[(u32, u32)], current: (u32, u32)) -> Option<(u32, u3
 pub(crate) fn apply_profile_tab(
     panes: Query<&VideoPane, Changed<VideoPane>>,
     options: Res<GameOptions>,
-    mut labels: Query<(&ProfileTabLabel, &mut TextColor)>,
+    mut labels: Query<(&ProfileTabLabel, &mut TextColor), Without<ResolutionValue>>,
     // `Without<ResolutionValue>` is not cosmetic: the resolution readout is a
     // `RowValue` too, so without it the two `&mut Text` queries overlap and
     // Bevy's access check panics the whole schedule at startup (B0001).
-    // `refresh_row_values` below is filtered the same way.
+    // `refresh_row_values` below is filtered the same way. The tab labels are
+    // filtered for the same reason, because the resolution query now takes
+    // `&mut TextColor` as well.
     mut values: Query<(&RowValue, &mut Text), (Without<ProfileTabLabel>, Without<ResolutionValue>)>,
-    mut resolution: Query<&mut Text, With<ResolutionValue>>,
+    mut resolution: Query<(&mut Text, &mut TextColor), With<ResolutionValue>>,
 ) {
     let Some(pane) = panes.iter().next() else {
         return;
@@ -938,8 +1088,9 @@ pub(crate) fn apply_profile_tab(
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    for mut text in resolution.iter_mut() {
-        *text = Text::new(resolution_text(bank.width, bank.height));
+    for (mut text, mut color) in resolution.iter_mut() {
+        *text = Text::new(resolution_text(bank.width, bank.height, pane.profile));
+        color.0 = resolution_color(pane.profile);
     }
     for (label, mut color) in labels.iter_mut() {
         color.0 = if label.0 == pane.profile {
@@ -961,7 +1112,7 @@ pub(crate) fn refresh_row_values(
     options: Res<GameOptions>,
     panes: Query<&VideoPane>,
     mut values: Query<(&RowValue, &mut Text), Without<ResolutionValue>>,
-    mut resolution: Query<&mut Text, With<ResolutionValue>>,
+    mut resolution: Query<(&mut Text, &mut TextColor), With<ResolutionValue>>,
 ) {
     if !options.is_changed() {
         return;
@@ -971,10 +1122,14 @@ pub(crate) fn refresh_row_values(
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    let wanted = resolution_text(bank.width, bank.height);
-    for mut text in resolution.iter_mut() {
+    let wanted = resolution_text(bank.width, bank.height, profile);
+    let wanted_color = resolution_color(profile);
+    for (mut text, mut color) in resolution.iter_mut() {
         if text.0 != wanted {
             *text = Text::new(wanted.clone());
+        }
+        if color.0 != wanted_color {
+            color.0 = wanted_color;
         }
     }
     for (value, mut text) in values.iter_mut() {
@@ -1049,6 +1204,102 @@ mod tests {
         assert_eq!(next_resolution(&modes, (800, 600)), Some((1280, 720)));
         assert_eq!(next_resolution(&modes, (1280, 720)), Some((1920, 1080)));
         assert_eq!(next_resolution(&modes, (1920, 1080)), Some((800, 600)));
+    }
+
+    /// The click order must visit all three states and come back, or the
+    /// player can reach a mode and never hand the window back to the config.
+    #[test]
+    fn the_window_mode_row_cycles_through_all_three_states() {
+        assert_eq!(next_window_mode(None), Some(true));
+        assert_eq!(next_window_mode(Some(true)), Some(false));
+        assert_eq!(next_window_mode(Some(false)), None);
+    }
+
+    /// The row carries the original's own captions, and says out loud that a
+    /// chosen mode lasts for the session only — `window_mode_override` is
+    /// deliberately not persisted, so a row implying otherwise would lie on
+    /// the next launch.
+    #[test]
+    fn the_window_mode_row_names_the_state_and_its_lifetime() {
+        let strings = ClientUiStrings::from_rows(&[
+            ("UIIT_STT_WINDOWMODE_WINDOWDISPLAY", "Window screen"),
+            ("UIIT_STT_WINDOWMODE_FULLDISPLAY", "Full screen"),
+        ]);
+
+        let windowed = window_mode_text(&strings, Some(true));
+        assert!(windowed.starts_with("Window screen"), "{windowed:?}");
+        assert!(windowed.contains(SESSION_ONLY), "{windowed:?}");
+
+        let full = window_mode_text(&strings, Some(false));
+        assert!(full.starts_with("Full screen"), "{full:?}");
+        assert!(full.contains(SESSION_ONLY), "{full:?}");
+
+        // The unset state is the one that *does* survive a restart, so it must
+        // not carry the session marker.
+        let unset = window_mode_text(&strings, None);
+        assert_eq!(unset, WINDOW_MODE_UNSET);
+        assert!(!unset.contains(SESSION_ONLY), "{unset:?}");
+    }
+
+    /// The "(session only)" note is a claim about the storage, so it is tied
+    /// to it: persist the field and this fails, and the note has to go in the
+    /// same change instead of staying behind as a stale warning.
+    #[test]
+    fn the_window_mode_override_is_still_unpersisted() {
+        let options = include_str!("settings/options.rs");
+        let at = options
+            .find("pub window_mode_override")
+            .expect("VideoOptions still declares the override");
+        let before = options[..at].trim_end();
+        assert!(
+            before.ends_with("#[serde(skip)]"),
+            "window_mode_override is no longer `#[serde(skip)]` — drop the \
+             `(session only)` note from the Video pane"
+        );
+    }
+
+    /// Only Graphic 1 resizes the window, so the Graphic 2 row has to say so.
+    /// A control that stores a value and changes nothing, silently, is the
+    /// worst of the three states a row can be in.
+    #[test]
+    fn the_graphic_two_resolution_row_says_the_window_does_not_follow_it() {
+        assert_eq!(
+            resolution_text(1280, 720, GraphicProfileTab::One),
+            "1280 x 720",
+            "the Graphic 1 row is the plain pair"
+        );
+
+        let two = resolution_text(1280, 720, GraphicProfileTab::Two);
+        assert!(
+            two.starts_with("1280 x 720"),
+            "the value still leads: {two:?}"
+        );
+        assert!(
+            two.contains("Graphic 1"),
+            "the Graphic 2 row must name the bank that does drive the window: {two:?}"
+        );
+        assert_ne!(
+            resolution_color(GraphicProfileTab::Two),
+            resolution_color(GraphicProfileTab::One),
+            "the dimming is half the signal"
+        );
+    }
+
+    /// The note above is a claim about another module, so it is tied to that
+    /// module's source: the window resolves its size from `graphic1` alone.
+    /// Wire Graphic 2 and this fails, which is the point — the row's note has
+    /// to be removed in the same change, not left behind as a stale apology.
+    #[test]
+    fn the_window_still_reads_only_the_first_graphic_bank() {
+        let window = include_str!("config/window.rs");
+        assert!(
+            window.contains("graphic1.chosen_size()"),
+            "the window no longer reads graphic1 — re-judge the resolution row"
+        );
+        assert!(
+            !window.contains("graphic2"),
+            "the window now reads graphic2: drop the `(window follows Graphic 1)` note"
+        );
     }
 
     /// A stored value the monitor does not offer (hand-edited settings, or a
