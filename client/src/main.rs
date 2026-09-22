@@ -76,7 +76,7 @@ fn main() {
     app.insert_resource(config)
         // Read straight out of Media.pk2 before the app ticks: the gateway
         // connect fires on the first frame, so the asset server would deliver
-        // these two files too late (#300).
+        // these two files too late.
         .insert_resource(plugins::config::division::DivisionInfo::load_or_fallback())
         .insert_resource(material_defaults)
         .add_plugins((
@@ -164,7 +164,7 @@ fn main() {
         .add_plugins((
             // WaterPlugin,
             plugins::input_watchdog::InputWatchdogPlugin,
-            // Inert unless SCREENSHOT=<path> is set (#564).
+            // Inert unless SCREENSHOT=<path> is set.
             plugins::screenshot::ScreenshotPlugin,
             plugins::combat::CombatPlugin,
             plugins::skills::SkillsPlugin,
@@ -175,8 +175,14 @@ fn main() {
             plugins::effects::EffectsPlugin,
             plugins::animation_culling::AnimationCullingPlugin,
             // animation-keyed SFX from the .bsr mod palette (Sound ModData)
-            plugins::animation_sounds::AnimationSoundsPlugin,
-            // zone BGM from effectenvsnd.txt, played out of Music.pk2 (#771)
+            // Nested as one element (the `Plugins` tuple impl tops out at 15):
+            // both halves are effect sound, one from the model palette, one
+            // from the `effectsound.txt` handle table.
+            (
+                plugins::animation_sounds::AnimationSoundsPlugin,
+                plugins::audio_events::AudioEventsPlugin,
+            ),
+            // zone BGM from effectenvsnd.txt, played out of Music.pk2
             plugins::zone_ambience::ZoneAmbiencePlugin,
             plugins::zone_bgm::ZoneBgmPlugin,
             // per-texel metallic sheen of EnvMap resources (weapons, armor)
@@ -273,9 +279,9 @@ fn main() {
     if dev_tools {
         app.add_plugins((
             // `.run_if(dev_windows_visible)` like every other inspector in the
-            // tree: these two were the only ones the "dev" corner button could
-            // not hide, so switching the dev windows off left the world
-            // inspector — the most expensive of them — on screen.
+            // tree: without it the "dev" corner button cannot hide these two, so
+            // switching the dev windows off would leave the world inspector — the
+            // most expensive of them — on screen.
             plugins::dev::world_inspector::ManualWorldInspectorPlugin,
             StateInspectorPlugin::<GameState>::default().run_if(plugins::dev::dev_windows_visible),
         ));
