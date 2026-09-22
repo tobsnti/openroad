@@ -151,6 +151,12 @@ impl EffectSoundTable {
 
     /// The first row at an address — what a call site with no reason to pick a
     /// variant should play.
+    ///
+    /// No production call site left: since #773 every playback goes through
+    /// `plugins::audio_events::play`, which picks *among* the variants (see
+    /// its module doc for why). Kept because it is the deterministic accessor
+    /// the parser's own tests and any future single-row caller need.
+    #[allow(dead_code)]
     pub fn first(&self, address: &SoundAddress) -> Option<&EffectSound> {
         self.sounds(address).first()
     }

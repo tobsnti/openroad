@@ -17,7 +17,8 @@ use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
 use crate::assets::textdata::masterydata::MasteryData;
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::NpcChat;
-use crate::assets::textdata::questreward::{QuestRewardItems, QuestRewardModes};
+use crate::assets::textdata::quest::QuestTable;
+use crate::assets::textdata::questreward::{QuestRewardItems, QuestRewardModes, QuestRewardValues};
 use crate::assets::textdata::shops::ShopTable;
 use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
 use crate::assets::textdata::skilleffect::{parse_skilleffect, SkillEffectTable};
@@ -36,28 +37,36 @@ pub mod dungeoninfo;
 pub mod effectsound;
 pub mod gameguide;
 pub mod itemdata;
+pub mod job;
 pub mod leveldata;
 pub mod magicoption;
 pub mod masterydata;
 pub mod names;
 pub mod npcchat;
+pub mod quest;
 pub mod questreward;
 pub mod shops;
 pub mod skilldata;
 pub mod skilleffect;
 pub mod skillgroup;
+pub mod specialty;
 pub mod teleport;
 pub mod uisystem;
 pub mod worldmap;
 pub mod zonenames;
 pub mod zonesound;
 
+/// Shared marker for the textdata loader family. Currently unconstructed: the
+/// per-file loaders each carry their own type, and this one is the anchor the
+/// `read_sibling` helper below hangs off.
 #[derive(Default, bevy::reflect::TypePath)]
+#[allow(dead_code)]
 pub(crate) struct TextdataLoader;
 
 /// Read + decode another textdata file from within a loader (registers it as
 /// a load dependency). Used by the ref-shop chain, whose sibling files never
 /// load standalone.
+#[allow(dead_code)]
 async fn read_sibling(
     load_context: &mut LoadContext<'_>,
     name: &str,
@@ -80,8 +89,13 @@ pub enum Textdata {
     ItemData(ItemData),
     LevelData(LevelData),
     ZoneNames(ZoneNames),
-    /// Quest reward mode table + its per-quest reward rows (two files).
-    QuestRewards(QuestRewardModes, QuestRewardItems),
+    /// Quest reward mode table (+ its gold/exp columns) and the per-quest
+    /// reward rows behind it (two files).
+    QuestRewards(QuestRewardModes, QuestRewardValues, QuestRewardItems),
+    /// `questdata.txt` joined with `questcontentsdata.txt` — the quest
+    /// *structure* tables (id → codename/title key, codename → objective
+    /// keys). Decoration for a journal whose spine is the wire.
+    Quests(QuestTable),
     Names(TextdataNames),
     SkillData(SkillData),
     SkillEffects(SkillEffectTable),
@@ -163,6 +177,7 @@ impl AssetLoader for TextdataLoader {
             && !file_stem.starts_with("worldmap_mapinfo")
             && !file_stem.starts_with("dungeoninfo")
             && !file_stem.starts_with("refqusetreward")
+            && !file_stem.starts_with("questdata")
             && !file_stem.starts_with("regioninfo")
             && !file_stem.starts_with("effectsound")
         {
@@ -176,7 +191,7 @@ impl AssetLoader for TextdataLoader {
         reader
             .read_to_end(&mut buf)
             .await
-            .map_err(|e| TextdataError::IO(e))?;
+            .map_err(TextdataError::IO)?;
         // Shared decoder: BOM-sniff UTF-16 with CP949 fallback (EP-09.1).
         let content = decode::decode_textdata(&buf);
 
@@ -215,11 +230,7 @@ impl AssetLoader for TextdataLoader {
             } else {
                 let data = content
                     .lines()
-                    .map(|l| {
-                        l.split("\t")
-                            .map(|s| String::from(s))
-                            .collect::<Vec<String>>()
-                    })
+                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
                     .filter(|l| l.len() > 10)
                     .map(|l| (l[1].parse::<i32>().unwrap(), CharacterDataRow(l)))
                     .collect::<HashMap<_, _>>();
@@ -243,8 +254,17 @@ impl AssetLoader for TextdataLoader {
             let items = read_sibling(load_context, "refquestrewarditems.txt").await?;
             Ok(Textdata::QuestRewards(
                 QuestRewardModes::parse(&content),
+                QuestRewardValues::parse(&content),
                 QuestRewardItems::parse(&items),
             ))
+        } else if file_stem.starts_with("questdata") {
+            // questdata.txt is the entry point of the quest-structure pair:
+            // it keys by quest **id**, questcontentsdata.txt keys by
+            // **codename**, and a journal needs both because the wire carries
+            // ids our questdata.txt does not have. The sibling never loads
+            // standalone, like the ref-shop chain.
+            let contents = read_sibling(load_context, "questcontentsdata.txt").await?;
+            Ok(Textdata::Quests(QuestTable::parse(&content, &contents)))
         } else if file_stem.starts_with("regioninfo") {
             // regioninfo is the entry point of the zone-sound join: it names
             // the zones and their sectors, effectenvsnd keys off the same
@@ -371,11 +391,7 @@ impl AssetLoader for TextdataLoader {
             } else {
                 let data = content
                     .lines()
-                    .map(|l| {
-                        l.split("\t")
-                            .map(|s| String::from(s))
-                            .collect::<Vec<String>>()
-                    })
+                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
                     .filter(|l| l.len() > 100)
                     .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, SkillDataRow(l))))
                     .collect::<HashMap<_, _>>();
@@ -463,11 +479,7 @@ impl AssetLoader for TextdataLoader {
             } else {
                 let data = content
                     .lines()
-                    .map(|l| {
-                        l.split("\t")
-                            .map(|s| String::from(s))
-                            .collect::<Vec<String>>()
-                    })
+                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
                     .filter(|l| l.len() > 10)
                     .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, ItemDataRow(l))))
                     .collect::<HashMap<_, _>>();
