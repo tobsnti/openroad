@@ -621,6 +621,47 @@ mod tests {
     ];
 
     /// Every `.rs` file of the client crate.
+    /// Only the code that *runs in the client* counts as a consumer.
+    ///
+    /// The scan below looks for a `key_for(<id>)` call or a `KEY_*` constant
+    /// name in the crate's sources, and a plain substring search cannot tell a
+    /// call from a mention: naming `KEY_AUTO_POTION` in a doc comment, or
+    /// reading it inside the file's own `#[cfg(test)]` block, would mark the id
+    /// consumed and silence the dead-wire check for it — and such mentions are
+    /// plentiful (`hud/autopotion/model.rs`, `hud/underbar/menu_popup.rs`). So
+    /// line comments are blanked and everything from the first `#[cfg(test)]`
+    /// is cut off (test modules sit at file end throughout this crate).
+    fn shipping_code(text: &str) -> String {
+        let body = text
+            .split_once("#[cfg(test)]")
+            .map_or(text, |(shipping, _)| shipping);
+        body.lines()
+            .map(|line| match line.find("//") {
+                // Crude on purpose: a `//` inside a string literal truncates
+                // its line too. That direction is the safe one — it can only
+                // hide a mention, never invent one.
+                Some(at) => &line[..at],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The filter itself, checked on a fabricated file: a `KEY_*` mention in a
+    /// comment or inside a `#[cfg(test)]` block must not read as a consumer, or
+    /// the dead-wire check silences itself.
+    #[test]
+    fn shipping_code_drops_comments_and_test_blocks() {
+        let file = "fn f() { let _ = 1; }\n\
+                    // KEY_QUEST is mentioned here\n\
+                    #[cfg(test)]\n\
+                    mod tests { use super::KEY_HELP; }\n";
+        let code = shipping_code(file);
+        assert!(code.contains("let _ = 1"), "real code survives");
+        assert!(!code.contains("KEY_QUEST"), "a comment is not a call site");
+        assert!(!code.contains("KEY_HELP"), "a test is not a call site");
+    }
+
     fn client_sources() -> Vec<String> {
         fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
             for entry in std::fs::read_dir(dir).expect("src is readable").flatten() {
@@ -628,7 +669,9 @@ mod tests {
                 if path.is_dir() {
                     walk(&path, out);
                 } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(std::fs::read_to_string(&path).expect("source is readable"));
+                    out.push(shipping_code(
+                        &std::fs::read_to_string(&path).expect("source is readable"),
+                    ));
                 }
             }
         }

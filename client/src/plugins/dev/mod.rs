@@ -74,16 +74,35 @@ pub fn dev_windows_visible(visible: Res<DevWindowsVisible>) -> bool {
 /// | `Y` | *(free today)* | Alchemy |
 /// | `U` | nav snapshot / light adjust | Community |
 /// | `I` | light adjust | Inventory (bound already) |
+/// | `Z` | light adjust (`dev/lighting.rs:81`) | View Drop Item (3012, bound) |
+/// | `N` | vanilla/PBR switch (`environment/mod.rs:592`) | Sit/Stand (3014) |
+/// | `L` | time-of-day scrub (`environment/mod.rs:606`) | Academy (3033) |
 ///
 /// The `I` row is the reason this is not theoretical: the inventory toggle
-/// ships today and `dev/lighting.rs` reads the same key in `Update`.
-pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 5] = [
+/// ships today and `dev/lighting.rs` reads the same key in `Update`. `Z`, `N`
+/// and `L` joined the list when `SROptionSet.dat` gave ids 3012/3014/3033 a
+/// default (`settings/keymap.rs`) — before that they were free.
+pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 8] = [
     KeyCode::KeyQ,
     KeyCode::KeyE,
     KeyCode::KeyT,
     KeyCode::KeyU,
     KeyCode::KeyI,
+    KeyCode::KeyZ,
+    KeyCode::KeyN,
+    KeyCode::KeyL,
 ];
+
+/// The collisions the `dev_tools` gate does **not** cover: keys a dev system
+/// reads in every session, gated or not.
+///
+/// `Tab` is the only one today. `switch_mode` (below) is registered
+/// unconditionally, and `SROptionSet.dat` id 3009 `KeyBerserkerMode` now
+/// defaults to `Tab` (`settings/keymap.rs`). 3009 has no consumer yet
+/// (`keymap.rs`'s `NOT_YET_WIRED`), so the clash is latent — the first system
+/// that reads the berserk binding inherits a silent `AppMode` flip, which is
+/// why it is named here rather than discovered then.
+pub const DEV_UNGATED_HOTKEY_COLLISIONS: [KeyCode; 1] = [KeyCode::Tab];
 
 /// Whether the dev tooling may be registered at all — the key-driven systems
 /// **and** the egui windows and the corner button that toggles them.
@@ -294,7 +313,34 @@ mod test {
         ] {
             assert!(DEV_HOTKEY_COLLISIONS.contains(&key), "{key:?}");
         }
-        // Tab (the mode switch) stays ungated and must not be in the list
+        // Tab (the mode switch) is read by an *ungated* system, so it belongs
+        // in the other list, not here.
         assert!(!DEV_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+        assert!(DEV_UNGATED_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+    }
+
+    /// Every key a dev system reads must be listed once a keymap default
+    /// claims it — otherwise the clash is only visible to whoever
+    /// happens to press it. `Z`/`N`/`L` are read by `dev/lighting.rs` and
+    /// `environment/mod.rs`, `Tab` by the ungated `switch_mode`.
+    #[test]
+    fn the_keys_the_keymap_defaults_claim_are_all_listed() {
+        use crate::plugins::settings::keymap::KEY_ACTIONS;
+
+        for (key, list) in [
+            (KeyCode::KeyZ, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::KeyN, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::KeyL, &DEV_HOTKEY_COLLISIONS[..]),
+            (KeyCode::Tab, &DEV_UNGATED_HOTKEY_COLLISIONS[..]),
+        ] {
+            // The premise: the key really is a keymap default now.
+            assert!(
+                KEY_ACTIONS
+                    .iter()
+                    .any(|action| action.default_key == Some(key)),
+                "no KEY_ACTIONS default binds {key:?} any more - drop it from the list"
+            );
+            assert!(list.contains(&key), "{key:?} is read by a dev system");
+        }
     }
 }

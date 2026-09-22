@@ -1150,7 +1150,7 @@ mod tests {
         }
     }
 
-    /// The two rows left unwired on purpose (`PREGAME-options-b2b3.md` §2):
+    /// The one row left unwired on purpose:
     /// id 8 `UIIT_STT_FILTERING`, whose candidate string `_15` describes edge
     /// smoothing and does not name the row, and nothing else. If a later change
     /// wires id 8, this test should be updated deliberately.

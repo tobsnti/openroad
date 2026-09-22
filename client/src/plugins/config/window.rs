@@ -616,6 +616,45 @@ mod tests {
         );
     }
 
+    /// The Video pane's saved size is the only way a stored resolution reaches
+    /// the window, and it sits *between* `RESOLUTION=` and `config.yaml`. All
+    /// three rungs of that ladder in one place, because the middle one was
+    /// added without a test and a dropped `.or_else` would be silent: the
+    /// window would simply keep `config.yaml`'s size.
+    #[test]
+    fn a_chosen_size_beats_the_config_and_loses_to_the_env() {
+        let settings = WindowSettings {
+            width: 1920.0,
+            height: 1080.0,
+            mode: WindowModeConfig::Windowed,
+            title: "t".into(),
+            monitor: MonitorSelection::Primary,
+            present_mode: PresentModeConfig::default(),
+            max_frame_latency: None,
+        };
+
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), None).size,
+            Some((1280.0, 720.0)),
+            "the saved size has to win over config.yaml"
+        );
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), Some("1600x900")).size,
+            Some((1600.0, 900.0)),
+            "RESOLUTION= outranks the saved size"
+        );
+        assert_eq!(
+            window_intent(&settings, None, None, None).size,
+            Some((1920.0, 1080.0)),
+            "nothing saved, nothing in the env: config.yaml"
+        );
+        // Fullscreen still means the monitor owns the size.
+        assert_eq!(
+            window_intent(&settings, Some(false), Some((1280, 720)), None).size,
+            None
+        );
+    }
+
     /// Every documented spelling has to reach wgpu, because the fallback that
     /// makes this hard to verify at runtime is silent: a typo'd mode would not
     /// error, it would deserialize-fail or quietly behave as something else.

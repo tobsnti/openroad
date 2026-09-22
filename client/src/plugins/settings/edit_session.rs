@@ -87,6 +87,7 @@ impl OptionsEditSession {
 mod test {
     use super::*;
     use crate::plugins::settings::options::SightMode;
+    use crate::plugins::settings::window_positions::WndPosSlot;
 
     fn edited() -> GameOptions {
         let mut o = GameOptions::default();
@@ -147,6 +148,11 @@ mod test {
         session.begin(&GameOptions::default());
 
         let mut live = GameOptions::default();
+        // The drag has to be *visible* in `live`, or the assertion below would
+        // also hold for a whole-struct `*live = base.clone()` - the very thing
+        // it exists to rule out.
+        live.windows.set(WndPosSlot::WorldMap, (640.0, -8.0));
+        assert_ne!(live.windows, GameOptions::default().windows);
         let moved = live.windows.clone();
         live.audio.bgm_volume = 1;
 

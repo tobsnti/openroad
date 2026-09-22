@@ -27,20 +27,19 @@
 //! Each row carries its `SROptionSet` id (`docs/formats/sroptionset.md:106-133`)
 //! and its textuisystem key, and writes straight into
 //! `GameOptions.gameplay.toggles`, which is already id-keyed and already
-//! persisted. Six ids have a runtime consumer today — the five name indicators
-//! (`hud/nameplates.rs:52-56`) and `MonsterConditionCheckbox` 2024, which
-//! `hud/quickstate.rs:48,144-155` uses to hide the over-head vitality bars —
-//! so those six are `Backing::Live`; every other row renders but is inert and
-//! dimmed rather than silently doing nothing.
+//! persisted. The ids with a runtime consumer today are the five name
+//! indicators (`hud/nameplates.rs:88-92`) and the two Community switches
+//! 2002/2003 (`hud/petition.rs::auto_refusal`) — those are `Backing::Live`;
+//! every other row renders but is inert and dimmed rather than silently doing
+//! nothing. 2024 `MonsterConditionCheckbox` has no reader in the tree either,
+//! so it is inert like its three siblings.
 //!
-//! Why 2021/2022/2023 are still inert (B6):
-//! the four ids 2021-2024 are **one** family, not four features. Their keys are
-//! `UIIT_STT_QUICKSTATE_OWNER` / `_COS` / `_PARTY` / `_MONSTER` (textuisystem
-//! :866-869) [V] — the same `QUICKSTATE` widget, `GDR_QUICK_STATE*`
-//! (`ginterface.txt:6,25`), gated per **entity category**. We build that widget
-//! for monsters only, and deliberately (`hud/quickstate.rs:12-16`: monsters are
-//! the only entities whose `EntityVitals` we get on the wire; a remote player's
-//! max HP is not sent). So 2021/2022/2023 have no display to gate — the COS
+//! Why 2021/2022/2023/2024 are inert: the four ids 2021-2024 are **one** family,
+//! not four features. Their keys are `UIIT_STT_QUICKSTATE_OWNER` / `_COS` /
+//! `_PARTY` / `_MONSTER` (textuisystem :866-869) — the same `QUICKSTATE` widget,
+//! `GDR_QUICK_STATE*` (`ginterface.txt:6,25`), gated per **entity category**.
+//! openroad has no quick-state widget at all: it went with the over-head HP bar.
+//! So none of the four has a display to gate — the COS
 //! stack (`hud/cos_status.rs`, `ifcosstatus.txt`) and the party window
 //! (`hud/party/`, opened by keymap 3005 only) are *different* resinfo trees
 //! with their own gauges, and hanging these ids on them would wire an option to
@@ -341,16 +340,14 @@ const GAME_SET_ROWS: [ToggleRow; 7] = [
         english: "Party Member Status",
         backing: Backing::Inert,
     },
-    // The one Game Settings row with a live consumer: `hud/quickstate.rs:48`
-    // names this id and `:144-155` hides every over-head vitality bar when it
-    // is off. It was marked `Inert` here, which meant the checkbox rendered
-    // dimmed and refused the click — a *working* option presented as a stub,
-    // the mirror image of a dead wire.
+    // Inert like its three siblings: the reader this row was marked `Live` for
+    // went with the over-head vitality bars. Nothing in the tree reads 2024, so
+    // a clickable switch here would be the dead wire this table exists to avoid.
     ToggleRow {
         id: Some(2024),
         key: "UIIT_STT_QUICKSTATE_MONSTER",
         english: "Monster Condition",
-        backing: Backing::Live,
+        backing: Backing::Inert,
     },
     ToggleRow {
         id: Some(2019),
@@ -588,7 +585,10 @@ fn spawn_import_button(pane: &mut RelatedSpawnerCommands<ChildOf>, font: &Handle
             font_size: FontSize::Px(11.0),
             ..default()
         },
-        TextColor(LABEL_INERT),
+        // Not `LABEL_INERT`: in this pane that grey means
+        // "rendered but nothing reads it" (see the constant), and this button
+        // works.
+        TextColor(LABEL_COLOR),
         abs(IMPORT_BUTTON),
         Pickable::default(),
     ));
@@ -1069,13 +1069,13 @@ mod test {
         }
     }
 
-    /// Every row that claims a backing must be one an actual system reads —
-    /// and, since the audit of 2026-08-20, every row an actual system reads
-    /// must claim it. The two readers in the tree are `hud/nameplates.rs:52-56`
-    /// (2010..=2014), `hud/quickstate.rs:48` (2024) and, since 2026-08-24,
+    /// Every row that claims a backing must be one an actual system reads, and
+    /// every row an actual system reads must claim it. The two readers in the
+    /// tree are `hud/nameplates.rs:88-92` (2010..=2014) and
     /// `hud/petition.rs::auto_refusal` (2002/2003); nothing else looks at
-    /// `gameplay.toggles`. Moving a row in or out of this list has to be a
-    /// deliberate edit here, in both directions.
+    /// `gameplay.toggles`. 2024 is deliberately absent — its reader is gone.
+    /// Moving a row in or out of this list has to be a deliberate edit here, in
+    /// both directions.
     #[test]
     fn the_live_rows_are_exactly_the_ids_a_system_reads() {
         let live: Vec<Option<u16>> = NAME_VIEW_ROWS
@@ -1093,7 +1093,6 @@ mod test {
                 Some(2012),
                 Some(2013),
                 Some(2014),
-                Some(2024),
                 Some(2002),
                 Some(2003),
             ]
