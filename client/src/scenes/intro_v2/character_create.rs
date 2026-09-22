@@ -317,9 +317,11 @@ const PREVIEW_ZOOM_DOLLY: f32 = 15.0;
 /// are tracked EP-10.1 remainder.
 const DEFAULT_SCALE: u8 = 0x22;
 
-/// Client-side name cap mirroring the original's pre-send validation
-/// (UIO_MSG_ERROR_CHARACTER_NAME_STRING: "Only 12 English letters are
-/// available"). The minimum bound is UNKNOWN — only emptiness is rejected.
+/// Name length window of the original's own pre-send validation: an unsigned
+/// range test in the original, `(len - 2) > 10`, i.e. exactly `2 ..= 12`
+/// (message `UIO_MSG_ERROR_CHARACTER_NAME_STRING`, whose shipped text ends in
+/// the literal `[Min., Max.]` because the call site passes no arguments).
+const MIN_NAME_LEN: usize = 2;
 const MAX_NAME_LEN: usize = 12;
 
 // --- Creation data model -----------------------------------------------------
@@ -1743,9 +1745,9 @@ fn current_name(name_query: &Query<&EditableText, With<NameInput>>) -> String {
         .unwrap_or_default()
 }
 
-/// Pre-send validation mirroring the original client: non-empty, at most
-/// [`MAX_NAME_LEN`] characters, no inner whitespace. Returns the original
-/// error message on violation.
+/// Pre-send validation mirroring the original client: non-empty,
+/// [`MIN_NAME_LEN`] to [`MAX_NAME_LEN`] characters, no inner whitespace.
+/// Returns the original error message on violation.
 fn validate_name(name: &str, ui_strings: &ClientUiStrings) -> Result<(), String> {
     if name.is_empty() {
         return Err(ui_strings.get_plain_or(
@@ -1753,7 +1755,8 @@ fn validate_name(name: &str, ui_strings: &ClientUiStrings) -> Result<(), String>
             "Enter the name of character.",
         ));
     }
-    if name.chars().count() > MAX_NAME_LEN || name.contains(char::is_whitespace) {
+    let len = name.chars().count();
+    if !(MIN_NAME_LEN..=MAX_NAME_LEN).contains(&len) || name.contains(char::is_whitespace) {
         return Err(ui_strings.get_plain_or(
             "UIO_MSG_ERROR_CHARACTER_NAME_STRING",
             "Exceeded the letter limit. Only 12 English letters are available.",
@@ -1775,6 +1778,18 @@ fn send_action(conn: &SilkroadConnection, request: CharacterSelectionActionReque
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original's length test is an unsigned range check, `2 ..= 12`: a
+    /// one-letter name is refused before any packet leaves the client.
+    #[test]
+    fn a_name_needs_at_least_two_and_at_most_twelve_characters() {
+        let strings = ClientUiStrings::default();
+        assert!(validate_name("A", &strings).is_err());
+        assert!(validate_name("Ab", &strings).is_ok());
+        assert!(validate_name("Abcdefghijkl", &strings).is_ok());
+        assert!(validate_name("Abcdefghijklm", &strings).is_err());
+        assert!(validate_name("", &strings).is_err());
+    }
 
     /// `Section = Slider` is ONE authored template, transcribed verbatim, and
     /// its drawn width is the next arrow's right edge — 140, not the row
