@@ -193,32 +193,19 @@ pub fn races_from_bodies<'a>(code_names: impl Iterator<Item = &'a str>) -> Vec<R
 
 /// The playable races of the loaded corpus. Empty when no character table is
 /// loaded (headless/netcheck), which is what keeps the callers from offering a
-/// race nothing can build.
+/// race nothing can build. Rows with `Service = 0` are switched off in the
+/// data and do not count (a server that ships the European bodies but disables
+/// their rows offers one race).
 pub fn available_races(char_data: &ClientCharacterData) -> Vec<Race> {
     let Some(table) = char_data.data() else {
         return Vec::new();
     };
-    races_from_bodies(table.iter().map(|(_, row)| row.code_name().as_str()))
-}
-
-/// The plates the region board shows: every race the corpus can build, plus
-/// the races the interface data itself declares a plate for. The second half
-/// is why a corpus without European bodies still shows a *dimmed* Europe
-/// plate with the original's "Out of service area." reason (#643) instead of
-/// silently dropping a race the client's own interface files announce.
-pub fn plate_races(char_data: &ClientCharacterData) -> Vec<Race> {
-    let mut races = available_races(char_data);
-    for known in KNOWN_RACES.iter() {
-        let race = Race::from_ascii([known.code.as_bytes()[0], known.code.as_bytes()[1]]);
-        if !races.contains(&race) {
-            races.push(race);
-        }
-    }
-    races.sort_by_key(|race| {
-        let known = KNOWN_RACES.iter().position(|p| p.code == race.code());
-        (known.unwrap_or(KNOWN_RACES.len()), *race)
-    });
-    races
+    races_from_bodies(
+        table
+            .iter()
+            .filter(|(_, row)| row.in_service())
+            .map(|(_, row)| row.code_name().as_str()),
+    )
 }
 
 #[cfg(test)]
@@ -316,19 +303,34 @@ mod tests {
             row(5851, "MOB_EU_MOVOI"),
         ]);
         assert_eq!(codes(&available_races(&data)), ["CH"]);
-        // the board still shows the plate the interface data declares, dimmed
-        assert_eq!(codes(&plate_races(&data)), ["CH", "EU"]);
     }
 
-    /// An unknown race the corpus can build reaches the board too — the plate
-    /// list is the race list plus the declared plates, never a fixed pair.
+    /// Red control: European body rows that the data itself switches off
+    /// (`Service = 0`, column 0) do not conjure the race, while the same rows
+    /// in service do. A data set may carry no `CHAR_EU_*` row at all; this is
+    /// the other shape a server ships.
     #[test]
-    fn an_unknown_race_with_bodies_reaches_the_board() {
-        let data = char_data(vec![
+    fn a_race_whose_rows_are_out_of_service_is_not_offered() {
+        let off = |id: i32, code_name: &str| {
+            let (id, mut row) = row(id, code_name);
+            row.0[0] = "0".to_string();
+            (id, row)
+        };
+        let disabled = char_data(vec![
             row(1907, "CHAR_CH_MAN_ADVENTURER"),
-            row(30000, "CHAR_JP_WOMAN_RONIN"),
+            off(14875, "CHAR_EU_MAN_FIGHTER"),
+            off(14876, "CHAR_EU_WOMAN_FIGHTER"),
         ]);
-        assert_eq!(codes(&plate_races(&data)), ["CH", "EU", "JP"]);
+        assert_eq!(codes(&available_races(&disabled)), ["CH"]);
+
+        let mut enabled = char_data(vec![
+            row(1907, "CHAR_CH_MAN_ADVENTURER"),
+            row(14875, "CHAR_EU_MAN_FIGHTER"),
+        ]);
+        assert_eq!(codes(&available_races(&enabled)), ["CH", "EU"]);
+        // a blank Service column (test rows) counts as in service
+        enabled = char_data(vec![row(14875, "CHAR_EU_MAN_FIGHTER")]);
+        assert_eq!(codes(&available_races(&enabled)), ["EU"]);
     }
 
     /// The presentation table stays a citation of the corpus, not a race list:

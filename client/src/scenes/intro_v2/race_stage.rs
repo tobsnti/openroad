@@ -666,6 +666,15 @@ pub fn board_prop_translation(cam_base: Vec3, origin: Vec3, offset: Vec3) -> Vec
     (cam_base + offset + Vec3::Y * BOARD_STAGE_LIFT) * Vec3::new(-1.0, 1.0, 1.0) - origin
 }
 
+/// The props this corpus puts on the desk. A race idol stands for a choice;
+/// without a playable body row there is no choice, so that figure stays off
+/// the desk. The desk and the lizard are scenery and always stand.
+fn props_on_stage(races: &[Race]) -> impl Iterator<Item = &'static BoardProp> + '_ {
+    BOARD_PROPS
+        .iter()
+        .filter(move |prop| prop.race.is_none_or(|race| races.contains(&race)))
+}
+
 /// The authored idol props, in the original's own array order.
 fn authored_idols() -> Vec<&'static BoardProp> {
     BOARD_PROPS.iter().filter(|p| p.race.is_some()).collect()
@@ -703,7 +712,8 @@ pub fn spawn_race_board_props(
     mut commands: Commands,
 ) {
     let cam_base = scene.map(|s| s.0.cam_base()).unwrap_or(Vec3::ZERO);
-    for prop in BOARD_PROPS.iter() {
+    let races = super::race_catalog::available_races(&char_data);
+    for prop in props_on_stage(&races) {
         let transform =
             Transform::from_translation(board_prop_translation(cam_base, origin.0, prop.offset))
                 .with_scale(Vec3::new(-1.0, 1.0, 1.0))
@@ -745,7 +755,7 @@ pub fn spawn_race_board_props(
     // pickable box, so the pointer, the plate and the confirm treat it like
     // any other race. On a v1.188-shaped corpus this loop does nothing.
     let mut extra = 0usize;
-    for race in super::race_catalog::available_races(&char_data) {
+    for race in races {
         if BOARD_PROPS.iter().any(|p| p.race == Some(race)) {
             continue;
         }
@@ -1418,6 +1428,30 @@ mod tests {
         assert_ne!(
             confirm_camera_pose(Race::EUROPEAN, cam_base, origin).0,
             confirm_camera_pose(Race::CHINESE, cam_base, origin).0
+        );
+    }
+
+    /// A corpus without European body rows puts no European idol
+    /// on the desk — nothing to hover, nothing to plate. The desk and the
+    /// lizard (no race) stay; a corpus with both races gets all four props.
+    #[test]
+    fn a_race_without_bodies_has_no_idol_on_the_desk() {
+        let paths =
+            |races: &[Race]| -> Vec<&str> { props_on_stage(races).map(|p| p.path).collect() };
+        let chinese_only = paths(&[Race::CHINESE]);
+        assert_eq!(chinese_only.len(), 3);
+        assert!(!chinese_only.iter().any(|p| p.contains("idol_europe")));
+        assert!(chinese_only.iter().any(|p| p.contains("idol_china")));
+        assert!(chinese_only.iter().any(|p| p.contains("lizard")));
+        assert!(chinese_only.iter().any(|p| p.ends_with("box.bsr")));
+        assert_eq!(
+            paths(&[Race::CHINESE, Race::EUROPEAN]).len(),
+            BOARD_PROPS.len()
+        );
+        assert_eq!(
+            paths(&[]).len(),
+            2,
+            "no race at all leaves only the scenery"
         );
     }
 

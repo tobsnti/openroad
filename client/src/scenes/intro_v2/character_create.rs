@@ -817,7 +817,7 @@ pub(crate) fn figure_variants(
     let prefix = race.body_prefix(gender);
     let mut rows: Vec<(i32, String)> = table
         .iter()
-        .filter(|(_, row)| row.code_name().starts_with(&prefix))
+        .filter(|(_, row)| row.in_service() && row.code_name().starts_with(&prefix))
         .map(|(id, row)| (*id, row.code_name().clone()))
         .collect();
     rows.sort_by_key(|(id, _)| *id);
