@@ -399,26 +399,24 @@ impl ItemDataRow {
         self.0.get(index)?.trim().parse().ok()
     }
 
-    /// `Param<n>` read as the **big-endian byte view** of the signed int: the
-    /// alchemy rows pack four values into one column, and the paired `_Desc`
-    /// names the indices, which is how the order was determined —
-    /// `MAGICSTONE_STR_01.Param2 = 169090560 = 0x0A141E00` -> `10,20,30,0`
-    /// beside a `Desc` reading `"10, 20, 30, 0"`. A `-1` column is empty, not
-    /// `[255,255,255,255]`, so callers check the raw value first.
-    pub fn param_bytes(&self, n: usize) -> Option<[u8; 4]> {
-        Some(i32::try_from(self.param(n)?).ok()?.to_be_bytes())
-    }
+    // `param_bytes(n)` — `Param<n>` as the big-endian byte view of the signed
+    // int — was written here and removed again before it shipped, for the same
+    // reason as the two below: no reader. The finding it was built on stands
+    // and is what a future reader needs: the alchemy rows pack four values into
+    // one column, and the paired `_Desc` names the indices, which is how the
+    // order was determined — `MAGICSTONE_STR_01.Param2 = 169090560 =
+    // 0x0A141E00` -> `10,20,30,0` beside a `Desc` reading `"10, 20, 30, 0"`.
+    // A `-1` column is empty, not `[255,255,255,255]`. One line over
+    // [`Self::param`] the day something reads it.
 
     // `cos_rent_minutes()` and `cos_level_tiers()` used to live here and were
-    // removed on 2026-08-21: neither had a
-    // reader, and the first one read the *wrong* family — it was documented and
-    // unit-tested as "the mount scroll's rent duration" while `Param1` is 0 on
-    // all 44 of those rows (census on `Param1` above). Both were plain column
-    // reads: the rent column is [`Self::param`]`(1)`, the tier list is
-    // `Desc2_128` split on commas. Reinstating either is trivial the day a
-    // consumer exists (shop tooltip / rent plate, capture-gated by observation
-    // order 237); shipping them dead is what let the wrong reading stand for a
-    // week.
+    // removed: neither had a reader, and the first one read the *wrong* family —
+    // it was documented and unit-tested as "the mount scroll's rent duration"
+    // while `Param1` is 0 on all 44 of those rows (see the `Param1` table
+    // above). Both were plain column reads: the rent column is
+    // [`Self::param`]`(1)`, the tier list is `Desc2_128` split on commas.
+    // Reinstating either is trivial the day a consumer exists (shop tooltip /
+    // rent plate); shipping them dead is what let the wrong reading stand.
 
     /// Name of the character animation group that applies while this item
     /// is equipped, i.e. the weapon class of a weapon (`None` for

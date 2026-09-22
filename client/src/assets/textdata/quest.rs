@@ -4,7 +4,7 @@
 //!
 //! Idea: these two tables are the *decoration* of a journal, never its spine.
 //! The server sends the active set on the wire (`packets::agent::quest`), and
-//! two of the nine ids our own server sends for char `Devi` (220, 399) have
+//! two of the nine ids our own server sends for one character (220, 399) have
 //! **no row** in this 706-row `questdata.txt` at all — verified lookup, with
 //! the other seven ids of the same packet as the positive control. So the
 //! tables are joined by two

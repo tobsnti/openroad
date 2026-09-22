@@ -20,7 +20,7 @@ use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{
-    QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValue, QuestRewardValues,
+    QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValues,
 };
 use crate::assets::textdata::shops::{ShopLayout, ShopTable};
 use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
@@ -556,14 +556,6 @@ impl ClientSpeechText {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.as_ref().and_then(|strings| strings.get(key))
     }
-
-    /// The table itself, for consumers that resolve many keys at once — the
-    /// quest journal decorates every active record in one pass and takes
-    /// `Option<&UiSystemText>` (`plugins::net::quest::QuestJournal`). Same
-    /// reason `ClientQuestRewards::values` exists.
-    pub fn strings(&self) -> Option<&UiSystemText> {
-        self.0.as_ref()
-    }
 }
 
 #[derive(Resource, Default)]
@@ -588,17 +580,11 @@ impl ClientQuestRewards {
             .is_some_and(|(modes, _, _)| modes.choose_one(quest))
     }
 
-    /// The gold/exp table itself, for consumers that decorate many quests at
-    /// once (the quest journal).
-    pub fn values(&self) -> Option<&QuestRewardValues> {
-        self.0.as_ref().map(|(_, values, _)| values)
-    }
-
-    /// Gold/experience of a quest (columns 10/11), `None` for a quest the
-    /// table has no row for.
-    pub fn value(&self, quest: u32) -> Option<QuestRewardValue> {
-        self.0.as_ref().and_then(|(_, values, _)| values.get(quest))
-    }
+    // `values()` (the gold/exp table itself) and `value(quest)` (one row) were
+    // here and are removed again: both were written for a quest journal that
+    // does not exist yet, and neither had a reader. `QuestRewardValues` is
+    // still parsed and still held in this resource — re-exposing it is one
+    // line the day a journal reads it.
 
     /// The quest's reward rows: candidates in pick-one mode, all granted
     /// otherwise.
@@ -617,6 +603,15 @@ impl ClientQuestRewards {
 pub struct ClientQuestTable(Option<QuestTable>);
 
 impl ClientQuestTable {
+    /// The parsed table, `None` until `questdata.txt` has loaded.
+    ///
+    /// This is the resource's only read path and it has **no reader yet** —
+    /// the journal UI that will use it is not written. It is kept rather than
+    /// deleted because the loader arm above it has to hand the parsed table
+    /// somewhere for the file to be loaded at all; an accessor that returns it
+    /// is the smallest such landing place. If the journal is still unwritten
+    /// when this file is next touched, delete the resource, the loader arm and
+    /// this method together — `QuestTable` itself carries its own tests.
     pub fn table(&self) -> Option<&QuestTable> {
         self.0.as_ref()
     }

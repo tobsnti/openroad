@@ -219,8 +219,7 @@ impl AssetLoader for TextdataLoader {
                             continue;
                         }
                     };
-                    let Some(Textdata::CharacterData(char_data)) = loaded.take::<Textdata>()
-                    else {
+                    let Some(Textdata::CharacterData(char_data)) = loaded.take::<Textdata>() else {
                         warn!("characterdata: shard {file} did not decode as character data; skipping");
                         continue;
                     };

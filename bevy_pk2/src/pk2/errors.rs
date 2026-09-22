@@ -35,3 +35,43 @@ impl std::fmt::Display for Error {
         }
     }
 }
+
+/// `Error` crosses a crate boundary, so it has to be an error in the language's
+/// sense too: without this impl a caller cannot put it in a `Box<dyn Error>`,
+/// use `?` into `anyhow`/`eyre`, or ask for the `source()` of an I/O failure.
+/// Only the [`Error::IO`] variant wraps another error; the rest are terminal.
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::IO(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The trait impl is the point: a caller two crates away holds this as a
+    /// `Box<dyn std::error::Error>`, and reaches the underlying `io::Error`
+    /// through `source()` rather than by matching our variants.
+    #[test]
+    fn the_error_is_a_std_error_and_names_its_io_source() {
+        let err = Error::IO(io::Error::from(io::ErrorKind::NotFound));
+        let boxed: Box<dyn std::error::Error> = Box::new(err);
+        assert_eq!(boxed.to_string(), "file not found");
+        let source = boxed.source().expect("an I/O failure carries its source");
+        assert!(
+            source.downcast_ref::<io::Error>().is_some(),
+            "the source is the io::Error itself"
+        );
+
+        let terminal: Box<dyn std::error::Error> = Box::new(Error::ChainLoop(2560));
+        assert!(terminal.source().is_none(), "a chain loop wraps nothing");
+        assert_eq!(
+            terminal.to_string(),
+            "block chain loops or never ends at offset 2560"
+        );
+    }
+}

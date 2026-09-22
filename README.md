@@ -134,6 +134,20 @@ make run world
 On Windows, the same `make run <scene>` commands work from PowerShell; Make
 delegates the run step to `scripts/run.ps1` so the root `.env` is loaded correctly.
 
+Looking at a running client without sitting in front of it. All three are inert
+unless set:
+
+| Variable | Effect |
+|---|---|
+| `OPENROAD_SCREENSHOT=<path prefix>` | saves PNGs of the primary window (`<prefix>_0.png`, …) and exits after the last one |
+| `OPENROAD_SCREENSHOT_AT=8,10,12` | shot times in seconds, replacing the default `2.0,2.8,3.6`; entries that are unparseable, negative or not finite are dropped with a warning |
+| `OPENROAD_UI_DUMP=<seconds>` | prints the UI node tree once at that time (draw order, rect, colour); the run continues |
+
+Only the two screenshot variables end the run. Beware of a leftover
+`OPENROAD_SCREENSHOT` in `.env`: `make run` sources it, and the next session then
+quits after a few seconds. The client warns about it in its first log line for
+exactly that reason.
+
 Release profile — `make build release` reproduces exactly what the `build-*.yml`
 workflows compile, so a performance claim can be measured locally instead of inferred
 from a CI artifact:

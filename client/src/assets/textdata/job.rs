@@ -6,19 +6,20 @@
 //! any other label. So the whole feature is a key builder plus the existing UI
 //! string path — no new file format, no new loader.
 //!
-//! Sources (client decompile):
+//! Sources (the original client, read as data):
 //! - the client formats `UIIT_STT_CLASS_%s_%d` / `UIIT_STT_CLASS_EU_%s_%d`
 //!   and picks the variant from a byte at world-object `+0x9c` (0 = Chinese
 //!   names, 1 = European names). Job tokens inside the client itself are
 //!   `1 = "MERCHANT"`, `2 = "THIEF"`, `3 = "HUNTER"` `[V]`.
-//! - §6.1: the 43 `UIIT_STT_CLASS_*` rows in the user's own
+//! - the 43 `UIIT_STT_CLASS_*` rows in the user's own
 //!   `textuisystem.txt` are exactly (CH + EU) × 3 jobs × 7 ranks + the extra
 //!   `MERCHANT_6_NEW`. Seven ranks per job, cross-checked against
 //!   `leveldata.txt` columns 6/7/8 (JL1…JL7, `-1` from row 8 on).
 //!
-//! The job-suit predicate lives in `plugins/net/job.rs` instead: it builds on
-//! `net::entity_spawn::is_job_suit`, and `assets/textdata/**` is a closed
-//! surface that must not reach into `net`/`plugins` (see `client/src/lib.rs`).
+//! Deliberately not here: the job-suit predicate. It needs the spawn packet,
+//! and `assets/textdata/**` is a closed surface whose `use crate::` may point
+//! at `assets` only, never at `net`/`plugins` (see `client/src/lib.rs:39`). It
+//! belongs on the `net` side and is not written yet.
 //!
 //! Deliberately **not** here: anything that needs a server (the player's own
 //! job, rank, points, prices, transport). This module is what can be decided
@@ -97,11 +98,10 @@ pub fn rank_name(strings: &UiSystemText, job: JobType, rank: u8, set: RankNameSe
 mod test {
     use super::*;
 
-    /// All 43 `UIIT_STT_CLASS_*` rows of the user's own
-    /// `Media/server_dep/silkroad/textdata/textuisystem.txt`, read 2026-08-21
-    /// (English = last non-empty column). The PK2 is not in CI, so the rows
-    /// live here as constants — same pattern as
-    /// `client/src/plugins/hud/alchemy/probability.rs`.
+    /// All 43 `UIIT_STT_CLASS_*` rows of
+    /// `Media/server_dep/silkroad/textdata/textuisystem.txt` (English = last
+    /// non-empty column). No PK2 is available in CI, so the rows live here as
+    /// constants instead of whatever archive a machine happens to have.
     const CLASS_ROWS: &[(&str, &str)] = &[
         ("UIIT_STT_CLASS_EU_HUNTER_1", "Hunter Beginner"),
         ("UIIT_STT_CLASS_EU_HUNTER_2", "Trader"),

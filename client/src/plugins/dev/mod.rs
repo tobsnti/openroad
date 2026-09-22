@@ -23,8 +23,8 @@ pub mod aabb_lines;
 pub mod glass_ball;
 pub mod lighting;
 pub mod navmesh_lines;
-pub mod world_inspector;
 mod ui_dump;
+pub mod world_inspector;
 // pub: `map::objects::cull_fogged_objects` reads `RenderDebugSettings` to
 // stand down while the panel's render_objects toggle owns wrapper visibility
 mod auto_screenshot;

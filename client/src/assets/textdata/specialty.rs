@@ -191,11 +191,11 @@ mod test {
     use super::*;
     use std::collections::HashMap;
 
-    /// Every one of the 43 specialty rows of the user's own
-    /// `Media/server_dep/silkroad/textdata/itemdata_{5000,10000,25000,...}.txt`,
-    /// read 2026-08-21: `(ref_id, code_name, TypeID4, price col 26, sell col 31)`.
-    /// The PK2 is not in CI, so the rows live here as constants — same pattern
-    /// as `client/src/plugins/hud/alchemy/probability.rs`.
+    /// Every one of the 43 specialty rows of
+    /// `Media/server_dep/silkroad/textdata/itemdata_{5000,10000,25000,...}.txt`:
+    /// `(ref_id, code_name, TypeID4, price col 26, sell col 31)`. No PK2 is
+    /// available in CI, so the rows live here as constants instead of whatever
+    /// archive a machine happens to have.
     const SPECIALTY_ROWS: &[(i32, &str, u32, u64, u64)] = &[
         (2147, "ITEM_ETC_TRADE_CH_01", 1, 383, 191),
         (2148, "ITEM_ETC_TRADE_CH_02", 1, 383, 191),
