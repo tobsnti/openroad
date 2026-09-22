@@ -1277,9 +1277,8 @@ mod test {
     /// each id is followed by its opt byte) with an explicit `job_type`. When
     /// `job_type != 0` the guild block is written the way the original server
     /// writes it for a job-suited player: the guild **name only**, no
-    /// `GuildID`/nick/crest/union/flags sub-block ([S] xBot
-    /// `PacketParser.cs:750-766`). Every other fixture in this file uses
-    /// `job_type = 0`, which is exactly why the hazard survived so long.
+    /// id/nick/crest/union/flags sub-block. Every other fixture in this file
+    /// uses `job_type = 0`, which is exactly why the hazard survived so long.
     fn job_player_body(
         player_ref: u32,
         equipment: &[u32],
@@ -1319,7 +1318,7 @@ mod test {
                 .u32(3) // guild crest rev
                 .u32(9) // union id
                 .u32(4) // union crest rev
-                .u8(1) // isFriendly
+                .u8(1) // is_friendly
                 .u8(0xFF); // authority: None
         }
         // equipment_cooldown, pk_flag

@@ -11,27 +11,23 @@ use sro_macro_derive::*;
 /// `0x6100 CLIENT_GATEWAY_PATCH_REQUEST` — the version check the **original**
 /// launcher sends first on the gateway connection, before the shard list.
 ///
-/// Layout captured from the user's own original v1.208 client through our
-/// proxy (2026-08-20): body `16 | 0900 "SR_Client" | d0 00 00 00` = locale
-/// `0x16` (22, vSRO), a u16-length-prefixed module name, then the build version
-/// as a `u32` (0xD0 = 208). Two independent descriptions agree on that shape
-/// (xBot `Network/Gateway.cs:135-143`, GPL-3.0; the same struct in the sibling
-/// workspace `sro-rs-client/packets/src/gateway.rs:115-134`), and it is
-/// encrypted on the wire — `0x6100` is in the outbound-encryption allowlist
-/// (`client/src/net/frame.rs`).
+/// The body of the original v1.208 client is
+/// `16 | 0900 "SR_Client" | d0 00 00 00` = locale `0x16` (22, vSRO), a
+/// u16-length-prefixed module name, then the build version as a `u32`
+/// (0xD0 = 208). It is encrypted on the wire — `0x6100` is in the
+/// outbound-encryption allowlist (`client/src/net/frame.rs`).
 ///
 /// OpenRoad's own client does not send it (its launcher does an `SV.T`
 /// preflight instead), so this exists to *read* what a real client asks and to
-/// let a test peer answer it. No in-tree sender yet — the type is the
-/// recovered layout, kept next to the rest of the gateway family.
+/// let a test peer answer it. No in-tree sender yet.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PatchRequest {
     /// Region/locale byte the gateway gates content on (`0x16` = 22 for vSRO).
     pub locale: u8,
-    /// Module name the client compiles in — `"SR_Client"` on the captured
-    /// v1.208 client.
+    /// Module name the client compiles in — `"SR_Client"` on the v1.208
+    /// client.
     pub module_name: String,
-    /// Client build number; `208` on the captured client.
+    /// Client build number; `208` on the v1.208 client.
     pub version: u32,
 }
 
@@ -42,18 +38,12 @@ pub struct PatchRequest {
 /// `2` ("update available") is followed by the download-server triple and the
 /// file list.
 ///
-/// Field layout learned from two *no-licence* sources (facts and layouts only,
-/// never their code or text): the SilkroadDoc wiki `GATEWAY_PATCH.md` and
-/// `srodevs-docs/packets/gateway/gateway_patch_ack.md`. Both agree with the
-/// GPL-3.0 xBot dispatch, which branches on exactly `1` (proceed) and `2`
-/// (version incorrect) and reads nothing more in the success case
-/// (`Vsro Multi Tool/Clientless_login/Gateway.cs:72-84`), and with the sibling
-/// workspace's model (`sro-rs-client/packets/src/gateway.rs:136-176`).
+/// The launcher branches on exactly `1` (proceed) and `2` (version incorrect)
+/// and reads nothing more in the success case.
 ///
 /// **Minimal on purpose**: the `error_code == 2` file list (a `has-more`
 /// sequence of id/name/path/size/packed entries) is *not* modelled. We never
-/// send it, and no capture of ours contains one — modelling it would be
-/// unsourced beyond the two wiki descriptions. A real `result == 2` with
+/// send it, and modelling it would be guesswork. A real `result == 2` with
 /// `error_code == 2` therefore deserializes only as far as the triple.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PatchResponse {
