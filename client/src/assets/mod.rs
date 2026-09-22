@@ -244,6 +244,9 @@ impl FontRole {
 pub const BUNDLED_FALLBACK_FACE: &str = "fonts/Arimo-Variable.ttf";
 
 #[derive(AssetCollection, Resource)]
+// Test-only `Default`, same reason as [`IntroV2Assets`]: a system under test
+// needs the resource to exist for parameter validation, not to resolve.
+#[cfg_attr(test, derive(Default))]
 #[allow(dead_code)]
 pub struct FontAssets {
     // These four start on the bundled OFL face so text always renders, and are

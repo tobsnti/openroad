@@ -1284,4 +1284,48 @@ mod tests {
         // maintainer-facing: still names the file that would unblock it
         assert!(PLATE_DISABLED_DIAGNOSIS.contains("characterdata"));
     }
+
+    /// A frame without a 2d camera draws no board — it must not take the
+    /// schedule down with it.
+    ///
+    /// `enter_region_select` used to insert [`HoveredRegion`] *after* its
+    /// `no 2d camera` early return, while [`update_region_hover`] takes it as
+    /// `ResMut<_>`. Bevy does not skip a system whose resource is missing: it
+    /// fails parameter validation and panics the schedule (AGENTS.md), so the
+    /// missing camera killed the whole state instead of just leaving the board
+    /// empty. This builds exactly that shape — the enter system with no
+    /// `Camera2d` in the world, then the hover system — and it must survive
+    /// the update.
+    #[test]
+    fn the_hover_resource_is_there_even_when_the_2d_camera_is_not() {
+        use crate::scenes::intro_v2::assets::IntroV2Assets;
+
+        let mut app = App::new();
+        // TaskPoolPlugin before AssetPlugin, the fixture pairing of
+        // `crate::assets` — `Res<AssetServer>` is a parameter of the system
+        // under test.
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .insert_resource(IntroV2Assets::default())
+        .insert_resource(FontAssets::default())
+        .insert_resource(ClientUiStrings::default())
+        .insert_resource(char_data(vec![row(1907, "CHAR_CH_MAN_ADVENTURER")]))
+        .add_systems(Startup, enter_region_select)
+        .add_systems(Update, update_region_hover);
+
+        app.update();
+
+        let mut cameras = app.world_mut().query_filtered::<(), With<Camera2d>>();
+        assert_eq!(
+            cameras.iter(app.world()).count(),
+            0,
+            "this test is only meaningful without a 2d camera"
+        );
+        assert!(
+            app.world().contains_resource::<HoveredRegion>(),
+            "the hover resource must exist even when the board was not drawn"
+        );
+    }
 }
