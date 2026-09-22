@@ -50,11 +50,77 @@ pub fn reenable_connect_button(
     >,
     mut commands: Commands,
 ) {
+    // Entering the form is a fresh start: no request of a previous visit is
+    // still being waited for.
+    commands.remove_resource::<PendingLogin>();
     for entity in query.iter() {
         commands
             .entity(entity)
             .remove::<(InteractionDisabled, Pressed)>();
     }
+}
+
+/// A gateway login request that has gone out and is still waiting for its
+/// answer. Its only job is that the wait cannot be infinite.
+///
+/// [`on_connect_activate`] disables Connect **and** Exit while the request is in
+/// flight, and every arm that *answers* gives them back. A server that answers
+/// nothing has no such arm, so the screen would stay disabled for good; that is
+/// what [`time_out_pending_login`] ends.
+#[derive(Resource)]
+pub struct PendingLogin {
+    timer: Timer,
+}
+
+/// How long the screen waits for `0xA102` before it hands itself back.
+///
+/// **Ours, not the original's**: what the original does with a gateway that
+/// never answers is unknown, and no data row names a timeout. Ten seconds is
+/// chosen to be far longer than an answering gateway needs (a local login
+/// answers inside a second) and short enough that a player does not conclude
+/// the client is dead.
+const LOGIN_ANSWER_BUDGET_SECS: f32 = 10.0;
+
+impl Default for PendingLogin {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(LOGIN_ANSWER_BUDGET_SECS, TimerMode::Once),
+        }
+    }
+}
+
+/// Gives the login screen back when the gateway never answers, and says so.
+///
+/// The budget does not run while the *user* is the one being waited for: with
+/// the captcha modal up, the request **was** answered and the two greyed buttons
+/// are what the original shows, so the timer is held at zero instead of ticking
+/// behind the modal.
+pub fn time_out_pending_login(
+    time: Res<Time>,
+    mut pending: ResMut<PendingLogin>,
+    captcha_modal: Query<(), With<super::captcha::CaptchaModal>>,
+    buttons: Query<Entity, Or<(With<ConnectButton>, With<ExitButton>)>>,
+    ui_strings: Res<ClientUiStrings>,
+    mut info_text_writer: MessageWriter<InfoTextV2Update>,
+    mut commands: Commands,
+) {
+    if !captcha_modal.is_empty() {
+        pending.timer.reset();
+        return;
+    }
+    if !pending.timer.tick(time.delta()).just_finished() {
+        return;
+    }
+    warn!("[Login] no answer within {LOGIN_ANSWER_BUDGET_SECS} s — giving the screen back");
+    info_text_writer.write(InfoTextV2Update(
+        ui_strings.get_plain_or(AGENT_CONNECT_ERROR_KEY, "Failed to connect to server."),
+    ));
+    for entity in buttons.iter() {
+        commands
+            .entity(entity)
+            .remove::<(InteractionDisabled, Pressed)>();
+    }
+    commands.remove_resource::<PendingLogin>();
 }
 
 /// The textuisystem rows this flow speaks, all present in
@@ -84,6 +150,11 @@ pub fn reenable_connect_button(
 /// code -> key mapping exists once, next to the wire type it belongs to.
 const CONNECT_PROGRESS_KEY: &str = "UIO_MSG_ERROR_CITATION";
 const PASSWORD_ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR";
+/// `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`, English column
+/// "Failed to connect to server." — the key's misspelling is the original's).
+/// The row the agent-connect failure path speaks; see that arm for why it goes
+/// to the status line and not to a message box.
+const AGENT_CONNECT_ERROR_KEY: &str = "UIO_MSG_ERROR_SEVER_CONNECT";
 
 /// `Activate` observer of the Connect button: sends the gateway login
 /// request. Port of the old `on_connect_button_clicked_system`.
@@ -196,6 +267,9 @@ pub fn on_connect_activate(
     if let Err(e) = connection.get_sender().send(frame) {
         error!("failed to send frame: {}", e.0);
     }
+    // From here the screen is disabled until somebody answers — so start the
+    // clock that guarantees somebody does ([`time_out_pending_login`]).
+    commands.insert_resource(PendingLogin::default());
 }
 
 /// Surfaces an asynchronous gateway connect failure as intro info text. Because
@@ -242,6 +316,9 @@ pub fn on_gateway_login_response(
     let Ok(connect_button) = connect_button_query.single() else {
         return;
     };
+
+    // The gateway answered, so the wait is over either way.
+    commands.remove_resource::<PendingLogin>();
 
     let username = credentials.username.clone();
     let password = credentials.password.clone();
@@ -326,9 +403,57 @@ pub fn on_gateway_login_response(
                 commands.spawn(AgentConnectionBundle::new(conn));
             }
             Err(err) => {
+                // Both halves of the answer, as for a rejected agent *login*
+                // (`on_agent_login_response`): say it, and give the screen back.
+                // The gateway connection is despawned above and the buttons are
+                // still disabled from `on_connect_activate`, so without this arm
+                // the screen stands on "...Requesting user confirmation..." with
+                // no way out. The sentence is the shipped row for exactly this
+                // case, `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`,
+                // "Failed to connect to server."), not our prose.
+                //
+                // **No message box, on purpose.** The title screen has an
+                // authored error channel — `GDR_TEXT_MESSAGE`
+                // (`pstitle_europe.txt:634`), the orange status line we already
+                // draw — while a one-button message box is not authored
+                // anywhere in `ifmessagebox.txt`: its only generic section,
+                // `MsgBoxSimple`, is a yes/no box (`UIIT_CTL_YES`/`_NO`), and
+                // `ifconfirmbox.txt` is the image-code window, not a message
+                // box.
                 error!("failed to connect to agent server: {}", err);
+                report_agent_connect_failure(
+                    &mut commands,
+                    &mut info_text_writer,
+                    &ui_strings,
+                    connect_button,
+                    exit_button_query.single().ok(),
+                );
             }
         }
+    }
+}
+
+/// Says what happened and gives the screen back after a failed agent connect.
+///
+/// A named function rather than three lines in the match arm because that arm
+/// sits inside a closure-free `else` branch of a long system and because it is
+/// the only part of the agent-connect failure that a test can hold: the connect
+/// itself is a real socket. `on_agent_login_response` does the same two things
+/// for a *rejected* login.
+fn report_agent_connect_failure(
+    commands: &mut Commands,
+    info_text_writer: &mut MessageWriter<InfoTextV2Update>,
+    ui_strings: &ClientUiStrings,
+    connect_button: Entity,
+    exit_button: Option<Entity>,
+) {
+    info_text_writer.write(InfoTextV2Update(
+        ui_strings.get_plain_or(AGENT_CONNECT_ERROR_KEY, "Failed to connect to server."),
+    ));
+    for entity in std::iter::once(connect_button).chain(exit_button) {
+        commands
+            .entity(entity)
+            .remove::<(InteractionDisabled, Pressed)>();
     }
 }
 
@@ -429,11 +554,10 @@ mod tests {
         );
     }
 
-    /// A *failed agent connection* — not a rejected login — used to end in the
-    /// log. The screen
-    /// then stood on "...Requesting user confirmation..." with Connect disabled
-    /// for good, which is a client the user can only kill. So: the shipped
-    /// sentence on the status line, and both buttons back.
+    /// A *failed agent connection* — not a rejected login — must not end in the
+    /// log: the screen would stand on "...Requesting user confirmation..." with
+    /// Connect disabled for good. So: the shipped sentence on the status line,
+    /// and both buttons back.
     #[test]
     fn a_failed_agent_connection_says_so_and_unlocks_the_screen() {
         use bevy::ecs::system::SystemState;
@@ -633,6 +757,120 @@ mod tests {
         assert!(
             !line.to_lowercase().contains("select a server"),
             "the server hint must not fire once a shard is committed: {line:?}"
+        );
+    }
+
+    /// The locked screen itself, reproduced: Connect and Exit greyed, the
+    /// progress line standing, and no answer ever arriving. Without
+    /// `time_out_pending_login` that state is terminal.
+    #[test]
+    fn a_login_nobody_answers_gives_the_screen_back() {
+        use std::time::Duration;
+
+        use bevy::ui::{InteractionDisabled, Pressed};
+
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, ExitButton};
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>()
+            .init_resource::<Time>()
+            .init_resource::<super::PendingLogin>()
+            .add_systems(Update, super::time_out_pending_login);
+
+        let connect = app
+            .world_mut()
+            .spawn((ConnectButton, InteractionDisabled, Pressed))
+            .id();
+        let exit = app
+            .world_mut()
+            .spawn((ExitButton, InteractionDisabled, Pressed))
+            .id();
+
+        // Half the budget: the screen is still waiting, because a gateway that
+        // is merely slow must not be declared dead.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(
+                super::LOGIN_ANSWER_BUDGET_SECS / 2.0,
+            ));
+        app.update();
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_some(),
+            "the wait ended too early"
+        );
+
+        // Past the budget: both buttons back, the shipped sentence on the line,
+        // and nothing left waiting.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(super::LOGIN_ANSWER_BUDGET_SECS));
+        app.update();
+        for (entity, what) in [(connect, "Connect"), (exit, "Exit")] {
+            assert!(
+                app.world().get::<InteractionDisabled>(entity).is_none(),
+                "{what} is still disabled after a login nobody answered"
+            );
+            assert!(
+                app.world().get::<Pressed>(entity).is_none(),
+                "{what} still carries the pressed art"
+            );
+        }
+        let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+        let mut cursor = messages.get_cursor();
+        let line = cursor
+            .read(messages)
+            .next()
+            .expect("the timeout must put a line on the status bar")
+            .0
+            .clone();
+        assert_eq!(line, "Failed to connect to server.");
+        assert!(app.world().get_resource::<super::PendingLogin>().is_none());
+    }
+
+    /// The captcha half of the same budget: while the image-code window is up
+    /// the request *was* answered and the user is the one being waited for, so
+    /// the budget must not run out behind the modal.
+    #[test]
+    fn the_captcha_modal_holds_the_wait_open() {
+        use std::time::Duration;
+
+        use bevy::ui::InteractionDisabled;
+
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::captcha::CaptchaModal;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::ConnectButton;
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>()
+            .init_resource::<Time>()
+            .init_resource::<super::PendingLogin>()
+            .add_systems(Update, super::time_out_pending_login);
+
+        let connect = app
+            .world_mut()
+            .spawn((ConnectButton, InteractionDisabled))
+            .id();
+        app.world_mut().spawn(CaptchaModal);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(
+                super::LOGIN_ANSWER_BUDGET_SECS * 3.0,
+            ));
+        app.update();
+
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_some(),
+            "the modal's greyed Connect is what the original shows"
+        );
+        assert!(
+            app.world().get_resource::<super::PendingLogin>().is_some(),
+            "the wait belongs to the user now, it is not over"
         );
     }
 
