@@ -9,8 +9,9 @@
 //! that shared rect (`docs/re/ui/cos-pet-window.md` §3, marked `[S]`) and the
 //! selection lives here in code, exactly as it does in the original.
 //! The window is opened by the vanilla `KeyCOSInfo` shortcut (OptionSet.csv id
-//! 3016) — unbound by default, like the other 27 shortcuts whose vanilla
-//! default we do not have (`settings/keymap.rs`).
+//! 3016), which ships on **Insert**: `SROptionSet.dat` stores `0x2D` for that
+//! id in both readable installs (`settings/keymap.rs` module note). It used to
+//! be unbound here because that file had not been read.
 
 use bevy::prelude::*;
 
@@ -38,7 +39,7 @@ pub struct CosWindowState {
 }
 
 /// Toggle with the `KeyCOSInfo` shortcut (unless the chat input is capturing
-/// keys). Unbound until the user binds it, so this is inert by default.
+/// keys) — Insert out of the box, see the module note.
 pub fn toggle_cos_window(
     keys: Res<ButtonInput<KeyCode>>,
     chat: Res<ChatState>,

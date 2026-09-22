@@ -83,9 +83,33 @@ const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
 /// `FontSize::Px` of an intro control with resinfo `FontIndex` `font_index`.
 /// Unscaled on purpose: the intro draws its rects at the art's native size, so
 /// its text carries the same 1:1 factor as the box it sits in.
+///
+/// # Out of range: slot 0, not "the biggest slot"
+///
+/// An index above 4 names a slot the client never builds, so *some* rule is
+/// needed and the data decides which. Three facts about `Media/resinfo/*.txt`
+/// (247 files, 3740 `FontIndex=` attributes):
+///
+/// * The ladder is **not ordered**: 9, 8, 12, 11, 15 pt. A higher index is not
+///   a bigger font, so clamping an out-of-range index to the largest entry
+///   reads the index as a magnitude, which the ladder itself contradicts. That
+///   clamp is what stood here.
+/// * Out-of-range indices exist at exactly **three** sites in the whole data,
+///   all `FontIndex=7` in `ifchatbubblewindow.txt:12,31,50`.
+/// * The text those three sit among is uniformly slot 0: the nine chat trees
+///   carry 104 `FontIndex` attributes and **every one of them is 0**.
+///
+/// So slot 0 is the neighbouring authored size at the only place the case can
+/// occur, and it is the one choice that does not invent a size ordering. What
+/// the original itself does with index 7 is unknown, so this is a reasoned
+/// openroad rule, not a transcribed one, and the same rule the HUD ladder uses.
+/// It changes nothing on screen today: the intro trees (`ps*.txt`) carry only
+/// index 0 (258 controls) and index 2 (80).
 pub(crate) const fn intro_font_px(font_index: usize) -> f32 {
-    let last = FONT_INDEX_PX.len() - 1;
-    FONT_INDEX_PX[if font_index > last { last } else { font_index }]
+    if font_index >= FONT_INDEX_PX.len() {
+        return FONT_INDEX_PX[0];
+    }
+    FONT_INDEX_PX[font_index]
 }
 
 /// Marker for every UI root spawned by the intro v2 scene, used for cleanup.
@@ -990,8 +1014,27 @@ mod test {
         assert_eq!(intro_font_px(0), 12.0);
         assert_eq!(intro_font_px(2), 16.0, "every caption/button on the intro");
         assert_eq!(intro_font_px(4), 20.0);
-        // a data index the binary has no slot for must not panic
-        assert_eq!(intro_font_px(7), intro_font_px(4));
+    }
+
+    /// A data index the binary has no slot for must not panic, and must land on
+    /// slot 0 — see [`intro_font_px`]: the ladder is 9/8/12/11/15 pt, so an
+    /// out-of-range index is not "a bigger font", and the only three
+    /// out-of-range sites in the whole resinfo data (`FontIndex=7`,
+    /// `ifchatbubblewindow.txt:12,31,50`) sit among 104 chat controls that are
+    /// all slot 0. Clamping to the largest entry stood here and was pinned by a
+    /// test, which is the shape this replaces.
+    #[test]
+    fn an_out_of_range_font_index_falls_back_to_slot_zero() {
+        assert_eq!(intro_font_px(7), FONT_INDEX_PX[0]);
+        assert_eq!(intro_font_px(7), 12.0);
+        assert_ne!(
+            intro_font_px(7),
+            intro_font_px(4),
+            "an unknown slot must not be read as the biggest one"
+        );
+        // the ladder is genuinely unordered, which is the reason for the rule
+        assert!(FONT_INDEX_PX[1] < FONT_INDEX_PX[0]);
+        assert!(FONT_INDEX_PX[3] < FONT_INDEX_PX[2]);
     }
 
     #[test]

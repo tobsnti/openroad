@@ -593,17 +593,16 @@ mod tests {
         input
     }
 
-    /// The key these tests bind. **Not a modifier**: `keycode_to_vk`
+    /// The key these tests *re*bind to. **Not a modifier**: `keycode_to_vk`
     /// (`settings/keymap.rs`) is a Win32 VK table that carries no
     /// Alt/Shift/Ctrl entry at all, so `bind_key(_, KeyCode::AltLeft)` returns
     /// `false` and stores nothing — an earlier draft of these tests asserted
-    /// on exactly that and went red. Whether the original binds 3012 to a
-    /// modifier is UNKNOWN (`OptionSet.csv` gives id 3012 no default at all);
-    /// binding modifiers at all is a keymap-table gap, not a nameplate one.
+    /// on exactly that and went red. Binding modifiers at all is a keymap-table
+    /// gap, not a nameplate one.
     const HELD: KeyCode = KeyCode::F5;
 
-    /// Bound to `Z` out of the box (`SROptionSet.dat` id 3012 = `0x5A` in two
-    /// measured files; `OptionSet.csv` alone declares no default), so the
+    /// Bound to `Z` out of the box (`SROptionSet.dat` id 3012 = `0x5A`;
+    /// `OptionSet.csv` alone declares no default), so the
     /// plates appear while `Z` is held and stay hidden under any other key.
     ///
     /// The bulk read is the *additional* mode either way: the drop under the
@@ -618,7 +617,13 @@ mod tests {
             &options,
             false
         ));
+        // negative control: any other key held is not the binding
         assert!(!drop_item_names_held(&pressed(HELD), &options, false));
+        assert!(!drop_item_names_held(
+            &ButtonInput::default(),
+            &options,
+            false
+        ));
     }
 
     /// The whole point of #600: it is the HELD key, not the cursor, and it is

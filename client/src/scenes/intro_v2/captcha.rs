@@ -11,7 +11,7 @@ use image::EncodableLayout;
 use libflate::zlib::Decoder;
 
 use packets::login::{
-    LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginCaptchaConfirmResponse,
+    LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginCaptchaConfirmResponse, WrongAttempt,
 };
 use packets::Packet;
 
@@ -109,14 +109,39 @@ const CONFIRM_KEY: &str = "UIIS_CTL_CONFIRM";
 /// `UIIT_STT_GLOBAL_AUTHENTICATION_INPUT_ERROR` = "Image code entry has failed
 /// %d out of %d times." — the row directly above the password twin
 /// `UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR` (`:3971`) that `net.rs` uses, and
-/// verbatim the literal that stood here. The two `%d` are positional and are
-/// filled in wire order (attempts, maximum).
+/// verbatim the literal that stood here.
+///
+/// **Fill order is the wire order, `(max_attempts, cur_attempts)`.** This
+/// comment used to claim that while the code did the opposite. The rejection is
+/// `02 | 06000000 | 01000000` on the wire, the struct's field order is
+/// `max_attempts` then `cur_attempts` (`packets/src/login.rs`), and the original
+/// client puts the *first* wire field in the *first* `%d`: its status line reads
+/// **"Image code entry has failed 6 out of 1 times."** So the sentence is odd,
+/// but it is the original's sentence, and the original is the tie-breaker
+/// wherever we have no stated reason to depart.
+///
+/// The password twin in [`super::net`] *does* depart here on purpose and says
+/// so in one place; that rationale was never restated for this dialog, so this
+/// one follows the data instead of silently inheriting a deviation.
 const ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_AUTHENTICATION_INPUT_ERROR";
 
 /// Native size of the captcha box art (`ifconfirmbox.txt`'s plate). Unchanged
 /// by #664 — the shared shell owns the chrome, not this dialog's geometry.
 const CAPTCHA_BOX_W: f32 = 400.0;
 const CAPTCHA_BOX_H: f32 = 180.0;
+
+/// Ink of this dialog's two coloured labels. resinfo `FontColor` is **ARGB**,
+/// so the leading `255` is the alpha and the remaining three are the RGB:
+///
+/// * `GDR_STA_CAPTION` `FontColor=COLOR,"255,230,218,161"` (`ifconfirmbox.txt:71`)
+/// * `GDR_BTN_ACCEPT`  `FontColor=COLOR,"255,255,249,211"` (`ifconfirmbox.txt:52`)
+///
+/// Both were `Color::WHITE` here, which is neither the data nor what the
+/// original draws: its dialog paints the title glyphs in `rgb(230,218,161)` and
+/// the Confirm label in `rgb(255,249,211)`, with no white in either (the
+/// explanation text below *is* white, and stays white).
+const CAPTION_COLOR: Color = Color::srgb_u8(230, 218, 161);
+const CONFIRM_LABEL_COLOR: Color = Color::srgb_u8(255, 249, 211);
 
 /// The decoded captcha image; its presence triggers the modal to spawn.
 #[derive(Resource)]
@@ -234,10 +259,13 @@ fn captcha_modal(
                     (
                         Text({caption})
                         TextFont { font: FontSourceTemplate::Handle({caption_font}), font_size: {FontSize::Px(text_px)} }
-                        TextColor(Color::WHITE)
+                        TextColor({CAPTION_COLOR})
+                        // `HAlign=1` on `GDR_STA_CAPTION` (`ifconfirmbox.txt:73`)
+                        TextLayout::justify(Justify::Center)
                         Node {
                             position_type: PositionType::Absolute,
                             align_self: AlignSelf::Center,
+                            justify_content: JustifyContent::Center,
                             width: px(229),
                             height: px(15),
                             left: px(85),
@@ -247,10 +275,16 @@ fn captcha_modal(
                     (
                         Text({notice})
                         TextFont { font: FontSourceTemplate::Handle({description_font}), font_size: {FontSize::Px(text_px)} }
+                        // `GDR_STA_EXPLAIN` really is white: `FontColor` is
+                        // `255,255,255,255` (`ifconfirmbox.txt:109`), and the
+                        // original draws it as RGB(255,255,255).
                         TextColor(Color::WHITE)
+                        // `HAlign=1` on `GDR_STA_EXPLAIN` (`ifconfirmbox.txt:111`)
+                        TextLayout::justify(Justify::Center)
                         Node {
                             position_type: PositionType::Absolute,
                             align_self: AlignSelf::Center,
+                            justify_content: JustifyContent::Center,
                             width: px(336),
                             height: px(40),
                             left: px(32),
@@ -292,10 +326,11 @@ fn captcha_modal(
                         }
                         Children [
                             // label() starts transparent for the fade systems,
-                            // which never run on this modal, so force it white.
+                            // which never run on this modal, so the colour has
+                            // to be forced here.
                             (
                                 label(&confirm, confirm_font, text_px)
-                                TextColor(Color::WHITE)
+                                TextColor({CONFIRM_LABEL_COLOR})
                             ),
                         ]
                         on(move |_activate: On<Activate>,
@@ -385,6 +420,18 @@ pub fn spawn_captcha(
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
+/// Fills the wrong-attempt row with the rejection's two counters.
+///
+/// Its own function so the order can be pinned by a test: the whole defect here
+/// was a one-character swap that no test could see while the fill sat inline in
+/// the system. See [`ATTEMPTS_KEY`] for why the order is `(max, cur)`.
+fn wrong_attempt_line(template: &str, wrong_attempt: &WrongAttempt) -> String {
+    super::fill_placeholders(
+        template,
+        &[wrong_attempt.max_attempts, wrong_attempt.cur_attempts],
+    )
+}
+
 /// The answer to a submitted code. **This** is where the window closes.
 ///
 /// Accepted (`wrong_attempt: None`) tears the modal down and drops the image
@@ -421,9 +468,9 @@ pub fn on_captcha_confirm_response(
                     ATTEMPTS_KEY,
                     "Image code entry has failed %d out of %d times.",
                 );
-                info_text_writer.write(InfoTextV2Update(super::fill_placeholders(
+                info_text_writer.write(InfoTextV2Update(wrong_attempt_line(
                     &template,
-                    &[wrong_attempt.cur_attempts, wrong_attempt.max_attempts],
+                    wrong_attempt,
                 )));
                 super::play_error_sound(&mut commands, &assets, &options);
                 // Empty the field and put the caret back in it: the rejected
@@ -763,5 +810,58 @@ mod test {
         );
         assert_eq!(plain_text("no markup"), "no markup");
         assert_eq!(plain_text("unterminated <tag"), "unterminated <tag");
+    }
+
+    // ---- The wrong-attempt status line ------------------------------------
+
+    /// The original: wire `02 | 06000000 | 01000000` makes it print "failed
+    /// **6 out of 1** times". The first wire field goes in the first `%d`;
+    /// openroad printed it the other way round while its comment claimed wire
+    /// order.
+    #[test]
+    fn the_wrong_attempt_line_prints_the_first_wire_field_first() {
+        let rejection = WrongAttempt {
+            max_attempts: 6,
+            cur_attempts: 1,
+        };
+
+        assert_eq!(
+            wrong_attempt_line(
+                "Image code entry has failed %d out of %d times.",
+                &rejection
+            ),
+            "Image code entry has failed 6 out of 1 times."
+        );
+    }
+
+    /// Negative control for the test above: 6 and 1 read the same in either
+    /// order only if the two fields are equal, so a second rejection with two
+    /// *different* pairs proves the swap is not accidentally symmetric.
+    #[test]
+    fn the_wrong_attempt_line_is_not_the_reversed_order() {
+        let rejection = WrongAttempt {
+            max_attempts: 6,
+            cur_attempts: 1,
+        };
+
+        assert_ne!(
+            wrong_attempt_line("%d out of %d", &rejection),
+            "1 out of 6",
+            "this is the order that stood here and that the original contradicts"
+        );
+        assert_eq!(wrong_attempt_line("%d out of %d", &rejection), "6 out of 1");
+    }
+
+    /// The two colours the data names, so a future "tidy the colours" pass
+    /// cannot quietly put `Color::WHITE` back: resinfo `FontColor` is ARGB, and
+    /// the original draws both of them.
+    #[test]
+    fn the_dialog_ink_matches_ifconfirmbox() {
+        // GDR_STA_CAPTION FontColor="255,230,218,161" (ifconfirmbox.txt:71)
+        assert_eq!(CAPTION_COLOR, Color::srgb_u8(230, 218, 161));
+        assert_ne!(CAPTION_COLOR, Color::WHITE);
+        // GDR_BTN_ACCEPT FontColor="255,255,249,211" (ifconfirmbox.txt:52)
+        assert_eq!(CONFIRM_LABEL_COLOR, Color::srgb_u8(255, 249, 211));
+        assert_ne!(CONFIRM_LABEL_COLOR, Color::WHITE);
     }
 }

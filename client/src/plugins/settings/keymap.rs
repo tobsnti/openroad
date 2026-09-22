@@ -106,43 +106,47 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3001,
         name: "KeyCharacter",
+        // SROptionSet.dat id 3001 = 0x43 C; textuisystem L2259 "Character ( C )"
         default_key: Some(KeyCode::KeyC),
     },
     KeyAction {
         id: 3002,
         name: "KeyInventory",
+        // SROptionSet.dat id 3002 = 0x49 I; textuisystem L2260 "Inventory ( I )"
         default_key: Some(KeyCode::KeyI),
     },
     KeyAction {
         id: 3003,
         name: "KeySkill",
+        // SROptionSet.dat id 3003 = 0x53 S; textuisystem L2261 "Skill ( S )"
         default_key: Some(KeyCode::KeyS),
     },
     KeyAction {
         id: 3004,
         name: "KeyAction",
-        // textuisystem L2254 `UIIT_STT_TOGGLE_ACTION` "Action ( A )"
+        // SROptionSet.dat id 3004 = 0x41 A; textuisystem L2254 "Action ( A )"
         default_key: Some(KeyCode::KeyA),
     },
     KeyAction {
         id: 3005,
         name: "KeyParty",
-        // textuisystem L2250 `UIIT_STT_TOGGLE_PARTY` "Party ( P )"
+        // SROptionSet.dat id 3005 = 0x50 P; textuisystem L2250 "Party ( P )"
         default_key: Some(KeyCode::KeyP),
     },
     KeyAction {
         id: 3006,
         name: "KeyQuest",
-        // textuisystem L2262 `UIIT_STT_TOGGLE_QUEST` "Quest ( Q )"
+        // SROptionSet.dat id 3006 = 0x51 Q; textuisystem L2262 "Quest ( Q )"
         default_key: Some(KeyCode::KeyQ),
     },
     KeyAction {
         id: 3007,
         name: "KeyCommunity",
-        // textuisystem L2263 `UIIT_STT_TOGGLE_COMMUNITY` "Community ( U )".
-        // L2252 `Guild ( U )` claims the same letter; OptionSet.csv has no
-        // KeyGuild action, so this is the only bindable half of that collision
-        // (see the module note) — the collision is recorded, not resolved.
+        // SROptionSet.dat id 3007 = 0x55 U; textuisystem L2263
+        // `UIIT_STT_TOGGLE_COMMUNITY` "Community ( U )". L2252 `Guild ( U )`
+        // claims the same letter and OptionSet.csv has no KeyGuild action, so
+        // this is the only bindable half of that collision — and the option
+        // file confirms U belongs to this half.
         default_key: Some(KeyCode::KeyU),
     },
     KeyAction {
@@ -195,13 +199,14 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
         default_key: Some(KeyCode::Insert),
     },
     // Board/dismount is one toggle in the original (there is no separate
-    // dismount action), and its caption names the key: "Dismount (Home)".
+    // dismount action); SROptionSet.dat id 3017 = 0x24 VK_HOME, and the caption
+    // names the same key: "Dismount (Home)".
     KeyAction {
         id: 3017,
         name: "KeyCOSRide",
         default_key: Some(KeyCode::Home),
     },
-    // "Terminated (PgUp)".
+    // SROptionSet.dat id 3018 = 0x21 VK_PRIOR; caption "Terminated (PgUp)".
     KeyAction {
         id: 3018,
         name: "KeyCOSRelease",
@@ -210,16 +215,17 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3019,
         name: "KeyCOSFollow",
-        // SROptionSet.dat (two real files, byte-identical), id 3019 = 0x2E
+        // SROptionSet.dat id 3019 = 0x2E
         default_key: Some(KeyCode::Delete),
     },
     KeyAction {
         id: 3020,
         name: "KeyCOSAttack",
-        // SROptionSet.dat (two real files, byte-identical), id 3020 = 0x23
+        // SROptionSet.dat id 3020 = 0x23
         default_key: Some(KeyCode::End),
     },
-    // Offensive/defensive share one toggle, and both captions name "(PgDn)".
+    // Offensive/defensive share one toggle; SROptionSet.dat id 3021 = 0x22
+    // VK_NEXT, and both captions name "(PgDn)".
     KeyAction {
         id: 3021,
         name: "KeyCOSAIType",
@@ -234,7 +240,7 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3024,
         name: "KeyAutoPotion",
-        // textuisystem L2271 `UIIT_STT_TOGGLE_AUTOPOTION` "Auto Potion (T)"
+        // SROptionSet.dat id 3024 = 0x54 T; textuisystem L2271 "Auto Potion (T)"
         default_key: Some(KeyCode::KeyT),
     },
     KeyAction {
@@ -246,13 +252,13 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3026,
         name: "KeyPartyMatch",
-        // textuisystem L2251 `UIIT_STT_TOGGLE_PARTYMATCH` "Party Matching(E)"
+        // SROptionSet.dat id 3026 = 0x45 E; textuisystem L2251 "Party Matching(E)"
         default_key: Some(KeyCode::KeyE),
     },
     KeyAction {
         id: 3027,
         name: "KeyAlchemy",
-        // textuisystem L2273 `UIIT_STT_TOGGLE_ENCHANT` "Alchemy ( Y )"
+        // SROptionSet.dat id 3027 = 0x59 Y; textuisystem L2273 "Alchemy ( Y )"
         default_key: Some(KeyCode::KeyY),
     },
     KeyAction {
@@ -282,7 +288,7 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3033,
         name: "KeyAcademy",
-        // textuisystem L2253 `UIIT_CTL_TC_SHORTKEY_L` "Academy ( L )"
+        // SROptionSet.dat id 3033 = 0x4C L; textuisystem L2253 "Academy ( L )"
         default_key: Some(KeyCode::KeyL),
     },
     KeyAction {
@@ -786,9 +792,12 @@ mod tests {
         assert_eq!(opts.key_for(KEY_WORLD_MAP), Some(KeyCode::KeyM));
     }
 
-    /// The three COS keys the original prints inside its own button captions
-    /// ("Dismount (Home)", "Terminated (PgUp)", "Offensive/Defensive (PgDn)")
-    /// — transcribed data, not invented defaults (see the module note).
+    /// The COS keys, cross-confirmed twice over: the captions print three of
+    /// them ("Dismount (Home)", "Terminated (PgUp)", "Offensive/Defensive
+    /// (PgDn)") and `SROptionSet.dat` carries the same three VK codes plus the
+    /// two no caption names — follow = `0x2E` VK_DELETE, attack = `0x23`
+    /// VK_END. `KEY_COS_FOLLOW` used to be pinned at `None` here on the
+    /// grounds that "no caption names a key for follow"; the option file does.
     #[test]
     fn the_cos_keys_named_by_vanilla_captions_are_bound() {
         let opts = GameOptions::default();
@@ -813,10 +822,62 @@ mod tests {
             .count();
         assert_eq!(bound, 26);
         assert_eq!(KEY_ACTIONS.len() - bound, 6);
+
+        // The six the file stores as 0 — the four target keys, hide-friends,
+        // hide-enemies. These are the data saying "unbound".
+        for id in [3029u16, 3030, 3031, 3032, 3034, 3035] {
+            assert_eq!(opts.key_for(id), None, "{id} is 0 in SROptionSet.dat");
+        }
     }
 
-    /// The defaults that come from the user's own textdata, pinned against the
-    /// lines they were read from (`textuisystem.txt`, UTF-16LE, 5377 lines).
+    /// The eleven defaults this file used to leave `None`, each against the VK
+    /// code `SROptionSet.dat` stores for that id. Two independent installs
+    /// carry a byte-identical keymap block (see the module note).
+    #[test]
+    fn the_eleven_option_file_defaults_match_their_vk_codes() {
+        let opts = GameOptions::default();
+        for (id, vk, key) in [
+            (3009u16, 0x09u32, KeyCode::Tab),
+            (3011, 0x48, KeyCode::KeyH),
+            (3012, 0x5A, KeyCode::KeyZ),
+            (3013, 0x58, KeyCode::KeyX),
+            (3014, 0x4E, KeyCode::KeyN),
+            (3015, 0x47, KeyCode::KeyG),
+            (3016, 0x2D, KeyCode::Insert),
+            (3019, 0x2E, KeyCode::Delete),
+            (3020, 0x23, KeyCode::End),
+            (3023, 0x52, KeyCode::KeyR),
+            (3025, 0x57, KeyCode::KeyW),
+        ] {
+            assert_eq!(opts.key_for(id), Some(key), "default of {id}");
+            // and the translation is the one an imported .dat would take
+            assert_eq!(vk_to_keycode(vk), Some(key), "VK {vk:#04x} of {id}");
+        }
+    }
+
+    /// The shipped set must not collide with itself: 26 bound actions, 26
+    /// distinct keys. A silent duplicate would make two windows fight over one
+    /// key straight out of the box.
+    #[test]
+    fn no_two_shipped_defaults_share_a_key() {
+        let opts = GameOptions::default();
+        let mut keys: Vec<String> = KEY_ACTIONS
+            .iter()
+            .filter_map(|a| opts.key_for(a.id))
+            .map(|k| format!("{k:?}"))
+            .collect();
+        let before = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "two actions ship on the same key");
+        assert_eq!(before, 26);
+    }
+
+    /// The defaults the string table names in its own label text, pinned against
+    /// their lines (`textuisystem.txt`, UTF-16LE). This is the second source that
+    /// lets the `SROptionSet.dat` keymap block be read as the shipped defaults
+    /// rather than one player's rebind: all fourteen string-named keys agree with
+    /// the file.
     #[test]
     fn data_sourced_defaults_match_their_textuisystem_lines() {
         let opts = GameOptions::default();
@@ -832,19 +893,21 @@ mod tests {
         assert_eq!(opts.key_for(3033), Some(KeyCode::KeyL));
     }
 
-    /// The acceptance's hard rule: `Guild ( U )` (L2252) and `Community ( U )`
-    /// (L2263) claim the same letter and nothing in the data decides it, so at
-    /// most one action may hold `U` — and the world map, whose label carries no
-    /// letter at all (L2258 "Whole area map"), must not have been given one.
+    /// `Guild ( U )` (L2252) and `Community ( U )` (L2263) claim the same
+    /// letter and the strings alone cannot decide it, so at most one action may
+    /// hold `U`. The option file settles which: id 3007 (`KeyCommunity`, the
+    /// only half `OptionSet.csv` makes bindable) is `0x55`. The world map's
+    /// label carries no letter at all (L2258 "Whole area map") — its `M` is
+    /// id 3008 = `0x4D` in the same file, not an openroad invention any more.
     #[test]
-    fn the_u_collision_binds_at_most_one_action_and_the_world_map_gets_no_letter() {
+    fn the_u_collision_binds_exactly_the_community_half_and_the_map_keeps_its_m() {
         let opts = GameOptions::default();
-        let on_u = KEY_ACTIONS
+        let on_u: Vec<u16> = KEY_ACTIONS
             .iter()
             .filter(|a| opts.key_for(a.id) == Some(KeyCode::KeyU))
-            .count();
-        assert!(on_u <= 1, "the U collision must not be resolved silently");
-        // openroad's own pre-existing M, explicitly not a data-sourced letter
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(on_u, vec![3007], "U belongs to KeyCommunity, id 3007");
         assert_eq!(opts.key_for(KEY_WORLD_MAP), Some(KeyCode::KeyM));
     }
 
