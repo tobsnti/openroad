@@ -65,7 +65,7 @@ use crate::plugins::textdata::{
 };
 use crate::plugins::world_origin::{set_dungeon_origin, set_world_origin, WorldOrigin};
 use crate::scenes::intro_v2::character_select::{JoiningCharacter, PendingWorldJoin};
-use crate::scenes::loading_screen::{spawn_loading_chrome, LoadingProgress};
+use crate::scenes::loading_screen::{spawn_loading_surface, LoadingProgress};
 use crate::scenes::world_scene::{preload_starting_area, set_origin_to_spawn_point, SpawnPoints};
 use crate::scenes::SceneState;
 use crate::util::mesh::{mirrored, needs_winding_reversal};
@@ -76,8 +76,8 @@ use crate::util::region::RegionIdExt;
 /// line to the target. Anything farther is ordinary travel that happens to
 /// occur mid-engagement.
 ///
-/// Additive, and sized so the unarmed/melee case reproduces the flat 80 this
-/// replaces (`ATTACK_GAP_STOP` 16 + 64). The server's stop point comes from
+/// Additive, and sized so the unarmed/melee case comes to a flat 80
+/// (`ATTACK_GAP_STOP` 16 + 64). The server's stop point comes from
 /// *its* belief of both positions, so the tolerance covers a disagreement
 /// between the two views, which does not scale with the weapon: a multiplier
 /// would hand a bow an 800-unit radius and start re-projecting genuine long
@@ -170,10 +170,7 @@ fn reset_local_player(mut local: ResMut<LocalPlayer>) {
 /// *entity* rather than in `Local`s, because the entity is spawned in
 /// `OnEnter(GameWorld)` and despawned by `cleanup_game_scene` — so a second
 /// world entry starts at zero by construction instead of by remembering to
-/// reset it. As a `Local`, `elapsed` survived the scene exit sitting at the
-/// 30 s cap and dismissed the *next* entry's overlay on its first frame,
-/// dropping the player into an unbuilt world. Same trap `dev_fast_login`
-/// documents for its once-per-visit guards.
+/// reset it.
 #[derive(Component, Default)]
 struct GameLoadingOverlay {
     /// Seconds this overlay has been up, for [`MAX_WAIT_SECS`].
@@ -194,10 +191,7 @@ struct GameLoadingOverlay {
 ///
 /// This is **the** local-player spawn for a real session:
 /// `spawn_player_character` is only reached from the two fallback branches
-/// below and from the sandbox/dev scenes. It used to say "non-mirrored" here
-/// and mean it, which is why the character you actually play kept rendering
-/// mirror-imaged (weapon in the wrong hand) long after every other SRO
-/// resource had been put in the mirrored frame.
+/// below and from the sandbox/dev scenes.
 fn spawn_selected_player(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -389,6 +383,8 @@ fn spawn_game_loading_overlay(
                 height: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
+                // the 4:3 cover box overflows on the axis that does not fit
+                overflow: bevy::ui::Overflow::clip(),
                 ..default()
             },
             BackgroundColor(Color::BLACK),
@@ -398,28 +394,12 @@ fn spawn_game_loading_overlay(
             UiTargetCamera(camera),
         ))
         .with_children(|parent| {
-            // stretched over the whole overlay, not letterboxed: the chrome
-            // below is placed as percentages of the same box, so a centred
-            // `max_width` background would leave the frame floating off it
-            parent.spawn((
-                ImageNode {
-                    image: background,
-                    image_mode: NodeImageMode::Stretch,
-                    ..default()
-                },
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(0.0),
-                    top: Val::Px(0.0),
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ));
-            // with the gauge: `dismiss_loading_overlay_when_ready` reports
-            // the world-entry readiness into it
-            spawn_loading_chrome(parent, &asset_server, true);
+            // Background and chrome both keep the authored 4:3: the art fills the
+            // window cropped, the chrome sits in the centred 4:3 box — stretching
+            // both to the window distorts them (`loading_screen::DESIGN_ASPECT`).
+            // With the gauge: `dismiss_loading_overlay_when_ready` reports the
+            // world-entry readiness into it.
+            spawn_loading_surface(parent, &asset_server, background, true);
         });
 }
 
@@ -439,14 +419,13 @@ const MAX_WAIT_SECS: f32 = 30.0;
 /// A region that is still loading is a region that still carries a
 /// [`TerrainLoadState`] — `load_terrain_objects_system` removes the component
 /// one poll after `Completed` precisely to disarm the per-frame polling — so
-/// "absent" and `Completed` both mean done. This check used to filter on
-/// `With<PreloadedTerrain>` *and* read `&TerrainLoadState`, and both of those
+/// "absent" and `Completed` both mean done. A check must not filter on
+/// `With<PreloadedTerrain>` or read `&TerrainLoadState`, because both
 /// components are retired while the world loads: `load_terrain_dynamically`
 /// drops the preload marker as soon as the camera is in range (it is a head
 /// start, not a pin), and the object pass drops the load state on completion.
-/// The query therefore emptied a frame or two after scene entry, `terrain_ready`
-/// could never become true again, and every world entry sat behind the overlay
-/// for the full [`MAX_WAIT_SECS`] with all its packets long since arrived.
+/// Such a query empties a frame or two after scene entry and can never report
+/// readiness again.
 ///
 /// Reading whatever terrain is currently resident, rather than a set captured at
 /// scene entry, also survives the world-origin re-anchor:
@@ -587,8 +566,8 @@ pub(crate) fn render_to_server_position(
 
 /// Send a movement request for a click-to-move order (authoritative: the player
 /// only walks when the server answers with a `MovementResponse`). Coordinates go
-/// out as raw region-local units (×10 scaling made the server wrap the
-/// destination several regions over — verified against a capture).
+/// out as raw region-local units: scaling them by ten makes the server wrap
+/// the destination several regions over.
 fn send_movement_request(
     mut orders: MessageReader<PlayerMoveOrder>,
     origin: Res<WorldOrigin>,
@@ -598,8 +577,7 @@ fn send_movement_request(
 ) {
     for order in orders.read() {
         let (region, x, y, z) = render_to_server_position(order.0, &origin);
-        // Coordinates are raw region-local units (verified against a capture:
-        // ×10 scaling made the server wrap the destination several regions over).
+        // raw region-local units, see this function's doc
         let (x, y, z) = (x.round() as i32, y.round() as i32, z.round() as i32);
         // Mounted on a server-side COS: the order addresses the MOUNT via the
         // pet-action envelope; the server answers with a MovementResponse for
@@ -804,8 +782,8 @@ fn on_speed_update(
 ) {
     for msg in reader.read() {
         let Some(entity) = entities.get(msg.unique_id) else {
-            // warn, not debug: a dropped speed update on the LOCAL player is
-            // exactly how the post-teleport stale-index bug stayed invisible
+            // warn, not debug: a dropped speed update on the LOCAL player must
+            // stay visible
             warn!(
                 "network: EntitySpeedUpdate for unknown uid {} (walk={:.1} run={:.1}) — dropped",
                 msg.unique_id, msg.walk_speed, msg.run_speed
@@ -970,7 +948,7 @@ fn apply_pending_character_data(
         );
         if let Some(stop) = parsed.item_stop {
             // A short read, not a corrupt stream: the records before the stop
-            // are kept (#455). Say how many survived and what stopped us.
+            // are kept. Say how many survived and what stopped us.
             warn!(
                 "network:   item section stopped at record {} (@{}, ref_id={}, {} bytes left); \
                  keeping the {} item(s) read before it",
@@ -1113,20 +1091,19 @@ fn on_character_data_end(
 
 /// 0x34B5 SERVER_AGENT_GAME_RESET — the world reset after a committed
 /// teleport. The server tears the zone down and then goes COMPLETELY silent
-/// (captured: 41 s without even the 4 s HP tick) until the client answers
+/// until the client answers
 /// with 0x34B6 GAME_RESET_COMPLETE, after which it replays the whole
 /// CHARACTER_DATA stream (0x34A5/0x3013/0x3020/0x34A6) and waits for a
 /// SECOND GameReady. So: ack immediately, clear the character-data stream
 /// state (`on_character_data_end`'s `game_ready_sent` guard would otherwise
-/// swallow the second 0x3012 — the exact stall the first teleport playtest
-/// hit), and sweep the remaining remote entities (the server only despawns a
-/// handful explicitly before the reset; the rest are implicitly gone). The
+/// swallow the second 0x3012), and sweep the remaining remote entities (the
+/// server only despawns a handful explicitly before the reset; the rest are
+/// implicitly gone). The
 /// replayed CHARACTER_DATA then repositions the player + re-anchors the
 /// origin via [`apply_pending_character_data`].
 ///
 /// The unique id MUST be cleared too: the server assigns a NEW id on every
-/// teleport (dump-verified: 0x3020 carried 0x018B50 at login, 0x018B84
-/// after the first teleport, 0x018BB8 after the next). Kept stale, the
+/// teleport. Kept stale, the
 /// position scan anchors on an id that no longer exists in the replayed
 /// blob, fails, and discards it; cleared, `apply_pending_character_data`
 /// waits for the replayed `CelestialPosition` to pin the fresh id.
@@ -1149,7 +1126,7 @@ fn on_game_reset(
         let mut swept = 0;
         for entity in remotes.iter() {
             // The teleport's own despawn packets arrive in the same read, so
-            // some of these are already queued for despawn (#430).
+            // some of these are already queued for despawn.
             commands.entity(entity).try_despawn();
             swept += 1;
         }
@@ -1361,7 +1338,7 @@ fn mark_item_drops_no_shadow(
 /// death animation and the `Dying` timer despawns them later; everything
 /// else (walked out of range) vanishes immediately as before.
 ///
-/// `try_despawn` rather than `despawn` (#430): a live server sends overlapping
+/// `try_despawn` rather than `despawn`: a live server sends overlapping
 /// despawns — the same unique id in two group batches, or in a group batch and
 /// a `0x3016` single despawn — that one network read delivers in a single
 /// frame. `NetworkEntities` only drops the id when the despawn *applies* (its
@@ -1369,8 +1346,7 @@ fn mark_item_drops_no_shadow(
 /// inserted just as late, so every duplicate in that frame still resolves to
 /// the live entity and queues a second despawn. That second command is
 /// expected and harmless — the entity is meant to be gone — but the default
-/// handler reported each one as an ECS error (59 in one 15-minute session,
-/// in bursts of 8 within the same millisecond). Silencing it here keeps the
+/// handler reports each one as an ECS error. Silencing it here keeps the
 /// error channel meaningful; it is not a way to hide a wrong despawn, since
 /// the first one already did exactly what the server asked.
 fn despawn_or_die(
@@ -1420,11 +1396,8 @@ fn spawn_remote_entity(
     );
     // Every SRO resource is placed under the LH -> RH handedness mirror
     // (`util::mesh`): map objects, dungeon props, the char-select previews and
-    // every test scene already are. The in-world spawn paths were the ones
-    // that migration missed, so remote players, NPCs, monsters and ground
-    // items all rendered geometrically mirrored — weapon in the wrong hand,
-    // asymmetric armour on the wrong side. One mirror here covers every branch
-    // below, since they all place from this transform.
+    // every test scene. One mirror here covers every branch below, since they
+    // all place from this transform.
     let transform = mirrored(
         Transform::from_translation(render)
             .with_rotation(heading_to_render_rotation(entity.position.heading)),
@@ -1444,7 +1417,7 @@ fn spawn_remote_entity(
         speed: speed.current(),
         // The spawn record's state block already carries the gait the server
         // has this entity in, so a monster that is strolling when it comes
-        // into view starts on its walk clip instead of snapping to run (#275).
+        // into view starts on its walk clip instead of snapping to run.
         walking: entity
             .state
             .as_ref()
@@ -1605,10 +1578,9 @@ fn spawn_remote_entity(
                 }
             }
             // Buffs the entity already carries when it comes into view. The
-            // spawn record has always parsed them (`net/reader.rs`'s
-            // character-state block); nothing kept them until the target
-            // window's buff row (#636) needed them. Only inserted when the
-            // list is non-empty, so an unbuffed entity carries no component.
+            // spawn record's character-state block carries them. Only inserted
+            // when the list is non-empty, so an unbuffed entity carries no
+            // component.
             if let Some(buffs) = entity
                 .state
                 .as_ref()
@@ -1738,7 +1710,7 @@ fn cleanup_game_scene(
         .chain(remotes.iter())
     {
         // The chained sets can overlap, and `despawn` is recursive over
-        // children, so an entity may already be queued for despawn (#430).
+        // children, so an entity may already be queued for despawn.
         commands.entity(entity).try_despawn();
     }
     commands.remove_resource::<JoiningCharacter>();
@@ -1755,11 +1727,9 @@ mod test {
     use super::*;
     use crate::plugins::map::terrain::TerrainId;
 
-    /// #628: the world-entry overlay used to invent an English caption
-    /// string exactly where the original bakes the 144x20 `nowloading.ddj`
-    /// art, and drew no frame at all. It now goes through
-    /// `loading_screen::spawn_loading_chrome`, so pin both halves: the overlay
-    /// is art only, and it carries the authored chrome.
+    /// The world-entry overlay is art only — the original bakes the 144x20
+    /// `nowloading.ddj` art here — and it carries the authored chrome from
+    /// `loading_screen::spawn_loading_chrome`. Pin both halves.
     #[test]
     fn the_world_entry_overlay_is_art_only_and_carries_the_shared_chrome() {
         let mut app = App::new();
@@ -1865,14 +1835,13 @@ mod test {
         }
     }
 
-    /// The regression. A region that has finished carries **no**
+    /// A region that has finished carries **no**
     /// `TerrainLoadState` at all — `load_terrain_objects_system` removes it one
     /// poll after `Completed` to disarm the per-frame polling — and it loses
     /// `PreloadedTerrain` even earlier, on the first `load_terrain_dynamically`
-    /// run. The old check filtered on both, so its query emptied within a
-    /// couple of frames of scene entry and `terrain_ready` could never be true
-    /// again: every world entry sat behind the overlay for the full 30 s
-    /// safety net with all its packets long since arrived.
+    /// run. A check filtered on both therefore empties within a couple of
+    /// frames of scene entry, after which `terrain_ready` can never be true
+    /// again and the overlay stays up for the full 30 s safety net.
     #[test]
     fn a_finished_region_that_dropped_its_load_state_counts_as_ready() {
         let mut app = overlay_app();
@@ -1919,11 +1888,10 @@ mod test {
         assert!(!overlay_is_up(&mut app), "the safety net did not fire");
     }
 
-    /// The timer used to be a `Local<f32>`, which survives the scene exit. Once
-    /// the first entry had left it at the 30 s cap, the *next* entry's overlay
-    /// was dismissed on its very first frame, dropping the player into an
-    /// unbuilt world. It now lives on the overlay entity, which is spawned
-    /// fresh on entry and despawned by `cleanup_game_scene`.
+    /// The timer lives on the overlay entity, which is spawned fresh on entry
+    /// and despawned by `cleanup_game_scene`. A `Local<f32>` would survive the
+    /// scene exit at the 30 s cap and dismiss the next entry's overlay on its
+    /// very first frame, dropping the player into an unbuilt world.
     #[test]
     fn a_second_world_entry_does_not_inherit_the_first_entrys_timer() {
         let mut app = overlay_app();
@@ -2007,8 +1975,8 @@ mod test {
     /// Bevy reports a failed command through the `log` crate
     /// (`bevy_ecs::error::handler::warn` -> `log::warn!`), NOT through
     /// `tracing` directly — a tracing-only collector sees nothing, which is
-    /// what made the first attempt at this test a false green. So capture the
-    /// `log` records themselves. No other test in this binary installs a
+    /// `tracing` directly — a tracing-only collector sees nothing. So capture
+    /// the `log` records themselves. No other test in this binary installs a
     /// logger (`LogPlugin` is only wired in `netcheck`/`main`).
     struct CapturedLog;
 
@@ -2041,11 +2009,10 @@ mod test {
     /// Ask [`despawn_or_die`] to remove the same entity twice in one frame —
     /// exactly what the live server produces when a unique id shows up in two
     /// group despawn batches, or in a batch and a `0x3016`, inside one network
-    /// read (#430: 59 such errors in a 15-minute session, in bursts of 8 in
-    /// the same millisecond). The first half of the test is the control: the
-    /// plain `despawn` reports that duplicate, which is the error the issue
-    /// counted. The second half is the fix: through `despawn_or_die` the same
-    /// duplicate reports nothing, and the entity is still gone.
+    /// read. The first half of the test is the control: the plain `despawn`
+    /// reports that duplicate. The second half is the guard: through
+    /// `despawn_or_die` the same duplicate reports nothing, and the entity is
+    /// still gone.
     ///
     /// Both halves live in one test because the log capture is process-global.
     /// `run_system_once` applies the commands inline, so the capture is not
@@ -2100,9 +2067,8 @@ mod test {
         );
     }
 
-    /// The flat 80 this classifier replaced, reproduced exactly for the
-    /// unarmed/melee reach — the change is meant to generalise the rule, not
-    /// to move the melee case.
+    /// The unarmed/melee reach keeps the flat 80: the classifier generalises
+    /// the rule, it must not move the melee case.
     #[test]
     fn the_melee_classification_radius_is_unchanged() {
         use crate::plugins::combat::ATTACK_GAP_STOP;
@@ -2111,7 +2077,7 @@ mod test {
         assert!(!is_attack_approach(80.1, ATTACK_GAP_STOP));
     }
 
-    /// The defect: a bow approach stops ~160 out, so a flat 80 called it
+    /// A bow approach stops ~160 out, which a flat 80 calls
     /// ordinary travel — neither projecting it onto our line to the monster
     /// nor letting the "already inside the ring, hold position" branch run,
     /// which is the branch that actually parks a bow user.
