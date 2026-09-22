@@ -23,6 +23,46 @@ pub struct GuildTag {
     pub granted_nick: String,
 }
 
+/// The six numeric fields behind the guild tag (`GuildID`, crest revisions,
+/// union, hostility, siege authority). Separate from [`GuildTag`] because the
+/// tag is the nameplate's text component while these drive hostile-guild
+/// styling and the fortress-position display — and because a job-suited
+/// player's record carries the tag's name but **not** this sub-block (see
+/// [`Reader::guild`]).
+///
+/// Field order and widths: `GuildID:u32`, `GuildLastCrestRev:u32`,
+/// `UnionID:u32`, `UnionLastCrestRev:u32`, `isFriendly:u8`,
+/// `GuildMemberAuthorityType:u8` — xBot `PacketParser.cs:759-765` /
+/// `SRPlayer.cs:222-231`, field-for-field the same set go-sro's zero-writer
+/// `WriteGuild` (`model/packetutils_entity.go:331-342`) emits. Little-endian
+/// like the whole wire. Table: `docs/re/systems/guild.md` §4.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GuildAffiliation {
+    pub id: u32,
+    /// Crest revision the *sender* holds; a client with an older one refetches
+    /// the emblem out of band (`docs/re/systems/guild.md` §12).
+    pub crest_rev: u32,
+    pub union_id: u32,
+    pub union_crest_rev: u32,
+    /// War hostility: false = at war with the observer's guild. The byte is a
+    /// bool on the wire (`!= 0`); no capture pins which side sets it, so no
+    /// consumer may key colour off it yet (`[S]`).
+    pub is_friendly: bool,
+    /// `GuildMemberAuthorityType` — the enum defines only `None = 0xFF`
+    /// (xBot `SRPlayer.cs:231`); every other value is `[U]` until a capture.
+    pub siege_authority: u8,
+}
+
+/// A player record's guild block: the tag plus the sub-block that a job-suited
+/// player omits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuildBlock {
+    pub tag: GuildTag,
+    /// `None` when the record was read in job mode, i.e. the sub-block was not
+    /// on the wire at all — *not* "all zeroes".
+    pub affiliation: Option<GuildAffiliation>,
+}
+
 /// Bounds-checked little-endian reader.
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -43,6 +83,12 @@ impl<'a> Reader<'a> {
     /// width was derived, see `entity_spawn::recover_unknown_record`).
     pub fn seek(&mut self, pos: usize) -> Option<()> {
         (pos <= self.buf.len()).then(|| self.pos = pos)
+    }
+
+    /// Bytes left in the buffer. Used where a record's *tail* is optional and
+    /// only the payload length can say whether it is there.
+    pub fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
     }
 
     pub fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -141,27 +187,65 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Read the guild block: name string, guild id (u32), member-nick string,
-    /// then 14 bytes — crest revision, union id, union crest revision and two
-    /// flag bytes — that nothing consumes yet.
+    /// Read a player record's guild block. `job_mode` is the record's own
+    /// `job_type != 0` (read a few fields earlier by the caller) and decides
+    /// **how much of the block is on the wire**:
     ///
-    /// The block is **always present**, guild or not: a guildless player sends
-    /// a zero-length name and the same zeroed tail, so this is not conditional
-    /// on membership. `None` (a short read) aborts the record like every other
-    /// parse failure here.
+    /// - always: the guild `name` string (empty for a guildless player — the
+    ///   name field is never omitted, only the sub-block behind it);
+    /// - only when *not* in job mode: `GuildID:u32`, the granted-nick string,
+    ///   `GuildLastCrestRev:u32`, `UnionID:u32`, `UnionLastCrestRev:u32`,
+    ///   `isFriendly:u8`, `GuildMemberAuthorityType:u8`.
     ///
-    /// UNVERIFIED against real bytes — `packet_dump/0x3019.log` holds no player
-    /// spawn record at all (`docs/net-captured-opcodes.md`), so the layout
-    /// comes from go-sro's `WriteGuild` (the server these dumps were captured
-    /// against), corroborated field-for-field by the vSRO client-side parser.
-    /// Closing it needs the guilded-player capture, `docs/re/CAPTURE_LIST.md`
-    /// row A5.
-    pub fn guild(&mut self) -> Option<GuildTag> {
+    /// **Why the branch, and where the old "always present" came from.** This
+    /// used to consume `u32 + string + 14` unconditionally with a comment
+    /// claiming the block is always there. That claim is traceable to go-sro's
+    /// zero-writer `WriteGuild` (`model/packetutils_entity.go:331-342`) — the
+    /// stub server our dumps were captured against, which has **no job mode at
+    /// all** and therefore cannot ever omit it. The original client's own
+    /// third-party parser branches: xBot reads `GuildName` and then skips the
+    /// whole `GuildID…authority` sub-block when `hasJobMode()` holds
+    /// (`PacketParser.cs:750-766`, `SRPlayer.cs:49-54`; job players render as
+    /// `*Name`). One job-suited player in view desynced the entire spawn batch
+    /// (`docs/re/systems/guild.md` §4 hazard 1, §13 D1).
+    ///
+    /// Confidence: `[S]` — the *branch* is spec-derived from xBot (GPL-3.0,
+    /// portable with citation) and not yet seen on real bytes: probing all 868
+    /// frames of `packet_dump/0x3019.log` for the little-endian ref id of every
+    /// player row in `characterdata*.txt` (26 ids) turns up no player record
+    /// (positive control on the identical probe: NPC ref 2013 = `dd070000`
+    /// appears in 14 frames). Capture C1 in `docs/re/systems/guild.md` §14 and
+    /// order `artifacts/capture/orders/070-jobsuit-player-spawn-record.json`
+    /// close it; if it comes back the other way, delete the branch, not the
+    /// fields.
+    ///
+    /// `None` (a short read) aborts the record like every other parse failure
+    /// here.
+    pub fn guild(&mut self, job_mode: bool) -> Option<GuildBlock> {
         let name = self.string()?;
-        self.skip(4)?; // guild id
+        if job_mode {
+            return Some(GuildBlock {
+                tag: GuildTag {
+                    name,
+                    granted_nick: String::new(),
+                },
+                affiliation: None,
+            });
+        }
+        let id = self.u32()?;
         let granted_nick = self.string()?;
-        self.skip(14)?; // crest rev, union id, union crest rev, 2×u8 flags
-        Some(GuildTag { name, granted_nick })
+        let affiliation = GuildAffiliation {
+            id,
+            crest_rev: self.u32()?,
+            union_id: self.u32()?,
+            union_crest_rev: self.u32()?,
+            is_friendly: self.u8()? != 0,
+            siege_authority: self.u8()?,
+        };
+        Some(GuildBlock {
+            tag: GuildTag { name, granted_nick },
+            affiliation: Some(affiliation),
+        })
     }
 }
 
@@ -204,5 +288,55 @@ mod test {
         let mut r = Reader::new(&b);
         r.skip_movement(0x8001).unwrap();
         assert_eq!(r.u8(), Some(0xEE));
+    }
+
+    fn guild_bytes(name: &str, nick: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&7u32.to_le_bytes()); // guild id
+        b.extend_from_slice(&(nick.len() as u16).to_le_bytes());
+        b.extend_from_slice(nick.as_bytes());
+        b.extend_from_slice(&3u32.to_le_bytes()); // guild crest rev
+        b.extend_from_slice(&9u32.to_le_bytes()); // union id
+        b.extend_from_slice(&4u32.to_le_bytes()); // union crest rev
+        b.push(0); // isFriendly = false -> at war
+        b.push(0xFF); // authority: None
+        b
+    }
+
+    /// The six fields behind the tag were skipped as 14 anonymous bytes; a
+    /// sentinel proves the width is unchanged and the values now land.
+    #[test]
+    fn guild_block_full_reads_every_field() {
+        let mut b = guild_bytes("Ironclad", "Quartermaster");
+        b.push(0xEE);
+        let mut r = Reader::new(&b);
+        let block = r.guild(false).unwrap();
+        assert_eq!(block.tag.name, "Ironclad");
+        assert_eq!(block.tag.granted_nick, "Quartermaster");
+        let a = block
+            .affiliation
+            .expect("non-job record carries the sub-block");
+        assert_eq!(a.id, 7);
+        assert_eq!(a.crest_rev, 3);
+        assert_eq!(a.union_id, 9);
+        assert_eq!(a.union_crest_rev, 4);
+        assert!(!a.is_friendly);
+        assert_eq!(a.siege_authority, 0xFF);
+        assert_eq!(r.u8(), Some(0xEE), "block width must be unchanged");
+    }
+
+    /// In job mode only the name string is on the wire: reading the
+    /// sub-block anyway ate the following record's bytes.
+    #[test]
+    fn guild_block_in_job_mode_is_name_only() {
+        let b: Vec<u8> = vec![3, 0, b'A', b'B', b'C', 0xEE];
+        let mut r = Reader::new(&b);
+        let block = r.guild(true).unwrap();
+        assert_eq!(block.tag.name, "ABC");
+        assert_eq!(block.tag.granted_nick, "");
+        assert_eq!(block.affiliation, None);
+        assert_eq!(r.u8(), Some(0xEE), "nothing behind the name may be eaten");
     }
 }
