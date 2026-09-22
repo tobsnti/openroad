@@ -40,7 +40,7 @@ use crate::util::mesh::needs_winding_reversal;
 
 use super::assets::IntroV2Assets;
 use super::character_select;
-use super::chrome::InfoTextV2Update;
+use super::chrome::{InfoTextV2, InfoTextV2Update};
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{intro_font_px, play_error_sound, unescape_newlines, IntroV2State, IntroV2Ui};
@@ -2459,9 +2459,18 @@ pub fn on_check_name_response(
             text.0 = ui_strings.get_plain_or("UIO_MSG_ERROR_ADMISSON", "Valid ID");
             continue;
         }
-        // The per-code error catalogue arrives with the lobby slice; until
-        // then every refusal shows the only row this action was ever seen with.
-        text.0 = ui_strings.get_plain_or("UIO_MSG_ERROR_ID", "This ID already exists.");
+        // The refusal goes through the one dispatcher the original uses for
+        // every lobby error ([`super::lobby_error_line`]) — the create screen
+        // is one of its four callers, and a private copy of a single row would
+        // put the wrong sentence on screen for every code but `0x0410`. A
+        // refusal without a code (or the silent `0x0401`) keeps the row this
+        // action actually uses.
+        text.0 = super::lobby_error_line_or(
+            res.error_code,
+            &ui_strings,
+            "UIO_MSG_ERROR_ID",
+            "This ID already exists.",
+        );
         play_error_sound(&mut commands, &assets, &options);
     }
 }
@@ -2676,13 +2685,17 @@ pub fn on_character_create_response(
         if res.result == 1 {
             next_state.set(IntroV2State::CharacterList);
         } else {
-            // The per-code error catalogue (0x0404 "Select a Weapon.", 0x0405
-            // "A maximum of %d characters ...") arrives with the lobby slice;
-            // until then the code goes to the log and the band shows the
-            // generic create failure.
+            // The per-code catalogue covers this screen: `0x0404`
+            // "Select a Weapon.", `0x0405` "A maximum of %d characters ..."
+            // and `0x0410` "This ID already exists." are all rows the original
+            // shows here, and the generic create failure is only what the
+            // table itself falls back to. Same renderer as delete/restore and
+            // world join ([`super::lobby_error_line`]).
             let code = res.error_code.unwrap_or_default();
             warn!("character create rejected (error {:#06x})", code);
-            info_text_writer.write(InfoTextV2Update(ui_strings.get_plain_or(
+            info_text_writer.write(InfoTextV2Update(super::lobby_error_line_or(
+                res.error_code,
+                &ui_strings,
                 "UIO_SMERR_FAILED_TO_CREATE_CHARACTER",
                 "Failed to create a character. Please try to connect again.",
             )));
@@ -2798,12 +2811,48 @@ fn validate_name(name: &str, ui_strings: &ClientUiStrings) -> Result<(), String>
 /// request may leave.
 fn gate_selection(selection: &CharCreateSelection) -> Result<(), (&'static str, &'static str)> {
     if selection.race == Race::EUROPEAN && !selection.garment_chosen {
-        return Err(("UIO_MSG_ERROR_CHARACTER_SELECTARMOR", "Select a Protector."));
+        return Err(GATE_PROTECTOR);
     }
     if !selection.weapon_chosen {
-        return Err(("UIO_MSG_ERROR_CHARACTER_SELECTWEAPON", "Select a Weapon."));
+        return Err(GATE_WEAPON);
     }
     Ok(())
+}
+
+/// The two gate lines as one pair each, so [`gate_selection`] and
+/// [`clear_satisfied_gate_line`] cannot drift apart: one of them writes the
+/// line, the other one has to recognise it again.
+const GATE_PROTECTOR: (&str, &str) = ("UIO_MSG_ERROR_CHARACTER_SELECTARMOR", "Select a Protector.");
+const GATE_WEAPON: (&str, &str) = ("UIO_MSG_ERROR_CHARACTER_SELECTWEAPON", "Select a Weapon.");
+
+/// Takes the gate line down once the player has done what it asked.
+///
+/// "Select a Weapon." is written by [`gate_selection`] and by nothing else, and
+/// the notice line only ever changes when somebody writes a new one — so the
+/// demand has to be taken down here. A line that outlives its reason reads as a
+/// second, unexplained refusal.
+///
+/// Only the two lines this screen's gates authored are cleared, and only once
+/// the gates pass: a server refusal or a name error keeps standing, because
+/// picking a weapon has not answered those.
+pub fn clear_satisfied_gate_line(
+    selection: Res<CharCreateSelection>,
+    ui_strings: Res<ClientUiStrings>,
+    notice: Query<&Text, With<InfoTextV2>>,
+    mut info_text_writer: MessageWriter<InfoTextV2Update>,
+) {
+    if gate_selection(&selection).is_err() {
+        return;
+    }
+    let Ok(shown) = notice.single() else {
+        return;
+    };
+    if [GATE_PROTECTOR, GATE_WEAPON]
+        .iter()
+        .any(|(key, fallback)| ui_strings.get_plain_or(key, fallback) == shown.0)
+    {
+        info_text_writer.write(InfoTextV2Update(String::new()));
+    }
 }
 
 /// Sends a lobby action frame; returns whether it was queued.
@@ -3746,5 +3795,122 @@ mod tests {
         );
         eu.garment_chosen = true;
         assert_eq!(gate_selection(&eu), Ok(()));
+    }
+
+    /// "Select a Weapon." is written once, and the notice line only changes
+    /// when somebody writes a new one, so the demand has to be taken down when
+    /// the weapon is picked. Asserted in both directions, plus the line that
+    /// must **not** be cleared.
+    #[test]
+    fn the_gate_line_goes_when_the_gate_is_satisfied() {
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2;
+
+        fn app_showing(line: &str, selection: CharCreateSelection) -> App {
+            let mut app = App::new();
+            app.add_message::<InfoTextV2Update>()
+                .init_resource::<ClientUiStrings>()
+                .insert_resource(selection)
+                .add_systems(Update, super::clear_satisfied_gate_line);
+            app.world_mut().spawn((InfoTextV2, Text(line.to_string())));
+            app
+        }
+
+        fn cleared(app: &App) -> bool {
+            let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+            let mut cursor = messages.get_cursor();
+            cursor.read(messages).any(|line| line.0.is_empty())
+        }
+
+        // The demand still stands: a fresh screen has chosen no weapon.
+        let mut app = app_showing("Select a Weapon.", CharCreateSelection::default());
+        app.update();
+        assert!(
+            !cleared(&app),
+            "the demand may not be taken down while it is unmet"
+        );
+
+        // The weapon is picked: the line goes.
+        let mut app = app_showing(
+            "Select a Weapon.",
+            CharCreateSelection {
+                weapon_chosen: true,
+                ..Default::default()
+            },
+        );
+        app.update();
+        assert!(cleared(&app), "the met demand stayed on the screen");
+
+        // Not our line: a server refusal survives a weapon pick, because
+        // picking a weapon has not answered it.
+        let mut app = app_showing(
+            "This ID already exists.",
+            CharCreateSelection {
+                weapon_chosen: true,
+                ..Default::default()
+            },
+        );
+        app.update();
+        assert!(!cleared(&app), "an unrelated line was wiped");
+    }
+
+    /// The overlay pass has to bring its own light.
+    ///
+    /// [`spawn_figure_overlay_camera`] moves the preview onto the
+    /// `CreateFigure` render layer ([`tag_figure_overlay_meshes`]), and a
+    /// `DirectionalLight` only lights the layers it is on — the scene's sun is
+    /// on the main layer, so without this the figure would be lit by the sky
+    /// probe alone and read as a flat silhouette. The light is a child of the
+    /// camera with an identity transform (the paper doll's headlight
+    /// construction), so it follows the camera flight.
+    #[test]
+    fn the_overlay_camera_carries_a_headlight_on_the_figure_layer() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>();
+        let example = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../config.example.yaml")
+            .with_extension("")
+            .to_str()
+            .expect("the example path is utf-8")
+            .to_string();
+        let config = crate::plugins::config::ClientConfig::from_file(&example)
+            .expect("config.example.yaml loads");
+        app.insert_resource(config);
+        app.world_mut()
+            .run_system_once(spawn_figure_overlay_camera)
+            .expect("the overlay camera spawns");
+
+        let figure_layer = RenderLayers::layer(CameraLayers::CreateFigure.into());
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<Entity, With<FigureOverlayCamera>>();
+        let camera = cameras
+            .iter(app.world())
+            .next()
+            .expect("the overlay camera exists");
+
+        let mut lights = app
+            .world_mut()
+            .query::<(&DirectionalLight, &RenderLayers, &ChildOf)>();
+        let on_the_layer: Vec<_> = lights
+            .iter(app.world())
+            .filter(|(_, layers, _)| layers.intersects(&figure_layer))
+            .collect();
+        assert_eq!(
+            on_the_layer.len(),
+            1,
+            "exactly one light on the figure's own layer"
+        );
+        assert_eq!(
+            on_the_layer[0].2.parent(),
+            camera,
+            "a headlight is parented to the camera, or it stops following the flight"
+        );
     }
 }
