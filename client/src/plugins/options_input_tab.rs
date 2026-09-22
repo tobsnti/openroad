@@ -26,7 +26,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
-use crate::plugins::settings::keymap::KEY_ACTIONS;
+use crate::plugins::settings::keymap::{action_is_wired, unwired_reason, KEY_ACTIONS};
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::settings::tooltip::{attach_tooltip, spawn_tooltip_line};
 use crate::plugins::textdata::ClientUiStrings;
@@ -192,7 +192,12 @@ pub fn build_input_pane(
     ))
     .with_children(|list| {
         for act in KEY_ACTIONS {
-            list.spawn((
+            // A row whose key does nothing is dimmed and says why on hover.
+            // It stays rebindable: the binding is real, persisted data, and
+            // the action may gain its consumer tomorrow.
+            let note = inert_note(act.id);
+            let label_color = row_color(note);
+            let mut entity = list.spawn((
                 Node {
                     width: Val::Percent(100.0),
                     height: Val::Px(ROW_H),
@@ -200,8 +205,11 @@ pub fn build_input_pane(
                     ..default()
                 },
                 Pickable::IGNORE,
-            ))
-            .with_children(|row| {
+            ));
+            if let Some(note) = note {
+                attach_tooltip(&mut entity, note);
+            }
+            entity.with_children(|row| {
                 row.spawn((
                     Node {
                         width: Val::Px(LABEL_W),
@@ -217,7 +225,7 @@ pub fn build_input_pane(
                             font_size: FontSize::Px(FONT_SIZE),
                             ..default()
                         },
-                        TextColor(ROW_COLOR),
+                        TextColor(label_color),
                         Pickable::IGNORE,
                     ));
                 });
@@ -254,7 +262,7 @@ pub fn build_input_pane(
                             font_size: FontSize::Px(FONT_SIZE),
                             ..default()
                         },
-                        TextColor(ROW_COLOR),
+                        TextColor(label_color),
                         KeyBindingLabel(act.id),
                         Pickable::IGNORE,
                     ));
@@ -464,9 +472,10 @@ fn refresh_binding_labels(
         color.0 = if armed {
             CAPTURING_COLOR
         } else if !options.key_conflicts(id).is_empty() {
+            // A conflict is actionable, so it outranks the dimming below.
             CONFLICT_COLOR
         } else {
-            ROW_COLOR
+            row_color(inert_note(id))
         };
     }
 }
@@ -488,6 +497,30 @@ fn key_caption(key: KeyCode) -> String {
         .or_else(|| raw.strip_prefix("Digit"))
         .unwrap_or(&raw)
         .to_string()
+}
+
+/// Why a row is dimmed, or `None` while pressing its key does something.
+///
+/// Mirrors [`action_is_wired`] rather than listing ids again: that function is
+/// the single source, and it is false for two different reasons. The first has
+/// a sourced sentence in `keymap::UNWIRED_ACTIONS`; the second is the case the
+/// function itself defines — an action the option data leaves unbound, which
+/// shows an empty key and cannot fire.
+fn inert_note(id: u16) -> Option<&'static str> {
+    if action_is_wired(id) {
+        return None;
+    }
+    Some(unwired_reason(id).unwrap_or("No key is bound to this action yet."))
+}
+
+/// The one place a row's colour is decided, so the spawner and the repaint
+/// cannot drift apart.
+fn row_color(note: Option<&'static str>) -> Color {
+    if note.is_some() {
+        INERT_COLOR
+    } else {
+        ROW_COLOR
+    }
 }
 
 /// `KeyInventory` -> `Key Inventory`.
@@ -525,6 +558,65 @@ mod tests {
         // `_01` describes wheel-as-shortcut, which is the swapped row.
         assert!(MOUSE_ROWS[0].0, "row 0 must be the swapped position");
         assert!(MOUSE_TOOLTIPS[0].1.starts_with("Use the wheel as hot key"));
+    }
+
+    /// The pane must dim exactly the rows whose key does nothing — no more, no
+    /// fewer — and it must take that answer from `keymap`, never from a list
+    /// of its own. A local list would be wrong the day an action is wired.
+    #[test]
+    fn a_row_is_dimmed_exactly_when_its_action_is_unwired() {
+        for act in KEY_ACTIONS {
+            let note = inert_note(act.id);
+            assert_eq!(
+                note.is_none(),
+                action_is_wired(act.id),
+                "{} ({}) disagrees with keymap::action_is_wired",
+                act.name,
+                act.id
+            );
+            assert_eq!(
+                row_color(note),
+                if action_is_wired(act.id) {
+                    ROW_COLOR
+                } else {
+                    INERT_COLOR
+                },
+                "{} ({}) is painted against its own verdict",
+                act.name,
+                act.id
+            );
+        }
+    }
+
+    /// Dimming without a reason is a shrug. Every unwired row has to be able to
+    /// answer "why does this key do nothing" on hover, and the sourced half of
+    /// that answer comes from `keymap::UNWIRED_ACTIONS`.
+    #[test]
+    fn every_dimmed_row_can_say_why() {
+        let mut dimmed = 0;
+        for act in KEY_ACTIONS {
+            let Some(note) = inert_note(act.id) else {
+                continue;
+            };
+            dimmed += 1;
+            assert!(
+                note.len() > 10,
+                "{} ({}) is dimmed with no usable reason: {note:?}",
+                act.name,
+                act.id
+            );
+            // An action the data binds has a sourced sentence; one it leaves
+            // unbound gets this pane's own, and the two must not be confused.
+            match action(act.id).and_then(|a| a.default_key) {
+                Some(_) => assert_eq!(note, unwired_reason(act.id).unwrap_or_default()),
+                None => assert!(note.contains("No key is bound")),
+            }
+        }
+        assert!(dimmed > 0, "the scan found nothing to dim — it is broken");
+        assert!(
+            dimmed < KEY_ACTIONS.len(),
+            "every row dimmed: the scan is inverted"
+        );
     }
 
     /// The pair must cover both values of id 3101 exactly once: a radio that
