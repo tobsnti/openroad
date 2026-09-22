@@ -37,6 +37,7 @@ use super::assets::IntroV2Assets;
 use super::character_select;
 use super::chrome::InfoTextV2Update;
 use super::login_form::main_button_style;
+pub use super::model::{CharCreateSelection, Garment, Gender, Race};
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{IntroV2State, IntroV2Ui};
 use crate::assets::FontAssets;
@@ -45,33 +46,6 @@ use crate::assets::FontAssets;
 /// keeps the agent connection alive for the switch into creation.
 #[derive(Resource)]
 pub struct EnteringCharacterCreate;
-
-/// The two v1.188 playable races (Islam/Arabia is not a v1.188 body).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Race {
-    #[default]
-    Chinese,
-    European,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Gender {
-    #[default]
-    Male,
-    Female,
-}
-
-/// The current creation choice; its change drives the live preview, the
-/// toggle highlights and the picker labels. `figure`/`weapon` index into the
-/// corpus-enumerated option lists (clamped on resolve).
-#[derive(Resource, Default)]
-pub struct CharCreateSelection {
-    pub race: Race,
-    pub gender: Gender,
-    pub figure: usize,
-    pub weapon: usize,
-    pub garment: Garment,
-}
 
 /// Root marker of the creation UI (left panel + bottom button row).
 #[derive(Component, Default, Clone)]
@@ -371,15 +345,6 @@ const MAX_NAME_LEN: usize = 12;
 // scale byte is UNKNOWN (only the untouched-slider default 0x22 is
 // capture-verified), and guessing wire values against the live server would
 // mint permanently mis-scaled characters.
-
-/// The three `_DEF` starter garment sets (original `GDR_SLI_PROTECTOR`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Garment {
-    #[default]
-    Clothes,
-    Light,
-    Heavy,
-}
 
 impl Garment {
     pub const ALL: [Garment; 3] = [Garment::Clothes, Garment::Light, Garment::Heavy];

@@ -33,6 +33,7 @@ pub mod chrome;
 pub mod dev_fast_login;
 pub mod fade;
 pub mod login_form;
+pub mod model;
 pub mod net;
 pub mod region_select;
 pub mod scene_data;
@@ -246,20 +247,17 @@ impl Plugin for IntroV2ScenePlugin {
             .add_systems(
                 Update,
                 (
-                    character_create::update_preview.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
-                    character_create::highlight_selection_buttons.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
+                    character_create::update_preview
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
+                    character_create::highlight_selection_buttons
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
                     // The rows carry no value text; the Explain box is the
                     // readout, so it re-reads on either a selection change or
                     // a focus change.
                     character_create::update_explain_panel
                         .run_if(resource_exists::<character_create::CharCreateFocus>),
-                    character_create::update_slider_thumbs.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
+                    character_create::update_slider_thumbs
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
                     // `Section = Rotate`: yaw + zoom are applied whenever the
                     // view state changes (and once on enter, via the added
                     // resource), so the preview keeps them across re-spawns.
