@@ -66,7 +66,7 @@ class in the PR**. The class decides what you are allowed to do with it:
 |---|---|---|
 | **MIT** | Veykril/pk2 crate, JMX-File-Editor (C# — structures portable), NVMTerrainExtractor, SRO-2DT-Editor, SR_Db2Media (skilldata cipher) | Depend on / port code and structures |
 | **DBAD** | florian0/SRO_DevKit, go-sro | Read/reference only for GPL-3.0 purposes |
-| **No license** (all-rights-reserved by default) | SilkroadDoc wiki, sr_formats, Silkroad-Effect-Viewer, both Blender importers, NVMEditor, threejs-pyside6, srodevs-docs, devtekve Security.cs | Learn facts and field layouts; **never copy code or text** |
+| **No license** (all-rights-reserved by default) | SilkroadDoc wiki, sr_formats, Silkroad-Effect-Viewer, both Blender importers, NVMEditor, threejs-pyside6, srodevs-docs, devtekve Security.cs, xBot (C# client bot) | Learn facts and field layouts; **never copy code or text** |
 | **AGPL-3.0** | skrillax (server), RSBot | Behavior/spec reference only; **no code porting** |
 | **Same-owner workspace** | sibling `sro-rs-client` docs, scripts, stub server | Adopt freely (verify headers when porting code) |
 | **Proprietary** | "Silkroad Origin" mobile remake data | Static inspection of a user-supplied install only; never redistribute, never commit; **not** v1.188 ground truth |
