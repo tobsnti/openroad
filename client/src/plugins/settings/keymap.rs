@@ -308,6 +308,12 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
 /// The option ids openroad actually consumes today. Kept next to the migrated
 /// call sites' ids so a rename cannot silently unbind a window.
 pub const KEY_CHARACTER: u16 = 3001;
+/// Opens the action / emote panel (`hud::action`).
+///
+/// Named `_PANEL` because the scan that proves a binding is consumed searches
+/// for the constant's name as plain text, and `KEY_ACTION` is a prefix of the
+/// `KEY_ACTIONS` table every options page mentions.
+pub const KEY_ACTION_PANEL: u16 = 3004;
 /// Opens the COS/companion window (`docs/re/ui/cos-pet-window.md`).
 pub const KEY_COS_INFO: u16 = 3016;
 pub const KEY_INVENTORY: u16 = 3002;
@@ -460,6 +466,46 @@ pub fn action(id: u16) -> Option<&'static KeyAction> {
     KEY_ACTIONS.iter().find(|a| a.id == id)
 }
 
+/// Bound actions that no system reads yet, with the reason.
+///
+/// This is the single source for "the key does nothing": the Key Map tab reads
+/// it to mark such a row, and the test below proves each entry against the
+/// crate's own call sites, so an entry cannot outlive its excuse and a new
+/// dead binding cannot be added quietly. Shrinking the list is the work;
+/// growing it needs a reason in the same commit.
+pub const UNWIRED_ACTIONS: [(u16, &str); 11] = [
+    (3004, "KeyAction — no action window yet"),
+    (3006, "KeyQuest — no quest journal yet"),
+    (3007, "KeyCommunity — no community window yet"),
+    (3009, "KeyBerserkerMode — no berserk trigger yet"),
+    (3011, "KeyHelp — no help window yet"),
+    (3013, "KeyMouseQuickSlot — no mouse quick-slot mode yet"),
+    (3014, "KeySitStand — no sit/stand chain yet"),
+    (3015, "KeyAutoPickup — pickup is click/loot driven"),
+    (3023, "KeyReplyWhisper — no whisper-reply shortcut yet"),
+    (
+        3025,
+        "KeyCOSSelection — bound (0x57) since the .dat was read; \
+         there is no COS cycling/selection action yet",
+    ),
+    (3033, "KeyAcademy — no academy panel yet"),
+];
+
+/// Whether pressing this action's key does anything today.
+///
+/// False for an action nothing reads *and* for one the data leaves unbound —
+/// both are a row the player can read but not use.
+pub fn action_is_wired(id: u16) -> bool {
+    action(id).is_some_and(|a| a.default_key.is_some()) && unwired_reason(id).is_none()
+}
+
+/// Why this action does nothing, for a caller that wants to say so.
+pub fn unwired_reason(id: u16) -> Option<&'static str> {
+    UNWIRED_ACTIONS
+        .iter()
+        .find_map(|&(unwired, why)| (unwired == id).then_some(why))
+}
+
 impl GameOptions {
     /// Which key currently triggers action `id`: the stored binding if there is a
     /// readable one, else the action's default, else unbound.
@@ -523,37 +569,17 @@ mod tests {
     /// window either consumes its id or says out loud that it does not yet.
     #[test]
     fn every_bound_key_is_either_consumed_or_declared_unwired() {
-        /// Ids whose consumer does not exist yet. Every entry is a row the
-        /// pane draws without effect; removing one means wiring it.
-        const NOT_YET_WIRED: [(u16, &str); 12] = [
-            (3004, "KeyAction — no action window yet"),
-            (3006, "KeyQuest — no quest journal yet"),
-            (3007, "KeyCommunity — no community window yet"),
-            (3009, "KeyBerserkerMode — no berserk trigger yet"),
-            (3011, "KeyHelp — no help window yet"),
-            (3013, "KeyMouseQuickSlot — no mouse quick-slot mode yet"),
-            (3014, "KeySitStand — no sit/stand chain yet"),
-            (3015, "KeyAutoPickup — pickup is click/loot driven"),
-            (3023, "KeyReplyWhisper — no whisper-reply shortcut yet"),
-            (
-                3025,
-                "KeyCOSSelection — bound (0x57) since the .dat was read; \
-                    there is no COS cycling/selection action yet",
-            ),
-            (3026, "KeyPartyMatch — no party-matching window yet"),
-            (3033, "KeyAcademy — no academy panel yet"),
-        ];
-
         let sources = client_sources();
+        let consts = key_consts();
         let consumed = |id: u16| {
             let needle = format!("key_for({id}");
             // A call site may name the constant with any path prefix
             // (`KEY_COMMUNITY`, `keymap::KEY_COMMUNITY`, the full path), so the
             // constant's *name* is what is searched for, outside this file.
-            let by_const = KEY_CONSTS
+            let by_const = consts
                 .iter()
                 .find(|(const_id, _)| *const_id == id)
-                .map(|(_, name)| *name);
+                .map(|(_, name)| name.as_str());
             sources.iter().any(|text| {
                 if text.contains("pub const KEY_ACTIONS") {
                     return false; // this file defines them; it does not consume them
@@ -567,7 +593,7 @@ mod tests {
             if action.default_key.is_none() {
                 continue;
             }
-            if NOT_YET_WIRED.iter().any(|(id, _)| *id == action.id) {
+            if unwired_reason(action.id).is_some() {
                 continue;
             }
             if !consumed(action.id) {
@@ -580,19 +606,34 @@ mod tests {
             dead.join("\n  ")
         );
 
-        // The excuse list must not outlive the excuse. `NOT_YET_WIRED` is a
-        // *skip* list, so an id that gained its window would keep silencing the
-        // check above. A listed id that is consumed is a failure, not a shrug.
-        let stale: Vec<&str> = NOT_YET_WIRED
+        // The excuse list must not outlive the excuse. `UNWIRED_ACTIONS` is a
+        // *skip* list, so an id that gained its window keeps silencing the
+        // check above — that is how 3026 stayed listed as "no party-matching
+        // window yet" while `hud/party_matching/model.rs` read it. A listed id
+        // that is consumed is now a failure, not a shrug, and the options pane
+        // reads the same list to mark a row as having no effect.
+        let stale: Vec<&str> = UNWIRED_ACTIONS
             .iter()
             .filter(|(id, _)| consumed(*id))
             .map(|(_, why)| *why)
             .collect();
         assert!(
             stale.is_empty(),
-            "these ids are consumed and must leave NOT_YET_WIRED:\n  {}",
+            "these ids are consumed and must leave UNWIRED_ACTIONS:\n  {}",
             stale.join("\n  ")
         );
+
+        // The public view of the same fact, so a caller outside this module
+        // cannot read something the scan disagrees with.
+        for action in KEY_ACTIONS.iter() {
+            assert_eq!(
+                action_is_wired(action.id),
+                action.default_key.is_some() && consumed(action.id),
+                "action_is_wired disagrees with the call sites for {} ({})",
+                action.name,
+                action.id
+            );
+        }
 
         // Positive control: the scan can actually find a consumed id, so a
         // broken scan fails loudly instead of passing everything.
@@ -602,26 +643,43 @@ mod tests {
         );
     }
 
-    /// The `pub const KEY_*` names a call site may use instead of a literal id.
-    /// A missing entry is not cosmetic: `consumed()` falls back to searching for
-    /// `key_for(<id>`, which a site calling `pressed(KEY_COS_RIDE)` never
-    /// matches.
-    const KEY_CONSTS: [(u16, &str); 14] = [
-        (3001, "KEY_CHARACTER"),
-        (3002, "KEY_INVENTORY"),
-        (3003, "KEY_SKILL"),
-        (3005, "KEY_PARTY"),
-        (3008, "KEY_WORLD_MAP"),
-        (3012, "KEY_VIEW_DROP_ITEM"),
-        (3016, "KEY_COS_INFO"),
-        (3017, "KEY_COS_RIDE"),
-        (3018, "KEY_COS_RELEASE"),
-        (3019, "KEY_COS_FOLLOW"),
-        (3020, "KEY_COS_ATTACK"),
-        (3021, "KEY_COS_AI_TYPE"),
-        (3024, "KEY_AUTO_POTION"),
-        (3027, "KEY_ALCHEMY"),
-    ];
+    /// The `pub const KEY_*` names a call site may use instead of a literal id,
+    /// read out of this file instead of kept by hand.
+    ///
+    /// A missing entry is not cosmetic: `consumed()` falls back to searching
+    /// for `key_for(<id>`, which a site calling `pressed(KEY_COS_RIDE)` never
+    /// matches. The hand-kept list forgot `KEY_PARTY_MATCH`, so a wired action
+    /// read as dead; the list is derived now and cannot fall behind the
+    /// declarations it describes.
+    fn key_consts() -> Vec<(u16, String)> {
+        include_str!("keymap.rs")
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub const KEY_")?;
+                let (name, value) = rest.split_once(": u16 = ")?;
+                let id = value.trim().trim_end_matches(';').parse().ok()?;
+                Some((id, format!("KEY_{name}")))
+            })
+            .collect()
+    }
+
+    /// Every declared `KEY_*` constant reaches the scan, and the scan resolves
+    /// the one the hand-kept list had forgotten.
+    #[test]
+    fn the_constant_table_is_complete() {
+        let consts = key_consts();
+        let declared = include_str!("keymap.rs")
+            .lines()
+            .filter(|line| line.trim_start().starts_with("pub const KEY_") && line.contains("u16"))
+            .count();
+        assert_eq!(consts.len(), declared, "a declaration is missing from the scan");
+        assert!(
+            consts
+                .iter()
+                .any(|(id, name)| *id == 3026 && name == "KEY_PARTY_MATCH"),
+            "KEY_PARTY_MATCH must resolve — its call site names the constant, not the id"
+        );
+    }
 
     /// Every `.rs` file of the client crate.
     /// Only the code that *runs in the client* counts as a consumer.
@@ -636,9 +694,7 @@ mod tests {
     /// is cut off (test modules sit at file end throughout this crate).
     fn shipping_code(text: &str) -> String {
         let body = text
-            .split_once("#[cfg(test)]")
-            .map_or(text, |(shipping, _)| shipping);
-        body.lines()
+            .lines()
             .map(|line| match line.find("//") {
                 // Crude on purpose: a `//` inside a string literal truncates
                 // its line too. That direction is the safe one — it can only
@@ -647,7 +703,53 @@ mod tests {
                 None => line,
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        drop_test_items(&body)
+    }
+
+    /// Cut out each `#[cfg(test)]` item and keep what follows it.
+    ///
+    /// Cutting the file at the first `#[cfg(test)]` instead throws away every
+    /// call site behind it. No file in the crate has that shape today — the
+    /// test modules all sit at file end — so this removes a failure mode
+    /// rather than an observed miss. Comments are already gone when this runs,
+    /// so brace counting only meets code; an item that never balances is
+    /// dropped whole, which is the old behaviour and can only hide a call
+    /// site, never invent one.
+    fn drop_test_items(text: &str) -> String {
+        const MARKER: &str = "#[cfg(test)]";
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find(MARKER) {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + MARKER.len()..];
+            match item_end(after) {
+                Some(end) => rest = &after[end..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Where the item starting at `from` ends: past its `{ .. }` body, or past
+    /// the `;` of a braceless item such as `#[cfg(test)] use super::*;`.
+    fn item_end(from: &str) -> Option<usize> {
+        let mut depth = 0usize;
+        for (at, ch) in from.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(at + 1);
+                    }
+                }
+                ';' if depth == 0 => return Some(at + 1),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The filter itself, checked on a fabricated file: a `KEY_*` mention in a
@@ -663,6 +765,24 @@ mod tests {
         assert!(code.contains("let _ = 1"), "real code survives");
         assert!(!code.contains("KEY_QUEST"), "a comment is not a call site");
         assert!(!code.contains("KEY_HELP"), "a test is not a call site");
+    }
+
+    /// The file shape the old scan could not read: shipping code *after* a
+    /// test module. Cutting at the first `#[cfg(test)]` drops the toggle.
+    #[test]
+    fn shipping_code_keeps_code_after_a_test_module() {
+        let file = "struct S;\n\
+                    #[cfg(test)]\n\
+                    mod test { fn t() { let _ = \"KEY_HELP\"; } }\n\
+                    fn toggle() { options.key_for(KEY_COMMUNITY); }\n\
+                    #[cfg(test)]\n\
+                    use super::KEY_QUEST;\n\
+                    fn after() { options.key_for(KEY_ALCHEMY); }\n";
+        let code = shipping_code(file);
+        assert!(code.contains("KEY_COMMUNITY"), "code after a test module is code");
+        assert!(code.contains("KEY_ALCHEMY"), "a braceless test item ends at its `;`");
+        assert!(!code.contains("KEY_HELP"), "the test module itself is still cut");
+        assert!(!code.contains("KEY_QUEST"), "the braceless test item is cut too");
     }
 
     fn client_sources() -> Vec<String> {
