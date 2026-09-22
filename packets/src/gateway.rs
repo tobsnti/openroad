@@ -185,6 +185,84 @@ mod tests {
         assert_eq!(decoded.farms[1].ip, Ipv4Addr::new(192, 168, 1, 10));
     }
 
+    /// The original v1.208 launcher's first gateway packet: locale `0x16`,
+    /// u16-prefixed `"SR_Client"`, build `208` (`0xD0`).
+    const PATCH_REQUEST_WIRE: &[u8] = &[
+        0x16, 0x09, 0x00, b'S', b'R', b'_', b'C', b'l', b'i', b'e', b'n', b't', 0xd0, 0x00, 0x00,
+        0x00,
+    ];
+
+    #[test]
+    fn patch_request_roundtrips() {
+        let decoded =
+            PatchRequest::try_from(Bytes::from_static(PATCH_REQUEST_WIRE)).expect("decodes");
+        assert_eq!(decoded.locale, 0x16);
+        assert_eq!(decoded.module_name, "SR_Client");
+        assert_eq!(decoded.version, 208);
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), PATCH_REQUEST_WIRE);
+    }
+
+    /// `result == 1` ("up to date") is the whole packet: one byte, no error
+    /// block. A response that read further here would stall the launcher.
+    #[test]
+    fn an_up_to_date_patch_response_is_a_single_byte() {
+        let decoded = PatchResponse::try_from(Bytes::from_static(&[0x01])).expect("decodes");
+        assert_eq!(
+            decoded,
+            PatchResponse {
+                result: 1,
+                error: None,
+            }
+        );
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), &[0x01]);
+    }
+
+    /// Only error code `2` ("update available") carries the download triple.
+    #[test]
+    fn an_update_available_response_carries_the_download_triple() {
+        const BODY: &[u8] = &[
+            0x02, 0x02, 0x09, 0x00, 0x31, 0x32, 0x37, 0x2e, 0x30, 0x2e, 0x30, 0x2e, 0x31, 0xa3,
+            0x3d, 0xd1, 0x00, 0x00, 0x00,
+        ];
+        let decoded = PatchResponse::try_from(Bytes::from_static(BODY)).expect("decodes");
+        let error = decoded.error.clone().expect("result 2 carries an error");
+        assert_eq!(error.error_code, 2);
+        assert_eq!(error.download_server_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(error.download_server_port, Some(15779));
+        assert_eq!(error.latest_version, Some(209));
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), BODY);
+    }
+
+    /// Any other error code ends after the code itself — "gateway not in
+    /// service" (3) has no triple behind it.
+    #[test]
+    fn a_non_update_error_code_ends_after_the_code() {
+        let decoded = PatchResponse::try_from(Bytes::from_static(&[0x02, 0x03])).expect("decodes");
+        let error = decoded.error.clone().expect("result 2 carries an error");
+        assert_eq!(error.error_code, 3);
+        assert_eq!(error.download_server_ip, None);
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), &[0x02, 0x03]);
+    }
+
+    /// The news pair: the request is the locale byte, and the only answer we
+    /// send is the empty list.
+    #[test]
+    fn notice_request_and_empty_response_roundtrip() {
+        let request = NoticeRequest::try_from(Bytes::from_static(&[0x16])).expect("decodes");
+        assert_eq!(request.content_id, 0x16);
+        let encoded: Bytes = request.into();
+        assert_eq!(encoded.as_ref(), &[0x16]);
+
+        let response = NoticeResponse::try_from(Bytes::from_static(&[0x00])).expect("decodes");
+        assert_eq!(response.notice_count, 0);
+        let encoded: Bytes = response.into();
+        assert_eq!(encoded.as_ref(), &[0x00]);
+    }
+
     #[test]
     fn a_zero_count_is_an_empty_list_not_an_error_code() {
         let decoded =
