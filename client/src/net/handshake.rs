@@ -107,16 +107,52 @@ pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeEr
     Ok(flags)
 }
 
+/// Read one whole handshake frame, however the network split it.
+///
+/// A single `read` is not a frame: TCP may deliver the 0x5000 setup packet in
+/// pieces, and `SilkroadFrame::parse` answers `Incomplete` for a partial one.
+/// An `expect` on that read or on the parse turns a split packet — or a peer
+/// that closes mid-handshake — into a panic on a task-pool thread, i.e. a
+/// login-time crash for the GUI client and the headless netcheck harness
+/// alike.
+///
+/// So: accumulate until the frame parses, and turn every failure into a
+/// [`HandshakeError`] the caller already knows how to report. Generic over
+/// `Read` only so the split can be reproduced in a test without a socket.
+fn read_handshake_frame<R: Read>(
+    stream: &mut R,
+    security: Arc<RwLock<SilkroadSecurityState>>,
+) -> Result<SilkroadFrame, HandshakeError> {
+    // The handshake frame is a few dozen bytes; this cap only bounds a peer
+    // that keeps sending without ever completing one.
+    const MAX_HANDSHAKE_BYTES: usize = 4096;
+    let mut pending: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).map_err(|_| InvalidFrame)?;
+        if read == 0 {
+            // Peer closed before the frame was complete.
+            return Err(InvalidFrame);
+        }
+        pending.extend_from_slice(&chunk[..read]);
+        if pending.len() > MAX_HANDSHAKE_BYTES {
+            return Err(InvalidFrame);
+        }
+        match SilkroadFrame::parse(&mut pending, security.clone()) {
+            Ok((_, frame)) => return Ok(frame),
+            // Not all of it arrived yet — read more rather than fail.
+            Err(SilkroadFrameError::Incomplete) => continue,
+            Err(_) => return Err(InvalidFrame),
+        }
+    }
+}
+
 pub(crate) fn initialize(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
+    let frame = read_handshake_frame(stream, security.clone())?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -220,11 +256,14 @@ fn setup_handshake(
             context: sec_data.clone(),
         };
         let s = Arc::new(RwLock::new(security));
-        let mut buf = frame
+        let buf = frame
             .serialize(s.clone())
             .expect("failed to serialize handshake response frame");
+        // write_all, not write: a short write would silently truncate the
+        // handshake frame and the server would drop the connection with no
+        // error on our side.
         write
-            .write(&mut buf)
+            .write_all(&buf)
             .expect("failed to send handshake response data");
         debug!("sent challenge");
 
@@ -246,12 +285,8 @@ pub(crate) fn finalize(
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
-    return match frame {
+    let frame = read_handshake_frame(stream, security.clone())?;
+    match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
                 return Err(InvalidHandshakePacket);
@@ -264,7 +299,7 @@ pub(crate) fn finalize(
             }
         }
         _ => Err(InvalidHandshakePacket),
-    };
+    }
 }
 
 fn derive_final_key(
@@ -329,7 +364,7 @@ fn derive_final_key(
         .serialize(Arc::clone(&s))
         .expect("failed to serialize handshake completed frame");
     write
-        .write(&buf)
+        .write_all(&buf)
         .expect("failed to send handshake completed data");
 
     return Ok(SilkroadSecurityState {
@@ -428,6 +463,86 @@ pub fn g_pow_x_mod_p(generator: u32, private: u32, prime: u32) -> u32 {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A `Read` that hands out the bytes in the chunks it was given — one
+    /// `read` call per chunk, then EOF. This is what a real socket does with a
+    /// frame that crossed a TCP segment boundary.
+    struct ChunkedReader {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+    }
+
+    impl ChunkedReader {
+        fn new(chunks: &[&[u8]]) -> Self {
+            Self {
+                chunks: chunks.iter().map(|c| c.to_vec()).collect(),
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(chunk) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            Ok(n)
+        }
+    }
+
+    /// One unencrypted 0x5000 setup frame on the wire: `len:u16 | opcode:u16 |
+    /// count:u8 | crc:u8 | body`. Phase 1 arrives before any key is agreed, so
+    /// it is never encrypted and the two security bytes are zero.
+    fn setup_frame_bytes(body: &[u8]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        raw.extend_from_slice(&0x5000u16.to_le_bytes());
+        raw.push(0);
+        raw.push(0);
+        raw.extend_from_slice(body);
+        raw
+    }
+
+    fn fresh_security() -> Arc<RwLock<SilkroadSecurityState>> {
+        Arc::new(RwLock::new(SilkroadSecurityState::new()))
+    }
+
+    /// **A split setup frame must not crash the client.** TCP is a byte
+    /// stream, so the 0x5000 setup packet may arrive in pieces;
+    /// `SilkroadFrame::parse` answers `Incomplete` for a partial one. A single
+    /// `read` followed by an `expect` on the parse panics the task-pool thread
+    /// that opens the agent connection, taking the whole process with it.
+    /// Reading on until the frame is whole must produce the identical frame.
+    #[test]
+    fn a_split_setup_frame_is_reassembled_not_a_panic() {
+        let body: Vec<u8> = (0u8..20).collect();
+        let raw = setup_frame_bytes(&body);
+        // Split inside the body, and again inside the 6-byte header — the two
+        // places a single `read` cannot recover from.
+        for split in [3usize, 5, 6, 7, raw.len() - 1] {
+            let (head, tail) = raw.split_at(split);
+            let frame =
+                read_handshake_frame(&mut ChunkedReader::new(&[head, tail]), fresh_security())
+                    .expect("a split frame is still a frame");
+            match frame {
+                SilkroadFrame::Packet { opcode, data, .. } => {
+                    assert_eq!(opcode, 0x5000, "split at {split}");
+                    assert_eq!(data.as_ref(), body.as_slice(), "split at {split}");
+                }
+                other => panic!("split at {split}: expected a packet, got {other:?}"),
+            }
+        }
+    }
+
+    /// A peer that closes mid-handshake must become an error the caller can
+    /// report, not a panic.
+    #[test]
+    fn a_peer_closing_mid_handshake_is_an_error() {
+        let raw = setup_frame_bytes(&[1, 2, 3, 4]);
+        let err = read_handshake_frame(&mut ChunkedReader::new(&[&raw[..4]]), fresh_security())
+            .expect_err("a truncated stream cannot yield a frame");
+        assert!(matches!(err, InvalidFrame), "got {err:?}");
+    }
 
     /// A session mid-handshake: the client has computed B and K from the
     /// server's g/p/A and keyed the handshake blowfish.
