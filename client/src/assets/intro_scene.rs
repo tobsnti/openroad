@@ -88,11 +88,18 @@ impl CameraKeyframe {
     /// Render-space translation of the keyframe: the mirrored SRO-space
     /// position shifted by the floating world origin (see `world_origin`).
     /// Pass `Vec3::ZERO` to get the raw SRO-space position.
+    ///
+    /// Order matters: `rx * 1920` is ~3e5, where an f32 step is 1/32, so adding
+    /// the local offset *before* subtracting the world origin quantises the
+    /// result to that grid (a key at `960.4188843` comes back as `960.40625`).
+    /// Rebasing the region first keeps the sum in the small render-space
+    /// numbers the floating origin exists for; the mirror distributes over it.
     pub fn translation(&self, origin: Vec3) -> Vec3 {
-        let base = Vec3::new(self.rx * 1920.0, 0.0, self.rz * 1920.0);
-        let offset = base + self.offset;
-        let offset = offset * Vec3::new(-1.0, 1.0, 1.0);
-        offset - origin
+        // 1920.0 is `plugins::map::terrain::REGION_SIZE`, spelled out because
+        // this module is part of the parser-only lib surface.
+        let mirror = Vec3::new(-1.0, 1.0, 1.0);
+        let base = Vec3::new(self.rx * 1920.0, 0.0, self.rz * 1920.0) * mirror;
+        (base - origin) + self.offset * mirror
     }
 
     fn rotation(&self) -> Quat {

@@ -39,10 +39,21 @@ pub fn button_label(text: &str, font: Handle<Font>) -> impl Scene {
 /// Label that starts fully transparent and carries a [`TargetColor`], so the
 /// intro's fade systems can fade it in (mirrors the old intro's `text()`).
 pub fn label(text: &str, font: Handle<Font>, font_size: f32) -> impl Scene {
+    label_sized(text, font, FontSize::Px(font_size))
+}
+
+/// [`label`] with the size given as a [`FontSize`] rather than logical pixels.
+///
+/// Exists because a surface whose geometry is expressed in viewport units
+/// (`Val::Vh`, the character-creation screen) needs its text in the *same*
+/// unit — a `FontSize::Px` caption inside a `Val::Vh` box is the one part that
+/// would not grow with the window. Every existing caller keeps passing pixels
+/// through [`label`], so this is an added entry point, not a changed one.
+pub fn label_sized(text: &str, font: Handle<Font>, font_size: FontSize) -> impl Scene {
     let text = text.to_string();
     bsn! {
         Text({text})
-        TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(font_size)} }
+        TextFont { font: FontSourceTemplate::Handle({font}), font_size: {font_size} }
         TextColor(Color::NONE)
         TargetColor(Srgba::WHITE)
         TextLayout::justify(Justify::Center)
@@ -58,11 +69,32 @@ pub fn label(text: &str, font: Handle<Font>, font_size: f32) -> impl Scene {
 /// in the 20px input fields; `EditableText` has no vertical alignment API.
 const INPUT_PAD_TOP: f32 = 3.0;
 
-/// Single-line text input. Click to focus, typing/caret/selection handled by
-/// bevy's `EditableTextInputPlugin`.
+/// Single-line text input, left-aligned. Click to focus, typing/caret/selection
+/// handled by bevy's `EditableTextInputPlugin`.
+///
+/// Left is the alignment every *in-game* input wants (chat, quantity, name
+/// entry), so it stays the default here — the login screen's centred rows go
+/// through [`text_input_justified`] instead, which is what keeps this widget's
+/// HUD call sites untouched.
 pub fn text_input(font: Handle<Font>, tab: i32) -> impl Scene {
+    text_input_justified(font, tab, Justify::Left)
+}
+
+/// Single-line text input with an explicit horizontal alignment of the value.
+///
+/// # The idea
+///
+/// The original's login rows draw their *content* centred: `GDR_EDIT_ID` /
+/// `GDR_EDIT_PASS` (`pstitle_europe.txt:63`, `:44`) carry `HAlign=1`, and the
+/// original draws it that way: the typed value sits centred in the field, not
+/// flush left. So alignment is a per-call-site property of
+/// this widget, not a global style: the HUD's chat/quantity/name rows are
+/// left-aligned and must stay that way, which is why [`text_input`] keeps
+/// `Justify::Left` and only the intro passes `Justify::Center`.
+pub fn text_input_justified(font: Handle<Font>, tab: i32, justify: Justify) -> impl Scene {
     bsn! {
         EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
+        TextLayout::justify(justify)
         Node {
             width: percent(100),
             height: percent(100),
@@ -80,6 +112,17 @@ pub fn text_input(font: Handle<Font>, tab: i32) -> impl Scene {
 /// (caret stays visible) while a sibling overlay shows asterisks. `M` is a
 /// marker component placed on the inner `EditableText` entity so callers can
 /// query the value.
+///
+/// Two properties here come **from the original**, not from taste — do not
+/// "tidy" them away:
+/// * the echo is **one `*` per character** (three characters -> three stars),
+///   which is what `update_password_echo` in `ui_v2/mod.rs` produces — no fixed
+///   number of stars, no per-character width padding.
+/// * the echo is **centred** in the field, like the ID row's value, matching
+///   `HAlign=1` on `GDR_EDIT_PASS` (`pstitle_europe.txt:44`).
+///
+/// This widget only has the login screen as a call site, so the centring is set
+/// here rather than being a parameter.
 pub fn password_input<M: Component + Default + Clone + Unpin>(
     font: Handle<Font>,
     tab: i32,
@@ -91,6 +134,9 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
             (
                 M
                 EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
+                // centred so the (invisible) glyphs and therefore the caret sit
+                // where the asterisk echo below draws them
+                TextLayout::justify(Justify::Center)
                 Node {
                     width: percent(100),
                     height: percent(100),
@@ -104,6 +150,7 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
             (
                 PasswordEcho
                 Text("")
+                TextLayout::justify(Justify::Center)
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(0),

@@ -19,6 +19,10 @@ pub mod widgets;
 
 /// Widget library built on bevy 0.19's headless widgets (`bevy_ui_widgets`),
 /// styled with the game's own image assets. Used by the intro v2 scene.
+/// The design canvas every `resinfo` rect is authored in (`Rect="0,0,1600,1200"`
+/// on the full-screen statics).
+pub const RESINFO_CANVAS: (f32, f32) = (1600.0, 1200.0);
+
 pub struct UiV2Plugin;
 
 impl Plugin for UiV2Plugin {
@@ -89,7 +93,7 @@ fn disabled_art(style: &ImageButtonStyle) -> &Handle<Image> {
     }
 }
 
-/// Plays the click through the `effectsound.txt` registry (#773): the row
+/// Plays the click through the `effectsound.txt` registry: the row
 /// `UI / SND_BUTTON_CLICK` names both the `.wav` and the volume the data wants
 /// it at (80), which no call site could have invented. The `ButtonSound`
 /// component stays as the fallback for the frames before the table is loaded —
@@ -183,9 +187,9 @@ fn update_password_echo(
 mod tests {
     use super::*;
 
-    /// Drive the real system in an `App`: the disabled arm used to resolve to
-    /// `normal`, which is exactly the defect (#640) — a button that cannot be
-    /// pressed looked like one that can.
+    /// Drive the real system in an `App`: a disabled arm that resolved to
+    /// `normal` would make a button that cannot be pressed look like one
+    /// that can.
     fn app_with_button(disable: Option<&str>) -> (App, Entity, Handle<Image>, Handle<Image>) {
         let mut app = App::new();
         // TaskPoolPlugin BEFORE AssetPlugin: `asset_server.load()` touches the
