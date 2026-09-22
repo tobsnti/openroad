@@ -114,6 +114,29 @@ const SLIDER_RIGHT: f32 = WINDOW_W - (214.0 + SLIDER_BTN);
 /// (`:482` / `:463`) are 91x41. Both pairs use `button_europe.ddj`.
 const LIST_BUTTON_W: f32 = 91.0;
 const LIST_BUTTON_H: f32 = 40.0;
+/// Gap between Select and Cancel, and it is the **same pair value** as
+/// Connect/Exit on the login screen (`login_form::BUTTON_GAP`, 18 px from the
+/// blue fills of `button_europe.ddj` at x 309..381 / 418..491 on an 800x600
+/// client). With the pair centred on the screen it puts Select at
+/// `(800 - (2*91 + 18)) / 2 = 300`, against the **301** the original draws — one
+/// pixel.
+const LIST_BUTTON_GAP: f32 = 18.0;
+
+/// Where the server window's top edge sits, as a fraction of the client height.
+///
+/// **Taken from the original, like the login window's 51 %** (`login_form`
+/// `WINDOW_TOP_PERCENT`): it draws the 240x340 frame at **(280,125)** in an
+/// 800x600 client. The frame is not centred vertically, and nothing in
+/// `pstitle_europe.txt` says it is: `Rect="0,0,..."` (`:529`) authors the size
+/// and leaves the origin to the code.
+///
+/// Horizontally there *is* a rule and it is computed, not written down:
+/// `(800 - 240) / 2 = 280` is exactly the original's x, so the window is centred
+/// (`align_items: Center` below).
+///
+/// The Select/Cancel row keeps its 10 px below the frame
+/// (125 + 340 + 10 = 475 = the original's Select top).
+const WINDOW_TOP_PERCENT: f32 = 100.0 * 125.0 / 600.0;
 
 fn slider_style(
     normal: &Handle<Image>,
@@ -180,7 +203,11 @@ pub fn server_window(
         Name("Server Selection V2")
         Node {
             position_type: PositionType::Absolute,
-            justify_content: JustifyContent::Center,
+            // The frame is **not** vertically centred — see
+            // `WINDOW_TOP_PERCENT`. Horizontally it is, and that half stays an
+            // alignment rather than a number.
+            top: percent(WINDOW_TOP_PERCENT),
+            align_items: AlignItems::Center,
             flex_direction: FlexDirection::Column,
             width: percent(100),
             height: percent(100),
@@ -236,10 +263,12 @@ pub fn server_window(
             // Select / Cancel button row
             (
                 Node {
-                    width: px(288),
-                    height: px(41),
+                    width: percent(100),
+                    height: {px(LIST_BUTTON_H)},
                     align_self: AlignSelf::Center,
-                    justify_content: JustifyContent::SpaceEvenly,
+                    justify_content: JustifyContent::Center,
+                    column_gap: {px(LIST_BUTTON_GAP)},
+                    // the original sits the row 10 px under the frame
                     top: px(10),
                 }
                 Children [
@@ -752,7 +781,61 @@ pub fn update_select_button_enabled(
 mod tests {
     use super::*;
 
-    /// The row count is the list rect divided by the measured row height, not a
+    /// The frame's origin in the original is (280,125) in an 800x600 client: x is
+    /// the centring *rule*, y is the original's value.
+    #[test]
+    fn the_server_window_sits_where_the_original_does() {
+        let (client_w, client_h) = (800.0, 600.0);
+        let left = (client_w - WINDOW_W) / 2.0;
+        let top = client_h * WINDOW_TOP_PERCENT / 100.0;
+        assert_eq!((left, top), (280.0, 125.0));
+        // The frame is deliberately **not** vertically centred: centring gives
+        // 130 here, and the original draws 125. Neither is derivable from the
+        // other, which is why this number is a named constant.
+        let centred = (client_h - WINDOW_H) / 2.0;
+        assert_ne!(top, centred);
+        assert_eq!(centred, 130.0);
+    }
+
+    /// Select's top follows from the frame — the row keeps its 10 px under it,
+    /// so 125 + 340 + 10 = 475 is the original's value without a second number
+    /// for it.
+    #[test]
+    fn the_button_row_follows_the_frame() {
+        let top = 600.0 * WINDOW_TOP_PERCENT / 100.0 + WINDOW_H + 10.0;
+        assert_eq!(top, 475.0);
+    }
+
+    /// The other axis: the pair is centred on the screen with the same 18 px gap
+    /// as Connect/Exit, which puts Select at 300 against the original's 301.
+    /// `SpaceEvenly` over a 288-wide row is the red control: ~35 px apart, and
+    /// Select 10 px to the left of where the original draws it.
+    #[test]
+    fn select_and_cancel_are_centred_18px_apart() {
+        let pair = 2.0 * LIST_BUTTON_W + LIST_BUTTON_GAP;
+        let select_left = (800.0 - pair) / 2.0;
+        assert_eq!(select_left, 300.0);
+        assert!((select_left - 301.0).abs() <= 1.0);
+        let old_row_w = 288.0;
+        let space_evenly_gap = (old_row_w - 2.0 * LIST_BUTTON_W) / 3.0;
+        let old_select_left = (800.0 - old_row_w) / 2.0 + space_evenly_gap;
+        // 291.33, so `SpaceEvenly` over that row explains a 291 px Select edge
+        // to within a third of a pixel.
+        assert!((old_select_left - 291.0).abs() < 0.5);
+        assert!(space_evenly_gap > 34.0 && space_evenly_gap < 36.0);
+    }
+
+    /// The 1 px the original does *not* share: this window's buttons are
+    /// `Rect="0,0,91,40"` (`pstitle_europe.txt:548`, `:567`) while the login
+    /// screen's are `0,0,91,41` (`:491`). Pinned so nobody tidies them into one
+    /// constant.
+    #[test]
+    fn the_list_buttons_are_a_pixel_shorter_than_the_login_buttons() {
+        assert_eq!((LIST_BUTTON_W, LIST_BUTTON_H), (91.0, 40.0));
+        assert_eq!(LIST_BUTTON_H + 1.0, 41.0);
+    }
+
+    /// The row count is the list rect divided by the row height, not a
     /// hand-picked 15 — this is the assertion that keeps it that way.
     #[test]
     fn visible_rows_is_the_list_rect_divided_by_the_row() {
