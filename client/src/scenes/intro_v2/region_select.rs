@@ -44,10 +44,10 @@ use crate::plugins::world_origin::WorldOrigin;
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
 use super::login_form::main_button_style;
-use super::race_catalog::{plate_races, KNOWN_RACES};
+use super::race_catalog::{available_races, KNOWN_RACES};
 use super::race_stage::RaceBoardIdol;
 use super::scene_data::ActiveCharSelectSceneV2;
-use super::{intro_font_px, IntroV2State, IntroV2Ui};
+use super::{intro_font_px, unescape_newlines, IntroV2State, IntroV2Ui};
 
 /// Root marker of the region-select UI.
 #[derive(Component, Default, Clone)]
@@ -256,34 +256,17 @@ const PLATE_BODY_FONT_INDEX: usize = 0;
 const CANCEL_FONT_INDEX: usize = 2;
 
 /// How long the finished loading picture stays up after its gauge is full, so
-/// `OnEnter(CharacterCreate)` can build the screen behind it. **Our number**
-/// (timing UNKNOWN — not data-derived); what it is *not* any more is the
-/// progress source, which is now the real asset load (§8.8).
+/// `OnEnter(CharacterCreate)` can build the screen behind it. Our number
+/// (timing UNKNOWN — not data-derived); it is not the progress source, which is
+/// the real asset load.
 const LOADING_CUT_SECS: f32 = 1.2;
 
-/// Dim tint of a data-blocked plate (no body rows for the race).
-const PLATE_DISABLED_TINT: Color = Color::srgba(0.45, 0.45, 0.45, 1.0);
-
-/// Reason shown in the body rect of a data-blocked plate. Deliberate
-/// deviation from the original (#643): the v1.188 client always ships both
-/// races, so it has no "this race is missing" state and no textuisystem key
-/// for one. Re-measured 2026-08-22 over all ten shipped `characterdata*.txt`
-/// shards (the RE notes): 26 `CHAR_CH_*` bodies,
-/// **zero** `CHAR_EU_*` — while the same corpus *does* ship the eight European
-/// starter weapons (`itemdata_15000.txt:492-499`, ids 10887-10894). So the
-/// gap is precisely "no European body ref_id to send or render", not a gate we
-/// could open. A corpus without `CHAR_EU_*` figure rows (verified on the
-/// maintainer's Media.pk2: `characterdata_5000.txt` holds the 26 `CHAR_CH_*`
-/// bodies, ids 1907-1932, and no shard holds a `CHAR_EU_*` row) would
-/// otherwise dim the plate with no stated cause, which reads as a client bug.
-/// Re-measured 2026-08-25 on the maintainer's PK2 after a "the data is there
-/// now" report: it is *half* there, and the wording now says which half. The
-/// models ship (`Data/res/char/europe/europeman_*.bsr`) and so do the European
-/// monsters, NPCs and starter weapons; what is missing is the one row a
-/// creation packet needs, the playable body in `characterdata` — 26 `CHAR_CH_*`
-/// rows across the nine shards, zero `CHAR_EU_*`. Naming the exact missing row
-/// is what turns "unavailable" from a verdict into something the reader can
-/// check and fix (the RE notes).
+/// A race the data has no playable body for is not on the board at all; it
+/// replaces the dimmed "Out of service area." plate. A data set may carry
+/// `CHAR_CH_*` body rows across the `characterdata*.txt` shards and **zero**
+/// `CHAR_EU_*`, while `Data/res/char/europe/*.bsr` and the European starter
+/// weapons ship — the models are there, the row a creation packet needs is not.
+///
 /// Player-facing reason on a data-blocked plate: the ORIGINAL's own key for
 /// "this region cannot be played here", `UIO_MSG_ERROR_ REGION_SUPPORT`
 /// (`textuisystem.txt`, English column: *"Out of service area."*; the stray
@@ -362,7 +345,7 @@ pub fn enter_region_select(
     // The board is as long as the corpus says: one plate per race the
     // character table can build, plus the plates the interface data itself
     // declares (those stay, dimmed, with the original's reason — #643).
-    for race in plate_races(&char_data) {
+    for race in available_races(&char_data) {
         let presentation = race.presentation();
         if presentation.is_none() {
             info!(
@@ -387,7 +370,6 @@ pub fn enter_region_select(
             label_key,
             &label_fallback,
             presentation.map(|p| p.desc_key).unwrap_or(""),
-            race_available(&char_data, race),
         );
     }
 
@@ -466,13 +448,8 @@ fn spawn_plate(
     label_key: &str,
     label_fallback: &str,
     desc_key: &str,
-    available: bool,
 ) {
-    let tint = if available {
-        Color::WHITE
-    } else {
-        PLATE_DISABLED_TINT
-    };
+    let tint = Color::WHITE;
     let mut plate = commands.spawn((
         RegionSelectRoot,
         IntroV2Ui,
@@ -501,11 +478,7 @@ fn spawn_plate(
         Pickable::IGNORE,
     ));
     plate.with_children(|p| {
-        let label_colour = if available {
-            Color::WHITE
-        } else {
-            PLATE_DISABLED_TINT
-        };
+        let label_colour = Color::WHITE;
         p.spawn((
             RegionPlateInk {
                 race,
@@ -529,17 +502,8 @@ fn spawn_plate(
             },
             Pickable::IGNORE,
         ));
-        // A blocked plate states its reason in the body rect instead of the
-        // race description: dimming alone is indistinguishable from a client
-        // bug, and the cause (missing characterdata rows) is not guessable.
-        let body_text = if available {
-            ui_strings.get_or(desc_key, "").to_string()
-        } else {
-            // The original's own sentence, from the user's own textdata.
-            ui_strings
-                .get_or(PLATE_DISABLED_KEY, PLATE_DISABLED_FALLBACK)
-                .to_string()
-        };
+        // `UIO_NEWCHAR_CTL_*_TT` carries literal `\n` (textuisystem convention)
+        let body_text = unescape_newlines(ui_strings.get_or(desc_key, ""));
         let body_colour = Color::srgba(0.9, 0.9, 0.9, 0.9);
         p.spawn((
             RegionPlateInk {

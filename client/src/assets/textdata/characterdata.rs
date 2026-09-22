@@ -181,6 +181,15 @@ impl CharacterDataRow {
         &self.0[ChardataFields::CodeName]
     }
 
+    /// `Service` (column 0): the data's own on/off switch for a row. `0` is off;
+    /// anything else, or an unreadable/blank column, counts as in service.
+    pub fn in_service(&self) -> bool {
+        self.0
+            .first()
+            .and_then(|v| v.trim().trim_start_matches('\u{feff}').parse::<i32>().ok())
+            .is_none_or(|v| v != 0)
+    }
+
     /// The object's own UI icon as an asset path (`media://icon/...`), or
     /// `None` when the column is blank or a placeholder.
     ///
