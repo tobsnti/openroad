@@ -180,10 +180,10 @@ pub fn bar_tree(state: IntroV2State) -> BarTree {
 /// `region_select::spawn_loading_cut` already picks
 /// `LOADING_CHINA_DDJ`/`LOADING_EUROPE_DDJ` off the same [`Race`].
 /// A race the interface data does not pair art for gets the bare (un-suffixed)
-/// half of the pair — the file that exists in every corpus — rather than a
-/// guessed `_<code>` filename.
+/// half of the pair — the file that always ships — rather than a guessed
+/// `_<code>` filename.
 fn create_bar_art(race: Race, assets: &IntroV2Assets) -> (Handle<Image>, Handle<Image>) {
-    if race == Race::European {
+    if race == Race::EUROPEAN {
         (
             assets.redbar_up_europe.clone(),
             assets.redbar_down_europe.clone(),
@@ -620,9 +620,9 @@ mod test {
             .split_once("\n}\n")
             .expect("create_bar_art is closed")
             .0;
-        // The race list is data-borne now, so the function is a comparison
-        // against the one race whose art the data pairs (`Race::European`)
-        // plus the bare fallback branch — not two enum arms.
+        // The race list is data-borne, so the function is a comparison against
+        // the one race whose art the data pairs (`Race::EUROPEAN`) plus the
+        // bare fallback branch — not two enum arms.
         let (europe_branch, fallback_branch) = body
             .split_once("} else {")
             .expect("create_bar_art has a fallback branch");
