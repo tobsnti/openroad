@@ -45,52 +45,33 @@ const BOARD_CAM_ARRIVAL_PITCH: f32 = 0.62;
 /// below is expressed *relative to it*, not as a second free number.
 const BOARD_TABLE_LEVEL: f32 = -20.0;
 
-/// **Arrival pose derived from the props' own bounding boxes — the distance is
+/// **Arrival pose derived from the idols' own bounding boxes — the distance is
 /// ours, the direction is the original's (stated deviation, ADR-0009).**
 ///
-/// The measurement that decided this shape, photographed and then computed
-/// (lane `charstage-2`, 2026-08-25):
+/// From `(165.2, -33.9, 640.3)` with `pitch +0.62 / yaw 2.53` the original's
+/// axis misses the props' union by only 3.5°, and it stands **18.2 units** from
+/// that union's centre — inside its own tableau, so the desk crops the frame
+/// (`box.bsr`'s planks across the whole screen).
 ///
-/// * The original's pose *is* right and *is* aimed right: from
-///   `(165.2, -33.9, 640.3)` with `pitch +0.62 / yaw 2.53` the axis misses the
-///   union of the four props' bounding boxes (centre `155.78, -23.43, 651.79`,
-///   radius `13.76`) by only **3.5°**. So neither the read floats nor our
-///   `y = -20` placement is the defect — the earlier suspicion that
-///   `BOARD_TABLE_LEVEL` was an invented number is **refuted**, with numbers.
-/// * What the original does is stand **inside** its own tableau: `18.2` units
-///   from that centre, where the union has an angular radius of **37°** against
-///   a half-FOV of `22.5°`. It overfills the frame by design, and the first
-///   photo showed exactly that — `box.bsr`'s planks across the whole screen.
-/// * A first correction that mirrored height and pitch about the *placement
-///   plane* instead of the *view axis* was `14.2°` off-axis and pushed the
-///   tableau into the bottom-left corner (photographed, `/tmp/shots/cs2v_5.png`
-///   and `cs2w_5.png`). Mirroring about the wrong plane is not a composition.
-///
-/// **The deviation, in one line:** the original stands 18.2 units inside its
-/// tableau and crops it; we step back until the whole union is inside the frame,
-/// because this screen offers a *choice* and a cropped motif does not show what
-/// is on offer. Everything else stays the original's: the **azimuth** and the
-/// **magnitude of the elevation** are the measured `yaw 2.53 / |pitch| 0.62`;
-/// only the elevation's *sign* is flipped, which is the maintainer's request to
-/// see the figures from above (playtest H2), and only the *distance* is ours.
-///
-/// Still `[U]`, and now sharper than before: why the original composes its own
-/// race board as an overfilled close-up. It may well be intentional (the plates
-/// are 2D art over it), but nothing measured says so.
-const BOARD_CAM_PITCH: f32 = -BOARD_CAM_MEASURED_PITCH;
-
+/// The deviation, in one line: the **azimuth** and the **magnitude of the
+/// elevation** are the original's `yaw 2.53 / |pitch| 0.62`; the elevation's
+/// *sign* is flipped, so the camera looks at the figures from above, and the
+/// *distance* is whatever frames the **idols** — not the desk — at
+/// [`BOARD_FRAME_FILL`]. Framing the whole desk (the union of all four props)
+/// put the camera ~39 units out and the figures became specks on a crate;
+/// framing the idols lands ~17 units out, within 10 % of the original's own
+/// stand-off.
+const BOARD_CAM_PITCH: f32 = -BOARD_CAM_ARRIVAL_PITCH;
 /// Vertical field of view the cinematic camera is spawned with
 /// (`plugins::camera::FOV` = `FRAC_PI_4`). Mirrored here rather than imported
 /// because that constant is private to the camera plugin; the test
 /// `the_frame_fill_uses_the_cameras_own_fov` fails if the two drift apart.
 const BOARD_CAM_FOV: f32 = std::f32::consts::FRAC_PI_4;
 
-/// Fraction of the frame's half-height the props' bounding sphere is asked to
-/// fill. **Our number** (ADR-0009): `0.85` is the largest value at which every
-/// corner of the union still projects inside the viewport at both `21:9`
-/// (3440x1440) and `16:9` — computed, not eyeballed, and asserted for both
-/// aspects in `the_arrival_frames_the_props_at_both_aspects`. Larger crops the
-/// table again; much smaller turns the motif into a detail of the quay.
+/// Fraction of the frame's half-height the motif's bounding sphere is asked to
+/// fill. **Our number** (ADR-0009): `0.85` keeps every corner of the motif
+/// inside the viewport at both `21:9` (3440x1440) and `16:9`, asserted in
+/// `the_arrival_frames_the_props_at_both_aspects`.
 const BOARD_FRAME_FILL: f32 = 0.85;
 
 /// Yaw of the same waypoint. The original says `2.53` rad; our world mirrors
@@ -166,13 +147,6 @@ pub struct RaceBoardFlight {
     pub target_rot: Quat,
 }
 
-/// World-space bounding sphere of the four props, from their own `.bsr` boxes
-/// through the very mapping [`spawn_race_board_props`] uses (mirror, per-prop
-/// yaw, lift, floating origin). Returned as `(centre, radius)`.
-///
-/// This is the *motif* the arrival frames. Deriving it here — instead of
-/// writing down a camera distance — is what makes the composition follow the
-/// data: change a prop, and the shot follows.
 /// The eight corners of a bounding box.
 fn bbox_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
     [
@@ -187,12 +161,12 @@ fn bbox_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
     ]
 }
 
-/// Every prop corner in world space, through the mapping
-/// [`spawn_race_board_props`] uses: the prop's own yaw, its `(-1, 1, 1)` mirror
-/// scale, the lift and the floating origin.
+/// Every corner of the *motif* props ([`BoardProp::motif`]) in world space,
+/// through the mapping [`spawn_race_board_props`] uses: the prop's own yaw, its
+/// `(-1, 1, 1)` mirror scale, the lift and the floating origin.
 fn board_prop_corners(cam_base: Vec3, origin: Vec3) -> Vec<Vec3> {
     let mut out = Vec::with_capacity(BOARD_PROPS.len() * 8);
-    for prop in BOARD_PROPS.iter() {
+    for prop in BOARD_PROPS.iter().filter(|prop| prop.motif) {
         let translation = board_prop_translation(cam_base, origin, prop.offset);
         let rotation = Quat::from_rotation_y(-prop.yaw);
         for corner in bbox_corners(prop.bbox_min, prop.bbox_max) {
@@ -299,6 +273,10 @@ fn inside_quad_xz(quad: &[Vec3; 4], point: Vec3) -> bool {
     positive == 0 || negative == 0
 }
 
+/// World-space bounding sphere `(centre, radius)` of the motif — the idols on
+/// the desk, not the desk. Deriving it here instead of writing down a camera
+/// distance is what makes the composition follow the data: change a prop, and
+/// the framing follows.
 pub fn board_props_bounds(cam_base: Vec3, origin: Vec3) -> (Vec3, f32) {
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
@@ -359,16 +337,13 @@ fn prop_bounds(prop: &BoardProp, cam_base: Vec3, origin: Vec3) -> (Vec3, f32) {
 /// china) and worsens the other's. It ends up *further* from the figure than it
 /// started, because the original already stands 18.2 units inside its tableau.
 ///
-/// Our arrival stands **39.1** units back instead, for the stated reason at
-/// [`BOARD_FRAME_FILL`], and with the elevation sign flipped. Transplanting the
-/// measured delta into that shot reproduces nothing: computed in our own frame
-/// it *worsens* the chosen idol's off-axis angle (europe 6.6° → 8.7°, china
-/// 4.0° → 8.4°). So the click applies the original's **decision** through the
-/// rule this file already states — same measured direction, same
-/// [`BOARD_FRAME_FILL`], motif = the **chosen idol's own box** instead of the
-/// union of all four props. The distance falls out of the data (the idols
-/// measure ~1.1 x 2.2 x 1.1, so it lands ~3.8 units out): a close-up of the
-/// figure the player picked, with no new constant.
+/// Our arrival frames the idol group from above ([`BOARD_CAM_PITCH`]), so the
+/// original's delta transplanted into that shot reproduces nothing. The click
+/// applies the original's **decision** through the rule this file already
+/// states — same direction, same [`BOARD_FRAME_FILL`], motif = the **chosen
+/// idol's own box** instead of the idol group. The distance falls out of the
+/// data (the idols are ~1.1 x 2.2 x 1.1, so it lands ~3.8 units out): a
+/// close-up of the figure the player picked, with no new constant.
 pub fn confirm_camera_pose(race: Race, cam_base: Vec3, origin: Vec3) -> (Vec3, Quat) {
     let rotation = Quat::from_euler(EulerRot::YXZ, -BOARD_CAM_YAW_ORIGINAL, BOARD_CAM_PITCH, 0.0);
     let (centre, radius) = BOARD_PROPS
@@ -526,6 +501,9 @@ struct BoardProp {
     /// (`PI` is its own mirror image, which is why the lineup never had to
     /// think about it).
     yaw: f32,
+    /// Part of what the arrival pose frames. The idols are the motif; the desk
+    /// is the stage they stand on and may crop.
+    motif: bool,
 }
 
 const BOARD_PROPS: [BoardProp; 4] = [
@@ -551,10 +529,10 @@ const BOARD_PROPS: [BoardProp; 4] = [
         // (-10.505..+2.701, origin near its back edge), so an unrotated table
         // sits ~7 units short in +z and the props the original placed *on* it
         // land behind it — the europe idol in mid-air over the stone step, the
-        // china idol on the back edge, the lizard off the deck entirely
-        // (playtest 2026-08-25, measured in the RE notes
-        // §6). With this value all three stand on the table.
+        // china idol on the back edge, the lizard off the deck entirely.
+        // With this value all three stand on the table.
         yaw: 3.0,
+        motif: false,
     },
     BoardProp {
         path: "data://res/interface/interface_idol_europe.bsr",
@@ -565,6 +543,7 @@ const BOARD_PROPS: [BoardProp; 4] = [
         bbox_max: Vec3::new(1.560, 2.229, -2.833),
         anim_offset: Vec3::ZERO,
         yaw: 3.31,
+        motif: true,
     },
     BoardProp {
         path: "data://res/interface/interface_idol_china.bsr",
@@ -575,6 +554,7 @@ const BOARD_PROPS: [BoardProp; 4] = [
         bbox_max: Vec3::new(4.839, 2.018, -2.350),
         anim_offset: Vec3::ZERO,
         yaw: 3.03,
+        motif: true,
     },
     // Slot 2 of the original's table is the Arabia idol, and it ships as
     // `interface_lizard.bsr` — dead art for a race v1.188 has no player body
@@ -603,6 +583,7 @@ const BOARD_PROPS: [BoardProp; 4] = [
         // (0.000, 0.349, -0.091) to (3.481, 0.357, -7.816).
         anim_offset: Vec3::new(3.481, 0.008, -7.725),
         yaw: 3.00,
+        motif: true,
     },
 ];
 
@@ -1039,9 +1020,19 @@ mod tests {
         // idol itself and therefore compared a *lifted* camera against an
         // *unlifted* idol — 6.3 units of built-in error that only stayed under
         // the threshold while the pose looked up (it scored 0.945 the moment
-        // the arrival was mirrored over the table plane, 2026-08-25). The lift
-        // is rigid, so both sides have to go through it.
-        let idol = board_prop_translation(Vec3::ZERO, Vec3::ZERO, IDOL_CHINA);
+        // the arrival was mirrored over the table plane). The lift is rigid,
+        // so both sides have to go through it.
+        // The mesh, not the placement point: `interface_idol_china.bms` sits
+        // ~5 units off its own origin (bbox x 3.2..4.8, z -3.9..-2.3), which
+        // from the close arrival is a 15° error the old origin-based check
+        // mistook for a mis-aimed camera.
+        let china = BOARD_PROPS
+            .iter()
+            .find(|prop| prop.race == Some(Race::CHINESE))
+            .expect("the china idol is authored");
+        let (idol, _) = prop_bounds(china, Vec3::ZERO, Vec3::ZERO);
+        let placement = board_prop_translation(Vec3::ZERO, Vec3::ZERO, IDOL_CHINA);
+        assert!((idol - placement).length() < 8.0, "same prop, same place");
         let to_idol = (idol - pos).normalize();
         let forward = rot * Vec3::NEG_Z;
         assert!(
@@ -1122,8 +1113,8 @@ mod tests {
         );
     }
 
-    /// The arrival frames the props: centred, whole, and from above — at BOTH
-    /// aspect ratios, with the red control on the pose this replaced.
+    /// The arrival frames the idols: centred, whole, close, and from above — at
+    /// BOTH aspect ratios, with the red control on the pose this replaced.
     ///
     /// This is a *picture* criterion, not a dot product. A dot product only says
     /// the camera points somewhere near the motif; it said `0.988` while the
@@ -1134,13 +1125,11 @@ mod tests {
     ///
     /// * every corner inside the frame (`|ndc| <= 1`) — nothing cropped;
     /// * the union's centre within the middle third (`|ndc| <= 1/3`);
-    /// * the union covering at least 15% of the frame area — it is the motif,
+    /// * the union covering at least a third of the frame height — it is the motif,
     ///   not a detail of the quay.
     ///
-    /// Red control, in the same test: the previous arrival — the measured pose
-    /// mirrored about the *placement plane* instead of the view axis — must fail
-    /// the centring check (it is 14.2° off-axis; photographed as "the table
-    /// clings to the bottom-left corner").
+    /// Red control, in the same test: the previous arrival — the same rule
+    /// applied to the whole desk — must leave the idols small.
     #[test]
     fn the_arrival_frames_the_props_at_both_aspects() {
         /// Perspective projection to normalised device coordinates, or `None`
@@ -1163,7 +1152,16 @@ mod tests {
 
         let corners = board_prop_corners(Vec3::ZERO, Vec3::ZERO);
         let (cam, rot) = board_camera_pose(Vec3::ZERO, Vec3::ZERO);
-        // the maintainer's own two shapes: his 3440x1440 and plain 16:9
+        // Framing the desk stood ~39 units off the idols, which is too far
+        // away; the original stands 18.2 off its tableau. The idols are
+        // the motif now, and the arrival must be in the original's range.
+        let (centre, _) = board_props_bounds(Vec3::ZERO, Vec3::ZERO);
+        let stand_off = (cam - centre).length();
+        assert!(
+            (12.0..=20.0).contains(&stand_off),
+            "the arrival stands {stand_off} from the idols; the original stands 18.2"
+        );
+        // the two window shapes that matter: 3440x1440 and plain 16:9
         for aspect in [3440.0 / 1440.0, 16.0 / 9.0] {
             let projected: Vec<Vec2> = corners
                 .iter()
@@ -1184,35 +1182,50 @@ mod tests {
                 centre.x.abs() <= 1.0 / 3.0 && centre.y.abs() <= 1.0 / 3.0,
                 "the tableau is off-centre at aspect {aspect}: {centre:?}"
             );
-            let area = (max.x - min.x) * (max.y - min.y) / 4.0;
+            // Aspect-independent: the motif's height, not its area (a wider
+            // window adds quay, not idols).
+            let height = (max.y - min.y) / 2.0;
             assert!(
-                area >= 0.15,
-                "the tableau covers only {area} of the frame at aspect {aspect}"
+                height >= 1.0 / 3.0,
+                "the idols cover only {height} of the frame height at aspect {aspect}"
             );
         }
 
-        // Red control: the pose this replaced (measured height and pitch
-        // mirrored about the placement plane) is NOT centred.
-        let mirrored_cam = (Vec3::new(
-            BOARD_CAM_MEASURED_OFFSET.x,
-            2.0 * BOARD_TABLE_LEVEL - BOARD_CAM_MEASURED_OFFSET.y,
-            BOARD_CAM_MEASURED_OFFSET.z,
-        ) + Vec3::Y * BOARD_STAGE_LIFT)
-            * Vec3::new(-1.0, 1.0, 1.0);
+        // Red control: the arrival this replaced framed the union of all four
+        // props (desk included) at the same fill. Reproduced here, it stands
+        // more than twice as far out and the idols shrink to under a sixth of
+        // the frame height — the picture that was too far away.
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for prop in BOARD_PROPS.iter() {
+            let translation = board_prop_translation(Vec3::ZERO, Vec3::ZERO, prop.offset);
+            let rotation = Quat::from_rotation_y(-prop.yaw);
+            for corner in bbox_corners(prop.bbox_min, prop.bbox_max) {
+                let local = (corner + prop.anim_offset) * Vec3::new(-1.0, 1.0, 1.0);
+                let world = translation + rotation * local;
+                min = min.min(world);
+                max = max.max(world);
+            }
+        }
+        let desk_centre = (min + max) * 0.5;
+        let desk_radius = (max - min).length() * 0.5;
+        let desk_distance = desk_radius / (BOARD_FRAME_FILL * (BOARD_CAM_FOV * 0.5).tan());
+        let desk_cam = desk_centre - (rot * Vec3::NEG_Z) * desk_distance;
+        let (idol_centre, _) = board_props_bounds(Vec3::ZERO, Vec3::ZERO);
+        assert!((desk_cam - idol_centre).length() > 2.0 * (cam - idol_centre).length());
         let projected: Vec<Vec2> = corners
             .iter()
-            .filter_map(|c| ndc(mirrored_cam, rot, 3440.0 / 1440.0, *c))
+            .filter_map(|c| ndc(desk_cam, rot, 16.0 / 9.0, *c))
             .collect();
-        let min = projected
-            .iter()
-            .fold(Vec2::splat(f32::MAX), |a, b| a.min(*b));
-        let max = projected
-            .iter()
-            .fold(Vec2::splat(f32::MIN), |a, b| a.max(*b));
-        let centre = (min + max) * 0.5;
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for p in &projected {
+            lo = lo.min(p.y);
+            hi = hi.max(p.y);
+        }
         assert!(
-            centre.x.abs() > 1.0 / 3.0 || centre.y.abs() > 1.0 / 3.0 || min.y < -1.0,
-            "the replaced pose was supposed to be the off-centre one, got {centre:?}"
+            (hi - lo) / 2.0 < 1.0 / 6.0,
+            "the desk-framing arrival was supposed to shrink the idols, got {}",
+            (hi - lo) / 2.0
         );
     }
 
