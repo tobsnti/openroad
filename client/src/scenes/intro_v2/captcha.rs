@@ -2,6 +2,7 @@ use std::io::Read;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::input_focus::tab_navigation::TabGroup;
+use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::text::{EditableText, EditableTextFilter, FontSourceTemplate};
@@ -25,7 +26,7 @@ use crate::plugins::ui_v2::widgets::{image_button, label, text_input};
 
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
-use super::IntroV2Ui;
+use super::{intro_font_px, IntroV2Ui};
 
 /// Upper bound on the inflated bitmap we are willing to expand, so a hostile or
 /// broken server cannot make us allocate arbitrarily. 64x the stock IBUV image,
@@ -53,7 +54,7 @@ fn decode_captcha_pixels(challenge: &LoginCaptchaChallenge) -> Option<Vec<u8>> {
         warn!("captcha: degenerate image size {width}x{height}");
         return None;
     }
-    if (width * height) % 8 != 0 {
+    if !(width * height).is_multiple_of(8) {
         warn!("captcha: {width}x{height} is not a whole number of 1bpp bytes");
         return None;
     }
@@ -103,6 +104,14 @@ fn decode_captcha_pixels(challenge: &LoginCaptchaChallenge) -> Option<Vec<u8>> {
 const CAPTION_KEY: &str = "UIIT_PAG_GLOBAL_AUTHENTICATION";
 const NOTICE_KEY: &str = "UIIT_STT_GLOBAL_AUTHENTICATION_NOTICE";
 const CONFIRM_KEY: &str = "UIIS_CTL_CONFIRM";
+/// The wrong-attempt line of this dialog:
+/// `Media/server_dep/silkroad/textdata/textuisystem.txt:3970` carries
+/// `UIIT_STT_GLOBAL_AUTHENTICATION_INPUT_ERROR` = "Image code entry has failed
+/// %d out of %d times." — the row directly above the password twin
+/// `UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR` (`:3971`) that `net.rs` uses, and
+/// verbatim the literal that stood here. The two `%d` are positional and are
+/// filled in wire order (attempts, maximum).
+const ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_AUTHENTICATION_INPUT_ERROR";
 
 /// Native size of the captcha box art (`ifconfirmbox.txt`'s plate). Unchanged
 /// by #664 — the shared shell owns the chrome, not this dialog's geometry.
@@ -120,6 +129,11 @@ pub struct CaptchaModal;
 /// Marker on the captcha code `EditableText`.
 #[derive(Component, Default, Clone)]
 pub struct CaptchaInput;
+
+/// Marker on the modal's Confirm button, so the Enter path can activate the
+/// very button the mouse activates instead of duplicating its observer.
+#[derive(Component, Default, Clone)]
+pub struct CaptchaConfirmButton;
 
 pub fn on_captcha_challenge(
     mut events: MessageReader<LoginCaptchaChallenge>,
@@ -179,26 +193,47 @@ fn captcha_modal(
     let description_font = fonts.nine.clone();
     let input_font = fonts.nine.clone();
     let confirm_font = fonts.nine.clone();
-    let confirm_sound = assets.sound_error.clone();
+    // One size for the whole box: its single resinfo host
+    // `GDR_CMB_CONFIRMBOX` (`pstitle.txt:6`, section `Validate`) is
+    // `FontIndex=0` -> 12 px on the ladder (`intro_font_px`), and the box has no
+    // other authored control to read a second index from. This restates the
+    // three 12.0 literals that were already here as what they are.
+    let text_px = intro_font_px(0);
+    // Confirm is a button, so it clicks: `resinfo/effectsound.txt` maps
+    // `SND_BUTTON_CLICK` -> `ui\uibutton_a.wav` (`:52`, twin `uibutton_b.wav`
+    // `:53`) while `SND_ERROR` -> `ui\Error.wav` sits at `:56`. This used to be
+    // `sound_error`, i.e. every *successful* captcha submit played the error
+    // cue — a copy/paste, not a reading of the data. The wrong-attempt reply keeps
+    // `sound_error` in `on_captcha_confirm_response`, which is the event that
+    // actually is a failure.
+    let confirm_sound = assets.sound_button_sound_a.clone();
 
     // The host entry `pstitle.txt:6` `GDR_CMB_CONFIRMBOX:CIFConfirmbox` (id 47,
     // section `Validate`) has a degenerate `Rect="0,0,1,1"`, so the original
-    // positions this box from code and the data says nothing about where it goes
-    // (`docs/re/ui/scene-intro-captcha.md` §3/§9). Centring it over a dimmed
-    // screen is therefore an openroad convention, not a reproduction; only the
-    // 400x180 box art and the child rects below come from the original.
+    // positions this box from code and the data says nothing about where it goes.
+    // Centring it over a dimmed screen is therefore an openroad convention, not a
+    // reproduction; only the 400x180 box art and the child rects below come from
+    // the original.
     bsn! {
         modal_scrim()
         CaptchaModal
         Name("Captcha Modal V2")
-        TabGroup::new(0)
+        // MODAL tab group, not `TabGroup::new(0)`. Bevy's rule is explicit
+        // (`bevy_input_focus::tab_navigation::TabGroup`): a non-modal group
+        // tabs through *all* non-modal groups, so with `new(0)` a Tab in the
+        // code field walked straight out of the box and into the login form's
+        // ID/PW/Connect/Exit behind the scrim — controls the original itself
+        // greys out while this box is up (see
+        // `login_form::lock_exit_while_captcha_is_open`). Modality of the tab
+        // ring is the keyboard half of that same behaviour.
+        TabGroup::modal()
         Children [
             (
                 modal_plate(window, CAPTCHA_BOX_W, CAPTCHA_BOX_H)
                 Children [
                     (
                         Text({caption})
-                        TextFont { font: FontSourceTemplate::Handle({caption_font}), font_size: {FontSize::Px(12.0)} }
+                        TextFont { font: FontSourceTemplate::Handle({caption_font}), font_size: {FontSize::Px(text_px)} }
                         TextColor(Color::WHITE)
                         Node {
                             position_type: PositionType::Absolute,
@@ -211,7 +246,7 @@ fn captcha_modal(
                     ),
                     (
                         Text({notice})
-                        TextFont { font: FontSourceTemplate::Handle({description_font}), font_size: {FontSize::Px(12.0)} }
+                        TextFont { font: FontSourceTemplate::Handle({description_font}), font_size: {FontSize::Px(text_px)} }
                         TextColor(Color::WHITE)
                         Node {
                             position_type: PositionType::Absolute,
@@ -247,6 +282,7 @@ fn captcha_modal(
                     ),
                     (
                         image_button(confirm_button_style(assets), 55.0, 18.0)
+                        CaptchaConfirmButton
                         Node {
                             position_type: PositionType::Absolute,
                             width: px(55),
@@ -258,14 +294,13 @@ fn captcha_modal(
                             // label() starts transparent for the fade systems,
                             // which never run on this modal, so force it white.
                             (
-                                label(&confirm, confirm_font, 12.0)
+                                label(&confirm, confirm_font, text_px)
                                 TextColor(Color::WHITE)
                             ),
                         ]
                         on(move |_activate: On<Activate>,
                             connection_query: Query<&SilkroadConnection, With<GatewayConnection>>,
                             input_query: Query<&EditableText, With<CaptchaInput>>,
-                            modal_query: Query<Entity, With<CaptchaModal>>,
                             options: Res<GameOptions>,
                             mut commands: Commands| {
                             let Ok(connection) = connection_query.single() else {
@@ -285,10 +320,14 @@ fn captcha_modal(
                                 .send(frame)
                                 .expect("failed to send LoginCaptchaConfirmRequest");
 
-                            commands.remove_resource::<CaptchaImageV2>();
-                            if let Ok(modal) = modal_query.single() {
-                                commands.entity(modal).despawn();
-                            }
+                            // The window deliberately stays up until the server
+                            // answers: tearing it down on the *click* (what
+                            // stood here) meant a rejected code left nothing to
+                            // retype into, while `on_captcha_confirm_response`
+                            // went on counting "failed %d out of %d times" —
+                            // keeping a retry counter and offering no retry.
+                            // `on_captcha_confirm_response` closes it on
+                            // acceptance and clears the field on rejection.
                             if let Some(playback) = options.audio.fx_playback() {
                                 commands.spawn((
                                     AudioPlayer::new(confirm_sound.clone()),
@@ -326,27 +365,134 @@ pub fn spawn_captcha(
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
+/// The answer to a submitted code. **This** is where the window closes.
+///
+/// Accepted (`wrong_attempt: None`) tears the modal down and drops the image
+/// resource; rejected keeps the modal, states the attempt count, plays
+/// `snd_error` and empties the field so the next code can simply be typed.
+///
+/// Unknown: whether a real gateway sends a **new** `0x2322` after a rejection.
+/// If it does, the fresh image replaces this one through `spawn_captcha`'s
+/// `resource_added` gate (which is why the resource is dropped on *acceptance*
+/// only, not on every answer). If it does not, the user retypes the same image,
+/// which is what the original's own retry counter implies. Both cases are
+/// handled.
 pub fn on_captcha_confirm_response(
     mut events: MessageReader<LoginCaptchaConfirmResponse>,
     mut info_text_writer: MessageWriter<InfoTextV2Update>,
     mut commands: Commands,
     assets: Res<IntroV2Assets>,
     options: Res<GameOptions>,
+    ui_strings: Res<ClientUiStrings>,
+    modal_query: Query<Entity, With<CaptchaModal>>,
+    mut input_query: Query<(Entity, &mut EditableText), With<CaptchaInput>>,
+    mut focus: ResMut<InputFocus>,
 ) {
     for event in events.read() {
         match &event.wrong_attempt {
-            None => continue,
+            None => {
+                commands.remove_resource::<CaptchaImageV2>();
+                for modal in modal_query.iter() {
+                    commands.entity(modal).despawn();
+                }
+            }
             Some(wrong_attempt) => {
-                info_text_writer.write(InfoTextV2Update(format!(
-                    "Image code entry has failed {} out of {} times.",
-                    wrong_attempt.cur_attempts, wrong_attempt.max_attempts
+                let template = ui_strings.get_plain_or(
+                    ATTEMPTS_KEY,
+                    "Image code entry has failed %d out of %d times.",
+                );
+                info_text_writer.write(InfoTextV2Update(super::fill_placeholders(
+                    &template,
+                    &[wrong_attempt.cur_attempts, wrong_attempt.max_attempts],
                 )));
-                if let Some(playback) = options.audio.fx_playback() {
-                    commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
+                super::play_error_sound(&mut commands, &assets, &options);
+                // Empty the field and put the caret back in it: the rejected
+                // code is worthless, and the user should not have to select it
+                // before retyping.
+                if let Ok((entity, mut text)) = input_query.single_mut() {
+                    text.clear();
+                    focus.set(entity, FocusCause::Navigated);
                 }
             }
         }
     }
+}
+
+/// Puts the caret in the code field the moment the modal exists.
+///
+/// # The idea
+///
+/// `spawn_captcha` builds the modal through `spawn_scene`, which **defers**
+/// entity creation, so the input entity does not exist yet inside that system —
+/// the established answer in this tree is a follow-up system on `Added<...>`
+/// (`hud/player_mini_info.rs:826 wire_cinfo_button`,
+/// `hud/target_window.rs:436`). That is what this is.
+///
+/// **Deliberate affordance, not a reproduction.** The original's focus behaviour
+/// on this dialog is unknown: the host block `GDR_CMB_CONFIRMBOX`
+/// (`resinfo/pstitle.txt:6`) carries no default focus field. But the modal is
+/// *the* only thing the screen
+/// accepts input for while it is up — `lock_exit_while_captcha_is_open` and the
+/// in-flight Connect grey out everything else — so the one field it has is the
+/// only sensible focus target. The mirror of it already existed for the
+/// *rejected* case (`on_captcha_confirm_response` re-focuses the emptied
+/// field); all this does is stop the *first* code from being the only one that
+/// has to be clicked into first.
+pub fn focus_captcha_input(
+    fresh: Query<Entity, Added<CaptchaInput>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if let Some(entity) = fresh.iter().next() {
+        focus.set(entity, FocusCause::Navigated);
+    }
+}
+
+/// Enter in the code field confirms the code.
+///
+/// # The idea
+///
+/// Same shape and same rationale as
+/// [`super::login_form::submit_on_enter`] one screen earlier — it is that
+/// pattern extended to this modal, not a second mechanism: `bevy_ui_widgets`'
+/// button already handles Enter when the *button* holds focus, so the only gap
+/// is Enter while the caret is in the edit row, which is where a code is
+/// actually typed. It goes through `Activate` on the real Confirm button so the
+/// send, the sound and the "window stays up until the server answers" rule all
+/// stay in the one observer the mouse uses.
+///
+/// The guard is the focus itself: only a caret sitting in `CaptchaInput`
+/// submits, so Enter on some other focused widget still does that widget's own
+/// thing.
+pub fn confirm_captcha_on_enter(
+    keys: Res<ButtonInput<KeyCode>>,
+    focus: Res<InputFocus>,
+    input_query: Query<(), With<CaptchaInput>>,
+    confirm_query: Query<Entity, With<CaptchaConfirmButton>>,
+    mut commands: Commands,
+) {
+    if !keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+        return;
+    }
+    let Some(focused) = focus.get() else {
+        return;
+    };
+    if input_query.get(focused).is_err() {
+        return;
+    }
+    if let Ok(confirm) = confirm_query.single() {
+        commands.trigger(Activate { entity: confirm });
+    }
+}
+
+/// `OnExit(LoginForm)`: the captcha window is a root of its own on the 2d
+/// camera, so nothing in the login form's own teardown reaches it. Leaving the
+/// form with a captcha still up (a scene restart, or an accepted login racing
+/// the state change) left a modal scrim over the next screen.
+pub fn despawn_captcha_modal(query: Query<Entity, With<CaptchaModal>>, mut commands: Commands) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn();
+    }
+    commands.remove_resource::<CaptchaImageV2>();
 }
 
 #[cfg(test)]
@@ -359,17 +505,110 @@ mod test {
     use crate::assets::textdata::uisystem::UiSystemText;
     use crate::plugins::textdata::plain_text;
 
+    // ---- Focus and Enter inside the modal ---------------------------------
+    //
+    // Both systems are driven with plain marker entities: the geometry comes
+    // from `captcha_modal`, but the *behaviour* under test is only "which
+    // entity holds focus" and "does the real Confirm button get `Activate`",
+    // and a `bsn!` scene would drag the whole asset/font stack into a headless
+    // fixture for nothing.
+
+    /// Records every `Activate` the systems fire, so the assertion does not
+    /// depend on Bevy's message buffer surviving an `app.update()`.
+    #[derive(Resource, Default)]
+    struct Activations(Vec<Entity>);
+
+    fn enter_app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<Activations>()
+            .add_systems(Update, (focus_captcha_input, confirm_captcha_on_enter))
+            .add_observer(|activate: On<Activate>, mut seen: ResMut<Activations>| {
+                seen.0.push(activate.entity);
+            });
+        let input = app.world_mut().spawn(CaptchaInput).id();
+        let confirm = app.world_mut().spawn(CaptchaConfirmButton).id();
+        (app, input, confirm)
+    }
+
+    fn press_enter(app: &mut App) {
+        // `reset` before `press`: without an `InputPlugin` nothing clears the
+        // just-pressed set between frames (same reasoning as `chat/input.rs`).
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::Enter);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+    }
+
+    /// The code field takes focus the moment it exists, so the first code can be
+    /// typed without clicking into the field.
+    #[test]
+    fn the_code_field_takes_focus_as_soon_as_it_exists() {
+        let (mut app, input, _confirm) = enter_app();
+        assert_eq!(app.world().resource::<InputFocus>().get(), None);
+
+        app.update();
+
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
+    }
+
+    /// Enter in the code field activates the *real* Confirm button, so the
+    /// send, the sound and "the window stays up until the server answers" all
+    /// stay in the one observer the mouse uses.
+    #[test]
+    fn enter_in_the_code_field_activates_the_confirm_button() {
+        let (mut app, _input, confirm) = enter_app();
+        app.update(); // focus lands in the field
+
+        press_enter(&mut app);
+
+        assert_eq!(app.world().resource::<Activations>().0, vec![confirm]);
+    }
+
+    /// The negative control §8d asks for: the same key press with the focus
+    /// somewhere else must fire nothing. Without the focus guard in
+    /// `confirm_captcha_on_enter` this test goes red, which is what makes the
+    /// green one above a proof instead of a coincidence.
+    #[test]
+    fn enter_outside_the_code_field_confirms_nothing() {
+        let (mut app, _input, _confirm) = enter_app();
+        app.update();
+        let elsewhere = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(elsewhere, FocusCause::Navigated);
+
+        press_enter(&mut app);
+
+        assert!(app.world().resource::<Activations>().0.is_empty());
+    }
+
+    /// And no key press at all must not confirm either — the guard that would
+    /// otherwise be invisible if `any_just_pressed` were ever dropped.
+    #[test]
+    fn a_frame_without_enter_confirms_nothing() {
+        let (mut app, _input, _confirm) = enter_app();
+        app.update();
+        app.update();
+
+        assert!(app.world().resource::<Activations>().0.is_empty());
+    }
+
     /// A 0x2322 payload in the stock shape the gateway sends: a zlib stream of
-    /// `width * height / 8` bytes at 1bpp. `unk_0x32c8` carries the constant the
-    /// real captures carry, so a decoder that still trusted it would fail here
-    /// (`docs/net-login-gateway.md`).
+    /// `width * height / 8` bytes at 1bpp. `unk_0x32c8` carries its usual
+    /// constant, so a decoder that still trusted it would fail here.
     fn challenge(width: u16, height: u16, bitmap: &[u8]) -> LoginCaptchaChallenge {
         let mut encoder = Encoder::new(Vec::new()).expect("zlib encoder");
         encoder.write_all(bitmap).expect("deflate");
         let image_data = encoder.finish().into_result().expect("zlib stream");
 
         LoginCaptchaChallenge {
-            // Header values as captured: flag 0, remain = everything after it.
+            // Header values as the gateway sends them: flag 0, remain =
+            // everything after it.
             image_flag: 0,
             image_remain: (image_data.len() + 8) as u16,
             image_compressed: image_data.len() as u16,
