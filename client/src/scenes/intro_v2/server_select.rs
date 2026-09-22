@@ -15,6 +15,7 @@ use crate::plugins::ui_v2::style::{ButtonSound, ImageButtonStyle, TargetColor};
 use crate::plugins::ui_v2::widgets::{image_button, label};
 
 use super::assets::IntroV2Assets;
+use super::chrome::InfoTextV2Update;
 use super::login_form::{main_button_style, ShardNameText};
 use super::{intro_font_px, IntroV2State};
 
@@ -574,8 +575,7 @@ pub fn update_shard_rows(
         .queue_spawn_related_scenes::<Children>(rows);
 }
 
-/// Swaps row art for hover/selection, mirroring the old
-/// `on_server_list_item_selected` visuals.
+/// Swaps row art for hover/selection.
 pub fn update_shard_row_visuals(
     mut rows: Query<(&Hovered, &ShardRow, &mut ImageNode, &mut BackgroundColor)>,
     highlighted: Query<&HighlightedShard, With<ServerWindow>>,
@@ -628,6 +628,8 @@ pub fn commit_remembered_shard(
     mut selected_shard: ResMut<SelectedShardV2>,
     shard_list: Res<ShardList>,
     options: Res<GameOptions>,
+    mut info_text: MessageWriter<InfoTextV2Update>,
+    mut said: Local<bool>,
 ) {
     if selected_shard.0.is_some() {
         return;
@@ -642,8 +644,25 @@ pub fn commit_remembered_shard(
         .iter()
         .find(|shard| shard.is_operating && shard.name == remembered)
     else {
+        // Say why the Server row is empty although a server is remembered.
+        // Without this the refusal is silent and the row simply looks
+        // unfilled; with it the screen states the one fact the player cannot
+        // see (the remembered shard is gone or down) and the row keeps telling
+        // the truth. Said once per screen, not once per frame.
+        //
+        // **Our own words, and a stated deviation**: `textdata/textuisystem.txt`
+        // has no row for "this server is not selectable" — none of the 52 rows
+        // whose English column mentions a server says it. `UIO_MSG_ERROR_INPUT`
+        // (`:164`) is *not* it: that row reads "Invalid ID".
+        if !*said {
+            *said = true;
+            info_text.write(InfoTextV2Update(format!(
+                "The remembered server '{remembered}' is not available — pick one with the Server row's list button."
+            )));
+        }
         return;
     };
+    *said = false;
     info!(
         "login form: pre-selecting the remembered server '{}' (shard {})",
         shard.name, shard.id
@@ -686,14 +705,21 @@ pub fn update_shard_name_text(
         })
     });
 
-    // No commit yet -> the remembered name, which is display only. An empty
-    // `recent_server` (first run) leaves the row empty, as it was before.
-    let wanted = match committed {
-        Some(name) => name,
-        None => options.login.recent_server.clone(),
-    };
+    // **No commit -> no name.** A fallback to the remembered `RECENTSERVER`
+    // name whenever nothing is committed would show a server name while
+    // `SelectedShardV2` is `None`, so Connect would answer "Select a server
+    // first" about a server the player can see. Such a fallback only bites when
+    // [`commit_remembered_shard`] has refused — remembered shard gone or not
+    // operating — i.e. exactly when the name is *not* a selection. Display and
+    // state are the same thing by construction rather than by care.
+    //
+    // The remembered name is not lost: it stays in `GameOptions`, and the
+    // moment that shard is in the list and operating again,
+    // `commit_remembered_shard` commits it and it shows up here as a real
+    // selection.
+    let wanted = committed.unwrap_or_default();
 
-    if wanted.is_empty() || text.0 == wanted {
+    if text.0 == wanted {
         return;
     }
     text.0 = wanted;
@@ -865,44 +891,64 @@ mod tests {
         }
     }
 
-    /// The measured original trap (order `031`): the Server row *shows*
-    /// `RECENTSERVER` while nothing is selected, and Connect then sends no
-    /// `0x6102` at all. Our prefill must reproduce the display and **not** the
-    /// selection — `SelectedShardV2` stays `None`, which is the single condition
-    /// `net::on_connect_activate` returns on before it builds a request.
+    /// **The row shows only what is actually selected.** The other way round —
+    /// a Server row reading a remembered name while `SelectedShardV2` is `None`
+    /// — makes Connect answer "Select a server first" about a server the player
+    /// can see.
+    ///
+    /// That is the original's own trap: it prefills `RECENTSERVER`, selects
+    /// nothing and then sends no `0x6102`. This is the one place where
+    /// reproducing it is a defect, not fidelity — a **stated deviation**.
     #[test]
-    fn a_remembered_name_is_displayed_without_becoming_a_selection() {
-        let mut app = App::new();
-        app.init_resource::<SelectedShardV2>();
-        let mut options = GameOptions::default();
-        options.login.recent_server = "Testserver".to_string();
-        app.insert_resource(options);
-        app.insert_resource(ShardList(packets::gateway::ShardListResponse {
-            farms: Vec::new(),
-            shards: vec![shard(42, "Testserver")],
-        }));
-        let text = app.world_mut().spawn((Text::default(), ShardNameText)).id();
-        app.add_systems(Update, update_shard_name_text);
-        app.update();
+    fn the_server_row_shows_only_a_committed_selection() {
+        fn app_with(listed: Vec<Shard>) -> (App, Entity) {
+            let mut app = App::new();
+            app.init_resource::<SelectedShardV2>();
+            app.add_message::<InfoTextV2Update>();
+            let mut options = GameOptions::default();
+            options.login.recent_server = "TestShard".to_string();
+            app.insert_resource(options);
+            app.insert_resource(ShardList(packets::gateway::ShardListResponse {
+                farms: Vec::new(),
+                shards: listed,
+            }));
+            let text = app.world_mut().spawn((Text::default(), ShardNameText)).id();
+            app.add_systems(
+                Update,
+                (commit_remembered_shard, update_shard_name_text).chain(),
+            );
+            app.update();
+            (app, text)
+        }
 
-        assert_eq!(
-            app.world().get::<Text>(text).expect("text").0,
-            "Testserver",
-            "the remembered name is shown"
-        );
-        assert!(
-            app.world().resource::<SelectedShardV2>().0.is_none(),
-            "showing a name must never commit a shard - that is the measured \
-             original behaviour and what makes Connect inert"
-        );
+        // Red control: the shard behind the remembered name is down, so nothing
+        // is committed — and the row must stay EMPTY.
+        let mut down = shard(42, "TestShard");
+        down.is_operating = false;
+        let (app, text) = app_with(vec![down]);
+        assert!(app.world().resource::<SelectedShardV2>().0.is_none());
+        assert_eq!(app.world().get::<Text>(text).expect("text").0, "");
+        // and the screen says why, instead of leaving an unexplained empty row
+        let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+        let mut cursor = messages.get_cursor();
+        assert!(cursor
+            .read(messages)
+            .any(|update| update.0.contains("TestShard")));
+
+        // Positive control: the same remembered name on an operating shard is
+        // committed, and then it *is* shown — display and state agree in both
+        // directions.
+        let (app, text) = app_with(vec![shard(42, "TestShard")]);
+        assert_eq!(app.world().resource::<SelectedShardV2>().0, Some(42));
+        assert_eq!(app.world().get::<Text>(text).expect("text").0, "TestShard");
     }
 
-    /// The playtest report of 2026-08-25: "select a server first" appeared while
-    /// the Server row named a server. [`commit_remembered_shard`] closes that gap
-    /// by turning the remembered name into the selection it looks like — and the
-    /// two negative controls are the point of the test: a shard that is **down**
-    /// and a name that is **not in the list** stay uncommitted, so the hint is
-    /// only ever shown when it is true.
+    /// "Select a server first" must not appear while the Server row names a
+    /// server. [`commit_remembered_shard`] closes that gap by turning the
+    /// remembered name into the selection it looks like — and the two negative
+    /// controls are the point of the test: a shard that is **down** and a name
+    /// that is **not in the list** stay uncommitted, so the hint is only ever
+    /// shown when it is true.
     #[test]
     fn the_remembered_server_becomes_the_selection_when_the_list_offers_it() {
         fn app_with(remembered: &str, listed: Vec<Shard>) -> App {
@@ -915,6 +961,7 @@ mod tests {
                 farms: Vec::new(),
                 shards: listed,
             }));
+            app.add_message::<InfoTextV2Update>();
             app.add_systems(Update, commit_remembered_shard);
             app.update();
             app
@@ -954,12 +1001,13 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(SelectedShardV2(Some(7)));
         let mut options = GameOptions::default();
-        options.login.recent_server = "Testserver".to_string();
+        options.login.recent_server = "TestShard".to_string();
         app.insert_resource(options);
         app.insert_resource(ShardList(packets::gateway::ShardListResponse {
             farms: Vec::new(),
-            shards: vec![shard(42, "Testserver")],
+            shards: vec![shard(42, "TestShard")],
         }));
+        app.add_message::<InfoTextV2Update>();
         app.add_systems(Update, commit_remembered_shard);
         app.update();
 
