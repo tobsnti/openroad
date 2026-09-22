@@ -46,8 +46,8 @@ const MAX_DISTANCE: f32 = 600.0;
 /// How long an entity's line-of-sight verdict is reused before it is cast
 /// again. Each verdict costs a `MeshRayCast` against the whole streamed static
 /// world (an AABB broadphase plus per-triangle tests), and re-casting every
-/// label every frame made the cost scale with crowd size — exactly when the
-/// client can least afford it. A label reacting to cover ~0.15 s late is not
+/// world (an AABB broadphase plus per-triangle tests), and re-casting every
+/// label every frame scales the cost with crowd size — exactly when the
 /// perceptible; a stutter in a crowded town is.
 const OCCLUSION_REFRESH_SECS: f32 = 0.15;
 
@@ -83,8 +83,8 @@ const FONT_SIZE: f32 = 13.0;
 
 /// `SROptionSet` display toggles that gate the plates (docs/formats/sroptionset.md,
 /// `UIIT_STT_*_SIGN`): own name, other players, monsters, NPCs — and the guild
-/// line. An id we have never received defaults to **enabled** (§9-U3: the
-/// NAMEVIEW tab has 6 rows but only 5 known ids).
+/// line. An id we have never received defaults to **enabled**: the NAMEVIEW
+/// tab has 6 rows but only 5 known ids.
 const OPT_OWN_NAME: u16 = 2010;
 const OPT_OTHER_NAME: u16 = 2011;
 const OPT_MONSTER_NAME: u16 = 2012;
@@ -96,14 +96,14 @@ const OPT_GUILD_NAME: u16 = 2014;
 pub struct Nameplate;
 
 /// Marks the sub-line span child of a pooled plate: the lines *under* the
-/// name. Today that is the guild tag and, since #782, the stall title of a
+/// name. Today that is the guild tag and the stall title of a
 /// player running a stall — one span, so the pool stays one text entity per
 /// plate instead of one per possible line.
 #[derive(Component)]
 pub struct NameplateSubLines;
 
 /// Whether a display toggle is on. Ids we have never been told about default to
-/// enabled, so a stock client shows everything (docs/re/ui/hud-nameplates.md §9-U3).
+/// enabled, so a stock client shows everything.
 fn toggle_on(options: &GameOptions, id: u16) -> bool {
     options.gameplay.toggles.get(&id).copied().unwrap_or(true)
 }
@@ -122,15 +122,15 @@ fn plate_toggle(kind: RemoteEntity) -> Option<u16> {
 
 /// Whether the **held** `KeyViewDropItem` binding (id 3012) is labelling every
 /// dropped item in range at once — the original's bulk read, so a player can
-/// take in a whole drop pile in one look (`docs/re/ui/hud-nameplates.md` §1 —
-/// the tooltip is "Dropped items' names can be checked by clicking
-/// corresponding button").
+/// take in a whole drop pile in one look; the tooltip reads "Dropped items'
+/// names can be checked by clicking corresponding button".
+///
+/// `KEY_VIEW_DROP_ITEM` ships bound to **Z** (`SROptionSet.dat` id 3012 =
+/// `0x5A`, identical in two real files; `OptionSet.csv` alone declares no
+/// default).
 ///
 /// This is the *additional* mode, not the only one: a drop under the cursor is
-/// always labelled. `KEY_VIEW_DROP_ITEM` ships with **no** default binding
-/// (`OptionSet.csv` declares none), so making the bulk key the sole path left
-/// drop names unreachable out of the box — hovering a drop showed nothing at
-/// all until the player went and bound a key.
+/// always labelled (`update_nameplates` ORs the two).
 ///
 /// Typing in chat must not reveal the pile, hence the `input_open` guard the
 /// six other keyed HUD modules use.
@@ -158,17 +158,15 @@ fn drop_item_names_held(
 
 /// The lines under an entity's name, newline-prefixed so they append to the
 /// name span: the guild tag first (when the toggle allows it), then the stall
-/// title of a player running a stall (#782), then the summoner of a COS.
+/// title of a player running a stall, then the summoner of a COS.
 ///
 /// All are one span, and all are plain text — the stall title reaches a screen
 /// reader as words for exactly that reason. **No stall toggle exists**: the
-/// NAMEVIEW tab has six rows and only five ids are known
-/// (`docs/re/ui/hud-nameplates.md` §9-U3), so gating this on an id would mean
-/// inventing one. The guild toggle is untouched.
+/// NAMEVIEW tab has six rows and only five ids are known, so gating this on an
+/// id would mean inventing one. The guild toggle is untouched.
 ///
-/// The COS owner is `[S]`: the spawn record carries `OwnerName` for every
-/// non-horse COS (`docs/re/systems/pet-growth-cos.md` §3) and nothing else
-/// consumes it, which is the whole of the evidence that vanilla draws it.
+/// The spawn record carries `OwnerName` for every non-horse COS and nothing
+/// else consumes it, which is the whole of the evidence that vanilla draws it.
 fn sub_lines_text(
     guild: Option<&GuildTag>,
     stall: Option<&StallOwner>,
@@ -504,8 +502,8 @@ pub fn update_nameplates(
                 //
                 // The weight rides the UI face's own `wght` axis rather than a
                 // second font file — the bundled Arimo is variable, so bold no
-                // longer means "a different typeface appears" (it used to swap
-                // to Fira Sans Bold beside a non-Fira body face). A PK2 face
+                // second font file — the bundled Arimo is variable, so bold does
+                // not mean "a different typeface appears". A PK2 face
                 // with no variable axis simply renders both states at its own
                 // single weight, which is the original's look anyway.
                 let wanted = if underline && hover_bold {
@@ -520,7 +518,7 @@ pub fn update_nameplates(
                 if font.font != face {
                     font.font = face;
                 }
-                // sub-lines: same size and colour as the name (§9-U4), empty
+                // sub-lines: same size and colour as the name, empty
                 // for an entity with neither a guild nor a stall
                 if let Some((mut span, mut span_color)) =
                     sub_span.and_then(|kid| sub_line_spans.get_mut(kid).ok())
@@ -553,8 +551,8 @@ pub fn update_nameplates(
     }
 }
 
-/// Self-registration for the entity nameplates (#558). The HUD registry holds one line per
-/// window, so two windows landing in the same lap no longer collide on it.
+/// Self-registration for the entity nameplates. The HUD registry holds one line per
+/// window, so two windows landing in the same lap cannot collide on it.
 pub struct NameplatesPlugin;
 
 impl Plugin for NameplatesPlugin {
@@ -592,30 +590,39 @@ mod tests {
         input
     }
 
-    /// The key these tests bind. **Not a modifier**: `keycode_to_vk`
+    /// The key these tests *re*bind to. **Not a modifier**: `keycode_to_vk`
     /// (`settings/keymap.rs`) is a Win32 VK table that carries no
     /// Alt/Shift/Ctrl entry at all, so `bind_key(_, KeyCode::AltLeft)` returns
-    /// `false` and stores nothing — an earlier draft of these tests asserted
-    /// on exactly that and went red. Whether the original binds 3012 to a
-    /// modifier is UNKNOWN (`OptionSet.csv` gives id 3012 no default at all);
-    /// binding modifiers at all is a keymap-table gap, not a nameplate one.
+    /// `false` and stores nothing. Binding modifiers at all is a keymap-table
+    /// gap, not a nameplate one.
     const HELD: KeyCode = KeyCode::F5;
 
-    /// Unbound by default (`OptionSet.csv` gives id 3012 no default key), so a
-    /// stock client never shows the *bulk* pile read.
+    /// Bound to `Z` out of the box (`SROptionSet.dat` id 3012 = `0x5A`;
+    /// `OptionSet.csv` alone declares no default), so the
+    /// plates appear while `Z` is held and stay hidden under any other key.
     ///
-    /// It does still label the drop under the cursor — that path does not go
-    /// through this function (`update_nameplates` ORs it in), which is the
-    /// point: making the unbound bulk key the only path is what left hover
-    /// silent on a stock client.
+    /// The bulk read is the *additional* mode either way: the drop under the
+    /// cursor is labelled without any key, through the other half of
+    /// `update_nameplates`.
     #[test]
-    fn the_bulk_pile_read_stays_off_while_the_action_is_unbound() {
+    fn drop_item_names_follow_the_shipped_z_binding() {
         let options = GameOptions::default();
-        assert_eq!(options.key_for(KEY_VIEW_DROP_ITEM), None);
+        assert_eq!(options.key_for(KEY_VIEW_DROP_ITEM), Some(KeyCode::KeyZ));
+        assert!(drop_item_names_held(
+            &pressed(KeyCode::KeyZ),
+            &options,
+            false
+        ));
+        // negative control: any other key held is not the binding
         assert!(!drop_item_names_held(&pressed(HELD), &options, false));
+        assert!(!drop_item_names_held(
+            &ButtonInput::default(),
+            &options,
+            false
+        ));
     }
 
-    /// The whole point of #600: it is the HELD key, not the cursor, and it is
+    /// The bulk read is the HELD key, not the cursor, and it is
     /// all-or-nothing for every pile in range.
     #[test]
     fn drop_item_names_follow_the_held_key() {
@@ -662,7 +669,7 @@ mod tests {
 
     /// The stall title is a second line on the *existing* plate, not a second
     /// text system — and it composes with the guild tag rather than replacing
-    /// it (#782).
+    /// it.
     #[test]
     fn sub_lines_stack_the_guild_tag_and_then_the_stall_title() {
         let guild = GuildTag {
