@@ -647,8 +647,8 @@ impl Ailment {
     /// is **unconfirmed for every bit except Burn**. Where the pairing
     /// is not obvious it returns `None` and that ailment plays no effect —
     /// borrowing a neighbouring file's art would be exactly the unsourced
-    /// invention ADR-0009 forbids. Unpaired files, kept here so the next person
-    /// does not re-derive the list: `control`, `hide`, `temptation`,
+    /// invention ADR-0009 forbids. Unpaired files: `control`, `hide`,
+    /// `temptation`,
     /// `dark_blaze`, `dark_toxin`, the `_off` counterparts (`icing_off`,
     /// `stone_off` — almost certainly the *removal* animations) and the `_b`/
     /// `_m` icing size variants. A parallel `monster/status_bad_*` set exists
@@ -1031,7 +1031,7 @@ pub enum GmCommand {
     /// level**, for a stackable it is the quantity — which is what the
     /// client's own two-branch
     /// clamp already implied. It is a *request*, not a guarantee: the server
-    /// clamps to the item's own ceiling, and a sent `255` came back as `+8`.
+    /// clamps to the item's own ceiling.
     ///
     /// `ref_id` is resolved client-side: the original looks argument 1 up in
     /// the item ref-object table by codename and puts the resulting u32 on the
@@ -2364,8 +2364,10 @@ impl From<TalkResponse> for Bytes {
     }
 }
 
-/// 0x7059 — client → server "make this teleporter my recall point"
-/// (`DesignateRecall`). A single u32, verified from the original's builder.
+/// 0x7059 — client → server "make this teleporter my recall point".
+///
+/// The original has no builder for this opcode, so the single `u32` below — one
+/// teleporter id — is **unconfirmed**.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct TeleportRecallRequest {
     pub teleport_unique_id: u32,
@@ -2373,13 +2375,13 @@ pub struct TeleportRecallRequest {
 
 /// 0xB059 — server → client ack for [`TeleportRecallRequest`].
 ///
-/// **Entire body [U], so nothing is claimed about it.** The opcode is declared in
-/// the original's enum but has no dispatch case and no parser, and go-sro has no
-/// handler either — there is no source for a layout. The doc guesses
-/// `success u8 [+ tail]` "by family analogy"; that guess is not encoded here,
-/// because splitting a leading byte off an unknown body would also make an empty
-/// body fail to decode. Kept whole and log-only until
-/// `packet_dump/0xb059.log` exists.
+/// **Carried whole.** The original parses this ack: it reads a `u8 result`,
+/// shows `UIIT_MSG_STATE_REBIRTH_POINT_APPOINT` on `result == 1` and otherwise
+/// reads a `u16` error code it never displays — so one byte on success, three
+/// on failure, and a vSRO server writes a bare `01`.
+///
+/// What is still open: the error-code *values*. The body stays a raw
+/// passthrough for now — typing it is a wire change, not a comment fix.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct TeleportRecallResponse {
     pub raw: Bytes,
@@ -3396,9 +3398,8 @@ mod test {
     #[test]
     fn object_action_response_unknown_shapes_keep_raw_tail() {
         // over-long or unrecognized phases must land in Unknown and roundtrip
-        // untouched. `03 xx 04 40` is no longer among them: #232 decoded it
-        // from the handler as `Failed { code, error }`, which is why `03 09 04
-        // 40` is asserted below to be typed, not raw.
+        // untouched. `03 xx 04 40` is not among them: the handler reads it as
+        // `Failed { code, error }`, so `03 09 04 40` is typed below, not raw.
         for wire in [
             Bytes::from_static(&[2, 0x04, 0x30]),
             Bytes::from_static(&[1]),
@@ -3639,7 +3640,7 @@ mod test {
         assert_eq!(back, unknown_kind);
     }
 
-    /// #547 — the per-hit record is a tagged record whose damage is a `u24`
+    /// The per-hit record is a tagged record whose damage is a `u24`
     /// packed behind a state byte, and whose arm is `flags & 0x7F`, not a bit
     /// test.
     #[test]
@@ -3702,8 +3703,8 @@ mod test {
         assert_eq!(back, with_trailer);
     }
 
-    /// #547 — arms 4 and 5 are 23-byte records; the old `flag & 0x08` test
-    /// read them as 9 and desynchronised everything after them.
+    /// Arms 4 and 5 are 23-byte records; a `flag & 0x08` bit test reads them
+    /// as 9 and desynchronises everything after them.
     #[test]
     fn hit_record_arms_4_and_5_carry_a_position_tail() {
         // the 0xB071 line above with its single hit rewritten to arm 4
@@ -3878,7 +3879,7 @@ mod test {
             assert_eq!(back, bytes);
         }
 
-        // A one-byte tail is now the wrong shape and must stay raw rather than
+        // A one-byte tail is the wrong shape and must stay raw rather than
         // be read as a truncated error.
         let short = Bytes::from_static(&[2, 0x07]);
         let decoded: ObjectActionUpdate = short.try_into().unwrap();
@@ -3888,7 +3889,7 @@ mod test {
         ));
     }
 
-    /// #232: `0xB074 result=3` is `code u8 + error u16` — the handler reads the
+    /// `0xB074 result=3` is `code u8 + error u16` — the handler reads the
     /// same code byte as results 1/2 and then a `u16` for its message box.
     /// The fixture is the real refusal body.
     #[test]
@@ -3905,7 +3906,7 @@ mod test {
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
 
-        // the two shapes that were already modelled still decode
+        // both modelled shapes decode
         let started: ObjectActionResponse = Bytes::from_static(&[1, 1]).try_into().unwrap();
         assert_eq!(started, ObjectActionResponse::Started { code: 1 });
         let ended: ObjectActionResponse = Bytes::from_static(&[2, 0]).try_into().unwrap();
@@ -4007,9 +4008,7 @@ mod test {
         assert!(GmCommand::try_from(Bytes::from_static(&[0x99, 0x00])).is_err());
     }
 
-    /// Pins the recovered sub-id against the regression that motivated it:
-    /// `MakeItem` was 0x06, which is **`LoadMonster`** — so every "make item"
-    /// was a monster spawn one byte short of that command's own layout. The
+    /// Pins the sub-id: `MakeItem` is 0x07, and 0x06 is **`LoadMonster`**. The
     /// bytes below are the real `/Makeitem ITEM_EU_STAFF_11_SET_A_RARE 255`
     /// (ref 25627, equipment, so 255 is not clamped).
     #[test]
@@ -4029,8 +4028,7 @@ mod test {
         );
     }
 
-    /// 0x06 is LoadMonster, and its body is 8 bytes — one more than MakeItem's,
-    /// which is exactly why sending MakeItem under 0x06 under-ran it.
+    /// 0x06 is LoadMonster, and its body is 8 bytes — one more than MakeItem's.
     #[test]
     fn gm_load_monster_owns_sub_command_six() {
         let command = GmCommand::LoadMonster {
@@ -4218,8 +4216,6 @@ mod test {
     /// `flag=0x04`, mask `0x8` = Burn, and — because bit 3 is NOT in
     /// `BAD_STATUS_LEVELED` — no trailing level byte, which confirms the level
     /// rule.
-    ///
-    /// Under the old enum reading this monster reported **MP = 8**.
     #[test]
     fn a_burning_monster_decodes_as_burn_not_as_mp() {
         let wire = Bytes::from_static(&[0xB1, 0x64, 0x02, 0x00, 0x03, 0x01, 0x04, 0x08, 0, 0, 0]);
@@ -4433,8 +4429,7 @@ mod test {
 
     /// 0xB081 inviter-side ack: the result byte selects the tail, so the
     /// refused case is three bytes and must decode as such — reading it as the
-    /// success layout is how a refused invite used to look like a broken
-    /// packet.
+    /// success layout would make a refused invite look malformed.
     #[test]
     fn the_exchange_ack_decodes_both_tails() {
         let raised = Bytes::from_static(&[0x01, 0xAA, 0x60, 0x01, 0x00]);
@@ -5083,7 +5078,7 @@ mod test {
         ));
     }
 
-    // --- Mastery/skill level-down + teleport recall (#260) -------------------
+    // --- Mastery/skill level-down + teleport recall --------------------------
 
     #[test]
     fn skill_level_down_request_is_a_lone_skill_id() {
@@ -5197,8 +5192,10 @@ mod test {
         assert_eq!(TeleportRecallRequest::try_from(wire).unwrap(), req);
     }
 
-    /// 0xB059 has no parser in any source, so it must not claim a shape — any body,
-    /// including an empty one, round-trips untouched instead of failing to decode.
+    /// 0xB059 is carried raw (see the struct's note: the original reads
+    /// `u8 result` [+ `u16` error], but the error-code values are unknown), so
+    /// any body — including an empty one — round-trips untouched instead of
+    /// failing to decode.
     #[test]
     fn teleport_recall_response_keeps_any_body_whole() {
         for body in [
@@ -5267,18 +5264,18 @@ mod test {
             EntityStateUpdate::try_from(Bytes::copy_from_slice(hex)).expect("decodes")
         };
 
-        // 13:58:23.185 — combat flag drops in the same millisecond as the death
+        // combat flag drops in the same millisecond as the death
         let combat_off = decode(&[0x7b, 0xb3, 0x01, 0x00, 0x08, 0x00]);
         assert_eq!(combat_off.unique_id, 111_483);
         assert_eq!(combat_off.kind, STATE_KIND_COMBAT);
         assert_eq!(combat_off.value, 0);
         assert!(!combat_off.is_death(), "kind 8 is not the death signal");
 
-        // 13:58:23.185 — the authoritative death
+        // the authoritative death
         let died = decode(&[0x7b, 0xb3, 0x01, 0x00, 0x00, 0x02]);
         assert!(died.is_death());
 
-        // 13:58:24.635 — revive, plus the untouchable window
+        // revive, plus the untouchable window
         let revived = decode(&[0x7b, 0xb3, 0x01, 0x00, 0x00, 0x01]);
         assert!(revived.is_revive());
         let untouchable = decode(&[0x7b, 0xb3, 0x01, 0x00, 0x04, 0x02]);
@@ -5286,7 +5283,7 @@ mod test {
         // it is a body state, but not one that hides the player
         assert_eq!(untouchable.body_invisibility(), Some(false));
 
-        // 13:58:30.920 — cleared 6.29 s later
+        // cleared 6.29 s later
         let cleared = decode(&[0x7b, 0xb3, 0x01, 0x00, 0x04, 0x00]);
         assert_eq!(cleared.value, BODY_STATE_NONE);
     }
