@@ -136,10 +136,16 @@ pub(crate) fn read_handshake_frame<R: Read>(
     loop {
         // Parse first: the carry buffer may already hold a whole frame from
         // the previous call, in which case there is nothing to read.
+        // Read the consumed length from the always-plaintext length prefix
+        // *before* parsing: `parse` reports a decrypt-relative size (4 bytes
+        // short for an encrypted frame), so deriving the carry position from it
+        // leaves filler bytes in `pending` and desynchronises every later read.
+        // `wire_len` is the one source of truth, as in `next_packet`.
+        let wire_len = SilkroadFrame::wire_len(pending);
         match SilkroadFrame::parse(pending, security.clone()) {
-            Ok((total_size, frame)) => {
-                // `parse` reports the size *behind* the 2-byte length prefix.
-                pending.drain(..total_size + 2);
+            Ok((_, frame)) => {
+                let consumed = wire_len.ok_or(InvalidFrame)?;
+                pending.drain(..consumed);
                 return Ok(frame);
             }
             // Not all of it arrived yet — read more rather than fail.
@@ -179,7 +185,7 @@ pub(crate) fn initialize(
             match security.read().expect("lock to be readable").state {
                 SilkroadSecurity::None => {
                     // Phase 1 is the first thing an unauthenticated peer sends:
-                    // validate its length against its own flag byte before any
+                    // `get_*` can panic on a truncated body.
                     // `get_*` can panic on a truncated body (#470).
                     check_body(&data, 0)?;
                     match setup_handshake(data, stream) {
@@ -326,7 +332,7 @@ fn derive_final_key(
     write: &mut TcpStream,
     security: &mut SilkroadSecurityState,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
-    // Trust boundary (#470): the challenge decides whether we talk to the peer
+    // Trust boundary: the challenge decides whether we talk to the peer
     // that derived our shared secret, so a body that does not match its own
     // flag byte — or a challenge with no key exchange behind it — is a hard
     // error, not a short read that panics inside `read_u64`.
@@ -345,9 +351,9 @@ fn derive_final_key(
         // `remote_public & 7`, where our own signature used
         // `local_public ‖ remote_public` with `local_public & 7`.
         //
-        // This used to recompute our *own* signature and compare it against
-        // our own stored copy — identical inputs, so the comparison could
-        // never fail and the server was never actually authenticated.
+        // Recomputing our *own* signature and comparing it against our own
+        // stored copy would be a tautology: identical inputs, so it can never
+        // fail, and the server would not be authenticated at all.
         let expected = server_challenge(sec_data);
         if remote_challenge != expected {
             error!(
@@ -629,6 +635,79 @@ mod test {
         assert!(pending.is_empty(), "both frames were consumed");
     }
 
+    /// A security state with a blowfish key, as it stands once the handshake
+    /// completed — every later frame the gateway sends is encrypted.
+    fn established_security() -> Arc<RwLock<SilkroadSecurityState>> {
+        let mut state = SilkroadSecurityState::new();
+        state.state = SilkroadSecurity::Established;
+        state.context.blowfish = Some(Blowfish::new(&[0u8; 8]).expect("test key"));
+        Arc::new(RwLock::new(state))
+    }
+
+    /// **The desynchronised login stream.** `parse` reports a *decrypt-relative*
+    /// size for an encrypted frame — four bytes short of what is on the wire —
+    /// so draining `size + 2` leaves four filler bytes in the carry buffer. The
+    /// module-identification answer arrives encrypted right behind the last
+    /// handshake message, so those four bytes would be read as the next frame
+    /// header: length 0, opcode 0, and nothing after it lines up again.
+    #[test]
+    fn an_encrypted_frame_leaves_the_carry_buffer_at_the_next_frame() {
+        let security = established_security();
+        // The last handshake message is cleartext; the module answer behind it
+        // is encrypted; a third frame stands in for whatever the gateway
+        // coalesced behind that.
+        let handshake = setup_frame_bytes(&[1, 2, 3, 4]);
+        let encrypted = SilkroadFrame::Packet {
+            count: 0,
+            crc: 0,
+            opcode: 0x2001,
+            encrypted: 1,
+            data: Bytes::from_static(&[b'G', b'a', b't', b'e', b'w', b'a', b'y']),
+        }
+        .serialize(security.clone())
+        .expect("serialize")
+        .to_vec();
+        assert_ne!(
+            encrypted.len(),
+            2 + 4 + 7,
+            "fixture must be blowfish-padded, or the defect cannot show"
+        );
+        let trailing = setup_frame_bytes(&[0xAB, 0xCD]);
+        let wire = [handshake, encrypted.clone(), trailing.clone()].concat();
+
+        let mut pending = Vec::new();
+        let frame = read_handshake_frame(
+            &mut ChunkedReader::new(&[&wire]),
+            security.clone(),
+            &mut pending,
+        )
+        .expect("the cleartext handshake frame parses");
+        assert!(matches!(
+            frame,
+            SilkroadFrame::Packet { opcode: 0x5000, .. }
+        ));
+        assert_eq!(
+            pending,
+            [encrypted.clone(), trailing.clone()].concat(),
+            "the carry buffer must stand exactly at the encrypted frame"
+        );
+
+        // Reading the encrypted frame is where a miscount shows.
+        let frame = read_handshake_frame(&mut ChunkedReader::new(&[]), security, &mut pending)
+            .expect("the encrypted frame parses from the buffer alone");
+        match frame {
+            SilkroadFrame::Packet { opcode, data, .. } => {
+                assert_eq!(opcode, 0x2001);
+                assert_eq!(data.as_ref(), b"Gateway");
+            }
+            other => panic!("expected a packet, got {other:?}"),
+        }
+        assert_eq!(
+            pending, trailing,
+            "the padding of the encrypted frame must be consumed with it"
+        );
+    }
+
     /// An `Interrupted` read is a signal, not a protocol error: nothing was
     /// consumed, so the read is retried. Failing it would abort a login for a
     /// reason that has nothing to do with the peer.
@@ -681,8 +760,8 @@ mod test {
 
     /// The server's challenge is the MIRROR of the client's signature — it
     /// concatenates `remote‖local` and keys on `remote & 7`, not `local‖remote`
-    /// on `local & 7`. Comparing the two used to be the whole "validation",
-    /// which made it a tautology that could never fail (#248).
+    /// on `local & 7`. Comparing the two to each other is a tautology that can
+    /// never fail.
     #[test]
     fn server_challenge_is_not_the_client_signature() {
         let sec = session(0xF2E1_5D3A, 0x7FFF_FFC3, 0x1234_5678, 0x0BAD_C0DE);
@@ -730,8 +809,8 @@ mod test {
         assert_ne!(server_challenge(&other), expected);
     }
 
-    /// The private exponent must vary per session — it used to be the literal
-    /// 123, making our public key and shared secret deterministic.
+    /// The private exponent must vary per session: a fixed literal makes our
+    /// public key and shared secret deterministic.
     #[test]
     fn private_exponent_is_drawn_per_session() {
         let mut seen = std::collections::HashSet::new();
@@ -744,7 +823,7 @@ mod test {
     }
 
     /// `generator` is read straight off the wire. A peer sending a value
-    /// above 0xB504F333 used to overflow the i64 in `mult * mult` — panic in
+    /// above 0xB504F333 overflows the i64 in `mult * mult` — panic in
     /// debug, silent wraparound in release — before any of the handshake's
     /// own validation could run.
     #[test]
@@ -761,7 +840,7 @@ mod test {
         assert_eq!(g_pow_x_mod_p(huge, 5, 1), 0);
     }
 
-    /// Sanity: the modpow still agrees with a plain reference implementation.
+    /// Sanity: the modpow agrees with a plain reference implementation.
     #[test]
     fn modpow_matches_a_reference_implementation() {
         let reference = |g: u32, x: u32, p: u32| -> u32 {
@@ -780,7 +859,7 @@ mod test {
         }
     }
 
-    /// #470: the handshake is the trust boundary for every later packet, and
+    /// The handshake is the trust boundary for every later packet, and
     /// the body reads panic on a short buffer. The original guards it with an
     /// explicit size check plus its own log line (`004b1da0:143-147`); a body
     /// that does not match its own flag byte must be rejected.

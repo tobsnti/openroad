@@ -123,12 +123,14 @@ impl SilkroadFrame {
         Ok(buf.freeze())
     }
 
+    /// The returned `usize` is NOT the wire length: it is decrypt-relative and
+    /// four bytes short for an encrypted frame — use [`wire_len`](Self::wire_len)
+    /// to advance a buffer.
     pub fn parse(
         data: &mut [u8],
         security: Arc<RwLock<SilkroadSecurityState>>,
     ) -> Result<(usize, SilkroadFrame), SilkroadFrameError> {
         if data.len() < 4 {
-            // info!("not enough data: {}", data.len());
             return Err(Incomplete);
         }
 
@@ -318,7 +320,7 @@ pub const ENCRYPTED_SEND_OPCODES: [u16; 7] =
 /// **Gameplay** opcodes the original encrypts per packet, independently of the
 /// login set above — and therefore not gated by the login-encryption config
 /// flag, which exists only because our plaintext *login* is what the reference
-/// server accepts today (#243).
+/// server accepts today.
 ///
 /// The original encrypts exactly two gameplay packets: character-selection
 /// action (`0x7007`) and inventory item use (`0x704C`). Every other one,
@@ -398,9 +400,8 @@ mod tests {
         }
     }
 
-    /// #243: the gateway login carries the account password, and the original
-    /// encrypts it. We shipped it in the clear because `Into<SilkroadFrame>`
-    /// hardcodes `encrypted: 0` and nothing ever raised it.
+    /// The gateway login carries the account password, and the original
+    /// encrypts it, so the request must be flagged for encryption.
     #[test]
     fn the_login_request_is_flagged_for_encryption() {
         let security = security(true);
@@ -441,7 +442,7 @@ mod tests {
         assert_eq!(encrypted_flag(&frame), 0);
     }
 
-    /// #462: `0x6106` (shard-list ping) is allocated with the encrypt flag set
+    /// `0x6106` (shard-list ping) is allocated with the encrypt flag set
     /// at `004c9480:11`, and unlike the rest of the allowlist we actually send
     /// it — `poll_gateway_connection` fires it as soon as the shard list lands.
     #[test]
@@ -519,8 +520,48 @@ mod tests {
         assert_eq!(&data[..], captured);
     }
 
-    /// The same slice also swallowed whatever followed in the buffer, so two
-    /// frames arriving in one read merged into one over-long body.
+    /// `wire_len` and the size `parse` returns are NOT the same number: `parse`
+    /// answers relative to what it decrypted, which is four bytes short of the
+    /// wire for an encrypted frame and exact for a cleartext one. Anything that
+    /// advances a buffer must therefore use `wire_len`: the parse value
+    /// desynchronises the stream behind the first encrypted frame.
+    #[test]
+    fn wire_len_is_the_serialized_length_parse_is_not() {
+        for (with_key, encrypted) in [(false, 0u8), (true, 1u8)] {
+            let security = security(with_key);
+            let frame = SilkroadFrame::Packet {
+                count: 0,
+                crc: 0,
+                opcode: 0x2001,
+                encrypted,
+                data: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7]),
+            };
+            let mut wire = frame
+                .serialize(security.clone())
+                .expect("serialize")
+                .to_vec();
+
+            assert_eq!(
+                SilkroadFrame::wire_len(&wire),
+                Some(wire.len()),
+                "wire_len must match the serialized frame (encrypted: {encrypted})"
+            );
+
+            let (reported, _) = SilkroadFrame::parse(&mut wire, security).expect("parse");
+            let expected = if encrypted == 1 {
+                wire.len() - 2 - 4
+            } else {
+                wire.len() - 2
+            };
+            assert_eq!(
+                reported, expected,
+                "parse reports a decrypt-relative size (encrypted: {encrypted})"
+            );
+        }
+    }
+
+    /// That slice also swallows whatever follows in the buffer, so two frames
+    /// arriving in one read would merge into one over-long body.
     #[test]
     fn a_following_frame_is_not_absorbed_into_the_body() {
         let security = security(false);
