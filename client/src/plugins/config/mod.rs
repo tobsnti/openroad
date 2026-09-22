@@ -77,10 +77,23 @@ fn log_network_config(config: Res<ClientConfig>) {
     info!("initialized network config: {:?}", config.network_settings);
 }
 
+/// **Nothing here is mandatory.** The
+/// project's promise is a client configured by "a data folder and a server
+/// address", but `network_settings`, `window_settings` and `scenes` used to be
+/// required fields, so a three-line `config.yaml` died with
+/// `missing field \`scenes\`` and every user had to carry a copy of the whole
+/// 500-line example. A field would only earn `required` back if it had no
+/// answer that is better than a guess — and none of these do: the window has a
+/// safe first-start geometry, the scenes have the names the client already
+/// hardcoded as its own defaults, and the gateway falls back to the one in the
+/// user's own `Media.pk2`. `config.example.yaml` stays the complete reference.
 #[derive(Resource, Deserialize)]
 pub struct ClientConfig {
+    #[serde(default)]
     pub network_settings: NetworkSettings,
+    #[serde(default)]
     pub window_settings: WindowSettings,
+    #[serde(default)]
     pub scenes: SceneSettings,
     /// Adds the egui world/resource inspectors and the debug-draw overlays.
     /// Off by default: reflecting the whole ECS world into egui every frame
@@ -463,6 +476,82 @@ mod tests {
             message.contains("cannot build an enum variant that carries a payload"),
             "the error has to come from the caught enum-shape panic, got: {message}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The promise of the project is a client configured by a data folder and
+    /// a server address, so *that* must be a whole `config.yaml`. It was not:
+    /// `network_settings`, `window_settings` and `scenes` were required
+    /// fields, and a minimal file died with "missing field `scenes`" before
+    /// the window existed. Everything the file
+    /// leaves out has to come back as the documented default.
+    #[test]
+    fn a_minimal_config_loads_and_defaults_the_rest() {
+        let dir = std::env::temp_dir().join(format!(
+            "openroad-cfg-min-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("config.yaml"),
+            "network_settings:\n  gateway_address: \"127.0.0.1:15779\"\n",
+        )
+        .expect("write");
+
+        let config = ClientConfig::from_file(dir.join("config").to_str().expect("utf-8"))
+            .expect("a config naming only the server address has to load");
+
+        assert_eq!(
+            config.network_settings.gateway_address.as_deref(),
+            Some("127.0.0.1:15779"),
+            "the one configured value survives"
+        );
+        assert!(
+            config.network_settings.enabled,
+            "networking is on by default"
+        );
+        assert!(config.network_settings.packet_dump);
+        // Cautious first-start window: movable and closable on unknown hardware.
+        assert_eq!(
+            config.window_settings.mode,
+            super::window::WindowModeConfig::Windowed
+        );
+        assert_eq!(config.window_settings.width, 1280.0);
+        assert_eq!(config.window_settings.height, 720.0);
+        assert_eq!(config.window_settings.title, "OpenRoad");
+        // The scenes the client already hardcodes as its own defaults.
+        assert_eq!(config.scenes.startup, "world");
+        assert_eq!(config.scenes.char_select_location, "constantinople");
+        assert!(config.scenes.intro_location.is_empty());
+        assert!(!config.dev_tools);
+        assert!(!config.diagnostics_enabled());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `scenes:` block that names one key must inherit the other two rather
+    /// than failing — the same per-field default rule one level down.
+    #[test]
+    fn a_partial_block_inherits_the_remaining_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "openroad-cfg-part-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("config.yaml"),
+            "scenes:\n  startup: intro\nwindow_settings:\n  title: \"OpenRoad c1\"\n",
+        )
+        .expect("write");
+
+        let config = ClientConfig::from_file(dir.join("config").to_str().expect("utf-8"))
+            .expect("a partial block has to load");
+
+        assert_eq!(config.scenes.startup, "intro");
+        assert_eq!(config.scenes.char_select_location, "constantinople");
+        assert_eq!(config.window_settings.title, "OpenRoad c1");
+        assert_eq!(config.window_settings.width, 1280.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 

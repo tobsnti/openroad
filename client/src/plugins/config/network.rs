@@ -2,8 +2,15 @@ use serde::Deserialize;
 
 use crate::plugins::config::division::DivisionInfo;
 
+/// Everything here has a default: pointing the client at a server is the one
+/// thing a minimal `config.yaml` is for, and it should not have to restate the
+/// switches around it. Even the address is optional — omitted, it comes from
+/// the user's own `Media.pk2` (see [`NetworkSettings::resolve_gateway`]).
 #[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct NetworkSettings {
+    /// Connect at all. Defaults to `true`: a client that talks to no server is
+    /// the special case (scene testing), not the normal one.
     pub enabled: bool,
     /// Overrides the gateway from the user's own `Media.pk2`
     /// (`divisioninfo.txt` + `gateport.txt`). Omit it to use that data —
@@ -40,6 +47,18 @@ impl NetworkSettings {
         self.gateway_address
             .clone()
             .or_else(|| division.gateway_address())
+    }
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gateway_address: None,
+            packet_dump: true,
+            item_use_enabled: false,
+            outbound_encryption: false,
+        }
     }
 }
 

@@ -25,7 +25,10 @@ Releases, unzip it, and:
 2. Copy your own `Media.pk2`, `Map.pk2`, `Data.pk2`, `Music.pk2` and
    `Particles.pk2` into `assets/` beside the binary.
 3. `cp config.example.yaml config.yaml`, then fill in the `pk2:` key and salt —
-   openroad does not ship the archive key.
+   openroad does not ship the archive key. (Every other field has a default, so
+   a hand-written `config.yaml` holding just the key and
+   `network_settings.gateway_address` also works; the example is the reference,
+   not a minimum.)
 4. Run `./client` **from that folder**, and point
    `network_settings.gateway_address` at a server you have access to.
 
