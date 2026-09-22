@@ -1,5 +1,5 @@
 use std::io::ErrorKind::InvalidData;
-use std::io::{Error, Read, Write};
+use std::io::{Error, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -93,8 +93,11 @@ impl SilkroadConnection {
 
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
 
-        Self::do_handshake(&security, &mut stream)?;
-        Self::send_module_identification(&security, &mut stream)?;
+        // Carries the bytes a handshake read got beyond the frame it wanted;
+        // the receive loop picks them up as its starting buffer.
+        let mut pending: Vec<u8> = Vec::with_capacity(READ_BUF_CAPACITY);
+        Self::do_handshake(&security, &mut stream, &mut pending)?;
+        Self::send_module_identification(&security, &mut stream, &mut pending)?;
 
         // The receive/send loop expects WouldBlock instead of blocking reads.
         stream.set_nonblocking(true)?;
@@ -104,7 +107,7 @@ impl SilkroadConnection {
         let (dc_sender, dc_receiver) = crossbeam::channel::bounded(1);
 
         Ok(Self {
-            read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
+            read_buf: pending,
             security,
             dc_sender,
             dc_receiver,
@@ -116,11 +119,17 @@ impl SilkroadConnection {
         })
     }
 
+    /// Runs both handshake steps over one carry buffer. The gateway packs the
+    /// phase-2 setup (and sometimes the module identification behind it) into
+    /// the same TCP segment as phase 1, so whatever a read got beyond the frame
+    /// it was after has to survive the step boundary — `pending` is where it
+    /// waits, and what is left in it at the end belongs to the receive loop.
     fn do_handshake(
         security: &Arc<RwLock<SilkroadSecurityState>>,
         mut stream: &mut TcpStream,
+        pending: &mut Vec<u8>,
     ) -> Result<(), Error> {
-        match handshake::initialize(&mut stream, security.clone()) {
+        match handshake::initialize(&mut stream, security.clone(), pending) {
             Ok(new_security) => {
                 let mut s = security.write().expect("security to be writable");
                 s.context = new_security.context;
@@ -129,7 +138,7 @@ impl SilkroadConnection {
             Err(e) => return Err(Error::new(InvalidData, e)),
         }
         debug!("finished handshake init");
-        match handshake::finalize(&mut stream, security.clone()) {
+        match handshake::finalize(&mut stream, security.clone(), pending) {
             Ok(new_security) => {
                 let mut s = security.write().expect("security to be writable");
                 s.context = new_security.context;
@@ -140,9 +149,13 @@ impl SilkroadConnection {
         Ok(())
     }
 
+    /// Sends our module identification and reads the peer's. Shares the
+    /// handshake's carry buffer: the answer can already be in it, and anything
+    /// behind the answer is the first of the real traffic.
     fn send_module_identification(
         security: &Arc<RwLock<SilkroadSecurityState>>,
         stream: &mut TcpStream,
+        pending: &mut Vec<u8>,
     ) -> Result<(), Error> {
         let frame = module_identification_frame();
         let buf = frame.serialize(Arc::clone(security)).map_err(|_| {
@@ -153,9 +166,7 @@ impl SilkroadConnection {
         })?;
         stream.write_all(&buf)?;
 
-        let mut buf = [0; 4096];
-        let read_bytes = stream.read(&mut buf)?;
-        let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], Arc::clone(security))
+        let frame = handshake::read_handshake_frame(stream, Arc::clone(security), pending)
             .map_err(|_| Error::new(InvalidData, "failed to parse module identification packet"))?;
         match frame {
             SilkroadFrame::Packet { opcode, data, .. } => {
@@ -165,8 +176,8 @@ impl SilkroadConnection {
                         format!("invalid opcode: {}", opcode),
                     ));
                 }
-                // Typed parse rather than an inline read: a truncated body used
-                // to index past the end of `data` and panic the connect thread.
+                // Typed parse rather than an inline read: a truncated body would
+                // index past the end of `data` and panic the connect thread.
                 let ident = ModuleIdentification::try_from(data).map_err(|e| {
                     Error::new(
                         InvalidData,
