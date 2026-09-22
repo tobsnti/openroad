@@ -59,6 +59,7 @@ and for the material this repository deliberately does not publish.
 - `sv-t.md`
 - `divisioninfo.md`
 - `gateport.md`
+- `option-txt.md` (client-wide `config/option.txt`: the cutscene and the splash track, per archive)
 - `sroptionset.md`
 - `resinfo.md` (the classic UI grammar itself — read blocks by key name, not by line offset)
 - `textdata-characterdata.md`
