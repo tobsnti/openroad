@@ -2,10 +2,13 @@
 *.pk2
 
 # Cursors decoded from the user's own PK2s stay out of the tree by default.
-# The three below are ours (AI-generated, see .raw/Cursors.png) and ARE tracked,
+# The four below are ours (AI-generated, see .raw/Cursors.png) and ARE tracked,
 # so they are exempted explicitly rather than left contradicting this rule.
+# This list must match `CURSOR_IMAGES` in client/src/plugins/cursor/mod.rs;
+# `every_cursor_image_is_shipped` is the test that checks it.
 cursors/*.cur
 cursors/*.png
 !cursors/Cursor3.png
 !cursors/cursor_attack.png
 !cursors/cursor_talk.png
+!cursors/cursor_targeting.png

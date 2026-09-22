@@ -30,13 +30,28 @@ enum CursorKind {
     /// over them for as long as the item stays armed, which is what makes the
     /// mode visible.
     ///
-    /// ⚠️ No art of its own yet. `Cursor14` was a choice of OURS — Media ships
-    /// eight unwired cursor slices and no doc says which one the original arms
-    /// here — but that slice was never cut out of `.raw/Cursors.png`, so this
-    /// mode borrows the default arrow. Cut the slice into `assets/cursors/`
-    /// and point `targeting` at it to give the armed-item mode its own cursor.
+    /// Note: which slice the amulet uses is a choice of OURS. Media ships eight
+    /// unwired cursor slices and no doc says which one the original arms here.
     Targeting,
 }
+
+/// Every cursor image this plugin loads, as `(asset path, hotspot)`.
+///
+/// One table rather than four `load()` calls scattered through
+/// [`setup_cursor`]: these paths are files that have to be *shipped*, and a
+/// path with no file behind it is not a compile error — it is a
+/// `bevy_asset: Path not found` line on every single start, and a cursor that
+/// silently never changes. The table is what's walked by
+/// `every_cursor_image_is_shipped`.
+///
+/// Hotspots sit on the sprite's tip, except the amulet, which has none — it
+/// points at its own gem.
+const CURSOR_IMAGES: [(&str, (u16, u16)); 4] = [
+    ("cursors/Cursor3.png", (1, 2)),
+    ("cursors/cursor_attack.png", (2, 2)),
+    ("cursors/cursor_talk.png", (2, 2)),
+    ("cursors/cursor_targeting.png", (13, 14)),
+];
 
 /// The custom cursor images (sliced from `.raw/Cursors.png` into
 /// `assets/cursors/`), loaded once at startup.
@@ -49,13 +64,13 @@ struct GameCursors {
 }
 
 impl GameCursors {
-    /// Image + click-point hotspot per kind (hotspots sit on the sprite's tip).
+    /// Image + click-point hotspot per kind.
     fn get(&self, kind: CursorKind) -> (&Handle<Image>, (u16, u16)) {
         match kind {
-            CursorKind::Default => (&self.default, (1, 2)),
-            CursorKind::Attack => (&self.attack, (2, 2)),
-            CursorKind::Talk => (&self.talk, (2, 2)),
-            CursorKind::Targeting => (&self.targeting, (2, 2)),
+            CursorKind::Default => (&self.default, CURSOR_IMAGES[0].1),
+            CursorKind::Attack => (&self.attack, CURSOR_IMAGES[1].1),
+            CursorKind::Talk => (&self.talk, CURSOR_IMAGES[2].1),
+            CursorKind::Targeting => (&self.targeting, CURSOR_IMAGES[3].1),
         }
     }
 }
@@ -74,14 +89,10 @@ impl Plugin for CursorPlugin {
 
 fn setup_cursor(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(GameCursors {
-        default: asset_server.load("cursors/Cursor3.png"),
-        attack: asset_server.load("cursors/cursor_attack.png"),
-        talk: asset_server.load("cursors/cursor_talk.png"),
-        // The default arrow, on purpose: the `Cursor14` slice this wants was
-        // never cut into `assets/cursors/`, so loading it bought an asset
-        // error every startup and a cursor that never changed anyway. See
-        // `CursorKind::Targeting`.
-        targeting: asset_server.load("cursors/Cursor3.png"),
+        default: asset_server.load(CURSOR_IMAGES[0].0),
+        attack: asset_server.load(CURSOR_IMAGES[1].0),
+        talk: asset_server.load(CURSOR_IMAGES[2].0),
+        targeting: asset_server.load(CURSOR_IMAGES[3].0),
     });
 }
 
@@ -112,8 +123,8 @@ fn update_cursor_icon(
         match hovered.0 {
             Some(entity) => match kinds.get(entity) {
                 // Characters get the plain cursor — and a COS counts as one,
-                // so the talk cursor no longer appears over somebody's pet
-                // promising a dialog that has no business existing.
+                // so the talk cursor does not appear over somebody's pet and
+                // promise a dialog that has no business existing.
                 Ok(kind) if interacts_as_character(kind, cos.contains(entity)) => {
                     CursorKind::Default
                 }
@@ -175,5 +186,42 @@ fn move_cursor(
         };
 
         game_cursor_camera.cursor_ray = camera.viewport_to_world(camera_transform, position).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CURSOR_IMAGES;
+    use std::path::PathBuf;
+
+    /// Every path in [`CURSOR_IMAGES`] must name a file that is actually
+    /// shipped under `assets/`.
+    ///
+    /// This is the only place the mistake is catchable: a missing cursor image
+    /// compiles, links and runs — `AssetServer::load` just logs
+    /// `Path not found: assets/cursors/<name>` once per start and hands back a
+    /// handle that never reaches `LoadState::Loaded`, so
+    /// [`update_cursor_icon`](super::update_cursor_icon) returns early forever
+    /// and that cursor kind is simply invisible.
+    #[test]
+    fn every_cursor_image_is_shipped() {
+        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets");
+        for (path, _) in CURSOR_IMAGES {
+            let file = assets.join(path);
+            assert!(
+                file.is_file(),
+                "cursor image `{path}` is loaded at startup but not shipped ({})",
+                file.display()
+            );
+        }
+    }
+
+    /// A hotspot outside the image is a click point the OS cannot honour, and
+    /// the cursors are 32x32 crops.
+    #[test]
+    fn every_cursor_hotspot_is_inside_a_32px_sprite() {
+        for (path, (x, y)) in CURSOR_IMAGES {
+            assert!(x < 32 && y < 32, "`{path}` hotspot {x},{y} is off-sprite");
+        }
     }
 }
