@@ -232,13 +232,9 @@ const TITLE_RECT: (f32, f32, f32, f32) = (47.0, 110.0, 292.0, 36.0);
 const DESIGN: (f32, f32) = crate::plugins::ui_v2::RESINFO_CANVAS;
 const PLATE_SIZE: (f32, f32) = (440.0, 152.0);
 
-/// Where a plate sits: **no longer ours, and no longer a row.** Measured
-/// 2026-08-26 (the RE notes): state 7 projects
-/// the two idols' world points in one call and then places each plate at
-/// `x = projX - plateWidth/2` (clamped to `x >= 5`), `y = projY` — the panel
-/// hangs on its own figure. The centred pair that stood here (a `15%` row with
-/// a `40 px` gap) was invented while this was `[U]`, and it is what the
-/// maintainer described as belonging "viel näher an der kiste mit der karte".
+/// Where a plate sits: not a row. The original projects the two idols' world
+/// points in one call and then places each plate at `x = projX - plateWidth/2`
+/// (clamped to `x >= 5`), `y = projY` — the panel hangs on its own figure.
 /// The screen offsets therefore live in [`plate_left_px`], not in a constant.
 
 /// `GDR_STATIC1` in sections `China`/`Europe`, plate-local; only x differs.
@@ -310,6 +306,13 @@ pub fn enter_region_select(
     cam_query: Query<Entity, With<Camera2d>>,
 ) {
     commands.remove_resource::<super::character_create::EnteringCharacterCreate>();
+    // Before the camera gate, not after it: `update_region_hover` takes
+    // Before the camera gate, not after it: `update_region_hover` takes
+    // `ResMut<HoveredRegion>` and Bevy does not skip a system whose resource is
+    // missing — it fails parameter validation and panics the schedule
+    // (AGENTS.md). Behind the early return, a frame without a 2d camera would
+    // take the whole state down instead of just drawing nothing.
+    commands.init_resource::<HoveredRegion>();
 
     let Some(camera) = cam_query.iter().next() else {
         warn!("no 2d camera found");
@@ -336,15 +339,12 @@ pub fn enter_region_select(
     ));
 
     // Each plate is its own absolutely placed root, because it is hung on its
-    // own idol every frame (§8.3) rather than laid out next to its sibling: the
-    // two used to be children of a centred row, which is precisely the
-    // invented placement the measurement replaced. They start invisible
-    // (`RegionPlateFade(0.0)`, alpha 0 like the original) and are
+    // own idol every frame rather than laid out next to its sibling. They start
+    // invisible (`RegionPlateFade(0.0)`, alpha 0 like the original) and are
     // ramped in by [`update_region_plates`] while the pointer is on their idol.
-    commands.init_resource::<HoveredRegion>();
     // The board is as long as the corpus says: one plate per race the
     // character table can build, plus the plates the interface data itself
-    // declares (those stay, dimmed, with the original's reason — #643).
+    // declares (those stay, dimmed, with the original's reason).
     for race in available_races(&char_data) {
         let presentation = race.presentation();
         if presentation.is_none() {

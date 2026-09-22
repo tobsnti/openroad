@@ -117,8 +117,8 @@ impl DesignFit {
 
 /// Blur radius of the backdrop, as a fraction of the cover box's height.
 ///
-/// Chosen by eye against the real art at 16:9 and 21:9 (pictures in
-/// `artifacts/capture/loading-fill/`): below ~0.05 the backdrop still reads as
+/// Chosen by eye against the real art at 16:9 and 21:9: below ~0.05 the
+/// backdrop still reads as
 /// a second, wrongly-cropped picture competing with the painting; above ~0.12
 /// it is an even smear that no longer echoes the composition. The value is a
 /// fraction, not pixels, so the effect is the same on a 1280 and a 3440 window.
@@ -287,8 +287,8 @@ pub fn design_pct(rect: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
 ///
 /// Public because three surfaces draw this chrome (the intro loading screen,
 /// the world-entry overlay in `game_scene`, the board->creation cut in
-/// `intro_v2::region_select`) and every one of them that re-derived the
-/// geometry got it wrong — see [`spawn_loading_chrome`].
+/// `intro_v2::region_select`), so none of them has to re-derive the geometry
+/// — see [`spawn_loading_chrome`].
 pub fn design_node(rect: (f32, f32, f32, f32)) -> Node {
     let (left, top, width, height) = design_pct(rect);
     Node {
@@ -612,7 +612,7 @@ mod test {
         assert!(GAUGE_RECT.0 >= FRAME_RECT.0);
         assert!(GAUGE_RECT.0 + GAUGE_RECT.2 <= FRAME_RECT.0 + FRAME_RECT.2);
         assert_eq!(GAUGE_RECT.0, CAPTION_RECT.0);
-        // the old hand-tuned 684x14 fill was neither the rect nor the art
+        // 684x14 is neither the authored rect nor the art size
         assert_ne!((GAUGE_RECT.2, GAUGE_RECT.3), (684.0, 14.0));
     }
 
@@ -662,11 +662,10 @@ mod test {
         out
     }
 
-    /// #628: `game_scene` and `region_select` each re-derived this chrome
-    /// because the rects were private here, and the creation cut mixed design
-    /// spaces — a percentage frame with a `Val::Px(252)` caption, which slides
-    /// off the frame at every window size but exactly design scale. The whole
-    /// point of the shared helper is that nothing it emits is in pixels.
+    /// Design spaces must not be mixed: a percentage frame with a
+    /// `Val::Px(252)` caption slides off the frame at every window size but
+    /// exactly design scale. The whole point of the shared helper is that
+    /// nothing it emits is in pixels.
     #[test]
     fn the_shared_chrome_is_percentage_only() {
         let (app, root) = chrome_app(true);
@@ -686,7 +685,7 @@ mod test {
     }
 
     /// The caption is baked art, never a string — there is no "Now Loading"
-    /// key in `textuisystem.txt`, so any text here is an invention (#628).
+    /// key in `textuisystem.txt`, so any text here is an invention.
     #[test]
     fn the_caption_is_art_and_the_gauge_is_optional() {
         let (app, root) = chrome_app(false);

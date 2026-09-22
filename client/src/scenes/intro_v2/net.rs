@@ -285,12 +285,11 @@ pub fn on_gateway_login_response(
         }
 
         // Codes with a payload rendered their own message above (attempt
-        // counter / ban reason); everything else now goes through the *shipped*
-        // row for its code instead of our own prose. `login_error_text` is the
-        // pump's switch transcribed (`FUN_0086bfc0:236-443`, table in
-        // the RE notes) and returns `None` for exactly
-        // the two payload codes, so the match arms and the table cannot drift
-        // apart. `describe_login_error` stays the prose for the log line.
+        // counter / ban reason); everything else goes through the *shipped* row
+        // for its code. `login_error_text` transcribes the original's login
+        // switch and returns `None` for exactly the two payload codes, so the
+        // match arms and the table cannot drift apart. `describe_login_error`
+        // stays the prose for the log line.
         match err.failure() {
             LoginFailure::WrongPassword(_) | LoginFailure::Blocked(_) => {}
             _ => {
@@ -344,20 +343,18 @@ pub fn on_gateway_login_response(
 /// the substance of this arm: it is done here, where the rejection arrives,
 /// rather than on a state transition that does not occur.
 ///
-/// Deliberate deviation from the original (ADR 0009), stated because it is one:
-/// the original's login-UI pump has **no error arm for this message**. Internal
-/// id `0x1002` is the `0xA103` result (`FUN_0086bfc0:94-112`) and it walks
-/// straight into the character-select transition without ever reading the
-/// result byte — no `textuisystem` string is selected anywhere in that arm
-/// (contrast `0x1003`/`0xA323` right below it at `:113-133`, which *does* pick
+/// Deliberate deviation from the original, stated because it is one: the
+/// original's login-UI pump has **no error arm for this message**. Internal id
+/// `0x1002` is the `0xA103` result and it walks straight into the
+/// character-select transition without ever reading the result byte — no
+/// `textuisystem` string is selected anywhere in that arm (contrast
+/// `0x1003`/`0xA323` right below it, which *does* pick
 /// `UIIT_STT_GLOBAL_AUTHENTICATION_INPUT_ERROR` on `result == 2`). Whether the
-/// original therefore shows nothing, or whether the still-undecompiled gateway
-/// dispatcher handles it, is `[U]` — the corpus does not contain that function
-/// (the RE notes). We
-/// choose to say something rather than dead-end the user, and we use
-/// [`describe_agent_auth_error`]'s prose rather than inventing a
-/// `textuisystem` key for it: no key is *measured* for this path, and a key
-/// derived from a name rule is precisely the mistake this repo keeps paying for.
+/// original therefore shows nothing, or whether its gateway dispatcher handles
+/// it, is unknown. We choose to say something rather than dead-end the user, and
+/// we use [`describe_agent_auth_error`]'s prose rather than inventing a
+/// `textuisystem` key for it: no key is known for this path, and a key derived
+/// from a name rule is a guess.
 pub fn on_agent_login_response(
     mut reader: MessageReader<AgentLoginResponse>,
     mut info_text_writer: MessageWriter<InfoTextV2Update>,

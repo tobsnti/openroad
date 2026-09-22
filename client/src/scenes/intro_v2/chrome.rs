@@ -1,9 +1,9 @@
 //! Intro chrome: the two full-width bars and the notice line that frame every
 //! intro state.
 //!
-//! Idea: the bars are `GDR_STA_SCREENUP` / `GDR_STA_SCREENDOWN` (ids 1/2),
-//! declared once per intro tree — and **each tree names its own art**, which is
-//! why one handle cannot serve the whole scene:
+//! The bars are `GDR_STA_SCREENUP` / `GDR_STA_SCREENDOWN` (ids 1/2), declared
+//! once per intro tree — and **each tree names its own art**, which is why one
+//! handle cannot serve the whole scene:
 //!
 //! | state | tree | up / down art |
 //! |---|---|---|
@@ -42,9 +42,9 @@ use super::{intro_font_px, IntroV2State};
 
 /// Bar rects, verbatim: `Rect="0,0,1600,172"` and `Rect="0,1030,1600,172"` in
 /// the trees' 1600x1200 design space. Height is expressed as a percentage of
-/// that space so the bars scale with the window, as they did before; 1030+172
-/// overruns the 1200 canvas by 2px, which is why the bottom bar is anchored to
-/// the bottom edge instead of to y=1030.
+/// that space so the bars scale with the window; 1030+172 overruns the 1200
+/// canvas by 2px, which is why the bottom bar is anchored to the bottom edge
+/// instead of to y=1030.
 /// The canvas height, from the one shared constant
 /// ([`crate::plugins::ui_v2::RESINFO_CANVAS`]) — not a second literal `1200`.
 const DESIGN_H: f32 = crate::plugins::ui_v2::RESINFO_CANVAS.1;
@@ -357,21 +357,16 @@ pub fn update_chrome_art(
 
 /// Applies notice-line messages — and empties the line on a screen change.
 ///
-/// Idea: the notice line is **one entity for the whole intro scene**
-/// ([`info_text`]), while every sentence in it belongs to exactly one screen.
-/// Without a clear-on-change, a sentence written for one screen is still
-/// standing on the next one: click the data-blocked European plate on region
-/// select, pick the Chinese one instead, and its rejection ("Out of service
-/// area." / `region_select::PLATE_DISABLED_REASON`) rides along into
-/// character creation — reported from the playtest as "unten steht irgendwie
-/// out of service area". Clearing was per-screen handwork until now
-/// (`character_select`, `net`), so every new writer had to remember it.
+/// The notice line is **one entity for the whole intro scene** ([`info_text`]),
+/// while every sentence in it belongs to exactly one screen. Without a
+/// clear-on-change, a sentence written for one screen still stands on the next:
+/// click the data-blocked European plate on region select, pick the Chinese one
+/// instead, and its rejection ("Out of service area." /
+/// `region_select::PLATE_DISABLED_REASON`) rides along into character creation.
 ///
-/// The original does empty the band on a screen change, and both frames of the
-/// same recorded session are on disk: a peer capture
-/// `22-after-delete.png` carries the three-line "The character's deletion is
-/// reserved." notice on the select screen, and `27-create-screen.png` a few
-/// clicks later shows the same band **empty**.
+/// The original does empty the band on a screen change: it shows the three-line
+/// "The character's deletion is reserved." notice on the select screen, and the
+/// same band is **empty** a few clicks later on the create screen.
 ///
 /// Why the clear cannot swallow a legitimate message: Bevy runs the
 /// `StateTransition` schedule *before* `Update`, so a message an `OnEnter`
@@ -405,7 +400,7 @@ mod test {
     use crate::scenes::SceneState;
 
     /// The bar height is the authored one, not a round percentage: 172 of the
-    /// 1600x1200 design space. The old 15% was unsourced and 8px too tall.
+    /// 1600x1200 design space.
     #[test]
     fn the_bar_height_is_the_authored_rect() {
         assert_eq!(BAR_H, 172.0);

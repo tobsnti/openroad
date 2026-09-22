@@ -46,8 +46,8 @@ pub struct ClientCharacterData(Option<CharacterData>);
 
 impl ClientCharacterData {
     /// Test-only constructor: builds the resource straight from a table so
-    /// data-shape regressions (e.g. #643, a race silently missing from the
-    /// race board) can be pinned to real characterdata rows in a unit test.
+    /// data-shape regressions (a race silently missing from the race board)
+    /// can be pinned to real characterdata rows in a unit test.
     #[cfg(test)]
     pub(crate) fn from_table(data: CharacterData) -> Self {
         Self(Some(data))
@@ -368,8 +368,8 @@ impl ClientUiStrings {
 ///
 /// Idea: a large minority of textuisystem's rows are authored for the original's
 /// `CIFPML` rich-text control, not for a plain label — they carry `<sml2>`,
-/// `<br>` and `<font …>` tags (`docs/re/ui/help-tooltip-widget.md`: 93 rows use
-/// the `sml2` dialect). A plain `Text` node renders those tags **literally**, so
+/// `<br>` and `<font …>` tags (93 rows use the `sml2` dialect). A plain `Text`
+/// node renders those tags **literally**, so
 /// the user sees the markup. We do not implement CIFPML; the honest reduction is
 /// to keep the authored line breaks (`<br>`) and drop the rest of the markup,
 /// which leaves markup-free rows byte-identical.
@@ -462,7 +462,7 @@ impl ClientWorldMap {
 #[derive(Resource, Default)]
 pub struct ClientZoneSounds(Option<ZoneSoundTable>);
 
-// Consumed by the playback half (#771).
+// Consumed by the playback half.
 #[allow(dead_code)]
 impl ClientZoneSounds {
     /// Zone at a sector-local position; `RECT` claims beat the sector's `ALL`
@@ -641,7 +641,7 @@ impl ClientQuestTable {
     }
 }
 
-/// The in-game help book (#575): the `gameguidedata.txt` tree and the
+/// The in-game help book: the `gameguidedata.txt` tree and the
 /// `texthelp.txt` bodies behind it. Two files, one resource, because a guide
 /// node without its body is not usable on its own.
 #[derive(Resource, Default)]
@@ -747,7 +747,7 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/textdataname.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/magicoption.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textuisystem.txt"),
-        // the in-game help book: the tree and its bodies (#575)
+        // the in-game help book: the tree and its bodies
         asset_server.load("media://server_dep/silkroad/textdata/gameguidedata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/texthelp.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/actionwnddata.txt"),
@@ -1010,8 +1010,7 @@ mod tests {
     }
 
     /// A markup row must reach a `Text` node as text, not as tags — this is the
-    /// only markup handling we have (`docs/re/ui/help-tooltip-widget.md` §8-5:
-    /// 93 rows use the `sml2` dialect).
+    /// only markup handling we have (93 rows use the `sml2` dialect).
     #[test]
     fn get_plain_or_resolves_markup_rows() {
         assert_eq!(
@@ -1053,7 +1052,7 @@ mod tests {
         "\tUI\tSND_BUTTON_CLICK\t-\t-\t-\t-\t0\tui\\\tuibutton_b.wav\t80\tclick#2\t\r\n",
     );
 
-    /// The registry resource is what the UI click reads (#773): it must resolve
+    /// The registry resource is what the UI click reads: it must resolve
     /// the row's own asset path and volume, and answer `None` (never panic)
     /// while the table has not loaded yet.
     #[test]

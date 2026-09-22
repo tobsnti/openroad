@@ -53,11 +53,10 @@ const CAMERA_MAX_PITCH: f32 = 1.45;
 const CAMERA_FOLLOW_SPEED: f32 = 8.0;
 /// Fixed pitch of [`SightMode::Quarter`], radians above the horizontal plane.
 ///
-/// **Ours, and the only number in the sight modes that is** (#379): the string
-/// table says the quarter view's "height is fixed to this perspective" but no
-/// file gives the angle. 0.9 rad ≈ 52° sits between the start pitch (0.5) and
-/// the top-down clamp (1.45), which is the shallow-isometric look the mode's
-/// own description promises ("provided for those inconvenienced by 3D motion").
+/// Not given by any data file: 0.9 rad (about 52 degrees) sits between the
+/// start pitch (0.5) and the top-down clamp (1.45), which is the shallow-
+/// isometric look the mode's own description promises ("provided for those
+/// inconvenienced by 3D motion").
 const QUARTER_VIEW_PITCH: f32 = 0.9;
 
 /// Orbit state of the third-person follow camera: zoom via the scroll wheel,
@@ -122,7 +121,7 @@ const ROTATION_TO_CENTER: Vec3 = Vec3::new(0.190, 3.140, 0.000);
 #[allow(dead_code)]
 const DISTANCE: f32 = 40.0;
 /// Near plane, from `Map/config.ifo` — a `JMXVCAMR1002` record whose 111 bytes
-/// parse EOF-exact (`docs/formats/camr-jmxvcamr.md`). Replaces a magic 0.5.
+/// parse EOF-exact (`docs/formats/camr-jmxvcamr.md`).
 const NEAR: f32 = 1.0;
 
 /// Far plane: one region past the distance at which fog reaches full opacity,
@@ -132,21 +131,15 @@ const NEAR: f32 = 1.0;
 /// REGION_SIZE` (3840) to `(VISIBLE_RANGE + FOG_RANGE) * REGION_SIZE` (5760),
 /// and Bevy's linear fog is `alpha = (d - start) / (end - start)`, so at 5500
 /// terrain is only ~86% opaque: a 5500 far plane would visibly cut partially
-/// transparent geometry out of the outer fog ring and break the deliberate
-/// hand-off to the horizon-matched `FOG_COLOR`. Deriving it from the streaming
-/// constants means retuning those cannot reintroduce that clip — the invariant
-/// is pinned by `the_far_plane_clears_the_fog_ceiling`.
-///
-/// The old 200000 was simply wrong: against a 0.5 near plane it gave a
-/// 400,000:1 depth range. Tightening that to 7680:1 also buys depth precision
-/// for the water SSR raymarch, which reads the view uniforms.
+/// transparent geometry out of the outer fog ring and break the hand-off to
+/// the horizon-matched `FOG_COLOR`. Deriving it from the streaming constants
+/// means retuning those cannot reintroduce that clip.
 const FAR: f32 = (VISIBLE_RANGE + FOG_RANGE + 1) as f32 * REGION_SIZE;
 
-/// Vertical FOV. `config.ifo` stores 45°, which is also Bevy's own
-/// `PerspectiveProjection` default; the previous 1.0 rad (57.3°) was a magic
-/// number. The record carries no aspect ratio, so "vertical" is inferred from
-/// its left-handed D3D basis (`D3DXMatrixPerspectiveFovLH` takes a y-direction
-/// FOV) rather than proven.
+/// Vertical FOV. `config.ifo` stores 45 degrees, which is also Bevy's own
+/// `PerspectiveProjection` default. The record carries no aspect ratio, so
+/// "vertical" is inferred from its left-handed D3D basis
+/// (`D3DXMatrixPerspectiveFovLH` takes a y-direction FOV) rather than proven.
 const FOV: f32 = std::f32::consts::FRAC_PI_4;
 
 #[allow(dead_code)]
@@ -211,10 +204,8 @@ impl Default for PlayerCamera {
 }
 
 /// Spawn the 2d UI camera every HUD and menu renders onto (`OnEnter(GameState::Loading)`).
-///
-/// Moved here from `plugins::ui` (#56-C), unchanged: this is a camera, and the
-/// `Hdr` coupling below is the counterpart of [`attach_bloom`] in this same
-/// module — keeping the two apart is what made the coupling easy to miss.
+/// The `Hdr` coupling below is the counterpart of [`attach_bloom`] in this
+/// same module.
 fn setup_ui_camera(mut commands: Commands, config: Res<ClientConfig>) {
     let ui_camera = commands
         .spawn((
@@ -247,16 +238,11 @@ impl Plugin for CameraPlugin {
         app
             // TODO: ThirdPersonCameraPlugin removed - no Bevy 0.16 compatible version
             .add_plugins(FreeCameraPlugin)
-            // The 2d UI camera, moved here with `setup_ui_camera` (#56-C).
             .add_systems(OnEnter(GameState::Loading), setup_ui_camera)
             .init_resource::<CameraRig>()
             // Ungated: every scene that spawns the player+fly camera pair
-            // (world sandbox AND the testing scenes) needs Tab to actually
-            // switch them — the old `SceneState::WorldSandbox` gate left the fly
-            // camera frozen active in the testing scenes and also lost the
-            // spawn-time `AppMode` race there. Scenes without both cameras
-            // hit the `single_mut()` early-returns, so this is a no-op
-            // everywhere else.
+            // needs Tab to switch between them. Scenes without both cameras
+            // hit the `single_mut()` early-returns, so this is a no-op there.
             .add_systems(Update, switch_camera)
             // Before anything renders: every window camera must agree on the
             // sample count (see `apply_window_camera_msaa`).
@@ -303,7 +289,6 @@ fn get_primary_window_size(windows: &Query<&mut Window>) -> Vec2 {
     window
 }
 
-/// Spawn a camera like this
 pub fn spawn_player_camera(
     app_mode: Res<State<AppMode>>,
     mut commands: Commands,
@@ -328,7 +313,6 @@ pub fn spawn_player_camera(
     // generator to stop the per-frame filtering cost.
     let sky_reflections = sky_reflection_env_light(&mut images);
 
-    // spawn camera
     // TODO: ThirdPersonCamera removed - no Bevy 0.16 compatible version; re-add when available
     // DepthPrepass feeds the high-quality water's screen-space reflection raymarch (see
     // water_hq.wgsl). MSAA stays at the Bevy default (Sample4): forcing it off breaks
@@ -565,9 +549,8 @@ pub(crate) fn retarget_window_cameras<'a>(
 ///
 /// The scale cancels: logical viewport = `physical / scale_factor` =
 /// `(window_physical * scale) / (window_scale_factor * scale)`, which is the
-/// window's own logical size. That identity is the whole design — it is what
-/// lets the 3D view shrink without any screen-space code knowing — and it is
-/// pinned by `the_logical_viewport_survives_scaling`.
+/// window's own logical size. That identity is the whole design: it is what
+/// lets the 3D view shrink without any screen-space code knowing.
 ///
 /// The physical size is rounded and floored at one texel: a zero-sized render
 /// target is a wgpu validation error, and a window can legitimately report 0
@@ -605,7 +588,7 @@ pub fn render_scale_target(
 ///
 /// `Projection` change detection is another of those conditions, and it is the
 /// one thing here we own, so touching it is how this code says "my target's
-/// dimensions moved". Pinned by `restoring_to_native_must_notify_the_camera`.
+/// dimensions moved".
 fn retarget_notify(projection: &mut Mut<Projection>) {
     projection.set_changed();
 }
@@ -871,11 +854,9 @@ fn main_view_render_settings(
 /// keys the shared main texture on `(target, usage, format, msaa)`, so the
 /// cameras drawing to the window must *all* agree or the disagreeing one gets
 /// its own texture — and the UI `Camera2d`, which clears nothing, then blits an
-/// empty texture over the 3D view. That failure has already happened once on
-/// the `format` axis of the same key (see [`attach_bloom`] and
-/// [`setup_ui_camera`]), and it happened because agreement was a thing to
-/// remember at a spawn site. Driving it off `Added<Camera>` means a camera
-/// added later cannot forget.
+/// empty texture over the 3D view. The `format` axis of the same key carries
+/// the same trap (see [`attach_bloom`] and [`setup_ui_camera`]). Driving this
+/// off `Added<Camera>` means a camera added later cannot forget.
 ///
 /// The offscreen portrait / paper-doll rigs render to their own images, which
 /// are keyed separately, so they are deliberately left alone.
@@ -931,9 +912,9 @@ pub struct MouseCameraRoles {
 ///
 /// `mouse_shortcut_swapped` is the id-3101 bool. Which of its two values maps
 /// to which vanilla string is **ours to choose** — no default for id 3101
-/// exists anywhere in `resinfo/` (`docs/re/ui/options-controls.md` §9) — so we
-/// read the field's own name literally: *swapped* means the shortcut moved to
-/// the wheel, i.e. 918 `UIIT_STT_USE_WHEEL_TO_USE_SKILL`, and the right button
+/// exists anywhere in `resinfo/` — so we read the field's own name literally:
+/// *swapped* means the shortcut moved to the wheel, i.e. 918
+/// `UIIT_STT_USE_WHEEL_TO_USE_SKILL`, and the right button
 /// changes the view instead. Unswapped is 917
 /// `UIIT_STT_USE_WHEEL_TO_CHANGE_SIGHT`.
 ///
@@ -1249,9 +1230,9 @@ mod test {
         assert!(axes.yaw_is_free && axes.pitch_is_free && axes.locked_pitch.is_none());
     }
 
-    /// #605: SROptionSet id 3101 was parsed, persisted and read by nobody.
-    /// These are the two vanilla states of `textuisystem.txt` 917/918 — exactly
-    /// one device changes the view, the other is reserved for shortcuts.
+    /// SROptionSet id 3101. These are the two vanilla states of
+    /// `textuisystem.txt` 917/918 — exactly one device changes the view, the
+    /// other is reserved for shortcuts.
     #[test]
     fn vanilla_mouse_scheme_gives_the_camera_one_device() {
         // 917 `..._TO_CHANGE_SIGHT`: wheel changes view, right button shortcuts.
@@ -1287,7 +1268,7 @@ mod test {
     /// of view instead of finishing its fade into `FOG_COLOR`.
     ///
     /// `config.ifo`'s 5500 sits 260 units inside our 5760 fog end — only ~86%
-    /// opaque — which is why #108 does not adopt it verbatim.
+    /// opaque — which is why the far plane does not adopt it verbatim.
     #[test]
     fn the_far_plane_clears_the_fog_ceiling() {
         let fog_end = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
@@ -1298,9 +1279,9 @@ mod test {
         );
     }
 
-    /// The old 200000 far plane against a 0.5 near plane gave a 400,000:1 depth
+    /// A 200000 far plane against a 0.5 near plane gives a 400,000:1 depth
     /// range, which is where the depth buffer loses precision. Keep the ratio
-    /// in a sane band — this is the reason the fix is worth making at all.
+    /// in a sane band.
     #[test]
     fn the_depth_range_stays_precise() {
         assert!(NEAR > 0.0);

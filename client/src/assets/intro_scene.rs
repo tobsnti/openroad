@@ -35,9 +35,8 @@ pub struct IntroScene {
 /// We carry **8 of them value-exact** — `frame`, `rx`=188, `rz`=95, the offset
 /// xyz and the rotation xyz — and deliberately drop **three**: the leading
 /// `0.0`, the `S_CameraInsert` command token, and the trailing `1`. The token is
-/// self-evident; the two constants' semantics are **UNKNOWN**
-/// (`docs/re/ui/scene-intro-splash.md` §9). The subset is a decision, not a
-/// parse loss: nothing in the dropped fields is geometry.
+/// self-evident; the two constants' semantics are **UNKNOWN**. The subset is a
+/// decision, not a parse loss: nothing in the dropped fields is geometry.
 ///
 /// `IntroScene::music` has no counterpart in that file either — it comes from
 /// `Media/config/option.txt:12` (`IntroBGM="maintheme_cut.ogg"`).
@@ -135,7 +134,7 @@ impl IntroScene {
     /// `constantinople`, `egypt`, `roc`) are the *same* format the `.intro`
     /// asset already carries — a `[CAMERA]` block of
     /// `0.0 S_CameraInsert <frame> <rx> <rz> <x> <y> <z> <rotx> <roty> <rotz> 1`
-    /// rows (`docs/re/ui/cameradata-editor.md`, `docs/re/ui/scene-intro-splash.md`
+    /// rows (`the local RE notes`, `the local RE notes`
     /// §3/§6). Only `china_wharf` has ever been transcribed by hand, so the
     /// other three cutscenes are unreachable in openroad purely for want of a
     /// converter. This is that converter: the transcription step stops being

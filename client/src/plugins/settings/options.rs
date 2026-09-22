@@ -88,11 +88,9 @@ impl Default for GraphicProfile {
 
 /// The three camera view modes of the original's Camera options pane.
 ///
-/// Idea: this is **not** an openroad invention, which is worth stating because
-/// `docs/re/ui/options-camera.md` §9 records "what each mode does geometrically"
-/// as UNKNOWN on the grounds that `ifoption_camera.txt` does not define it. The
-/// tree does not — but `textuisystem.txt` does, in the two description lines the
-/// pane itself renders next to each radio:
+/// Idea: this is **not** an openroad invention. `ifoption_camera.txt` does not
+/// say what each mode does geometrically, but `textuisystem.txt` does, in the two
+/// description lines the pane itself renders next to each radio:
 ///
 /// * `UIIT_STT_SIGHT_FREE_DESC1/2` — "Mouse oriented camera control" /
 ///   "Operates on multidirectional angle control and mouse movement"
@@ -131,13 +129,13 @@ impl SightMode {
     pub const ALL: [SightMode; 3] = [SightMode::Free, SightMode::ThirdPerson, SightMode::Quarter];
 }
 
-/// Camera view mode (`GDR_OPTION_WND_CAMERA`, #379).
+/// Camera view mode (`GDR_OPTION_WND_CAMERA`).
 ///
-/// **Stated non-original storage.** `docs/re/ui/options-camera.md` §9 leaves it
-/// UNKNOWN whether any `SROptionSet` id covers the sight mode — our parser
-/// lumps `2001..=2028` (`sroptionset.rs`) with none broken out — so no id is
-/// invented here. It rides the `user_settings.yaml` path with the rest of
-/// [`GameOptions`] instead, which is what makes the radio survive a restart.
+/// **Stated non-original storage.** It is unknown whether any `SROptionSet` id
+/// covers the sight mode — our parser lumps `2001..=2028` (`sroptionset.rs`)
+/// with none broken out — so no id is invented here. It rides the
+/// `user_settings.yaml` path with the rest of [`GameOptions`] instead, which is
+/// what makes the radio survive a restart.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraOptions {
     #[serde(default)]
@@ -160,12 +158,9 @@ pub struct VideoOptions {
     ///
     /// **Stated deviation from the original**, which persists id 2015 across
     /// restarts: `config.yaml` is openroad's single authority for the window,
-    /// and a persisted copy here is what silently overrode it (the bug this
-    /// replaced — a stale `window_mode: false` in `user_settings.yaml`, or
-    /// merely the `bool` default, forced borderless fullscreen on every boot
-    /// no matter what the config said). An older file's `window_mode:` key is
-    /// deliberately *not* aliased: it is ignored as an unknown key, which is
-    /// what retires the stale value without a migration.
+    /// and a persisted copy here would silently override it. An older file's
+    /// `window_mode:` key is deliberately *not* aliased: it is ignored as an
+    /// unknown key, which retires a stale value without a migration.
     ///
     /// It still takes part in [`GameOptions`]'s `PartialEq`, so flipping it
     /// does trigger a `persistence::save_on_change` write — harmless, since
@@ -247,10 +242,10 @@ impl AudioOptions {
     /// The same looping BGM settings, but **always** produced — muted BGM is
     /// expressed as a `paused` sink rather than as a missing entity.
     ///
-    /// That distinction is what makes the audio group live (#647): a track
-    /// that was never spawned because BGM happened to be off at scene entry
-    /// cannot start playing when the user turns BGM on, whereas a paused sink
-    /// can (`apply_background_music_options`).
+    /// That distinction is what makes the audio group live: a track that was
+    /// never spawned because BGM happened to be off at scene entry cannot start
+    /// playing when the user turns BGM on, whereas a paused sink can
+    /// (`apply_background_music_options`).
     pub fn bgm_playback_settings(&self) -> PlaybackSettings {
         PlaybackSettings {
             paused: !self.bgm_enabled,
@@ -270,8 +265,8 @@ impl AudioOptions {
             .then(|| PlaybackSettings::DESPAWN.with_volume(Self::gain(self.fx_volume)))
     }
 
-    /// Looping settings for a zone-ambience bed, always produced: like BGM
-    /// (#647) a muted environment channel is a *paused* sink, so turning the
+    /// Looping settings for a zone-ambience bed, always produced: like BGM,
+    /// a muted environment channel is a *paused* sink, so turning the
     /// Environment row back on starts the bed that was already there
     /// (`plugins::zone_ambience::apply_zone_ambience_options`).
     pub fn env_playback_settings(&self) -> PlaybackSettings {
@@ -424,12 +419,12 @@ pub struct GameOptions {
     pub gameplay: GameplayOptions,
     #[serde(default)]
     pub keymap: KeyMapOptions,
-    /// The Camera pane's sight mode (#379). Not in `OptionSet.csv`'s tab
+    /// The Camera pane's sight mode. Not in `OptionSet.csv`'s tab
     /// grouping because no id for it is identified — see [`CameraOptions`].
     #[serde(default)]
     pub camera: CameraOptions,
-    /// Where the player left each of the ten windows the original persists
-    /// (#302). Not an `OptionSet.csv` group at all — vanilla keeps this in its
+    /// Where the player left each of the ten windows the original persists.
+    /// Not an `OptionSet.csv` group at all — vanilla keeps this in its
     /// own `wndpos.dat`, which we deliberately never read or write; see
     /// [`super::window_positions`].
     #[serde(default)]
@@ -618,10 +613,10 @@ mod tests {
         assert_eq!(older.gameplay, GameplayOptions::default());
     }
 
-    /// #379's acceptance is explicitly "changes behaviour **and** survives a
-    /// restart". The restart half is this: the sight mode has to go through the
-    /// same `user_settings.yaml` round-trip `persistence.rs` performs, with a
-    /// stable spelling, or the radio silently resets on every launch.
+    /// The sight mode must change behaviour **and** survive a restart. The
+    /// restart half is this: it has to go through the same `user_settings.yaml`
+    /// round-trip `persistence.rs` performs, with a stable spelling, or the
+    /// radio silently resets on every launch.
     #[test]
     fn the_sight_mode_round_trips_through_the_settings_yaml() {
         for mode in SightMode::ALL {
@@ -635,9 +630,9 @@ mod tests {
         }
     }
 
-    /// A `user_settings.yaml` written before #379 has no `camera:` key at all.
-    /// It must still load — and land on the mode that is what openroad did
-    /// before the pane existed, not on whatever happens to be first.
+    /// A `user_settings.yaml` with no `camera:` key at all must still load —
+    /// and land on the documented default mode, not on whatever happens to be
+    /// first.
     #[test]
     fn a_settings_file_without_a_camera_group_still_loads_as_free() {
         let older: GameOptions =
@@ -730,10 +725,9 @@ mod tests {
 
     /// The window mode is `config.yaml`'s to decide, so the session override
     /// must not ride the file in either direction. Both halves are asserted
-    /// because either one alone would let the old bug back in: a written key
-    /// would be read back next launch, and a *read* key resurrects the stale
-    /// `window_mode: false` that every existing `user_settings.yaml` already
-    /// carries.
+    /// because either one alone would be enough to persist it: a written key
+    /// would be read back next launch, and a read key would adopt a stale
+    /// `window_mode:` value from an older file.
     #[test]
     fn the_window_mode_override_never_touches_the_settings_yaml() {
         let mut o = GameOptions::default();
@@ -744,7 +738,7 @@ mod tests {
             "a session-only override must not be written: {yaml}"
         );
 
-        // The legacy spelling every pre-fix file on disk has.
+        // The legacy spelling an older file on disk may carry.
         let back: GameOptions =
             serde_yaml::from_str("video:\n  window_mode: false\n").expect("legacy doc");
         assert_eq!(
@@ -816,7 +810,7 @@ mod tests {
         assert_eq!(audio.bgm_playback().unwrap().volume.to_linear(), 1.0);
     }
 
-    /// Muted BGM is a *paused sink*, not a missing entity (#647): the sink has
+    /// Muted BGM is a *paused sink*, not a missing entity: the sink has
     /// to exist, and to remember the intended volume, or turning BGM back on
     /// mid-scene would have nothing to unpause.
     #[test]
