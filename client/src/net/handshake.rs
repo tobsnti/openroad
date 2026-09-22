@@ -120,17 +120,40 @@ pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeEr
 /// So: accumulate until the frame parses, and turn every failure into a
 /// [`HandshakeError`] the caller already knows how to report. Generic over
 /// `Read` only so the split can be reproduced in a test without a socket.
-fn read_handshake_frame<R: Read>(
+///
+/// `pending` is the caller's carry buffer and outlives the call: a single read
+/// can hold more than one frame (the gateway coalesces the phase-2 setup, and
+/// the module-identification answer, behind the frame we are after), so the
+/// bytes behind the frame are kept rather than dropped.
+pub(crate) fn read_handshake_frame<R: Read>(
     stream: &mut R,
     security: Arc<RwLock<SilkroadSecurityState>>,
+    pending: &mut Vec<u8>,
 ) -> Result<SilkroadFrame, HandshakeError> {
     // The handshake frame is a few dozen bytes; this cap only bounds a peer
     // that keeps sending without ever completing one.
     const MAX_HANDSHAKE_BYTES: usize = 4096;
-    let mut pending: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
-        let read = stream.read(&mut chunk).map_err(|_| InvalidFrame)?;
+        // Parse first: the carry buffer may already hold a whole frame from
+        // the previous call, in which case there is nothing to read.
+        match SilkroadFrame::parse(pending, security.clone()) {
+            Ok((total_size, frame)) => {
+                // `parse` reports the size *behind* the 2-byte length prefix.
+                pending.drain(..total_size + 2);
+                return Ok(frame);
+            }
+            // Not all of it arrived yet — read more rather than fail.
+            Err(SilkroadFrameError::Incomplete) => {}
+            Err(_) => return Err(InvalidFrame),
+        }
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            // A signal cut the read short; nothing was consumed and nothing is
+            // wrong with the stream, so retry instead of failing the login.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(InvalidFrame),
+        };
         if read == 0 {
             // Peer closed before the frame was complete.
             return Err(InvalidFrame);
@@ -139,21 +162,16 @@ fn read_handshake_frame<R: Read>(
         if pending.len() > MAX_HANDSHAKE_BYTES {
             return Err(InvalidFrame);
         }
-        match SilkroadFrame::parse(&mut pending, security.clone()) {
-            Ok((_, frame)) => return Ok(frame),
-            // Not all of it arrived yet — read more rather than fail.
-            Err(SilkroadFrameError::Incomplete) => continue,
-            Err(_) => return Err(InvalidFrame),
-        }
     }
 }
 
 pub(crate) fn initialize(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
+    pending: &mut Vec<u8>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
-    let frame = read_handshake_frame(stream, security.clone())?;
+    let frame = read_handshake_frame(stream, security.clone(), pending)?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -284,9 +302,10 @@ fn setup_handshake(
 pub(crate) fn finalize(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
+    pending: &mut Vec<u8>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
-    let frame = read_handshake_frame(stream, security.clone())?;
+    let frame = read_handshake_frame(stream, security.clone(), pending)?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -524,9 +543,12 @@ mod test {
         // places a single `read` cannot recover from.
         for split in [3usize, 5, 6, 7, raw.len() - 1] {
             let (head, tail) = raw.split_at(split);
-            let frame =
-                read_handshake_frame(&mut ChunkedReader::new(&[head, tail]), fresh_security())
-                    .expect("a split frame is still a frame");
+            let frame = read_handshake_frame(
+                &mut ChunkedReader::new(&[head, tail]),
+                fresh_security(),
+                &mut Vec::new(),
+            )
+            .expect("a split frame is still a frame");
             match frame {
                 SilkroadFrame::Packet { opcode, data, .. } => {
                     assert_eq!(opcode, 0x5000, "split at {split}");
@@ -543,9 +565,90 @@ mod test {
     #[test]
     fn a_peer_closing_mid_handshake_is_an_error() {
         let raw = setup_frame_bytes(&[1, 2, 3, 4]);
-        let err = read_handshake_frame(&mut ChunkedReader::new(&[&raw[..4]]), fresh_security())
-            .expect_err("a truncated stream cannot yield a frame");
+        let err = read_handshake_frame(
+            &mut ChunkedReader::new(&[&raw[..4]]),
+            fresh_security(),
+            &mut Vec::new(),
+        )
+        .expect_err("a truncated stream cannot yield a frame");
         assert!(matches!(err, InvalidFrame), "got {err:?}");
+    }
+
+    /// A `Read` that reports one `Interrupted` error before handing out its
+    /// bytes — what a socket read does when a signal arrives mid-call.
+    struct InterruptingReader {
+        interrupted: bool,
+        rest: ChunkedReader,
+    }
+
+    impl Read for InterruptingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.rest.read(buf)
+        }
+    }
+
+    /// The server coalesces phase 1 and phase 2 into one segment often enough
+    /// that discarding whatever followed the frame loses a whole packet — and
+    /// with it the rest of the login. What is behind the frame must stay in the
+    /// caller's buffer.
+    #[test]
+    fn bytes_behind_the_frame_stay_in_the_carry_buffer() {
+        let first = setup_frame_bytes(&[1, 2, 3, 4]);
+        let second = setup_frame_bytes(&[9, 9]);
+        let mut wire = first.clone();
+        wire.extend_from_slice(&second);
+
+        let mut pending = Vec::new();
+        let frame = read_handshake_frame(
+            &mut ChunkedReader::new(&[&wire]),
+            fresh_security(),
+            &mut pending,
+        )
+        .expect("the first frame parses");
+        match frame {
+            SilkroadFrame::Packet { opcode, data, .. } => {
+                assert_eq!(opcode, 0x5000);
+                assert_eq!(data.as_ref(), &[1, 2, 3, 4]);
+            }
+            other => panic!("expected a packet, got {other:?}"),
+        }
+        assert_eq!(
+            pending, second,
+            "the coalesced second frame must survive the first read"
+        );
+
+        // ... and it parses from the buffer alone, without another read: the
+        // reader below is at EOF.
+        let frame =
+            read_handshake_frame(&mut ChunkedReader::new(&[]), fresh_security(), &mut pending)
+                .expect("the buffered second frame parses without a read");
+        match frame {
+            SilkroadFrame::Packet { data, .. } => assert_eq!(data.as_ref(), &[9, 9]),
+            other => panic!("expected a packet, got {other:?}"),
+        }
+        assert!(pending.is_empty(), "both frames were consumed");
+    }
+
+    /// An `Interrupted` read is a signal, not a protocol error: nothing was
+    /// consumed, so the read is retried. Failing it aborted a login for a
+    /// reason that has nothing to do with the peer.
+    #[test]
+    fn an_interrupted_read_is_retried_not_a_failed_handshake() {
+        let raw = setup_frame_bytes(&[7, 7, 7]);
+        let mut reader = InterruptingReader {
+            interrupted: false,
+            rest: ChunkedReader::new(&[&raw]),
+        };
+        let frame = read_handshake_frame(&mut reader, fresh_security(), &mut Vec::new())
+            .expect("a signal must not fail the handshake");
+        match frame {
+            SilkroadFrame::Packet { data, .. } => assert_eq!(data.as_ref(), &[7, 7, 7]),
+            other => panic!("expected a packet, got {other:?}"),
+        }
     }
 
     /// A session mid-handshake: the client has computed B and K from the
