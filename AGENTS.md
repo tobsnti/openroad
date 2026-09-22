@@ -43,12 +43,27 @@
   chat line), or the reporting moves into a HUD system behind a message. Registering the HUD
   resource in the harness is the wrong fix: it drags HUD state into something that
   deliberately has none, and only postpones the failure to the next HUD access.
+- **A command aimed at an entity that may already be gone uses `try_insert`, not `insert`.**
+  `commands.entity(e).insert(..)` panics when the queue reaches an entity that was despawned
+  after the command was queued, and that is a normal frame, not an error: a query runs before
+  this frame's despawns are applied, and observers for one press run in an order nobody
+  declared — so the click that focuses a window can be the click on its own (X), whose handler
+  despawns that same window. The panic kills the running app mid-session, and the thing lost by
+  `try_insert` is a component on something that is closing anyway. `insert` is right only where
+  the code itself just spawned the entity, or otherwise owns its lifetime.
 - `make ci` **builds and unit-tests; it never starts the app.** Two whole failure classes are
   therefore invisible to it: missing-resource parameter-validation panics, and plugin/system
   tuples that outgrow the arity Bevy implements (`Plugins` stops at 15 — a 16th entry makes
   the *whole* nested tuple fail the trait, and the error names no type at all). Before merging
   a change that touches systems, resources or a plugin registry, run the 40-second smoke:
   `NETCHECK=1 cargo run -p client` (add `NETCHECK_ACTIONS=1` for the action path).
+- The same arity cliff has a **third** shape, and it does show up at compile time: `SystemParam`
+  is implemented for tuples up to 16, so a system or observer with a 17th parameter fails its
+  `IntoSystem` bound with an error that names *no* parameter (`fn(..., ..., ...) cannot be used
+  as an entity observer`). It is reached by adding one ordinary `ResMut` — wiring a third menu
+  row did it in `hud/underbar/menu_popup.rs`. The fix is to group related parameters in a
+  `#[derive(SystemParam)]` struct; say in the comment that this is the arity constraint and not
+  tidying, or the next reader will inline it again.
 
 ## Documentation
 - Update `README.md` and `docs/*.md` when behavior or workflows change.
@@ -59,6 +74,13 @@
 - Use `cargo run -p <crate>` for workspace binaries.
 - New grouped Make commands must use space-separated subcommands, not hyphenated target names (for example `make pk2 list`, not `make pk2-list`).
 - Avoid destructive git commands unless explicitly requested.
+- **One PR per feature group, not one per change.** A group is a feature the player
+  can name — pre-game, party, pet/COS, trading, guild, alchemy, academy, quest, docs,
+  tooling. Several contributors working the same group commit onto one shared group
+  branch and the PR is opened **once, at the end**, by whoever finishes last. Do not stack a
+  PR on another PR's branch: a reviewer then cannot read either one without the other,
+  and closing the lower one orphans the upper. If a change does not belong to any open
+  group, it starts a new group branch — it does not get its own PR.
 - Reverting a merged PR: state the reason in one sentence on the revert (defect /
   visual veto / collateral / precaution) and reopen the issue it closed
   (`docs/adrs/adr-0010-revert-rationale.md`).

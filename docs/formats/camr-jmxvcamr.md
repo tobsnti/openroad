@@ -67,17 +67,41 @@ Two cautions on this record. `fov` is stored without an aspect ratio, so
 (`D3DXMatrixPerspectiveFovLH` takes a y-direction FOV) and from 45° matching
 Bevy's own default — **likely, not verified**. And the upstream source marks this
 format obsolete ("this file is not used anymore"), with `n = 1` in every build we
-have: the `[V]` confidence covers the *byte layout*, not the claim that this
+have: the confidence covers the *byte layout*, not the claim that this
 projection triple is what the shipped gameplay camera used.
 
-> **Round 2 (F3) — the `n = 1` blocker is terminal, so the residual unknowns are moot.** The only
-> known `JMXVCAMR1002` sample is `Map/config.ifo`, and an exhaustive grep of the v1.188 client
-> string table for `.ifo`/`.mfo` literals shows **`config.ifo` never appears** — the client does
-> not open it. So there is no second sample to come and no consumer whose behaviour could name the
-> remaining fields. **CAMR is `do-not-wire`**: close the open items rather than leaving them
-> waiting for a corpus that cannot grow. (The three projection constants already adopted under
-> #108 stand on their own — they were adopted for being *sourced values* against three unsourced
-> hardcodes, not for being the shipped camera's.) It is a single saved
+## Verdict on loading it: no
+
+The obvious follow-up — *stop hardcoding near/fov, load them* — is answered
+**no**:
+
+| Question | Answer |
+|---|---|
+| Does the client open `Map/config.ifo`? | **No** |
+| Does it open `Map/camera_path.txt`? | **No** |
+| Is there a camera file it *does* open? | **Yes** — `config\cameradata.txt`, read on world entry. |
+
+So a `config.ifo` loader would make our projection depend on a file the original ignores — a saved
+editor viewpoint, `n = 1`, of which we would then override the far plane anyway. The three numbers
+stay constants in `client/src/plugins/camera.rs`, with their offsets cited at the constant. What changes is
+the *claim*: the values are sourced, they are **not** evidence about the shipped camera.
+
+### `Map/camera_path.txt` — unresolved, and not built on
+
+261 bytes of ASCII, three lines, all in region `78, 70` (`Map/70/78.m` exists) at a constant height of
+`800.0`, each with `1.570796, 0, 0, 2190.306152`. Read in the `(pitch, yaw, roll, distance)` shape
+this family uses elsewhere, `1.570796` = π/2 is straight down and `2190.3` an orbit radius — a
+top-down pass, not a flythrough. **But the client never opens the file.** No
+consumer, no second sample: unknown, and no loader.
+
+> **The `n = 1` blocker is terminal, so the residual unknowns are moot.** The only
+> known `JMXVCAMR1002` sample is `Map/config.ifo`, and the client does not open
+> it. So there is no second sample to come and no consumer whose behaviour could
+> name the remaining fields. **CAMR is `do-not-wire`**: close the open items
+> rather than leaving them waiting for a corpus that cannot grow. (The three
+> projection constants already adopted under #108 stand on their own — they were
+> adopted for being *sourced values* against three unsourced hardcodes, not for
+> being the shipped camera's.) It is a single saved
 editor viewpoint — which is also why only the projection transfers and the pose
 does not (`distance` 1353.94 is far outside our 40–400 clamp; `pitch` 0.9908 rad
 *is* inside `[0.1, 1.45]`, so `distance` alone is what disqualifies the pose).
