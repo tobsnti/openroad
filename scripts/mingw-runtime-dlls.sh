@@ -17,7 +17,13 @@ set -euo pipefail
 exe=${1:?usage: mingw-runtime-dlls.sh <exe> <dest-dir>}
 dest=${2:?usage: mingw-runtime-dlls.sh <exe> <dest-dir>}
 
-command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1 || {
+# Overridable so the test can substitute recording stand-ins for the toolchain
+# (scripts/test_mingw_runtime_dlls.sh) — the logic worth testing is the walk,
+# not whether mingw is installed on the machine running the tests.
+OBJDUMP=${MINGW_OBJDUMP:-x86_64-w64-mingw32-objdump}
+CXX=${MINGW_CXX:-x86_64-w64-mingw32-g++}
+
+command -v "$OBJDUMP" >/dev/null 2>&1 || {
     echo "mingw-runtime-dlls: need x86_64-w64-mingw32-objdump (binutils-mingw-w64-x86-64)" >&2
     exit 1
 }
@@ -25,29 +31,35 @@ command -v x86_64-w64-mingw32-objdump >/dev/null 2>&1 || {
 # Ask the compiler that built the exe where its runtime lives, rather than
 # hardcoding a version-stamped path: the win32 and posix g++ variants ship
 # different DLLs, and picking the wrong one is a subtle runtime mismatch.
-libdir=$(dirname "$(x86_64-w64-mingw32-g++ -print-file-name=libstdc++-6.dll 2>/dev/null)")
+libdir=$(dirname "$("$CXX" -print-file-name=libstdc++-6.dll 2>/dev/null)")
 [ -d "$libdir" ] || { echo "mingw-runtime-dlls: cannot locate the mingw runtime directory" >&2; exit 1; }
 
-imports() { x86_64-w64-mingw32-objdump -p "$1" 2>/dev/null | awk '/DLL Name:/ {print $3}'; }
+imports() { "$OBJDUMP" -p "$1" 2>/dev/null | awk '/DLL Name:/ {print $3}'; }
 
-declare -A seen=()
+# No associative array and no shrinking array on purpose: this script has to
+# run on the machine that does the cross-build, and macOS still ships bash 3.2,
+# where `declare -A` is a syntax error and `${#queue[@]}` on an emptied array
+# trips `set -u`. So "already seen" is a delimited string we grep with `case`,
+# and the queue is walked by a moving index instead of being consumed.
+seen="|"
 queue=("$exe")
+head=0
 copied=0
 
-while [ ${#queue[@]} -gt 0 ]; do
-    current=${queue[0]}
-    queue=("${queue[@]:1}")
+while [ "$head" -lt "${#queue[@]}" ]; do
+    current=${queue[$head]}
+    head=$((head + 1))
     while read -r dll; do
         [ -n "$dll" ] || continue
-        [ -n "${seen[$dll]:-}" ] && continue
-        seen[$dll]=1
+        case "$seen" in *"|$dll|"*) continue ;; esac
+        seen="$seen$dll|"
         src="$libdir/$dll"
         # Not in the toolchain's lib dir => a Windows system DLL, not ours.
         [ -f "$src" ] || continue
         cp -f "$src" "$dest/"
         echo "  $dll"
         copied=$((copied + 1))
-        queue+=("$src")
+        queue=("${queue[@]}" "$src")
     done < <(imports "$current")
 done
 

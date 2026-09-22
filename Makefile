@@ -326,6 +326,7 @@ re-tools:
 	python3 scripts/test_check_opcode_ledger.py
 	python3 scripts/test_bump_version.py
 	bash scripts/test_safe_analyze.sh
+	bash scripts/test_mingw_runtime_dlls.sh
 
 # Textdata column indices vs SR_Db2Media. Skips (exit 0) when the reference
 # checkout is absent, so it never fails a build over an optional input.
