@@ -15,12 +15,21 @@
 //! unlabelled in the data, so they are deliberately not interpreted here.
 //! `refquestrewarditems.txt` also carries the literal comment line
 //! `//DBtoMedia`, which is why a line count of that file is one more than its
-//! row count (`docs/re/ui/quest-reward-window.md` §3).
+//! row count.
 
 use std::collections::HashMap;
 
 /// `SelectionCnt` column index in `refqusetreward.txt`.
 const SELECTION_CNT_COL: usize = 7;
+/// `refqusetreward.txt` columns `[10]`/`[11]` **[V]**: gold and experience.
+/// Named against the client's *own* pre-rendered reward text (`SN_PAYCON_*` in
+/// `textquest_otherstring.txt`) — `[10]`
+/// appears in its quest's reward sentence in 399 of the 402 rows where it is
+/// non-zero, `[11]` in 502 of 610, and every miss inspected is the text's
+/// thousands separator (`186,120` for `186120`), not a disagreement.
+/// `QNO_CH_SMITH_1`: `[10]=205 [11]=270` vs "Exp 270 / GOLD 205".
+const GOLD_COL: usize = 10;
+const EXP_COL: usize = 11;
 /// `refquestrewarditems.txt`: quest id, item codename, count.
 const ITEM_QUEST_COL: usize = 0;
 const ITEM_CODE_COL: usize = 3;
@@ -29,6 +38,47 @@ const ITEM_COUNT_COL: usize = 7;
 /// Per-quest `SelectionCnt` (`true` = the player picks exactly one).
 #[derive(Debug, Clone, Default)]
 pub struct QuestRewardModes(pub HashMap<u32, bool>);
+
+/// Per-quest gold/experience reward (columns 10 and 11).
+#[derive(Debug, Clone, Default)]
+pub struct QuestRewardValues(pub HashMap<u32, QuestRewardValue>);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct QuestRewardValue {
+    pub gold: u64,
+    pub exp: u64,
+}
+
+impl QuestRewardValues {
+    pub fn parse(content: &str) -> Self {
+        let mut map = HashMap::new();
+        for line in content.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let Some(quest) = cols.first().and_then(|c| c.trim().parse::<u32>().ok()) else {
+                continue;
+            };
+            let number = |col: usize| {
+                cols.get(col)
+                    .and_then(|c| c.trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            map.insert(
+                quest,
+                QuestRewardValue {
+                    gold: number(GOLD_COL),
+                    exp: number(EXP_COL),
+                },
+            );
+        }
+        QuestRewardValues(map)
+    }
+
+    /// Gold/exp for a quest, `None` for an id the table does not carry (ids
+    /// 220 and 399 have no row here either).
+    pub fn get(&self, quest: u32) -> Option<QuestRewardValue> {
+        self.0.get(&quest).copied()
+    }
+}
 
 /// Per-quest reward rows, in file order.
 #[derive(Debug, Clone, Default)]
@@ -39,7 +89,7 @@ pub struct QuestRewardItem {
     pub codename: String,
     /// Column 7. `1` for every pick-one candidate in this corpus and larger
     /// for stacked consumables (28 HP potions on `QNO_CH_POTION_1`), so it
-    /// reads as a quantity — **[S]**, the column is unnamed in the data.
+    /// reads as a quantity; the column is unnamed in the data.
     pub count: u32,
 }
 
@@ -123,9 +173,37 @@ mod test {
         assert!(!modes.choose_one(12345));
     }
 
+    /// The gold/exp columns, on the two rows §11.4 cross-checked against the
+    /// client's own reward text.
+    #[test]
+    fn gold_and_exp_come_from_columns_ten_and_eleven() {
+        let content = "3\tQNO_CH_SMITH_1\t1\t1\t0\t0\t0\t0\t0\t0\t205\t270\r\n\
+                       11\tQNO_CH_GENARAL_SP_1\t1\t1\t0\t0\t0\t0\t0\t0\t0\t14500\r\n\
+                       //comment";
+        let values = QuestRewardValues::parse(content);
+        assert_eq!(
+            values.get(3),
+            Some(QuestRewardValue {
+                gold: 205,
+                exp: 270
+            }),
+            "\"Exp 270 / GOLD 205\" in the quest's own SN_PAYCON text"
+        );
+        assert_eq!(
+            values.get(11),
+            Some(QuestRewardValue {
+                gold: 0,
+                exp: 14500
+            }),
+            "\"Experience 14500 / 50 Vigor recovery herbs\" — no gold"
+        );
+        // an id the table has no row for stays absent instead of reading 0/0
+        assert_eq!(values.get(220), None);
+    }
+
     /// Real rows from `refquestrewarditems.txt`, including the `//DBtoMedia`
     /// comment line that makes the file's line count one more than its row
-    /// count — a distinction `docs/re/systems/quest.md:113` got wrong.
+    /// count.
     #[test]
     fn reward_items_skip_the_comment_line() {
         let content = "6\tQNO_CH_POTION_1\t0\tITEM_ETC_HP_POTION_01\txxx\txxx\t0\t28\t0\txxx\r\n\

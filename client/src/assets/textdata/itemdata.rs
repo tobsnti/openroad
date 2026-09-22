@@ -1,3 +1,5 @@
+//!
+//! `dead_code` is allowed module-wide: the module models a file format, and parts of it have no consumer in the client yet.
 use bevy::asset::Asset;
 use bevy::prelude::TypePath;
 use std::collections::HashMap;
@@ -36,14 +38,32 @@ enum ItemdataFields {
     ItemClass = 61,
     Range = 94,
     /// RefItemData Param1/Desc1_128 (first of the 20 param/desc pairs at
-    /// 118..157). On COS summon items: Param1 = rent duration in minutes
-    /// (0/-1 = permanent), Desc1_128 = the summoned character's code name
-    /// (`ITEM_COS_T_HORSE1` → `COS_T_HORSE1`). Corpus-verified 2026-08-14,
-    /// docs/re/systems/mount.md / pet-pick-cos.md.
+    /// 118..157). `Desc1_128` = the summoned character's code name
+    /// (`ITEM_COS_T_HORSE1` → `COS_T_HORSE1`).
+    ///
+    /// **`Param1` is a rent duration in minutes on the *pet-scroll* family
+    /// only, not on mount/transport scrolls.** Over `itemdata*.txt` (all 10
+    /// shards, 12,061 rows):
+    ///
+    /// | TID | rows | `Param1` |
+    /// |---|---|---|
+    /// | `3/3/3/2` (ride+transport scrolls) | 44 | **0** on 43, `-1` on `ITEM_ETC_AUTOMOB` |
+    /// | `3/2/1/1` (growth-pet flute) | 10 | `-1` (permanent) |
+    /// | `3/2/1/2` (grab-pet scroll) | 20 | **4320** (= 3 d) on 5, **40320** (= 28 d) on 15 |
+    /// | `3/3/12/1` (guild-guard scroll) | 15 | 20 — unit unknown |
+    ///
+    /// Positive control on the same read path: this field yields 30,000 on the
+    /// `3/3/3/1` return scrolls and 3,600 on the `3/3/3/10` hour buffs, so the
+    /// zeros are the authored value, not a misread column. Read the column
+    /// through [`ItemDataRow::param`] when a consumer for the pet-scroll
+    /// rental exists.
     Param1 = 118,
     Desc1 = 119,
     /// Desc2_128: on laddered mount scrolls the comma-separated level-tier
-    /// list (`COS_C_OSTRICH` scroll → `5,10,20,...,120`).
+    /// list — 13 of the 44 `3/3/3/2` rows carry one
+    /// (`ITEM_COS_C_OSTRICH_SCROLL` → `5,10,20,30,45,60,75,90,105,120`,
+    /// `ITEM_COS_T_WHITEELEPHANT_SCROLL` → `20,30,...,120`), the other 31 and
+    /// all 20 grab-pet scrolls carry `xxx`.
     Desc2 = 121,
 }
 
@@ -366,24 +386,27 @@ impl ItemDataRow {
         self.field(ItemdataFields::Desc1 as usize)
     }
 
-    /// COS rent duration in minutes (`Param1`); `None` for permanent
-    /// (0 / -1 / blank).
-    pub fn cos_rent_minutes(&self) -> Option<u32> {
-        let minutes: i64 = self.0.get(ItemdataFields::Param1 as usize)?.parse().ok()?;
-        u32::try_from(minutes).ok().filter(|&m| m > 0)
+    /// `Param<n>` (1-based) as the raw authored integer. The 20
+    /// `(Param<N>, Param<N>_Desc)` pairs sit at fields 118..157, so `Param<n>`
+    /// is field `118 + 2*(n - 1)`; `docs/formats/textdata-itemdata.md` stops at
+    /// field 94 and does not describe them. On alchemy items they carry the
+    /// mechanic.
+    pub fn param(&self, n: usize) -> Option<i64> {
+        let index = ItemdataFields::Param1 as usize + 2 * n.checked_sub(1)?;
+        self.0.get(index)?.trim().parse().ok()
     }
 
-    /// The laddered-scroll level tiers (`Desc2_128`, e.g. `5,10,20,...`) —
-    /// scrolls whose summoned COS tier follows the owner's level. `None` for
-    /// plain single-tier scrolls.
-    pub fn cos_level_tiers(&self) -> Option<Vec<u32>> {
-        let tiers: Vec<u32> = self
-            .field(ItemdataFields::Desc2 as usize)?
-            .split(',')
-            .filter_map(|t| t.trim().parse().ok())
-            .collect();
-        (!tiers.is_empty()).then_some(tiers)
-    }
+    // `Param<n>` on alchemy rows packs four values into one column, and the
+    // paired `_Desc` names the indices: `MAGICSTONE_STR_01.Param2 = 169090560
+    // = 0x0A141E00` -> `10,20,30,0` beside a `Desc` reading `"10, 20, 30, 0"`.
+    // A `-1` column is empty, not `[255,255,255,255]`. A byte view of the
+    // column is one line over [`Self::param`] the day something reads it.
+
+    // There is no accessor for the COS rent duration or for the mount scroll's
+    // level-tier list: neither has a reader, and `Param1` is 0 on all 44 mount
+    // scroll rows (see the `Param1` table above). Both are plain column reads:
+    // the rent column is [`Self::param`]`(1)`, the tier list is `Desc2_128`
+    // split on commas.
 
     /// Name of the character animation group that applies while this item
     /// is equipped, i.e. the weapon class of a weapon (`None` for
@@ -463,36 +486,55 @@ mod test {
         assert_eq!(typed_row((3, 1, 6, 14)).animation_group(), Some("harf"));
     }
 
+    /// Every row in this test is copied field-for-field from `itemdata*.txt`.
+    /// A fabricated `3/3/3/2` scroll with `Param1 = 4320` — a combination that
+    /// **exists in no shard** — would "verify" a rent duration on the one
+    /// family whose rent column is always 0.
     #[test]
     fn cos_scroll_columns_resolve_summon_target() {
-        // ITEM_COS_T_HORSE1-shaped row: 3/3/3/2, permanent, plain tier.
-        let mut fields = vec![String::new(); 122];
-        for (i, v) in [(9, "3"), (10, "3"), (11, "3"), (12, "2")] {
-            fields[i] = v.to_string();
-        }
-        fields[118] = "0".to_string();
-        fields[119] = "COS_T_HORSE1".to_string();
-        fields[121] = "xxx".to_string();
-        let scroll = ItemDataRow(fields.clone());
-        assert!(scroll.is_cos_summon_scroll());
-        assert_eq!(scroll.cos_code_name(), Some("COS_T_HORSE1"));
-        assert_eq!(scroll.cos_rent_minutes(), None);
-        assert_eq!(scroll.cos_level_tiers(), None);
+        let row = |tid: (&str, &str, &str, &str), param1: &str, desc1: &str, desc2: &str| {
+            let mut fields = vec![String::new(); 122];
+            for (i, v) in [(9, tid.0), (10, tid.1), (11, tid.2), (12, tid.3)] {
+                fields[i] = v.to_string();
+            }
+            fields[118] = param1.to_string();
+            fields[119] = desc1.to_string();
+            fields[121] = desc2.to_string();
+            ItemDataRow(fields)
+        };
 
-        // Laddered rental scroll (ITEM_COS_C_OSTRICH_SCROLL-shaped).
-        fields[118] = "4320".to_string();
-        fields[119] = "COS_C_OSTRICH".to_string();
-        fields[121] = "5,10,20,30".to_string();
-        let laddered = ItemDataRow(fields);
-        assert_eq!(laddered.cos_rent_minutes(), Some(4320));
-        assert_eq!(laddered.cos_level_tiers(), Some(vec![5, 10, 20, 30]));
+        // ITEM_COS_C_OSTRICH_SCROLL, verbatim: a laddered *mount* scroll —
+        // 3/3/3/2, Param1 0, ten level tiers in Desc2.
+        let ostrich = row(
+            ("3", "3", "3", "2"),
+            "0",
+            "COS_C_OSTRICH",
+            "5,10,20,30,45,60,75,90,105,120",
+        );
+        assert!(ostrich.is_cos_summon_scroll());
+        assert_eq!(ostrich.cos_code_name(), Some("COS_C_OSTRICH"));
+        // The rent column is 0 on this family — all 44 rows of it.
+        assert_eq!(ostrich.param(1), Some(0));
+
+        // ITEM_COS_P_RABBIT_SCROLL, verbatim: the family that really is rented.
+        // 3/2/1/2, Param1 4320 = 3 days, no tier list.
+        let rabbit = row(("3", "2", "1", "2"), "4320", "COS_P_RABBIT", "xxx");
+        assert!(
+            !rabbit.is_cos_summon_scroll(),
+            "grab-pet scrolls are a different item family (3/2/1/2)"
+        );
+        assert_eq!(rabbit.param(1), Some(4320));
+        // ITEM_COS_P_MYOWON_SCROLL, verbatim: the 28-day period of the pair.
+        let myowon = row(("3", "2", "1", "2"), "40320", "COS_P_MYOWON", "xxx");
+        assert_eq!(myowon.param(1), Some(40_320));
+        assert_eq!(myowon.param(1).map(|m| m / 1440), Some(28));
 
         // Pet flutes (3/2/1/1) and potions are not summon scrolls; short rows
         // read as absent.
         assert!(!typed_row((3, 2, 1, 1)).is_cos_summon_scroll());
         assert!(!typed_row((3, 3, 1, 1)).is_cos_summon_scroll());
         assert_eq!(typed_row((3, 3, 3, 2)).cos_code_name(), None);
-        assert_eq!(typed_row((3, 3, 3, 2)).cos_rent_minutes(), None);
+        assert_eq!(typed_row((3, 3, 3, 2)).param(1), None);
     }
 
     /// The six classes whose 0x704C body carries a target slot. Getting this

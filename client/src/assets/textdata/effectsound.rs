@@ -10,7 +10,7 @@
 //! the table has to be loaded rather than hard-coding paths where the sound is
 //! played. The file is CP949 with no BOM (`decode.rs`).
 //!
-//! Measured in the user's own `Media.pk2` (2026-08-16), 6,583 lines:
+//! In the shipped `effectsound.txt`, 6,583 lines:
 //!
 //! * 5,674 data rows over 292 distinct `object` values, registering 5,083
 //!   sounding addresses — 390 of them carry more than one row
@@ -151,6 +151,12 @@ impl EffectSoundTable {
 
     /// The first row at an address — what a call site with no reason to pick a
     /// variant should play.
+    ///
+    /// No production call site left: every playback goes through
+    /// `plugins::audio_events::play`, which picks *among* the variants (see
+    /// its module doc for why). Kept because it is the deterministic accessor
+    /// the parser's own tests and any future single-row caller need.
+    #[allow(dead_code)]
     pub fn first(&self, address: &SoundAddress) -> Option<&EffectSound> {
         self.sounds(address).first()
     }
@@ -210,8 +216,8 @@ fn sound_path(folder: &str, file: &str) -> String {
 mod test {
     use super::*;
 
-    /// Real rows from the user's `Media.pk2` copy of `effectsound.txt`
-    /// (2026-08-16), tabs and all: the legend line, a section comment, the two
+    /// Real rows from the shipped `effectsound.txt`, tabs and all: the legend
+    /// line, a section comment, the two
     /// UI click variants, an item row, a skill-keyed row, a mute row and a row
     /// with no volume.
     const SAMPLE: &str = "//\tobject\thandle\tskill_ID\tevent1\tevent2\tevent3\tblank\tfolder\tfilename\tvolume\tdescription1\t\n\

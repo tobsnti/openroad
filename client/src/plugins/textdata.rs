@@ -18,7 +18,10 @@ use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
 use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
-use crate::assets::textdata::questreward::{QuestRewardItem, QuestRewardItems, QuestRewardModes};
+use crate::assets::textdata::quest::QuestTable;
+use crate::assets::textdata::questreward::{
+    QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValues,
+};
 use crate::assets::textdata::shops::{ShopLayout, ShopTable};
 use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
 use crate::assets::textdata::skilleffect::{SkillEffectTable, SkillEntry};
@@ -457,6 +460,15 @@ impl ClientZoneSounds {
 pub struct ClientEffectSounds(Option<EffectSoundTable>);
 
 impl ClientEffectSounds {
+    /// Wrap a parsed table. The loader uses it, and so does any test that
+    /// needs the registry answered without standing up the asset pipeline —
+    /// the tuple field is private, so without this the only reachable state
+    /// from another module was "table not loaded", which is exactly the arm a
+    /// sound test must *not* take.
+    pub fn from_table(table: EffectSoundTable) -> Self {
+        Self(Some(table))
+    }
+
     /// First row registered at an address, or `None` while the table is still
     /// loading / when the data does not name that sound.
     pub fn first(&self, address: &SoundAddress) -> Option<&EffectSound> {
@@ -558,23 +570,48 @@ impl ClientNpcChat {
 
 /// Quest reward tables (`refqusetreward.txt` + `refquestrewarditems.txt`).
 #[derive(Resource, Default)]
-pub struct ClientQuestRewards(Option<(QuestRewardModes, QuestRewardItems)>);
+pub struct ClientQuestRewards(Option<(QuestRewardModes, QuestRewardValues, QuestRewardItems)>);
 
 impl ClientQuestRewards {
     /// `true` when the quest's reward is a choose-one pick (`SelectionCnt`).
     pub fn choose_one(&self, quest: u32) -> bool {
         self.0
             .as_ref()
-            .is_some_and(|(modes, _)| modes.choose_one(quest))
+            .is_some_and(|(modes, _, _)| modes.choose_one(quest))
     }
+
+    // There is no accessor for the gold/exp reward table: it is parsed and
+    // held in this resource, but no consumer reads it. Exposing it is one line
+    // the day a quest journal needs it.
 
     /// The quest's reward rows: candidates in pick-one mode, all granted
     /// otherwise.
     pub fn items(&self, quest: u32) -> &[QuestRewardItem] {
         match &self.0 {
-            Some((_, items)) => items.items(quest),
+            Some((_, _, items)) => items.items(quest),
             None => &[],
         }
+    }
+}
+
+/// The quest structure tables (`questdata.txt` + `questcontentsdata.txt`) —
+/// journal decoration only: the active set itself comes off the wire, and this
+/// table does not cover every id the server can send.
+#[derive(Resource, Default)]
+pub struct ClientQuestTable(Option<QuestTable>);
+
+impl ClientQuestTable {
+    /// The parsed table, `None` until `questdata.txt` has loaded.
+    ///
+    /// This is the resource's only read path and it has **no reader yet** —
+    /// the journal UI that will use it is not written. It is kept rather than
+    /// deleted because the loader arm above it has to hand the parsed table
+    /// somewhere for the file to be loaded at all; an accessor that returns it
+    /// is the smallest such landing place. If the journal is still unwritten
+    /// when this file is next touched, delete the resource, the loader arm and
+    /// this method together — `QuestTable` itself carries its own tests.
+    pub fn table(&self) -> Option<&QuestTable> {
+        self.0.as_ref()
     }
 }
 
@@ -645,6 +682,7 @@ impl Plugin for TextdataPlugin {
             .init_resource::<ClientActionCommands>()
             .init_resource::<ClientCollectionBook>()
             .init_resource::<ClientQuestRewards>()
+            .init_resource::<ClientQuestTable>()
             .init_resource::<ClientUiStrings>()
             .init_resource::<ClientSpeechText>()
             .init_resource::<ClientNpcChat>()
@@ -678,6 +716,8 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/leveldata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textzonename.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/refqusetreward.txt"),
+        // Quest structure: questdata.txt pulls in questcontentsdata.txt.
+        asset_server.load("media://server_dep/silkroad/textdata/questdata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textdataname.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/magicoption.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textuisystem.txt"),
@@ -777,14 +817,25 @@ fn add_resource_when_textdata_loaded(
                 Textdata::LevelData(level_data) => {
                     commands.insert_resource(ClientLevelData(Some(level_data.clone())))
                 }
-                Textdata::QuestRewards(modes, items) => {
+                Textdata::QuestRewards(modes, values, items) => {
                     info!(
                         "loaded {} quest reward modes, {} quests with reward rows",
                         modes.0.len(),
                         items.0.len()
                     );
-                    commands
-                        .insert_resource(ClientQuestRewards(Some((modes.clone(), items.clone()))))
+                    commands.insert_resource(ClientQuestRewards(Some((
+                        modes.clone(),
+                        values.clone(),
+                        items.clone(),
+                    ))))
+                }
+                Textdata::Quests(table) => {
+                    info!(
+                        "loaded {} questdata rows, {} questcontentsdata rows",
+                        table.by_id.len(),
+                        table.contents.len()
+                    );
+                    commands.insert_resource(ClientQuestTable(Some(table.clone())))
                 }
                 Textdata::ZoneNames(zone_names) => {
                     info!("loaded {} zone names", zone_names.0.len());
@@ -904,7 +955,7 @@ fn add_resource_when_textdata_loaded(
                         effect_sounds.len(),
                         effect_sounds.mute_rows()
                     );
-                    commands.insert_resource(ClientEffectSounds(Some(effect_sounds.clone())))
+                    commands.insert_resource(ClientEffectSounds::from_table(effect_sounds.clone()))
                 }
             }
         }
