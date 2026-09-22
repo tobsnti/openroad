@@ -111,6 +111,15 @@ impl<'a> Reader<'a> {
         Some(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
 
+    /// The next `u32` without consuming it. Used where a record's optional
+    /// tail can only be told apart from the *following* record's head
+    /// (see `entity_spawn::parse_item`).
+    pub fn peek_u32(&self) -> Option<u32> {
+        let end = self.pos.checked_add(4)?;
+        let bytes = self.buf.get(self.pos..end)?;
+        Some(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
     pub fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
