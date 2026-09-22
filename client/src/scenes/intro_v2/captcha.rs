@@ -342,6 +342,26 @@ fn captcha_modal(
     }
 }
 
+/// Tears down a captcha modal that is still on screen when a **new** challenge
+/// arrives.
+///
+/// Idea: `on_captcha_confirm_response` keeps the modal up on a rejection (the
+/// user retypes), but a gateway that answers the rejection with a fresh
+/// `0x2322` re-inserts [`CaptchaImageV2`], and `spawn_captcha` hangs on
+/// `resource_added` — so the second challenge would spawn a *second* modal on
+/// top of the first. Two modals mean two [`CaptchaInput`] entities, and both
+/// `single()`/`single_mut()` consumers (`confirm_captcha_on_enter`,
+/// `on_captcha_confirm_response`) then fail their query and go silent: Enter
+/// stops confirming and the field is never cleared. One challenge, one modal.
+pub fn close_open_captcha_modal(
+    modal_query: Query<Entity, With<CaptchaModal>>,
+    mut commands: Commands,
+) {
+    for modal in modal_query.iter() {
+        commands.entity(modal).despawn();
+    }
+}
+
 pub fn spawn_captcha(
     captcha: Res<CaptchaImageV2>,
     assets: Res<IntroV2Assets>,
@@ -585,6 +605,57 @@ mod test {
         press_enter(&mut app);
 
         assert!(app.world().resource::<Activations>().0.is_empty());
+    }
+
+    /// A rejected code keeps the modal up (`on_captcha_confirm_response`), so a
+    /// gateway that answers the rejection with a **new** `0x2322` re-inserts
+    /// `CaptchaImageV2` while the old window is still on screen. Without
+    /// [`close_open_captcha_modal`] the `resource_added` spawner then puts a
+    /// second modal on top of the first, and both `single()` consumers
+    /// (`confirm_captcha_on_enter` here, `on_captcha_confirm_response` in the
+    /// flow) fail their query: Enter silently stops confirming. One challenge,
+    /// one modal.
+    #[test]
+    fn a_second_challenge_replaces_the_open_modal_instead_of_stacking_one() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<Activations>()
+            .add_systems(Update, (focus_captcha_input, confirm_captcha_on_enter))
+            .add_observer(|activate: On<Activate>, mut seen: ResMut<Activations>| {
+                seen.0.push(activate.entity);
+            });
+        // What `spawn_captcha` leaves behind, without its asset stack: one
+        // modal root carrying the field and the Confirm button.
+        fn spawn_modal(app: &mut App) {
+            app.world_mut()
+                .spawn((CaptchaModal, children![CaptchaInput, CaptchaConfirmButton]));
+        }
+
+        spawn_modal(&mut app);
+        app.update();
+
+        // The second challenge: the teardown runs first, then the spawner.
+        app.world_mut()
+            .run_system_once(close_open_captcha_modal)
+            .unwrap();
+        spawn_modal(&mut app);
+        app.update();
+
+        let mut modals = app.world_mut().query_filtered::<(), With<CaptchaModal>>();
+        assert_eq!(modals.iter(app.world()).count(), 1, "one modal at a time");
+        let mut inputs = app.world_mut().query_filtered::<(), With<CaptchaInput>>();
+        assert_eq!(inputs.iter(app.world()).count(), 1);
+
+        press_enter(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Activations>().0.len(),
+            1,
+            "Enter still reaches the one Confirm button"
+        );
     }
 
     /// And no key press at all must not confirm either — the guard that would
