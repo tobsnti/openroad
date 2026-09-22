@@ -167,7 +167,7 @@ fn netcheck_login(
 /// Answer the captcha with the configured `dev_fast_login.captcha_answer`.
 ///
 /// Headless has no modal to fall back on, so with no code configured this can
-/// only say so — the old hardcoded `"1"` merely hid that by guessing.
+/// only say so. Guessing a code would hide the missing configuration.
 fn netcheck_captcha(
     mut events: MessageReader<LoginCaptchaChallenge>,
     config: Res<ClientConfig>,
@@ -411,21 +411,30 @@ struct ActionDriver {
     next_move_at: Option<f64>,
     select_sent: bool,
     /// A CHARACTER_DATA body that arrived before the unique id did, kept so the
-    /// scan can be retried once `CelestialPosition` names the id (#728).
+    /// scan can be retried once `CelestialPosition` names the id.
     pending_body: Option<Bytes>,
 }
 
 /// Minimal [`RefResolver`] for headless spawn parsing: with no itemdata tables
-/// we cannot classify ref ids, so treat every record as a monster/NPC — the
-/// leading `unique_id` + position are read before any itemdata-dependent
-/// branch, which is all we need to pick a select target. Player/item/structure
-/// records simply fail to parse and are skipped (`parse_group_spawn` never
-/// panics), so a wrong guess costs at most a skipped target.
+/// we cannot classify ref ids, so treat every record as an NPC — the leading
+/// `unique_id` + position are read before any itemdata-dependent branch, which
+/// is all we need to pick a select target. Player/item/structure records simply
+/// fail to parse and are skipped (`parse_group_spawn` never panics), so a wrong
+/// guess costs at most a skipped target.
+///
+/// NPC and **not** monster: the two records are identical up to the monster's
+/// trailing rarity byte, so the NPC shape is the common prefix. Guessing
+/// "monster" loses every NPC record — the record ends after its talk block and
+/// the demanded rarity byte is a short read (`0x3015` single spawns, where the
+/// frame's own trailing byte can make it succeed with the *wrong* value, or a
+/// genuine truncation at the end of a batch). Guessing "NPC" reads the same
+/// uid and position from either kind and leaves a monster's rarity byte for
+/// the caller, which the harness ignores anyway.
 struct HeadlessResolver;
 
 impl RefResolver for HeadlessResolver {
     fn resolve(&self, _ref_id: u32) -> RefType {
-        RefType::Monster
+        RefType::Npc
     }
     fn item_is_equipment(&self, _ref_id: u32) -> bool {
         false
@@ -469,8 +478,7 @@ fn netcheck_capture_local_pos(
             continue;
         }
         // No position yet. On the live server the body (0x3013) beats
-        // `CelestialPosition` (0x3020) by ~20 ms — `packet_dump/0x3013.log`
-        // 2026-08-16T09:21:39.127Z vs `0x3020.log` …:39.149Z — so the scan ran
+        // `CelestialPosition` (0x3020) by ~20 ms, so the scan runs
         // WITHOUT a unique id, and the id-less scan deliberately refuses a body
         // that offers more than one plausible position
         // (`packets/src/agent/character_data.rs:696-703`). A real body offers
@@ -635,14 +643,45 @@ mod tests {
         v
     }
 
-    /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
-    /// one plausible position is REFUSED by the id-less scan
-    /// (`packets/src/agent/character_data.rs:696-703` — "a second match means we
-    /// can't tell the real spawn from a coincidence"). That is correct
-    /// behaviour, and it is why the headless driver never started: on the live
-    /// server the body (0x3013) beats `CelestialPosition` (0x3020) by ~20 ms, so
-    /// the scan always ran without the id. The real 2026-08-16 body offers 46
-    /// candidates; two are enough to reproduce it.
+    /// The headless resolver must guess NPC, not monster. An NPC record is the
+    /// monster record without the trailing rarity byte, so guessing "monster"
+    /// demands a byte that is not there and the whole record — and with it the
+    /// select target — is lost. The `Monster` arm below is the control: same
+    /// bytes, no spawn.
+    #[test]
+    fn the_headless_resolver_reads_an_npc_record() {
+        const NPC_BATCH: &[u8] = &[
+            0xd5, 0x07, 0x00, 0x00, 0xf3, 0x00, 0x00, 0x00, 0xa8, 0x61, 0x8f, 0x02, 0xc6, 0x44,
+            0x00, 0x00, 0x00, 0x00, 0x48, 0xe9, 0xaf, 0x44, 0xb5, 0x80, 0x00, 0x01, 0x00, 0xb5,
+            0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xc8, 0x42, 0x00, 0x02, 0x02, 0x01, 0x02,
+        ];
+
+        let parsed = parse_group_spawn(NPC_BATCH, true, 1, &HeadlessResolver);
+        let entity = parsed
+            .spawns
+            .first()
+            .expect("the headless resolver must read an NPC record");
+        assert_eq!(entity.unique_id, 243);
+        assert_eq!(entity.position.region, 0x61A8);
+
+        struct MonsterGuess;
+        impl RefResolver for MonsterGuess {
+            fn resolve(&self, _ref_id: u32) -> RefType {
+                RefType::Monster
+            }
+            fn item_is_equipment(&self, _ref_id: u32) -> bool {
+                false
+            }
+        }
+        assert!(
+            parse_group_spawn(NPC_BATCH, true, 1, &MonsterGuess)
+                .spawns
+                .is_empty(),
+            "the old monster guess loses the record on its missing rarity byte"
+        );
+    }
+
     #[test]
     fn a_body_without_the_unique_id_cannot_be_pinned() {
         let mut raw = vec![0u8; 8];
@@ -654,8 +693,8 @@ mod tests {
         assert!(parse_character_data(&raw, Some(119_948)).is_some());
     }
 
-    /// The fix: the body is kept and re-scanned when the id arrives, so the
-    /// out-of-order arrival stops being fatal.
+    /// The body is kept and re-scanned when the id arrives, so an out-of-order
+    /// arrival is not fatal.
     #[test]
     fn the_stashed_body_is_pinned_once_the_unique_id_arrives() {
         let mut raw = vec![0u8; 8];
@@ -687,9 +726,8 @@ mod tests {
 // Raw opcode probe (NETCHECK_PROBE=<opcode-hex>:<body-hex>[,<opcode>:<body>…])
 //
 // Idea: some questions about this server can only be answered by sending one
-// exact frame and watching what comes back — #215's item-use gate is the
-// standing example ("0x704C resets the connection, in any body form"), and that
-// claim was last measured before the #454 body fix. A typed request cannot
+// exact frame and watching what comes back — the item-use gate (0x704C) is the
+// standing example. A typed request cannot
 // express the negative control the experiment needs (an opcode the server has
 // no handler for at all), so this sends a frame built by hand: opcode + body
 // bytes, encryption flag 0, exactly like the original's FUN_00841780(op, 0).

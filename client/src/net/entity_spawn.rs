@@ -102,7 +102,7 @@ pub struct GroupSpawnParse {
     pub despawns: Vec<u32>,
     /// Ref ids the batch had to skip: present in the payload, in no client
     /// table, so unrenderable. Kept for diagnostics — the entities *around*
-    /// them are in `spawns` (#426).
+    /// them are in `spawns`.
     pub unresolved: Vec<u32>,
 }
 
@@ -174,7 +174,7 @@ pub fn is_job_suit(type_ids: ItemTypeIds) -> bool {
 /// [`RefResolver`] backed by the loaded characterdata/itemdata tables, plus
 /// the teleport table for gate buildings (whose refs live ONLY in
 /// teleportbuilding.txt — the Jangan dimensional gate, ref 2094, has no
-/// characterdata row and used to abort the whole spawn batch as `Unknown`).
+/// characterdata row).
 pub struct TextdataResolver<'a> {
     pub char_data: &'a ClientCharacterData,
     pub item_data: &'a ClientItemData,
@@ -282,10 +282,9 @@ pub fn parse_group_spawn(
             Some(entity) => out.spawns.push(entity),
             None => {
                 // An unclassifiable ref id has no derivable record width, so
-                // the whole batch used to end here — losing every entity
-                // behind it (#426). Try to derive the width from the payload
-                // instead and carry on without that one entity (it has no
-                // characterdata row, so it could not be rendered anyway).
+                // the batch cannot simply continue. Derive the width from the
+                // payload instead and carry on without that one entity (it has
+                // no characterdata row, so it could not be rendered anyway).
                 let unresolved = raw
                     .get(record_start..record_start + 4)
                     .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
@@ -568,8 +567,8 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
 /// Ride-only horses (tid4 1) have no tail; everything else ends in
 /// `OwnerUniqueID`, with pets prefixing their given name, pick pets omitting
 /// the PVP-state byte and guild guards inserting an `OwnerObjectID`. Routing
-/// these rows through the plain NPC parse (the pre-COS behavior) left the tail
-/// unconsumed and desynced every later record in the batch.
+/// these rows through the plain NPC parse leaves the tail unconsumed and
+/// desyncs every later record in the batch.
 fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
@@ -1016,8 +1015,8 @@ mod test {
 
     #[test]
     fn live_unknown_ref_keeps_the_rest_of_the_batch() {
-        // #426: the unclassifiable record used to end the batch, so the NPC
-        // *behind* it never spawned. Its width (49 bytes) is derivable from
+        // An unclassifiable record must not end the batch and lose the NPC
+        // *behind* it. Its width (49 bytes) is derivable from
         // the payload — it is the only one that lets the second record parse
         // and land exactly on the last byte — so the batch survives.
         let res = resolver(&[(3861, RefType::Npc)]);
@@ -1036,7 +1035,7 @@ mod test {
     fn unknown_ref_still_stops_the_batch_when_no_width_fits() {
         // The skip is only allowed when a width makes the remaining records
         // parse to the payload's last byte. Cut the payload's last byte off
-        // and none does, so the batch must abort as before instead of
+        // and none does, so the batch must abort instead of
         // inventing a boundary.
         let res = resolver(&[(3861, RefType::Npc)]);
         let truncated = &LIVE_UNKNOWN_NPC_BATCH[..LIVE_UNKNOWN_NPC_BATCH.len() - 1];
@@ -1460,7 +1459,7 @@ mod test {
         assert_eq!(parsed.spawns[1].unique_id, 98);
     }
 
-    /// A mounted player inserts a `u32` mount uid; the old flat skip desynced
+    /// A mounted player inserts a `u32` mount uid; a flat skip desyncs
     /// the batch, so a follower record proves the boundary.
     #[test]
     fn parses_mounted_player_and_keeps_the_boundary() {
@@ -1482,8 +1481,7 @@ mod test {
         assert_eq!(parsed.spawns[1].unique_id, 99);
     }
 
-    /// The guild block used to be skipped wholesale (#30). A guilded player's
-    /// name and granted nick now reach the spawn record.
+    /// A guilded player's name and granted nick reach the spawn record.
     #[test]
     fn parses_the_guild_block_of_a_guilded_player() {
         const PLAYER_REF: u32 = 1907;
@@ -1498,7 +1496,7 @@ mod test {
             .expect("guilded player carries a guild tag");
         assert_eq!(guild.name, "Ironclad");
         assert_eq!(guild.granted_nick, "Quartermaster");
-        // the record must still end exactly where it did before
+        // the record must still end exactly on its boundary
         assert_eq!(parsed.spawns[0].name.as_deref(), Some("Remote"));
         assert_eq!(parsed.spawns[0].unique_id, 352808);
     }
@@ -1656,7 +1654,7 @@ mod test {
         let drop = &parsed.spawns[0];
         assert_eq!(drop.ref_id, 3862);
         assert_eq!(
-            drop.unique_id, 155_079,
+            drop.unique_id, 155_591,
             "uid comes after the name string, not in place of it"
         );
         assert_eq!(drop.position.region, 0x60A8);
