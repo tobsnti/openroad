@@ -537,6 +537,40 @@ pub(crate) fn deleting_control_buttons(
     }
 }
 
+/// `GDR_STA_TITLE:CIFStatic` id 3, `Rect="47,110,368,36"`,
+/// `interface\outer\text-characterselect.ddj`
+/// (`pscharacterselect_europe.txt:972/976/980/981`).
+///
+/// The caption of this screen, and the one caption of the pre-game run that was
+/// missing: the login form paints `text-connect.ddj`, the region board
+/// `text-region.ddj`, the create screen `text-custom.ddj`, and the lobby left its
+/// bar empty. The art's own DDS header is 368x36, i.e. the rect is the native
+/// size: the **position** follows the 1600x1200 canvas, the **size** stays
+/// native pixels — the same split `region_select` already draws its title with.
+const TITLE_RECT: (f32, f32, f32, f32) = (47.0, 110.0, 368.0, 36.0);
+/// The canvas those rects are authored on — the shared
+/// [`crate::plugins::ui_v2::RESINFO_CANVAS`], not a local copy.
+const TITLE_DESIGN: (f32, f32) = crate::plugins::ui_v2::RESINFO_CANVAS;
+
+/// The screen's caption. It carries [`CharSelectControls`], so it fades in with
+/// the button row and the one despawn on exit takes it with it.
+fn screen_title(assets: &IntroV2Assets) -> impl Scene {
+    let title = assets.text_character_select.clone();
+    bsn! {
+        CharSelectControls
+        Name("Character Select Title")
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(100.0 * TITLE_RECT.0 / TITLE_DESIGN.0),
+            top: percent(100.0 * TITLE_RECT.1 / TITLE_DESIGN.1),
+            width: px(TITLE_RECT.2),
+            height: px(TITLE_RECT.3),
+        }
+        ImageNode { image: {title}, color: Color::NONE }
+        Pickable::IGNORE
+    }
+}
+
 fn spawn_default_controls(
     commands: &mut Commands,
     assets: &IntroV2Assets,
@@ -546,6 +580,9 @@ fn spawn_default_controls(
 ) {
     commands
         .spawn_scene(control_buttons(assets, fonts, ui_strings))
+        .insert((UiTargetCamera(camera), IntroV2Ui));
+    commands
+        .spawn_scene(screen_title(assets))
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
@@ -722,7 +759,7 @@ pub fn on_char_selection_action_response(
         }
 
         // Characters are lined up between the start and end offsets on the
-        // X axis (see the old character_scene.rs for the reference values).
+        // X axis.
         let begin = char_select_scene.0.char_start_offset() * Vec3::new(-1.0, 1.0, 1.0);
         let end = char_select_scene.0.char_end_offset() * Vec3::new(-1.0, 1.0, 1.0);
         let dir = end - begin;
@@ -2280,7 +2317,7 @@ const WARNING_BUTTON_HEIGHT: f32 = WARNING_BUTTON_SIZE.1;
 /// dimming fullscreen scrim (which deliberately blocks clicks on the
 /// characters and the underbar) with the centered warning window.
 /// Button geometry from `resinfo/pscharacterselect.txt`: every `GDR_BTN_*` on
-/// this screen is `0,0,92,41` (we had 91 wide).
+/// this screen is `0,0,92,41`.
 const MAIN_BUTTON_W: f32 = 92.0;
 const MAIN_BUTTON_H: f32 = 41.0;
 
@@ -3004,6 +3041,39 @@ mod tests {
         h * BAND_H_PCT / 100.0
     }
 
+    /// The screen's caption. Three things are pinned: the rect the data
+    /// authors, that the declared art is this screen's (not the login
+    /// screen's), and that the
+    /// title carries the marker which fades it in and despawns it — without that
+    /// marker it would appear without a fade and survive the screen.
+    #[test]
+    fn the_screen_title_comes_from_the_data() {
+        // `GDR_STA_TITLE` id 3, `Rect="47,110,368,36"`
+        // (`pscharacterselect_europe.txt:981`), and the art's own DDS header is
+        // 368x36, so width/height are drawn native.
+        assert_eq!(TITLE_RECT, (47.0, 110.0, 368.0, 36.0));
+        assert_eq!(TITLE_DESIGN, (1600.0, 1200.0));
+        assert!(
+            TITLE_RECT.0 + TITLE_RECT.2 <= TITLE_DESIGN.0,
+            "the caption must fit the canvas it is placed on"
+        );
+
+        let assets = include_str!("assets.rs");
+        assert!(assets.contains("outer/text-characterselect.ddj"));
+
+        let source = include_str!("character_select.rs");
+        let title = &source[source.find("fn screen_title").expect("the title scene")..];
+        let body = &title[..title.find("\nfn ").unwrap_or(title.len())];
+        assert!(
+            body.contains("CharSelectControls"),
+            "the title must share the marker that fades and despawns the controls"
+        );
+        assert!(
+            body.contains("text_character_select"),
+            "the title must draw this screen's art"
+        );
+    }
+
     /// Every `GDR_BTN_*` on this screen is `0,0,92,41` in
     /// `resinfo/pscharacterselect.txt`.
     #[test]
@@ -3025,7 +3095,7 @@ mod tests {
         );
     }
 
-    /// The info box's gauges used to be pinned at 100%. The fill is
+    /// The info box's gauges are derived, not pinned full: the fill is
     /// `current / (1.02^(level-1) * stat * 10)`, clamped, with a full bar when
     /// the maximum cannot be derived.
     #[test]
@@ -3157,7 +3227,7 @@ mod tests {
     }
 
     /// The delete-warning modal's two buttons are `GDR_BTN_WACCEPT`
-    /// `90,145,76,32` and `GDR_BTN_WCANCEL` `178,145,76,32`. We had y=136.
+    /// `90,145,76,32` and `GDR_BTN_WCANCEL` `178,145,76,32`.
     #[test]
     fn delete_modal_buttons_match_the_resinfo_rects() {
         assert_eq!(WARNING_BUTTON_Y, 145.0);

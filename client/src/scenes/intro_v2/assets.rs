@@ -33,6 +33,16 @@ pub struct IntroV2Assets {
     pub logo: Handle<Image>,
     #[asset(path = "media://interface/outer/logo-big.ddj")]
     pub logo_big: Handle<Image>,
+    // `GDR_STA_TITLE:CIFStatic` id 5, `Rect="47,110,184,36"`,
+    // `interface\outer\text-connect.ddj` — `pstitle_europe.txt:657/662`. The
+    // caption the original paints in the top left of the login screen.
+    #[asset(path = "media://interface/outer/text-connect.ddj")]
+    pub text_connect: Handle<Image>,
+    // `GDR_STA_TITLE:CIFStatic` id 3, `Rect="47,110,368,36"`,
+    // `interface\outer\text-characterselect.ddj` —
+    // `pscharacterselect_europe.txt:972/976/980/981`. The lobby's caption.
+    #[asset(path = "media://interface/outer/text-characterselect.ddj")]
+    pub text_character_select: Handle<Image>,
 
     // Buttons — the `_europe` variants: `config/define.txt` defines
     // EUROPE_SYSTEM, and `resinfo/pscharacterselect.txt` names
@@ -43,11 +53,11 @@ pub struct IntroV2Assets {
     pub button_press: Handle<Image>,
     #[asset(path = "media://interface/outer/button_europe_focus.ddj")]
     pub button_focus: Handle<Image>,
-    // No `button_europe_disable.ddj` ships (`find Media/interface/outer -iname
-    // '*europe*disable*'` is empty while `*button_europe*` lists three files),
-    // so the disabled frame comes from the shared `button_disable.ddj`. Its DDS
-    // header reads 91x40, i.e. the size the intro actually draws these buttons
-    // at (`image_button(main_button_style(..), 91.0, 41.0)`); the europe art is
+    // No `button_europe_disable.ddj` ships (the archive holds three
+    // `*button_europe*` files and no `*europe*disable*` one), so the disabled
+    // frame comes from the shared `button_disable.ddj`. Its DDS header reads
+    // 91x40, i.e. the size the intro actually draws these buttons at
+    // (`image_button(main_button_style(..), 91.0, 41.0)`); the europe art is
     // 92x40 and gets stretched to the same node either way.
     #[asset(path = "media://interface/outer/button_disable.ddj")]
     pub button_disable: Handle<Image>,
@@ -232,8 +242,8 @@ pub struct IntroV2Assets {
     pub woman_off_focus: Handle<Image>,
     #[asset(path = "media://interface/outer/woman_off_press.ddj")]
     pub woman_off_press: Handle<Image>,
-    // `GDR_BTN_CHECK` (:409-427) — an exact-fit 75x25 texture, so the screen
-    // stops borrowing the 91x30 generic login button for it.
+    // `GDR_BTN_CHECK` (:409-427) — an exact-fit 75x25 texture, rather than the
+    // 91x30 generic login button.
     #[asset(path = "media://interface/outer/overlap.ddj")]
     pub overlap: Handle<Image>,
     #[asset(path = "media://interface/outer/overlap_focus.ddj")]
