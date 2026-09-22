@@ -32,6 +32,7 @@ pub mod character_select;
 pub mod chrome;
 pub mod dev_fast_login;
 pub mod fade;
+pub mod lobby_sit;
 pub mod login_form;
 pub mod model;
 pub mod net;
@@ -113,9 +114,10 @@ impl Plugin for IntroV2ScenePlugin {
                 LoadingStateConfig::new(SceneState::Loading).load_collection::<IntroV2Assets>(),
             )
             .init_resource::<server_select::SelectedShardV2>()
+            .init_resource::<lobby_sit::LobbyDeletionMemory>()
             .init_resource::<server_select::ShardListScroll>()
-            // What the create screen's camera frames on: measured off the body
-            // that is actually on stage (`character_create::measure_create_figure`).
+            // What the create screen's camera frames on: the body that is
+            // actually on stage (`character_create::measure_create_figure`).
             .init_resource::<character_create::CreateFigureMetrics>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
@@ -209,6 +211,10 @@ impl Plugin for IntroV2ScenePlugin {
                 (
                     character_select::on_char_selection_action_response,
                     character_select::tag_pickable_meshes,
+                    // The hovered/selected figure's name over its head — a
+                    // deliberate improvement, the original leaves these
+                    // authored plates dead (see the system).
+                    character_select::update_character_name_plate,
                     character_select::update_hover_highlight.run_if(not(resource_exists::<
                         character_select::SelectedCharacterV2,
                     >)),
@@ -225,7 +231,14 @@ impl Plugin for IntroV2ScenePlugin {
                         .chain()
                         .run_if(resource_removed::<character_select::SelectedCharacterV2>),
                     character_select::on_character_delete_response,
+                    // A delete-scheduled figure sits in the line-up, folds down
+                    // on Delete and gets up on Restore (see `lobby_sit`).
+                    lobby_sit::begin_lobby_sit,
+                    lobby_sit::drive_lobby_sit,
                     character_select::on_character_join_response,
+                    // The countdown ticks from the single remainder `0xB007`
+                    // sends; without this it froze at the clicked value.
+                    character_select::tick_deletion_countdown,
                 )
                     .run_if(in_state(IntroV2State::CharacterList)),
             )
@@ -806,6 +819,43 @@ pub(super) fn fill_placeholders(template: &str, values: &[u32]) -> String {
     out
 }
 
+/// Renders one lobby error code (`0xB007`, `0xB001`) the way the original's
+/// dispatcher renders it — or `None` for the one code it deliberately swallows.
+///
+/// Idea: the *table* lives in `packets` ([`packets::agent::lobby_error_text`],
+/// because login, select and create share one dispatcher in the original), and
+/// the *rendering* is here, because it needs the loaded `textuisystem.txt` and
+/// all four pregame call sites want the same sentence: delete/restore, world
+/// join and the create screen's CheckName/Create answers.
+///
+/// The `(S<code>)` suffix is the original's: its appending helper formats
+/// `(%c%d)` with `'S'` and the raw code onto the looked-up row. A code past the
+/// table renders as *just* `(S1049)` — the original passes an empty key there,
+/// and inventing a row for a code the client has none for is the mistake this
+/// table exists to end.
+pub(super) fn lobby_error_line(
+    code: u16,
+    ui_strings: &crate::plugins::textdata::ClientUiStrings,
+) -> Option<String> {
+    use packets::agent::lobby::{lobby_error_text, LobbyErrorText};
+
+    match lobby_error_text(code) {
+        LobbyErrorText::Silent => None,
+        LobbyErrorText::Text {
+            key,
+            fallback,
+            code_suffix,
+        } => {
+            let mut line = ui_strings.get_plain_or(key, fallback);
+            if code_suffix {
+                line.push_str(&format!("(S{code})"));
+            }
+            Some(line)
+        }
+        LobbyErrorText::CodeOnly => Some(format!("(S{code})")),
+    }
+}
+
 /// Plays the original's `snd_error` once, honouring the audio options. Shared
 /// by every pregame refusal (login, captcha retry, lobby actions).
 pub(super) fn play_error_sound(
@@ -841,6 +891,37 @@ fn apply_background_music_options(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Which arms carry the `(S<code>)` suffix and which do not is part of the
+    /// table; the 0x0419 case pins the bare out-of-range form so nobody
+    /// "fixes" it into an invented sentence.
+    #[test]
+    fn a_lobby_error_renders_the_shipped_row_and_only_the_original_suffix() {
+        let strings = crate::plugins::textdata::ClientUiStrings::default();
+
+        // silent arm: no message at all
+        assert_eq!(lobby_error_line(0x0401, &strings), None);
+        // appending arm, code rendered in decimal like the `%d`
+        assert_eq!(
+            lobby_error_line(0x0415, &strings).as_deref(),
+            Some("Login failed(S1045)")
+        );
+        // plain arm, no suffix
+        assert_eq!(
+            lobby_error_line(0x0410, &strings).as_deref(),
+            Some("This ID already exists.")
+        );
+        // in-range hole -> the generic row, which *is* an appending arm
+        assert_eq!(
+            lobby_error_line(0x0402, &strings).as_deref(),
+            Some("Failed to connect to server.(S1026)")
+        );
+        // out of range: the empty key, so nothing but the suffix
+        assert_eq!(
+            lobby_error_line(0x0419, &strings).as_deref(),
+            Some("(S1049)")
+        );
+    }
 
     #[test]
     fn the_intro_text_sizes_are_the_unscaled_font_ladder() {
