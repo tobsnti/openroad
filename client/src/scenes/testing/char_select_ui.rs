@@ -18,7 +18,16 @@ pub struct CharSelectUiPreviewPlugin;
 
 impl Plugin for CharSelectUiPreviewPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(SceneState::UiTesting), spawn_preview);
+        app.add_systems(OnEnter(SceneState::UiTesting), spawn_preview)
+            // The notice line's own pump is registered for `SceneState::IntroV2`
+            // only (`intro_v2/mod.rs`), so inside this preview the message this
+            // module writes would never reach the entity — the band would stay
+            // empty and the multi-line behaviour could not be seen here. Same
+            // system, not a second copy.
+            .add_systems(
+                Update,
+                chrome::update_info_text.run_if(in_state(SceneState::UiTesting)),
+            );
     }
 }
 
@@ -51,6 +60,7 @@ fn spawn_preview(
     level_data: Res<ClientLevelData>,
     ui_strings: Res<ClientUiStrings>,
     cam_query: Query<Entity, With<Camera2d>>,
+    mut info_text: MessageWriter<chrome::InfoTextV2Update>,
     mut commands: Commands,
 ) {
     let Some(camera) = cam_query.iter().next() else {
@@ -79,6 +89,18 @@ fn spawn_preview(
     let deleting = std::env::var("PREVIEW_DELETING").is_ok();
     let mut character = dummy_character();
     character.is_deleting = deleting;
+    if deleting {
+        // A remainder inside the 7-day reservation, so `deletion_remaining`
+        // reads it as minutes (its `> 10080` branch is the seconds reading):
+        // 3 days 23 hours 59 minutes. Not a claim about the wire — but not
+        // arbitrary either: two-digit hours *and* minutes make the countdown
+        // sentence the **longest it can ever be** (days is a single digit for
+        // the whole reservation), which is the case
+        // `REMAIN_LINE2_FONT_PX` is sized against, so this preview is where
+        // that fit gets eyeballed. Days at 3 keeps the gauge near the middle,
+        // which is what the old 3d 5h 42m was chosen for.
+        character.deletion_time = Some(3 * 24 * 60 + 23 * 60 + 59);
+    }
 
     commands
         .spawn_scene(character_select::info_box(
@@ -86,9 +108,34 @@ fn spawn_preview(
             &level_data,
             &assets,
             &fonts,
+            &ui_strings,
         ))
         .insert(UiTargetCamera(camera));
     if deleting {
+        // The three-line notice is part of this state too — the original shows
+        // it in the lower band (`UIO_STT_CHAR_DEL_WAITING`), and it is the one
+        // message on this screen that is *not* one line, i.e. the only way to see
+        // the notice line's multi-line behaviour here.
+        info_text.write(chrome::InfoTextV2Update(
+            ui_strings
+                .get_plain_or(
+                    "UIO_STT_CHAR_DEL_WAITING",
+                    "The character's deletion is reserved.\nTo restore it, click 'Restore' \
+                     button.\nTo keep the reservation, click 'Cancel' button.",
+                )
+                .replace("\\n", "\n"),
+        ));
+        // The countdown window belongs to this state as much as the Restore row
+        // does: it states the deadline the row's choice is about. Without it the
+        // preview shows half the screen the original shows.
+        character_select::spawn_deletion_countdown(
+            &mut commands,
+            camera,
+            &character,
+            &assets,
+            &fonts,
+            &ui_strings,
+        );
         commands
             .spawn_scene(character_select::deleting_control_buttons(
                 &assets,
@@ -98,7 +145,11 @@ fn spawn_preview(
             .insert(UiTargetCamera(camera));
     } else {
         commands
-            .spawn_scene(character_select::selected_control_buttons(&assets, &fonts))
+            .spawn_scene(character_select::selected_control_buttons(
+                &assets,
+                &fonts,
+                &ui_strings,
+            ))
             .insert(UiTargetCamera(camera));
     }
 }
