@@ -30,26 +30,23 @@ pub struct GuildTag {
 /// player's record carries the tag's name but **not** this sub-block (see
 /// [`Reader::guild`]).
 ///
-/// Field order and widths: `GuildID:u32`, `GuildLastCrestRev:u32`,
-/// `UnionID:u32`, `UnionLastCrestRev:u32`, `isFriendly:u8`,
-/// `GuildMemberAuthorityType:u8` — xBot `PacketParser.cs:759-765` /
-/// `SRPlayer.cs:222-231`, field-for-field the same set go-sro's zero-writer
-/// `WriteGuild` (`model/packetutils_entity.go:331-342`) emits. Little-endian
-/// like the whole wire. Table: the local RE notes.
+/// Field order and widths: `id:u32`, `crest_rev:u32`, `union_id:u32`,
+/// `union_crest_rev:u32`, `is_friendly:u8`, `siege_authority:u8`.
+/// Little-endian like the whole wire.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GuildAffiliation {
     pub id: u32,
     /// Crest revision the *sender* holds; a client with an older one refetches
-    /// the emblem out of band (the local RE notes).
+    /// the emblem out of band.
     pub crest_rev: u32,
     pub union_id: u32,
     pub union_crest_rev: u32,
     /// War hostility: false = at war with the observer's guild. The byte is a
-    /// bool on the wire (`!= 0`); no capture pins which side sets it, so no
-    /// consumer may key colour off it yet (`[S]`).
+    /// bool on the wire (`!= 0`); which side sets it is unconfirmed, so no
+    /// consumer may key colour off it yet.
     pub is_friendly: bool,
-    /// `GuildMemberAuthorityType` — the enum defines only `None = 0xFF`
-    /// (xBot `SRPlayer.cs:231`); every other value is `[U]` until a capture.
+    /// Siege/member authority. Only `0xFF` ("none") is known; every other
+    /// value is unconfirmed.
     pub siege_authority: u8,
 }
 
@@ -193,9 +190,9 @@ impl<'a> Reader<'a> {
     ///
     /// - always: the guild `name` string (empty for a guildless player — the
     ///   name field is never omitted, only the sub-block behind it);
-    /// - only when *not* in job mode: `GuildID:u32`, the granted-nick string,
-    ///   `GuildLastCrestRev:u32`, `UnionID:u32`, `UnionLastCrestRev:u32`,
-    ///   `isFriendly:u8`, `GuildMemberAuthorityType:u8`.
+    /// - only when *not* in job mode: `id:u32`, the granted-nick string,
+    ///   `crest_rev:u32`, `union_id:u32`, `union_crest_rev:u32`,
+    ///   `is_friendly:u8`, `siege_authority:u8`.
     ///
     /// **Why the branch, and where the old "always present" came from.** This
     /// used to consume `u32 + string + 14` unconditionally with a comment
@@ -203,14 +200,14 @@ impl<'a> Reader<'a> {
     /// zero-writer `WriteGuild` (`model/packetutils_entity.go:331-342`) — the
     /// stub server our dumps were captured against, which has **no job mode at
     /// all** and therefore cannot ever omit it. The original client's own
-    /// third-party parser branches: xBot reads `GuildName` and then skips the
-    /// whole `GuildID…authority` sub-block when `hasJobMode()` holds
+    /// third-party parser branches: xBot reads the guild name and then skips
+    /// the whole id…authority sub-block when its job-mode predicate holds
     /// (`PacketParser.cs:750-766`, `SRPlayer.cs:49-54`; job players render as
     /// `*Name`). One job-suited player in view desynced the entire spawn batch
     /// (the local RE notes).
     ///
-    /// Confidence: `[S]` — the *branch* is spec-derived from xBot (GPL-3.0,
-    /// portable with citation) and not yet seen on real bytes: probing all 868
+    /// Confidence: `[S]` — the *branch* is spec-derived from xBot (no licence;
+    /// facts and field layout only) and not yet seen on real bytes: probing all 868
     /// frames of `packet_dump/0x3019.log` for the little-endian ref id of every
     /// player row in `characterdata*.txt` (26 ids) turns up no player record
     /// (positive control on the identical probe: NPC ref 2013 = `dd070000`
@@ -298,7 +295,7 @@ mod test {
         b.extend_from_slice(&3u32.to_le_bytes()); // guild crest rev
         b.extend_from_slice(&9u32.to_le_bytes()); // union id
         b.extend_from_slice(&4u32.to_le_bytes()); // union crest rev
-        b.push(0); // isFriendly = false -> at war
+        b.push(0); // is_friendly = false -> at war
         b.push(0xFF); // authority: None
         b
     }
