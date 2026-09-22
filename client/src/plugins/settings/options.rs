@@ -402,6 +402,17 @@ pub struct KeyMapOptions {
     pub mouse_shortcut_swapped: bool,
 }
 
+/// Login-screen state the original remembers between sessions: `RECENTSERVER`
+/// is a shard *name* (ids are per gateway session) and prefills the Server row
+/// as display state only — it never becomes a selection by itself.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoginOptions {
+    /// Name of the shard the player last committed with `Select`; empty means
+    /// "never selected one".
+    #[serde(default)]
+    pub recent_server: String,
+}
+
 /// openroad's live, persisted player options.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GameOptions {
@@ -423,6 +434,9 @@ pub struct GameOptions {
     /// [`super::window_positions`].
     #[serde(default)]
     pub windows: WindowPositions,
+    /// Login-screen memory (`RECENTSERVER`); see [`LoginOptions`].
+    #[serde(default)]
+    pub login: LoginOptions,
 }
 
 impl GameOptions {
