@@ -322,30 +322,30 @@ packets! {
 
     // Skill/mastery level-DOWN — the mirror of the four above
     // (docs/net-mastery-teleport-0x7202.md). Both responses are read from the
-    // original's parsers; neither request has a builder there, so their bodies are
-    // mirrored from the level-UP siblings and stay unverified until a capture.
+    // original's parsers; neither request has a builder there, so their bodies
+    // are mirrored from the level-UP siblings and stay unconfirmed.
     0x7202 => SkillLevelDownRequest,
     0xB202 => MasterySkillLevelDownResponse,
     0x7203 => MasteryLevelDownRequest,
     0xB203 => MasteryLevelDownResponse,
 
-    // Teleport recall point (0x7059 verified from the original's builder; the
-    // 0xB059 ack has no parser in any source, so its body is kept whole and
-    // log-only until packet_dump/0xb059.log exists).
+    // Teleport recall point. The original has no builder for 0x7059, so its
+    // u32 body is unconfirmed. The 0xB059 ack IS parsed by the original
+    // (u8 result [+ u16 error]), but the error-code values are unknown, so its
+    // body is kept whole and log-only.
     0x7059 => TeleportRecallRequest,
     0xB059 => TeleportRecallResponse,
 
-    // Stat point spending (EXPERIMENTAL, per SilkroadDoc:
-    // 0x7050 = CLIENT_INC_STR, 0x7051 = CLIENT_INC_INT).
+    // Stat point spending (EXPERIMENTAL): 0x7050 = CLIENT_INC_STR,
+    // 0x7051 = CLIENT_INC_INT.
     0x7050 => IncreaseStrRequest,
     0xB050 => IncreaseStrResponse,
     0x7051 => IncreaseIntRequest,
     0xB051 => IncreaseIntResponse,
 
-    // Buffs (server → client). Both VERIFIED (#125): 0xB0BD capture-verified
-    // 2026-08-06; 0xB072 is a count-prefixed LIST read off the original's
-    // handler `sro_client.exe@008a4de0` (captures only ever showed one id and
-    // could not separate that from a result byte).
+    // Buffs (server → client). Both confirmed (#125). 0xB072 is a
+    // count-prefixed LIST, per the original's handler; on the wire a single id
+    // is indistinguishable from a result byte.
     0xB0BD => BuffAdd,
     0xB072 => BuffRemove,
 

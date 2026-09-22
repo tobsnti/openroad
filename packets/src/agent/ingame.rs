@@ -2398,8 +2398,10 @@ impl From<TalkResponse> for Bytes {
     }
 }
 
-/// 0x7059 — client → server "make this teleporter my recall point"
-/// (`DesignateRecall`). A single u32, verified from the original's builder.
+/// 0x7059 — client → server "make this teleporter my recall point".
+///
+/// The original has no builder for this opcode, so the single `u32` below — one
+/// teleporter id — is **unconfirmed**.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct TeleportRecallRequest {
     pub teleport_unique_id: u32,
@@ -2407,13 +2409,13 @@ pub struct TeleportRecallRequest {
 
 /// 0xB059 — server → client ack for [`TeleportRecallRequest`].
 ///
-/// **Entire body [U], so nothing is claimed about it.** The opcode is declared in
-/// the original's enum but has no dispatch case and no parser, and go-sro has no
-/// handler either — there is no source for a layout. The doc guesses
-/// `success u8 [+ tail]` "by family analogy"; that guess is not encoded here,
-/// because splitting a leading byte off an unknown body would also make an empty
-/// body fail to decode. Kept whole and log-only until
-/// `packet_dump/0xb059.log` exists.
+/// **Carried whole.** The original parses this ack: it reads a `u8 result`,
+/// shows `UIIT_MSG_STATE_REBIRTH_POINT_APPOINT` on `result == 1` and otherwise
+/// reads a `u16` error code it never displays — so one byte on success, three
+/// on failure, and a vSRO server writes a bare `01`.
+///
+/// What is still open: the error-code *values*. The body stays a raw
+/// passthrough for now — typing it is a wire change, not a comment fix.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct TeleportRecallResponse {
     pub raw: Bytes,
@@ -5244,8 +5246,10 @@ mod test {
         assert_eq!(TeleportRecallRequest::try_from(wire).unwrap(), req);
     }
 
-    /// 0xB059 has no parser in any source, so it must not claim a shape — any body,
-    /// including an empty one, round-trips untouched instead of failing to decode.
+    /// 0xB059 is carried raw (see the struct's note: the original reads
+    /// `u8 result` [+ `u16` error], but the error-code values are unknown), so
+    /// any body — including an empty one — round-trips untouched instead of
+    /// failing to decode.
     #[test]
     fn teleport_recall_response_keeps_any_body_whole() {
         for body in [
