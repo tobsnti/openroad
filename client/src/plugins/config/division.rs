@@ -1,8 +1,8 @@
 //! Gateway configuration Joymax ships inside `Media.pk2`.
 //!
 //! Two files at the archive root carry what the client needs before it can
-//! reach a server, and both were previously ignored in favour of constants:
-//!
+//! Two files at the archive root carry what the client needs before it can
+//! reach a server:
 //! * `divisioninfo.txt` — binary despite the extension: the content id, then
 //!   the division list, each division naming its gateway hosts.
 //! * `gateport.txt` — the gateway port as NUL-padded ASCII decimal.
@@ -14,7 +14,6 @@
 //! file falls back to [`DivisionInfo::FALLBACK_CONTENT_ID`] and leaves the
 //! gateway to `config.yaml`, so a tree without PK2s keeps working.
 
-use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::{warn, Resource};
@@ -48,9 +47,9 @@ impl Default for DivisionInfo {
 }
 
 impl DivisionInfo {
-    /// The literal the five login call sites carried before this file was
-    /// read. Kept as the fallback so a tree without `Media.pk2` — notably the
-    /// headless net-check against a local stub — behaves exactly as before.
+    /// The content id used when no archive can be read. Kept as the fallback
+    /// so a tree without `Media.pk2` — notably the headless net-check against
+    /// a local stub — still reaches a gateway.
     pub const FALLBACK_CONTENT_ID: u8 = 22;
 
     /// Reads both files from `Media.pk2`, or returns the fallback with a
@@ -72,23 +71,17 @@ impl DivisionInfo {
 
     fn load_from_pk2() -> Option<Self> {
         let media = media_pk2_path();
-        // `open_or_panic` panics rather than returning an error, and this runs
-        // before the asset plugin would have reported a missing archive.
         // A missing key is the same class of "no archive to read" as a missing
         // file here, so it takes the same silent fallback rather than aborting
         // startup — the asset plugin reports it properly a moment later.
         let key = Pk2Key::resolve().ok()?;
-        panic::catch_unwind(AssertUnwindSafe(|| {
-            let archive = Archive::open_or_panic(&media, &key);
-            let mut info = Self::parse(&archive.read_file_bytes(Path::new("divisioninfo.txt"))?)?;
-            info.gateway_port = archive
-                .read_file_bytes(Path::new("gateport.txt"))
-                .as_deref()
-                .and_then(parse_gateport);
-            Some(info)
-        }))
-        .ok()
-        .flatten()
+        let archive = Archive::open(&media, &key).ok()?;
+        let mut info = Self::parse(&archive.read_file_bytes(Path::new("divisioninfo.txt"))?)?;
+        info.gateway_port = archive
+            .read_file_bytes(Path::new("gateport.txt"))
+            .as_deref()
+            .and_then(parse_gateport);
+        Some(info)
     }
 
     /// Parses `divisioninfo.txt`:
@@ -188,7 +181,7 @@ mod tests {
         assert_eq!(info.divisions.len(), 1);
         assert_eq!(info.divisions[0].name, "DIV01");
         assert_eq!(info.divisions[0].gateways, vec!["filter.example.com"]);
-        // The content id the five login sites hardcoded is exactly byte 0.
+        // The content id of the shipped archive is exactly byte 0.
         assert_eq!(info.content_id, DivisionInfo::FALLBACK_CONTENT_ID);
     }
 

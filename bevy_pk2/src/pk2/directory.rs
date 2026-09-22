@@ -8,7 +8,7 @@ use bevy::prelude::info;
 use bytes::Bytes;
 
 use crate::pk2::blowfish::Blowfish;
-use crate::pk2::constants::{HEADER_SIZE, MAX_CHAIN_BLOCKS};
+use crate::pk2::constants::{HEADER_SIZE, MAX_DIRECTORIES};
 use crate::pk2::entry::Entry;
 use crate::pk2::errors::Error;
 use crate::pk2::util::{read_block, CursorExt};
@@ -42,9 +42,27 @@ impl Directory {
     /// hostile or corrupt archive can point a subdirectory back at an ancestor,
     /// which used to recurse until the stack died. An already-expanded position
     /// is skipped, and errors propagate instead of `unwrap`-ing.
-    pub fn expand(&mut self, cursor: &mut Cursor<Bytes>, blowfish: &Blowfish) -> Result<(), Error> {
+    ///
+    /// The set holds one entry per *directory*, so its size is bounded by
+    /// [`MAX_DIRECTORIES`], not by the per-chain [`crate::pk2::constants::MAX_CHAIN_BLOCKS`]
+    /// (which `util::read_block` enforces on the block chain of a single
+    /// directory). Conflating the two caps how many directories an archive may
+    /// have and reports the overflow as a chain loop.
+    pub fn expand_from_file(&mut self, file: &mut File, blowfish: &Blowfish) -> Result<(), Error> {
+        self.expand_from_file_bounded(file, blowfish, MAX_DIRECTORIES)
+    }
+
+    /// [`Self::expand`] with the directory cap given explicitly, so the cap's
+    /// behaviour can be exercised without synthesizing a 65536-directory
+    /// archive (that would be ~170 MB of blocks per test run).
+    pub(crate) fn expand_bounded(
+        &mut self,
+        cursor: &mut Cursor<Bytes>,
+        blowfish: &Blowfish,
+        max_dirs: usize,
+    ) -> Result<(), Error> {
         let mut visited = HashSet::new();
-        self.expand_guarded(cursor, blowfish, &mut visited)
+        self.expand_guarded(cursor, blowfish, &mut visited, max_dirs)
     }
 
     fn expand_guarded(
@@ -52,9 +70,10 @@ impl Directory {
         cursor: &mut Cursor<Bytes>,
         blowfish: &Blowfish,
         visited: &mut HashSet<u64>,
+        max_dirs: usize,
     ) -> Result<(), Error> {
-        if visited.len() >= MAX_CHAIN_BLOCKS {
-            return Err(Error::ChainLoop(self.entry.position));
+        if visited.len() >= max_dirs {
+            return Err(Error::TooManyDirectories(max_dirs));
         }
         if !visited.insert(self.entry.position) {
             // already expanded from this block - a cycle in the tree
@@ -78,7 +97,7 @@ impl Directory {
             .collect();
 
         for d in dirs.values_mut() {
-            d.expand_guarded(cursor, blowfish, visited)?;
+            d.expand_guarded(cursor, blowfish, visited, max_dirs)?;
         }
 
         self.directories.extend(dirs);
@@ -112,8 +131,8 @@ impl Directory {
         blowfish: &Blowfish,
         visited: &mut HashSet<u64>,
     ) -> Result<(), Error> {
-        if visited.len() >= MAX_CHAIN_BLOCKS {
-            return Err(Error::ChainLoop(self.entry.position));
+        if visited.len() >= MAX_DIRECTORIES {
+            return Err(Error::TooManyDirectories(MAX_DIRECTORIES));
         }
         if !visited.insert(self.entry.position) {
             return Ok(());
@@ -222,4 +241,140 @@ impl Directory {
 
         entries
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pk2::constants::{BLOCK_SIZE, ENTRIES_PER_BLOCK, ENTRY_SIZE, MAX_DIRECTORIES};
+    use crate::pk2::key::Pk2Key;
+
+    /// A fixture cipher: these tests encrypt the blocks they then read back, so
+    /// any valid key exercises the tree walk they are about. The real archive
+    /// key is the player's own and deliberately absent from this crate.
+    fn test_cipher() -> Blowfish {
+        let key = Pk2Key::from_config("testkey", "00112233445566778899").unwrap();
+        Blowfish::from_key(&key).expect("fixture key is valid")
+    }
+
+    /// One plaintext block: `dirs` gives (name, block offset) for each child
+    /// directory entry, `next` is the chain pointer on the 20th entry.
+    fn block(dirs: &[(String, u64)], next: u64, blowfish: &Blowfish) -> Vec<u8> {
+        let mut buf = [0u8; BLOCK_SIZE];
+        for (i, (name, position)) in dirs.iter().enumerate() {
+            let at = i * ENTRY_SIZE;
+            buf[at] = 1; // EntryType::Dir
+            buf[at + 1..at + 1 + name.len()].copy_from_slice(name.as_bytes());
+            buf[at + 106..at + 114].copy_from_slice(&position.to_le_bytes());
+        }
+        let last = (ENTRIES_PER_BLOCK - 1) * ENTRY_SIZE;
+        buf[last + 118..last + 126].copy_from_slice(&next.to_le_bytes());
+        blowfish.encrypt(&mut buf);
+        buf.to_vec()
+    }
+
+    /// A root chain listing `count` child directories (19 per block, chained
+    /// through the 20th entry), each child an empty, properly terminated block
+    /// of its own. Returns the archive bytes and a root [`Directory`] at offset 0.
+    fn tree(count: usize, blowfish: &Blowfish) -> (Bytes, Directory) {
+        let per_block = ENTRIES_PER_BLOCK - 1;
+        let root_blocks = count.div_ceil(per_block).max(1);
+        let children: Vec<(String, u64)> = (0..count)
+            .map(|i| (format!("d{i}"), ((root_blocks + i) * BLOCK_SIZE) as u64))
+            .collect();
+        let mut bytes = Vec::with_capacity((root_blocks + count) * BLOCK_SIZE);
+        for j in 0..root_blocks {
+            let slice = &children[(j * per_block).min(count)..((j + 1) * per_block).min(count)];
+            let next = if j + 1 < root_blocks {
+                ((j + 1) * BLOCK_SIZE) as u64
+            } else {
+                0
+            };
+            bytes.extend_from_slice(&block(slice, next, blowfish));
+        }
+        for _ in 0..count {
+            bytes.extend_from_slice(&block(&[], 0, blowfish));
+        }
+        let mut root_entry = Entry::from(&[0u8; ENTRY_SIZE][..]);
+        root_entry.typ = 1;
+        root_entry.name[0] = b'r';
+        root_entry.position = 0;
+        (Bytes::from(bytes), Directory::from(root_entry))
+    }
+
+    /// (a) A wide tree below the cap indexes completely. A real archive holds
+    /// 5361 directories, which a 4096 cap meant for block chains would refuse.
+    #[test]
+    fn a_tree_below_the_directory_cap_expands() {
+        let blowfish = test_cipher();
+        let (bytes, mut root) = tree(12, &blowfish);
+        let mut cursor = Cursor::new(bytes);
+        root.expand_bounded(&mut cursor, &blowfish, 16)
+            .expect("a tree below the cap indexes");
+        assert_eq!(root.directories.len(), 12, "every child directory expanded");
+    }
+
+    /// (b) Above the cap the archive is refused as too large — and explicitly
+    /// NOT as a chain loop: a full tree is not a cycle, and calling it one sends
+    /// the reader hunting for corruption in an intact block.
+    #[test]
+    fn a_tree_above_the_directory_cap_is_not_a_chain_loop() {
+        let blowfish = test_cipher();
+        let (bytes, mut root) = tree(12, &blowfish);
+        let mut cursor = Cursor::new(bytes);
+        let err = root
+            .expand_bounded(&mut cursor, &blowfish, 4)
+            .expect_err("a tree above the cap is refused");
+        assert!(
+            matches!(err, Error::TooManyDirectories(4)),
+            "want TooManyDirectories, got {err:?}"
+        );
+    }
+
+    /// (c) A directory whose block chain points back at itself is still a
+    /// chain loop — the protection the cap was mistakenly doing double duty for.
+    #[test]
+    fn a_self_chaining_directory_block_is_still_a_chain_loop() {
+        let blowfish = test_cipher();
+        let one = BLOCK_SIZE as u64;
+        let mut bytes = vec![0u8; BLOCK_SIZE]; // filler so offset `one` is real
+        bytes.extend_from_slice(&block(&[], one, &blowfish)); // at `one` -> `one`
+        let mut root_entry = Entry::from(&[0u8; ENTRY_SIZE][..]);
+        root_entry.typ = 1;
+        root_entry.name[0] = b'r';
+        root_entry.position = one;
+        let mut root = Directory::from(root_entry);
+        let mut cursor = Cursor::new(Bytes::from(bytes));
+        let err = root
+            .expand_bounded(&mut cursor, &blowfish, MAX_DIRECTORIES)
+            .expect_err("a self-chaining block is refused");
+        assert!(
+            matches!(err, Error::ChainLoop(o) if o == one),
+            "want ChainLoop, got {err:?}"
+        );
+    }
+
+    /// (d) The foreign archive that exposed the defect, at its real size: 5361
+    /// directories through the public [`Directory::expand`] with the shipped cap.
+    /// Under the old shared 4096 cap this failed as a bogus `ChainLoop`.
+    #[test]
+    fn a_5361_directory_archive_indexes_with_the_shipped_cap() {
+        let blowfish = test_cipher();
+        let (bytes, mut root) = tree(5361, &blowfish);
+        let mut cursor = Cursor::new(bytes);
+        root.expand(&mut cursor, &blowfish)
+            .expect("5361 directories are a valid archive, not a chain loop");
+        assert_eq!(root.directories.len(), 5361);
+    }
+
+    /// The two caps must stay apart: the directory cap has to clear the
+    /// directory counts real archives have (2469 and 5361), while the per-chain
+    /// cap stays at the scale of one chain (322 blocks in the longest).
+    const _: () = {
+        assert!(
+            MAX_DIRECTORIES >= 4 * 5361,
+            "clear real archives with headroom"
+        );
+        assert!(MAX_DIRECTORIES <= 1 << 22, "still bound the walk");
+    };
 }
