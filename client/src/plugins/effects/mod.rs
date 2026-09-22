@@ -11,6 +11,7 @@
 
 pub mod components;
 pub mod material;
+pub mod options;
 pub mod rare;
 pub mod spawn;
 pub mod systems;
@@ -159,6 +160,9 @@ impl Plugin for EffectsPlugin {
                     .run_if(effects_enabled)
                     .before(TransformSystems::Propagate),
             )
+            // Outside the `effects_enabled` gate on purpose: this is the
+            // system that can turn the gate back on (Video pane row 13).
+            .add_systems(Update, options::apply_effect_quality_option)
             // outside the effects_enabled gate: entities keep despawning
             // (and their assets keep freeing) while effects are toggled off
             .add_systems(
