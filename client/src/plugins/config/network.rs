@@ -2,8 +2,15 @@ use serde::Deserialize;
 
 use crate::plugins::config::division::DivisionInfo;
 
+/// Everything here has a default: pointing the client at a server is the one
+/// thing a minimal `config.yaml` is for, and it should not have to restate the
+/// switches around it. Even the address is optional — omitted, it comes from
+/// the user's own `Media.pk2` (see [`NetworkSettings::resolve_gateway`]).
 #[derive(Deserialize, Debug)]
+#[serde(default)]
 pub struct NetworkSettings {
+    /// Connect at all. Defaults to `true`: a client that talks to no server is
+    /// the special case (scene testing), not the normal one.
     pub enabled: bool,
     /// Overrides the gateway from the user's own `Media.pk2`
     /// (`divisioninfo.txt` + `gateport.txt`). Omit it to use that data —
@@ -15,19 +22,17 @@ pub struct NetworkSettings {
     /// packet) for offline re-analysis.
     #[serde(default = "default_true")]
     pub packet_dump: bool,
-    /// Whether to send item-use (0x704C) requests. Off by default: the
-    /// maintainer's go-sro build does not implement 0x704C and resets the
-    /// connection on receipt (#215). Enable only against a server that
-    /// supports it.
+    /// Whether to send item-use (0x704C) requests. Off by default: some server
+    /// builds do not implement 0x704C and reset the connection on receipt.
+    /// Enable only against a server that supports it.
     #[serde(default)]
     pub item_use_enabled: bool,
     /// Apply the original client's outbound Blowfish policy: encrypt the
     /// identity/login opcodes (`ENCRYPTED_SEND_OPCODES`), leave everything
-    /// else cleartext. Off by default: without it we send the account password
-    /// in plaintext (#243), but the maintainer's server accepts our plaintext
-    /// login today and it is unverified that it accepts an encrypted one
-    /// (`docs/re/net/encryption-policy.md` UNKNOWN-1). Turn on once one live
-    /// login confirms it.
+    /// else cleartext. Off by default: without it the account password goes out
+    /// in plaintext, but it is unverified that the server accepts an encrypted
+    /// login. Turn on once one
+    /// live login confirms it.
     #[serde(default)]
     pub outbound_encryption: bool,
 }
@@ -40,6 +45,18 @@ impl NetworkSettings {
         self.gateway_address
             .clone()
             .or_else(|| division.gateway_address())
+    }
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gateway_address: None,
+            packet_dump: true,
+            item_use_enabled: false,
+            outbound_encryption: false,
+        }
     }
 }
 

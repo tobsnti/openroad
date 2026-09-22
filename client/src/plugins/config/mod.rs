@@ -1,6 +1,6 @@
 //! `config.yaml` and its typed sections.
 //!
-//! Convention (#581): **config enums stay flat unit variants** with an
+//! Convention: **config enums stay flat unit variants** with an
 //! explicit mapping function to whatever payload-carrying enum the engine
 //! wants — [`window::WindowModeConfig`] is the pattern. config-rs 0.14 can
 //! only build a payload-carrying variant from a YAML table and *panics* on a
@@ -49,8 +49,8 @@ pub struct ConfigPlugin;
 impl Plugin for ConfigPlugin {
     fn build(&self, app: &mut App) {
         // Nothing is derived here on purpose: a value computed in `build` is
-        // frozen for the process lifetime, which is the bug shape #647 is
-        // about. See `plugins::settings::live` for the mechanism.
+        // frozen for the process lifetime, which is what
+        // `plugins::settings::live` exists to avoid.
         // `setup_window` is on `Startup`, not on a state's `OnEnter`: it no
         // longer depends on any game state, `WindowPlugin::build` has already
         // spawned the primary window by then, and when the *initial*
@@ -77,10 +77,22 @@ fn log_network_config(config: Res<ClientConfig>) {
     info!("initialized network config: {:?}", config.network_settings);
 }
 
+/// **Nothing here is mandatory.** The
+/// project's promise is a client configured by "a data folder and a server
+/// address", so a three-line `config.yaml` has to load: `network_settings`,
+/// `window_settings` and `scenes` all carry defaults. A field would only earn
+/// `required` if it had no answer that is better than a guess — and none of
+/// these do: the window has a safe first-start geometry, the scenes have the
+/// names the client already hardcodes as its own defaults, and the gateway
+/// falls back to the one in the user's own `Media.pk2`. `config.example.yaml`
+/// stays the complete reference.
 #[derive(Resource, Deserialize)]
 pub struct ClientConfig {
+    #[serde(default)]
     pub network_settings: NetworkSettings,
+    #[serde(default)]
     pub window_settings: WindowSettings,
+    #[serde(default)]
     pub scenes: SceneSettings,
     /// Adds the egui world/resource inspectors and the debug-draw overlays.
     /// Off by default: reflecting the whole ECS world into egui every frame
@@ -93,9 +105,8 @@ pub struct ClientConfig {
     ///
     /// Split out from `dev_tools` because that switch also drags in the world
     /// inspector and the nav debug draws, which between them cost double-digit
-    /// FPS — so measuring through it measured a build nobody plays, and the
-    /// shipping configuration was unobservable. This tier is cheap enough to
-    /// leave on while taking a baseline; see `docs/perf-baselines.md`.
+    /// FPS — so measuring through it measures a build nobody plays. This tier
+    /// is cheap enough to leave on while taking a baseline.
     ///
     /// Restart-only, for the same reason as `dev_tools`: it decides plugin
     /// registration, and Bevy cannot add a plugin after startup.
@@ -103,8 +114,7 @@ pub struct ClientConfig {
     pub diagnostics: bool,
     /// Optional developer fast-login + first-character join on the intro_v2
     /// scene. Deliberately **not** called `autologin`: v1.188 ships a feature by
-    /// that name and it is a login queue, not this
-    /// (`docs/re/ui/scene-intro-autologin.md`). The `autologin` alias keeps
+    /// that name and it is a login queue, not this. The `autologin` alias keeps
     /// existing user `config.yaml` files working.
     #[serde(default, alias = "autologin")]
     pub dev_fast_login: DevFastLoginSettings,
@@ -144,8 +154,8 @@ impl ClientConfig {
     /// Whether to register the measurement tier (BRP, render-pass timings,
     /// per-phase draw counts).
     ///
-    /// `dev_tools` implies it: that switch used to *be* the only way to reach
-    /// BRP, so a config asking for the full toolbox must keep getting it.
+    /// `dev_tools` implies it: it is the full toolbox, so a config asking for
+    /// it must keep getting BRP.
     pub fn diagnostics_enabled(&self) -> bool {
         self.diagnostics || self.dev_tools
     }
@@ -156,7 +166,7 @@ impl ClientConfig {
     pub fn load() -> Self {
         // A readable message, not a bare `unwrap`: this runs before the window
         // exists, so this string is the only thing a user with a broken
-        // `config.yaml` ever sees (#539).
+        // `config.yaml` ever sees.
         Self::from_file("config").unwrap_or_else(|err| {
             panic!(
                 "failed to load config.yaml: {err}\nsee config.example.yaml for the expected shape"
@@ -168,7 +178,7 @@ impl ClientConfig {
     /// `config::File::with_name` wants it). Split out of [`load`](Self::load)
     /// so a test can point the *same* loader at `config.example.yaml` — the
     /// file a fresh setup copies — and prove it still matches this struct
-    /// (#539). `pub(crate)` so tests outside this module can build a config
+    /// (`pub(crate)` so tests outside this module can build a config
     /// from the shipped example instead of from a struct literal that would
     /// drift away from what users actually run.
     pub(crate) fn from_file(name: &str) -> Result<Self, config::ConfigError> {
@@ -180,14 +190,14 @@ impl ClientConfig {
 }
 
 /// Deserialize a loaded [`Config`], turning config-rs's enum-shape
-/// `unreachable!()` into an error that names the offending key (#581).
+/// `unreachable!()` into an error that names the offending key.
 ///
 /// Idea: config 0.14 can only build a *payload-carrying* enum variant from a
 /// YAML table. A bare string reaches `VariantAccess::newtype_variant_seed`
 /// with a `String` and hits `unreachable!()` (`config-0.14.1/src/de.rs:337`),
 /// so the process dies with "internal error: entered unreachable code" naming
 /// nothing — it reads like a corrupt install rather than a one-line config
-/// typo (#539, #566).
+/// nothing — it reads like a corrupt install rather than a one-line config typo.
 ///
 /// Our own config enums dodge it by convention — flat unit variants plus an
 /// explicit mapping function, see [`window::WindowModeConfig`] — but the
@@ -297,8 +307,8 @@ mod tests {
     }
 
     /// `dev_tools` is the superset switch, so turning it on must not silently
-    /// cost the BRP server it used to imply — the split that separated the
-    /// measurement tier from the inspectors is only safe if this holds.
+    /// cost the BRP server: separating the measurement tier from the
+    /// inspectors is only safe if this holds.
     #[test]
     fn dev_tools_implies_the_diagnostics_tier() {
         let mut config = ClientConfig::from_file(&example_config_name())
@@ -317,14 +327,13 @@ mod tests {
     }
 
     /// The whole `config.example.yaml` must deserialize into [`ClientConfig`]
-    /// through the *same* loader `main()` uses (#539).
+    /// through the *same* loader `main()` uses.
     ///
-    /// Until this test existed only individual blocks were covered, and the
-    /// file drifted where nothing looked: `mode: BorderlessFullscreen` became
-    /// unrepresentable when bevy's `WindowMode` variants took payloads, so
-    /// config-rs 0.14 hit its `unreachable!()` (de.rs:337) and every fresh
-    /// setup — `cp config.example.yaml config.yaml`, the documented path since
-    /// #526 untracked `config.yaml` — panicked before opening a window.
+    /// Covering individual blocks is not enough: `mode: BorderlessFullscreen`
+    /// became unrepresentable when bevy's `WindowMode` variants took payloads,
+    /// so config-rs 0.14 hits its `unreachable!()` (de.rs:337) and a fresh
+    /// setup — `cp config.example.yaml config.yaml`, the documented path —
+    /// panics before opening a window.
     #[test]
     fn example_config_deserializes_into_client_config() {
         let config = ClientConfig::from_file(&example_config_name())
@@ -383,7 +392,7 @@ mod tests {
     }
 
     /// A config that does not match the struct must come back as an `Err` the
-    /// caller can print, not as a panic from inside config-rs (#539).
+    /// caller can print, not as a panic from inside config-rs.
     #[test]
     fn a_broken_config_is_an_error_not_a_panic() {
         let dir = std::env::temp_dir().join(format!(
@@ -412,12 +421,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #581: naming an enum variant as a bare string where the Rust side
+    /// Naming an enum variant as a bare string where the Rust side
     /// expects a payload-carrying variant must come back as an `Err` that says
-    /// *which* key is wrong. Before the guard this panicked inside config-rs
+    /// *which* key is wrong. Unguarded, config-rs panics
     /// (`unreachable!()`, `config-0.14.1/src/de.rs:337`) with a message that
-    /// named nothing — the trap #539 only removed the trigger for.
-    ///
+    /// names nothing.
     /// It runs against the real loader and a real key: `window_settings.monitor`
     /// is bevy's `MonitorSelection`, whose `Index(usize)` variant carries a
     /// payload, so `monitor: Index` is a mistake a user can actually make.
@@ -457,12 +465,88 @@ mod tests {
         // Pins the *path*, not just the outcome: this sentence exists only in
         // `shape_mismatch_error`, which is reached only after `catch_unwind`
         // caught config-rs's `unreachable!()`. Without it the test would also
-        // pass on the ordinary type-mismatch path that #539 already covered,
-        // and the trap this issue is about would stay untested.
+        // pass on the ordinary type-mismatch path, leaving the enum-shape trap
+        // untested.
         assert!(
             message.contains("cannot build an enum variant that carries a payload"),
             "the error has to come from the caught enum-shape panic, got: {message}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The promise of the project is a client configured by a data folder and
+    /// a server address, so *that* must be a whole `config.yaml`:
+    /// `network_settings`, `window_settings` and `scenes` all default, and a
+    /// minimal file must not die with "missing field `scenes`" before the
+    /// window exists. Everything the file
+    /// leaves out has to come back as the documented default.
+    #[test]
+    fn a_minimal_config_loads_and_defaults_the_rest() {
+        let dir = std::env::temp_dir().join(format!(
+            "openroad-cfg-min-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("config.yaml"),
+            "network_settings:\n  gateway_address: \"127.0.0.1:15779\"\n",
+        )
+        .expect("write");
+
+        let config = ClientConfig::from_file(dir.join("config").to_str().expect("utf-8"))
+            .expect("a config naming only the server address has to load");
+
+        assert_eq!(
+            config.network_settings.gateway_address.as_deref(),
+            Some("127.0.0.1:15779"),
+            "the one configured value survives"
+        );
+        assert!(
+            config.network_settings.enabled,
+            "networking is on by default"
+        );
+        assert!(config.network_settings.packet_dump);
+        // Cautious first-start window: movable and closable on unknown hardware.
+        assert_eq!(
+            config.window_settings.mode,
+            super::window::WindowModeConfig::Windowed
+        );
+        assert_eq!(config.window_settings.width, 1280.0);
+        assert_eq!(config.window_settings.height, 720.0);
+        assert_eq!(config.window_settings.title, "OpenRoad");
+        // The scenes the client already hardcodes as its own defaults.
+        assert_eq!(config.scenes.startup, "world");
+        assert_eq!(config.scenes.char_select_location, "constantinople");
+        assert!(config.scenes.intro_location.is_empty());
+        assert!(!config.dev_tools);
+        assert!(!config.diagnostics_enabled());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `scenes:` block that names one key must inherit the other two rather
+    /// than failing — the same per-field default rule one level down.
+    #[test]
+    fn a_partial_block_inherits_the_remaining_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "openroad-cfg-part-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("config.yaml"),
+            "scenes:\n  startup: intro\nwindow_settings:\n  title: \"OpenRoad c1\"\n",
+        )
+        .expect("write");
+
+        let config = ClientConfig::from_file(dir.join("config").to_str().expect("utf-8"))
+            .expect("a partial block has to load");
+
+        assert_eq!(config.scenes.startup, "intro");
+        assert_eq!(config.scenes.char_select_location, "constantinople");
+        assert_eq!(config.window_settings.title, "OpenRoad c1");
+        assert_eq!(config.window_settings.width, 1280.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -484,8 +568,8 @@ mod tests {
         assert!(graphics.bloom.enabled);
         assert_eq!(graphics.bloom.intensity, 0.15);
         // Down from 4.0 and paired with an intensity: `pow(streak, 4)` on a
-        // mid-tone texture kept ~6% of the streak's energy, and nothing scaled
-        // it back, which is why the +N glow was invisible.
+        // mid-tone texture keeps only a few percent of the streak's energy, so
+        // the +N glow needs the lower exponent to be visible.
         assert_eq!(graphics.sheen.shine_pow, 2.0);
         assert_eq!(graphics.sheen.intensity, 3.0);
         assert!(graphics.rim.enabled);
