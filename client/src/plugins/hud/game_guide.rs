@@ -493,6 +493,25 @@ pub fn cleanup_game_guide_window(
     *state = GameGuideWindowState::default();
 }
 
+/// `KeyHelp` (id 3011, `H` by default) toggles the guide.
+///
+/// The guide *is* the original's Help: `UIIT_STT_GAMEGUIDE` reads "Help", and
+/// `UIIT_STT_GAMEGUIDE_START_2` names the key in its own start page — "game
+/// guide can be viewed to anytime by pressing the [H]key".
+pub fn toggle_game_guide_window(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::plugins::hud::chat::model::ChatState>,
+    options: Res<crate::plugins::settings::options::GameOptions>,
+    mut state: ResMut<GameGuideWindowState>,
+) {
+    let Some(key) = options.key_for(crate::plugins::settings::keymap::KEY_HELP) else {
+        return;
+    };
+    if keys.just_pressed(key) && !chat.input_open {
+        state.open = !state.open;
+    }
+}
+
 /// Self-registration (#558): the HUD registry only names this plugin.
 pub struct GameGuidePlugin;
 
@@ -504,6 +523,8 @@ impl Plugin for GameGuidePlugin {
             .add_systems(
                 Update,
                 (
+                    toggle_game_guide_window
+                        .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
                     apply_game_guide_window_visibility,
                     refresh_game_guide_window,
                 )
@@ -643,5 +664,79 @@ mod test {
             }),
             LEAF_ROW_H
         );
+    }
+}
+
+#[cfg(test)]
+mod keybind_test {
+    use super::*;
+    use crate::plugins::hud::chat::model::ChatState;
+    use crate::plugins::settings::keymap::{action_is_wired, KEY_HELP};
+    use crate::plugins::settings::options::GameOptions;
+
+    /// The guide is the original's Help window, and its key was dead: the Key
+    /// Map tab offered `H` and nothing read id 3011. It must also stay quiet
+    /// while the chat input is capturing keys.
+    #[test]
+    fn the_shortcut_toggles_the_guide_but_not_while_chat_is_capturing() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ChatState>()
+            .init_resource::<GameOptions>()
+            .init_resource::<GameGuideWindowState>()
+            .add_systems(Update, toggle_game_guide_window);
+
+        assert!(app
+            .world_mut()
+            .resource_mut::<GameOptions>()
+            .bind_key(KEY_HELP, KeyCode::KeyH));
+
+        // `reset` before `press`: a key already held records no just_pressed.
+        let press = |app: &mut App| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset(KeyCode::KeyH);
+            keys.press(KeyCode::KeyH);
+            app.update();
+        };
+
+        press(&mut app);
+        assert!(app.world().resource::<GameGuideWindowState>().open);
+        press(&mut app);
+        assert!(!app.world().resource::<GameGuideWindowState>().open);
+
+        app.world_mut().resource_mut::<ChatState>().input_open = true;
+        press(&mut app);
+        assert!(!app.world().resource::<GameGuideWindowState>().open);
+    }
+
+    /// The shipped default resolves `H` without a stored binding, and the
+    /// shared registry reports the action as wired.
+    #[test]
+    fn the_shipped_default_opens_the_guide() {
+        assert_eq!(
+            GameOptions::default().key_for(KEY_HELP),
+            Some(KeyCode::KeyH)
+        );
+        assert!(action_is_wired(KEY_HELP));
+    }
+
+    /// The text-field guard belongs on the toggle itself.
+    #[test]
+    fn the_toggle_carries_the_text_field_guard() {
+        let source = include_str!("game_guide.rs");
+        let plugin = source
+            .find("impl Plugin for GameGuidePlugin")
+            .expect("the plugin is declared");
+        let after = &source[plugin..];
+        let toggle = after
+            .find("toggle_game_guide_window")
+            .expect("the toggle is registered");
+        let guard = after[toggle..]
+            .find("text_field_focused")
+            .expect("the toggle carries no text-field guard");
+        let next = after[toggle..]
+            .find("apply_game_guide_window_visibility")
+            .expect("the visibility system follows the toggle");
+        assert!(guard < next, "the guard must sit on the toggle itself");
     }
 }

@@ -308,6 +308,11 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
 /// The option ids openroad actually consumes today. Kept next to the migrated
 /// call sites' ids so a rename cannot silently unbind a window.
 pub const KEY_CHARACTER: u16 = 3001;
+/// Opens the game guide — the original's Help (`hud::game_guide`).
+pub const KEY_HELP: u16 = 3011;
+/// Activates berserk (`hud::player_mini_info`), the same request the ring's
+/// activation button sends.
+pub const KEY_BERSERK: u16 = 3009;
 /// Opens the action / emote panel (`hud::action`).
 ///
 /// Named `_PANEL` because the scan that proves a binding is consumed searches
@@ -473,11 +478,9 @@ pub fn action(id: u16) -> Option<&'static KeyAction> {
 /// crate's own call sites, so an entry cannot outlive its excuse and a new
 /// dead binding cannot be added quietly. Shrinking the list is the work;
 /// growing it needs a reason in the same commit.
-pub const UNWIRED_ACTIONS: [(u16, &str); 10] = [
+pub const UNWIRED_ACTIONS: [(u16, &str); 8] = [
     (3006, "KeyQuest — no quest journal yet"),
     (3007, "KeyCommunity — no community window yet"),
-    (3009, "KeyBerserkerMode — no berserk trigger yet"),
-    (3011, "KeyHelp — no help window yet"),
     (3013, "KeyMouseQuickSlot — no mouse quick-slot mode yet"),
     (3014, "KeySitStand — no sit/stand chain yet"),
     (3015, "KeyAutoPickup — pickup is click/loot driven"),
@@ -671,7 +674,11 @@ mod tests {
             .lines()
             .filter(|line| line.trim_start().starts_with("pub const KEY_") && line.contains("u16"))
             .count();
-        assert_eq!(consts.len(), declared, "a declaration is missing from the scan");
+        assert_eq!(
+            consts.len(),
+            declared,
+            "a declaration is missing from the scan"
+        );
         assert!(
             consts
                 .iter()
@@ -778,10 +785,22 @@ mod tests {
                     use super::KEY_QUEST;\n\
                     fn after() { options.key_for(KEY_ALCHEMY); }\n";
         let code = shipping_code(file);
-        assert!(code.contains("KEY_COMMUNITY"), "code after a test module is code");
-        assert!(code.contains("KEY_ALCHEMY"), "a braceless test item ends at its `;`");
-        assert!(!code.contains("KEY_HELP"), "the test module itself is still cut");
-        assert!(!code.contains("KEY_QUEST"), "the braceless test item is cut too");
+        assert!(
+            code.contains("KEY_COMMUNITY"),
+            "code after a test module is code"
+        );
+        assert!(
+            code.contains("KEY_ALCHEMY"),
+            "a braceless test item ends at its `;`"
+        );
+        assert!(
+            !code.contains("KEY_HELP"),
+            "the test module itself is still cut"
+        );
+        assert!(
+            !code.contains("KEY_QUEST"),
+            "the braceless test item is cut too"
+        );
     }
 
     fn client_sources() -> Vec<String> {
