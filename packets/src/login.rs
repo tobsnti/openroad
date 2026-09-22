@@ -165,6 +165,79 @@ pub fn describe_login_error(code: u8) -> &'static str {
     }
 }
 
+/// The `textuisystem.txt` row the **original** shows for a `0xA102`
+/// `error_code`, as `(key, shipped English fallback)`.
+///
+/// Idea: same split as [`crate::agent::lobby_error_text`] — `packets` owns the
+/// code -> key mapping (it is wire knowledge, recovered from the binary), the
+/// client owns the lookup against the loaded table, so `packets` keeps no
+/// dependency on a client string table. [`describe_login_error`] stays what it
+/// always was: short prose for logs.
+///
+/// The mapping is the login-UI pump's switch, `FUN_0086bfc0:236-443`, whose
+/// internal id is the wire code **+ 1**; table and line numbers in
+/// `docs/re/net/login-gateway.md` §5.3. Every key below was re-verified to
+/// exist in the user's own `Media/server_dep/silkroad/textdata/textuisystem.txt`
+/// (5364 keyed rows, control key `ZZZ_NOPE` absent) [V].
+///
+/// Two rows deserve their note:
+/// * `1` and `2` carry a payload (attempt counter / ban info) that only the
+///   caller can render, so they are `None` here — the caller must not replace
+///   its own formatted line with a bare template.
+/// * `0xB`'s row `UIIO_CLIENT_START_CONTENT_FAIL_BILLING_FAILED` exists but its
+///   English column is literally `"0"` in this data set, i.e. an unfilled
+///   placeholder; the fallback below is our prose, and the client's
+///   `get_plain_or` will still prefer the (empty-ish) shipped row if present.
+///   That is the data's problem, not a missing key.
+pub fn login_error_text(code: u8) -> Option<(&'static str, &'static str)> {
+    Some(match code {
+        // rendered by the caller from the payload, see the doc comment
+        1 | 2 => return None,
+        3 => (
+            "UIO_MSG_ERROR_OVERLAP",
+            "This user is already connected. The user may still be connected because of an error that forced the game to close. Please try again in 5 minutes.",
+        ),
+        4 | 6 | 7 | 8 | 9 => (
+            "UIO_MSG_ERROR_SEVER_CONNECT",
+            "Failed to connect to server.",
+        ),
+        5 => (
+            "UIO_MSG_ERROR_SERVER_BUSY_CONNECT_IMPOSSIBILE",
+            "The server is full, please try again later.",
+        ),
+        0xA => (
+            "UIO_MSG_ERROR_CONTENT_FAIL_INSUFFICIENT_IP",
+            "Cannot connect to the server because access to the current IP has exceeded its limit.",
+        ),
+        0xB => (
+            "UIIO_CLIENT_START_CONTENT_FAIL_BILLING_FAILED",
+            "Billing failed. Cannot establish connection.",
+        ),
+        0xC => (
+            "UIIO_CLIENT_START_CONTENT_FAIL_BILLING_RELATED",
+            "Billing server error occurred.  Cannot establish connection.",
+        ),
+        0xD => (
+            "UIIO_SMERR_ADULT_ONLY_SERVER",
+            "Only adults over the age of 18 are allowed to connect to the server.",
+        ),
+        0xE => (
+            "UIIO_SMERR_TEENOVER_ONLY_SERVER",
+            "Only users over the age of 12 are allowed to connect to the server.",
+        ),
+        0xF => (
+            "UITT_TEENSERVER_ERRMGS_ADULT",
+            "Adults over the age of 18 are not allowed to connect to the Teen server.",
+        ),
+        // The pump has no arm past 0xF: an unnamed code falls through to the
+        // generic connect failure, the same default `lobby_error_text` uses.
+        _ => (
+            "UIO_MSG_ERROR_SEVER_CONNECT",
+            "Failed to connect to server.",
+        ),
+    })
+}
+
 /// Rendered as "Password entry has failed {cur} out of {max} times."
 ///
 /// ⚠️ **`[U]` on the wire.** The binary only shows the *internal* form — one
@@ -223,6 +296,14 @@ pub struct LoginCaptchaChallenge {
     pub image_data: Vec<u8>,
 }
 
+/// 0x6323 — the captcha answer the user typed.
+///
+/// The one thing worth stating: it is a **u16-length-prefixed string**, not a
+/// raw byte or a fixed-width field, even when the answer is a single digit.
+/// [V] 2026-08-22 at the original client: answering "1" put `01 00 31` on the
+/// wire (`docs/re/ui/live-pregame-measurements.md` §5.3). Our `String` already
+/// serializes exactly that, so this is a verification, not a fix; the byte test
+/// `captcha_confirm_sends_a_length_prefixed_string` keeps it that way.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct LoginCaptchaConfirmRequest {
     pub code: String,
@@ -237,7 +318,24 @@ pub struct LoginCaptchaConfirmResponse {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::*;
+
+    /// The captcha answer travels as a u16-LE-length-prefixed string. [V]
+    /// 2026-08-22: the original client sent `01 00 31` for the answer "1"
+    /// (`docs/re/ui/live-pregame-measurements.md` §5.3). A single-character
+    /// answer is the case where a raw-byte model would look plausible, which is
+    /// exactly why it is pinned here.
+    #[test]
+    fn captcha_confirm_sends_a_length_prefixed_string() {
+        let request = LoginCaptchaConfirmRequest {
+            code: "1".to_string(),
+        };
+        assert_eq!(request.byte_size(), 3);
+        let bytes: Bytes = request.into();
+        assert_eq!(bytes.as_ref(), &[0x01, 0x00, b'1']);
+    }
 
     fn error(code: u8) -> LoginError {
         LoginError {
@@ -277,6 +375,52 @@ mod tests {
                 "unknown error",
                 "code {code:#x}"
             );
+        }
+    }
+
+    /// The key table is the pump's switch (`docs/re/net/login-gateway.md`
+    /// §5.3), transcribed — not derived from a name rule. Pinned per code so a
+    /// later "tidy-up" cannot silently re-map one, and pinned as *absence* for
+    /// the two payload codes, whose line the caller formats itself.
+    #[test]
+    fn the_login_error_keys_are_the_transcribed_ones() {
+        assert_eq!(login_error_text(1), None);
+        assert_eq!(login_error_text(2), None);
+        assert_eq!(login_error_text(3).unwrap().0, "UIO_MSG_ERROR_OVERLAP");
+        for code in [4u8, 6, 7, 8, 9] {
+            assert_eq!(
+                login_error_text(code).unwrap().0,
+                "UIO_MSG_ERROR_SEVER_CONNECT",
+                "code {code:#x}"
+            );
+        }
+        assert_eq!(
+            login_error_text(5).unwrap().0,
+            "UIO_MSG_ERROR_SERVER_BUSY_CONNECT_IMPOSSIBILE"
+        );
+        assert_eq!(
+            login_error_text(0xA).unwrap().0,
+            "UIO_MSG_ERROR_CONTENT_FAIL_INSUFFICIENT_IP"
+        );
+        assert_eq!(
+            login_error_text(0xD).unwrap().0,
+            "UIIO_SMERR_ADULT_ONLY_SERVER"
+        );
+        assert_eq!(
+            login_error_text(0xF).unwrap().0,
+            "UITT_TEENSERVER_ERRMGS_ADULT"
+        );
+        // an unnamed code is the generic connect failure, never nothing
+        assert_eq!(
+            login_error_text(0x10).unwrap().0,
+            "UIO_MSG_ERROR_SEVER_CONNECT"
+        );
+        // and no arm may ship an empty fallback: a missing table must still
+        // put a sentence on the status line
+        for code in 3u8..=0x20 {
+            let (key, fallback) = login_error_text(code).expect("code {code:#x}");
+            assert!(key.starts_with("UI"), "code {code:#x} key {key}");
+            assert!(!fallback.is_empty(), "code {code:#x}");
         }
     }
 
