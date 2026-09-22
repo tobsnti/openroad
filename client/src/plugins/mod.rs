@@ -1,4 +1,5 @@
 pub mod animation_culling;
+pub mod animation_sit;
 pub mod animation_sounds;
 pub mod assets;
 /// Event sounds resolved through `effectsound.txt` handles.
@@ -55,26 +56,19 @@ mod tests {
     /// **Locked decision (`CLAUDE.md`): extensibility rides static Cargo
     /// features — no dynamic DLL/WASM plugins.**
     ///
-    /// The tree carried the remains of the opposite design for a long time:
-    /// `plugins/loader.rs` with `list_plugins()` / `load_plugin(PathBuf)`
-    /// stubs whose comment proposed "bevy-modding or `include!`", plus a
-    /// `sro_v188` version-plugin that only logged its own name at `Startup`.
-    /// Both were registered in `main.rs`, which made a rejected architecture
-    /// look like a live one. #56-C removed them; this pins the decision so a
-    /// future "plugin loader" has to argue with `CLAUDE.md` first.
+    /// A dynamic code-loading surface (`list_plugins()` / `load_plugin(PathBuf)`
+    /// stubs, a version plugin registered only to log its own name) is a
+    /// rejected architecture, and this test pins the decision so a future
+    /// "plugin loader" has to argue with `CLAUDE.md` first.
     ///
     /// Note what this does NOT forbid: `dynamic_resource_loader` (SRO resource
     /// mirroring, used by 16 modules) and the `bevy_asset_loader` asset
     /// loaders are unrelated to code loading — which is why the predicate is
     /// the two removed type names, not the word "loader".
-    /// #56-C, the last part: **exactly one UI module.** `plugins::ui` used to
-    /// sit next to `plugins::ui_v2` and read like a v1 of it. Measured, it was
-    /// four unrelated things — a hand-rolled text input and a button system
-    /// (dead, removed), the 2d UI camera and window settings (live), and the
-    /// shared context-menu widget (live). The dead halves went, and the two
-    /// live halves moved to the modules that own their domain
-    /// (`plugins::camera`, `plugins::options_video`, `plugins::hud`), so the
-    /// duality is gone rather than migrated.
+    /// Second part: **exactly one UI module.** A `plugins::ui` beside
+    /// `plugins::ui_v2` would read like a v1 of it; the live halves of that
+    /// module belong to the modules that own their domain
+    /// (`plugins::camera`, `plugins::options_video`, `plugins::hud`).
     ///
     /// The predicate is the module declaration, and `ui_v2` deliberately stays.
     #[test]
