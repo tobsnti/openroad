@@ -978,7 +978,12 @@ mod test {
     fn the_create_screen_answers_render_the_shipped_row_for_their_code() {
         let strings = crate::plugins::textdata::ClientUiStrings::default();
         let check_name = |code| {
-            lobby_error_line_or(code, &strings, "UIO_MSG_ERROR_ID", "This ID already exists.")
+            lobby_error_line_or(
+                code,
+                &strings,
+                "UIO_MSG_ERROR_ID",
+                "This ID already exists.",
+            )
         };
         let create = |code| {
             lobby_error_line_or(

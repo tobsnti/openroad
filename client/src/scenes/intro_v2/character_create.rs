@@ -164,8 +164,13 @@ fn cu_font(v: f32) -> FontSize {
     FontSize::Px(v)
 }
 
-/// [`cu`] as a number — for the slider thumb's per-frame position and the
-/// geometry tests.
+/// [`cu`] as a number — for the geometry tests.
+///
+/// Test-only: the screens themselves spawn `cu(..)` nodes, so the only callers
+/// of the bare number are the pinning tests below (and `control_row_box`,
+/// which exists for them). Without the gate the non-test build warns
+/// `never used`, which `clippy -D warnings` turns into an error.
+#[cfg(test)]
 fn cu_at(v: f32) -> f32 {
     v
 }
@@ -235,6 +240,11 @@ const GENDER_GEM_W: f32 = 20.0;
 ///
 /// The gem sits on the side the *other* button's gem does not: left for male,
 /// right for female (see [`GENDER_GEM_W`]).
+///
+/// Test-only, like [`control_row_box`]: the caption placement itself goes
+/// through [`gender_caption_margin`]; this is the span that margin is checked
+/// against.
+#[cfg(test)]
 fn gender_plate_span(gender: Gender) -> (f32, f32) {
     let w = MALE_RECT.2;
     match gender {
@@ -399,8 +409,7 @@ const WCREATE_NAME_RECT: (f32, f32, f32, f32) = (4.0, 23.0, 239.0, 15.0);
 /// `GDR_STATIC1` (`:786-804`), `UIO_NEWCHAR_MSG_CREATE`.
 const WCREATE_MSG_RECT: (f32, f32, f32, f32) = (4.0, 47.0, 239.0, 13.0);
 /// `GDR_BTN_WCREATE` (`:767-785`) `UIO_COMMON_CTL_CREATE` — this is where that
-/// key belongs; the screen's own `GDR_BTN_OK` carries `UIO_NEWCHAR_CTL_CONFIRM`
-/// and a stale comment used to misattribute it to this button.
+/// key belongs; the screen's own `GDR_BTN_OK` carries `UIO_NEWCHAR_CTL_CONFIRM`.
 const WCREATE_OK_RECT: (f32, f32, f32, f32) = (42.0, 75.0, WARNING_BUTTON_W, WARNING_BUTTON_H);
 /// `GDR_BTN_WCANCEL` (`:748-766`) `UIO_COMMON_CTL_CANCEL`.
 const WCREATE_CANCEL_RECT: (f32, f32, f32, f32) = (130.0, 75.0, WARNING_BUTTON_W, WARNING_BUTTON_H);
@@ -425,8 +434,7 @@ const EXPLAIN_EU_ART: (f32, f32) = (220.0, 236.0);
 /// `GDR_TEXT_EXPLAIN` (`:584-602`).
 const EXPLAIN_NAME_RECT: (f32, f32, f32, f32) = (15.0, 18.0, 183.0, 14.0);
 const EXPLAIN_BODY_RECT: (f32, f32, f32, f32) = (15.0, 42.0, 183.0, 122.0);
-/// `GDR_STA_EXPLAINNAME`'s authored `FontColor` — a warm parchment, distinct
-/// from the char-select gold this panel used to borrow.
+/// `GDR_STA_EXPLAINNAME`'s authored `FontColor` — a warm parchment.
 const EXPLAIN_NAME_COLOR: Color = Color::srgb(1.0, 239.0 / 255.0, 153.0 / 255.0);
 
 // --- Text sizes -------------------------------------------------------------
@@ -885,10 +893,8 @@ pub(crate) fn creation_preload_paths(
 /// tune. Two things vary by race and are read from the race's own tree rather
 /// than blended: the panel texture, and the order of the two gear rows.
 ///
-/// The five option rows keep our existing prev/value/next cycler *inside* the
-/// authored 120x24 row rect. Replacing that cycler with the `Section = Slider`
-/// template (`:685-745`) is the next build step and a separate change; this
-/// one is the texture/rect pass.
+/// The five option rows keep the prev/value/next cycler *inside* the authored
+/// 120x24 row rect.
 fn create_panel(
     assets: &IntroV2Assets,
     fonts: &FontAssets,
@@ -975,7 +981,7 @@ fn create_panel(
                 Node { position_type: PositionType::Absolute, left: cu(nlx), top: cu(nly), width: cu(nlw), height: cu(nlh) }
             ),
             // `GDR_EDIT_NAME` has no DDJ of its own: the slot is painted into
-            // the panel art, so there is no background node here any more.
+            // the panel art, so there is no background node here.
             (
                 Node { position_type: PositionType::Absolute, left: cu(nex), top: cu(ney), width: cu(new_), height: cu(neh) }
                 // The 12-char limit is an INPUT CAP, not an error case: in the
@@ -1437,7 +1443,9 @@ const MAIN_BUTTON_H: f32 = 41.0;
 
 /// Where the Confirm/Cancel row lands in a window of `w` x `h`, as
 /// `(confirm_left, cancel_right, top, bottom)`. Exists so the anchor can be
-/// checked against the measured original without a running app.
+/// checked against the original's numbers without a running app — and for
+/// nothing else, hence the gate.
+#[cfg(test)]
 fn control_row_box(w: f32, h: f32) -> (f32, f32, f32, f32) {
     let cancel_right = w - cu_at(CONTROL_ROW_RIGHT_INSET);
     let confirm_left =
@@ -1561,8 +1569,7 @@ pub fn enter_character_create(
     ));
 
     // `GDR_STA_EXPLAIN` + `Section = Explain`: the figure's vanilla name and
-    // backstory on the screen's own panel art, replacing the hand-built box
-    // that borrowed the char-select chrome. The European tree swaps both the
+    // backstory on the screen's own panel art. The European tree swaps both the
     // art and the size (see EXPLAIN_EU_* for the one rect/art mismatch).
     let (explain_art, (explain_w, explain_h)) = if race == Race::EUROPEAN {
         (assets.explain_window_02.clone(), EXPLAIN_EU_ART)
@@ -2680,8 +2687,8 @@ pub fn on_create_confirm_activate(
 }
 
 /// Handles the create response: success returns to a refreshed `CharacterList`;
-/// a server rejection (e.g. the same server gap seen on item-use) shows the
-/// info text + error sound and keeps the screen so no panic/disconnect occurs.
+/// a server rejection shows the info text + error sound and keeps the screen
+/// so no panic/disconnect occurs.
 pub fn on_character_create_response(
     mut reader: MessageReader<CharacterSelectionActionResponse>,
     mut info_text_writer: MessageWriter<InfoTextV2Update>,
@@ -3484,7 +3491,6 @@ mod tests {
 
     /// `GDR_STA_TITLE` (`pscharactercreate{china,_europe}.txt:215`) is a baked
     /// 428x36 image at 47,111 — `text-custom.ddj`, shared by both race trees.
-    /// We drew a hardcoded "Create Character" string with no textuisystem key.
     #[test]
     fn the_title_is_baked_art_at_its_resinfo_size() {
         assert_eq!((TITLE_ART_W, TITLE_ART_H), (428.0, 36.0));
@@ -3644,9 +3650,9 @@ mod tests {
         assert!(((PI / PREVIEW_ROTATE_STEP) - 12.0).abs() < 1e-5);
     }
 
-    /// The CH garment captions are `Protector` and `Armor` in the data, not the
-    /// "Light Armor"/"Heavy Armor" we invented. The EU keys genuinely DO read
-    /// "Light Armor"/"Heavy Armor", so only the CH pair was wrong (#304).
+    /// The CH garment captions are `Protector` and `Armor` in the data, not
+    /// "Light Armor"/"Heavy Armor". The EU keys genuinely DO read
+    /// "Light Armor"/"Heavy Armor", so only the CH pair differs.
     #[test]
     fn chinese_garment_fallbacks_match_the_textdata() {
         let (ch_light_key, ch_light) = Garment::Light.label(Race::CHINESE);
