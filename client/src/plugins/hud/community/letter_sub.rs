@@ -16,8 +16,7 @@
 //! y=234. Read is SENDER + CONTENTS + Reply/Delete/Close; write is RECEIVER +
 //! CONTENTS + Send/Cancel.
 //!
-//! Three absences are load-bearing (`docs/re/ui/mail-letter-window.md` §3, §9)
-//! and are **deliberately not filled in**:
+//! Three absences are load-bearing and are **deliberately not filled in**:
 //!
 //! * **No subject and no attachment slot** exist in either tree — v1.188 mail
 //!   is sender + body. Nothing here adds either.
@@ -408,7 +407,7 @@ fn buttons(window: LetterSubWindow) -> Vec<(LetterSubButton, f32, &'static str, 
 
 /// The 8 `msgbox2_window_` pieces around a `w x h` plate. The insets are the
 /// art's own extents, stated once in [`crate::plugins::hud::modal_dialog`].
-fn plate_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 8] {
+pub(super) fn plate_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 8] {
     let side = MODAL_SIDE;
     let top = MODAL_TOP;
     let bottom = MODAL_BOTTOM;
