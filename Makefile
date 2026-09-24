@@ -3,7 +3,7 @@
 .PHONY: check-deps check-env
 .PHONY: run watch launcher intro intro_v2 world animations ui_testing asset-loading asset_loading skills dungeons netcheck
 
-.PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data deny ci clean
+.PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data no-private deny ci clean
 .PHONY: pk2 pk2-list pk2-unpack list unpack bsr2glb
 .PHONY: perf snapshot sample fps get set attribute
 .PHONY: profile chrome tracy summary windows
@@ -272,13 +272,26 @@ fmt:
 clippy:
 	cargo clippy --all-targets --all-features
 
+# Leak gate: runs on the PATCH, not the tree — the question is what a diff adds,
+# not what the checkout contains. Override the base with
+# `make no-private LEAK_BASE=<ref>`.
+LEAK_BASE ?= origin/main
+no-private:
+	@python3 scripts/test_check_no_private.py
+	@if git rev-parse --verify --quiet $(LEAK_BASE) >/dev/null; then \
+		python3 scripts/check_no_private.py $(LEAK_BASE)...HEAD; \
+	else \
+		echo "$(LEAK_BASE) not found - fetch it or pass make no-private LEAK_BASE=<ref>." >&2; \
+		exit 1; \
+	fi
+
 warnings:
 	python3 scripts/check_warnings.py
 
 # The full local quality gate — run this before pushing. There is no CI service:
 # this repo deliberately has no GitHub Actions, so these checks are the gate.
 
-ci: check-target-dir fmt-check warnings opcodes re-tools reference-data deny test build
+ci: check-target-dir fmt-check warnings opcodes re-tools reference-data no-private deny test build
 
 # Supply-chain gate: licences, advisories, wildcard versions, source registries
 # (deny.toml). Skips with a notice when cargo-deny is absent, the same way the
