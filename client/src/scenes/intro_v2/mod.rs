@@ -480,6 +480,10 @@ impl Plugin for IntroV2ScenePlugin {
                     fade::on_fade_to_black,
                     net::on_gateway_login_response,
                     net::on_agent_login_response,
+                    // The one arm a silent server does not have: without it the
+                    // screen keeps the greyed buttons of a request nobody
+                    // answered (`net::PendingLogin`).
+                    net::time_out_pending_login.run_if(resource_exists::<net::PendingLogin>),
                     captcha::on_captcha_challenge,
                     captcha::on_captcha_confirm_response,
                     // The modal is the only thing the screen takes input for

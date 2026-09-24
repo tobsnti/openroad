@@ -50,11 +50,79 @@ pub fn reenable_connect_button(
     >,
     mut commands: Commands,
 ) {
+    // Entering the form is a fresh start: no request of the previous visit is
+    // still being waited for.
+    commands.remove_resource::<PendingLogin>();
     for entity in query.iter() {
         commands
             .entity(entity)
             .remove::<(InteractionDisabled, Pressed)>();
     }
+}
+
+/// A gateway login request that has gone out and is still waiting for its
+/// answer. Its only job is that the wait cannot be infinite.
+///
+/// [`on_connect_activate`] disables Connect **and** Exit while the request is in
+/// flight, and every arm that *answers* gives them back. A server that answers
+/// nothing has no arm, so the screen stayed disabled for the rest of the
+/// session: the status line on "...Requesting user confirmation...", and no
+/// further click producing a request. That state is what
+/// [`time_out_pending_login`] ends.
+#[derive(Resource)]
+pub struct PendingLogin {
+    timer: Timer,
+}
+
+/// How long the screen waits for `0xA102` before it hands itself back.
+///
+/// **Ours, not the original's**: what the original does with a gateway that
+/// never answers is unknown, and no data row names a timeout. Ten seconds is
+/// chosen to be far longer than an answering gateway needs (a local login
+/// answers inside a second) and short enough that a player does not conclude
+/// the client is dead.
+const LOGIN_ANSWER_BUDGET_SECS: f32 = 10.0;
+
+impl Default for PendingLogin {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(LOGIN_ANSWER_BUDGET_SECS, TimerMode::Once),
+        }
+    }
+}
+
+/// Gives the login screen back when the gateway never answers, and says so.
+///
+/// The budget does not run while the *user* is the one being waited for: with
+/// the captcha modal up, the request **was** answered and the two greyed buttons
+/// are what the original shows, so the timer is held at zero instead of ticking
+/// behind the modal.
+pub fn time_out_pending_login(
+    time: Res<Time>,
+    mut pending: ResMut<PendingLogin>,
+    captcha_modal: Query<(), With<super::captcha::CaptchaModal>>,
+    buttons: Query<Entity, Or<(With<ConnectButton>, With<ExitButton>)>>,
+    ui_strings: Res<ClientUiStrings>,
+    mut info_text_writer: MessageWriter<InfoTextV2Update>,
+    mut commands: Commands,
+) {
+    if !captcha_modal.is_empty() {
+        pending.timer.reset();
+        return;
+    }
+    if !pending.timer.tick(time.delta()).just_finished() {
+        return;
+    }
+    warn!("[Login] no answer within {LOGIN_ANSWER_BUDGET_SECS} s — giving the screen back");
+    info_text_writer.write(InfoTextV2Update(
+        ui_strings.get_plain_or(AGENT_CONNECT_ERROR_KEY, "Failed to connect to server."),
+    ));
+    for entity in buttons.iter() {
+        commands
+            .entity(entity)
+            .remove::<(InteractionDisabled, Pressed)>();
+    }
+    commands.remove_resource::<PendingLogin>();
 }
 
 /// The textuisystem rows this flow speaks, all present in
@@ -88,6 +156,16 @@ pub fn reenable_connect_button(
 /// the code -> key mapping exists once, next to the wire type it belongs to.
 const CONNECT_PROGRESS_KEY: &str = "UIO_MSG_ERROR_CITATION";
 const PASSWORD_ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR";
+/// The two rows the empty-form refusal speaks, both shipped:
+/// `UIO_MSG_ERROR_INPUT` (`textuisystem.txt:164`, English column "Invalid ID")
+/// and `UIO_MSG_ERROR_PASSWORD` (`:165`, "Invalid ID or password.").
+///
+/// Which row the original picks for an *empty* field is unknown — it sends the
+/// empty login rather than refusing it — so the choice of these two rows for
+/// this refusal is ours: the ID row when the ID is missing, the password row
+/// when only the password is, because that is what each sentence says.
+const EMPTY_ID_KEY: &str = "UIO_MSG_ERROR_INPUT";
+const EMPTY_PASSWORD_KEY: &str = "UIO_MSG_ERROR_PASSWORD";
 /// `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`, English column
 /// "Failed to connect to server." — the key's misspelling is the original's).
 /// The row the agent-connect failure path speaks; see that arm for why it goes
@@ -126,6 +204,22 @@ pub fn on_connect_activate(
 
     let username = id_input.value().to_string().trim().to_string();
     let password = pw_input.value().to_string().trim().to_string();
+
+    // An empty field is refused here, in front of the wire. Without this the
+    // click sent `0x6102` with an empty name and an empty password, the server
+    // answered nothing at all, and the screen stayed on
+    // "...Requesting user confirmation..." with Connect disabled — one early
+    // click and the client was only killable. The local gates in front of the
+    // send are the idiom the create screen already uses (`gate_selection`).
+    if username.is_empty() || password.is_empty() {
+        let (key, fallback) = if username.is_empty() {
+            (EMPTY_ID_KEY, "Invalid ID")
+        } else {
+            (EMPTY_PASSWORD_KEY, "Invalid ID or password.")
+        };
+        info_text_writer.write(InfoTextV2Update(ui_strings.get_plain_or(key, fallback)));
+        return;
+    }
 
     // No shard committed = nothing to log into, because `LoginRequest` carries
     // the shard id. This used to `return` in silence, and with `autologin`
@@ -213,6 +307,9 @@ pub fn on_connect_activate(
     if let Err(e) = connection.get_sender().send(frame) {
         error!("failed to send frame: {}", e.0);
     }
+    // From here the screen is disabled until somebody answers — so start the
+    // clock that guarantees somebody does ([`time_out_pending_login`]).
+    commands.insert_resource(PendingLogin::default());
 }
 
 /// Surfaces an asynchronous gateway connect failure as intro info text. Because
@@ -259,6 +356,9 @@ pub fn on_gateway_login_response(
     let Ok(connect_button) = connect_button_query.single() else {
         return;
     };
+
+    // The gateway answered, so the wait is over either way.
+    commands.remove_resource::<PendingLogin>();
 
     let username = credentials.username.clone();
     let password = credentials.password.clone();
@@ -715,6 +815,195 @@ mod tests {
         assert!(
             !line.to_lowercase().contains("select a server"),
             "the server hint must not fire once a shard is committed: {line:?}"
+        );
+    }
+
+    /// The worst of the pre-game defects: Connect on an **empty** form sent
+    /// `0x6102` with an empty name and an empty password, the server answered
+    /// nothing, and the screen was disabled for the rest of the session. Two
+    /// halves, both asserted here: nothing goes out, and nothing locks.
+    ///
+    /// Negative control is the second half: a filled form must still walk past
+    /// this gate (it then stops at the gateway lookup, which a test app has no
+    /// business owning).
+    #[test]
+    fn an_empty_form_is_refused_and_does_not_lock_the_screen() {
+        use bevy::text::EditableText;
+        use bevy::ui::InteractionDisabled;
+        use bevy::ui_widgets::Activate;
+
+        use crate::plugins::config::division::DivisionInfo;
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, IdInput, PwInput};
+        use crate::scenes::intro_v2::server_select::SelectedShardV2;
+        use crate::scenes::intro_v2::IntroV2State;
+
+        fn app_with_form(id: &str, pw: &str) -> (App, Entity) {
+            let mut app = App::new();
+            app.add_message::<InfoTextV2Update>()
+                .init_resource::<ClientUiStrings>()
+                .insert_resource(DivisionInfo::default())
+                .insert_resource(State::new(IntroV2State::LoginForm))
+                // A shard *is* committed: the empty form was refused by nothing
+                // else, which is how the packet went out.
+                .insert_resource(SelectedShardV2(Some(1)));
+            app.world_mut().add_observer(super::on_connect_activate);
+            app.world_mut().spawn((IdInput, EditableText::new(id)));
+            app.world_mut().spawn((PwInput, EditableText::new(pw)));
+            let connect = app.world_mut().spawn(ConnectButton).id();
+            (app, connect)
+        }
+
+        fn first_line(app: &App) -> Option<String> {
+            let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+            let mut cursor = messages.get_cursor();
+            cursor.read(messages).next().map(|line| line.0.clone())
+        }
+
+        // Both fields empty, and blanks count as empty (the value is trimmed).
+        let (mut app, connect) = app_with_form("", "   ");
+        app.world_mut().trigger(Activate { entity: connect });
+        // The shipped row for a missing ID, verbatim (`textuisystem.txt:164`).
+        assert_eq!(first_line(&app).as_deref(), Some("Invalid ID"));
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_none(),
+            "a refused click must not grey the button it refused"
+        );
+        assert!(
+            app.world().get_resource::<super::PendingLogin>().is_none(),
+            "nothing was sent, so nothing is being waited for"
+        );
+
+        // Only the password missing: the other row, and still no lock.
+        let (mut app, connect) = app_with_form("player", "");
+        app.world_mut().trigger(Activate { entity: connect });
+        assert_eq!(first_line(&app).as_deref(), Some("Invalid ID or password."));
+        assert!(app.world().get::<InteractionDisabled>(connect).is_none());
+
+        // Negative control: a filled form passes this gate and reaches the
+        // gateway lookup, whose line is the *connection* one.
+        let (mut app, connect) = app_with_form("player", "secret");
+        app.world_mut().trigger(Activate { entity: connect });
+        let line = first_line(&app).expect("the filled form must not be refused here");
+        assert!(
+            line.to_lowercase().contains("reconnecting"),
+            "expected the gateway line, got {line:?}"
+        );
+    }
+
+    /// The locked screen itself, reproduced: Connect and Exit greyed, the
+    /// progress line standing, and no answer ever arriving. Before
+    /// `time_out_pending_login` that state was terminal — the only way out was
+    /// killing the client.
+    #[test]
+    fn a_login_nobody_answers_gives_the_screen_back() {
+        use std::time::Duration;
+
+        use bevy::ui::{InteractionDisabled, Pressed};
+
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, ExitButton};
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>()
+            .init_resource::<Time>()
+            .init_resource::<super::PendingLogin>()
+            .add_systems(Update, super::time_out_pending_login);
+
+        let connect = app
+            .world_mut()
+            .spawn((ConnectButton, InteractionDisabled, Pressed))
+            .id();
+        let exit = app
+            .world_mut()
+            .spawn((ExitButton, InteractionDisabled, Pressed))
+            .id();
+
+        // Half the budget: the screen is still waiting, because a gateway that
+        // is merely slow must not be declared dead.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(
+                super::LOGIN_ANSWER_BUDGET_SECS / 2.0,
+            ));
+        app.update();
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_some(),
+            "the wait ended too early"
+        );
+
+        // Past the budget: both buttons back, the shipped sentence on the line,
+        // and nothing left waiting.
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(super::LOGIN_ANSWER_BUDGET_SECS));
+        app.update();
+        for (entity, what) in [(connect, "Connect"), (exit, "Exit")] {
+            assert!(
+                app.world().get::<InteractionDisabled>(entity).is_none(),
+                "{what} is still disabled after a login nobody answered"
+            );
+            assert!(
+                app.world().get::<Pressed>(entity).is_none(),
+                "{what} still carries the pressed art"
+            );
+        }
+        let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+        let mut cursor = messages.get_cursor();
+        let line = cursor
+            .read(messages)
+            .next()
+            .expect("the timeout must put a line on the status bar")
+            .0
+            .clone();
+        assert_eq!(line, "Failed to connect to server.");
+        assert!(app.world().get_resource::<super::PendingLogin>().is_none());
+    }
+
+    /// The captcha half of the same budget: while the image-code window is up
+    /// the request *was* answered and the user is the one being waited for, so
+    /// the budget must not run out behind the modal.
+    #[test]
+    fn the_captcha_modal_holds_the_wait_open() {
+        use std::time::Duration;
+
+        use bevy::ui::InteractionDisabled;
+
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::captcha::CaptchaModal;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::ConnectButton;
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>()
+            .init_resource::<Time>()
+            .init_resource::<super::PendingLogin>()
+            .add_systems(Update, super::time_out_pending_login);
+
+        let connect = app
+            .world_mut()
+            .spawn((ConnectButton, InteractionDisabled))
+            .id();
+        app.world_mut().spawn(CaptchaModal);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(
+                super::LOGIN_ANSWER_BUDGET_SECS * 3.0,
+            ));
+        app.update();
+
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_some(),
+            "the modal's greyed Connect is what the original shows"
+        );
+        assert!(
+            app.world().get_resource::<super::PendingLogin>().is_some(),
+            "the wait belongs to the user now, it is not over"
         );
     }
 
