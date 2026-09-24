@@ -1,6 +1,6 @@
 //! Exchange (player trade) window layout + the confirm/approve interaction.
 //!
-//! Idea: transcribed 1:1 from the user's `resinfo/ifexchange.txt` and
+//! Idea: transcribed 1:1 from the shipped `resinfo/ifexchange.txt` and
 //! `ginterface.txt:514` (`GDR_EXCHANGE`, `mframe_wnd_`, `UIIT_STT_EXCHANGE`),
 //! under the branch that is actually compiled — `APPLY_EXCHANGE_UPDATE_1TH`
 //! and `UI_UPDATE_2009_FIRST` are both listed in `config/define.txt:17,18`, so
@@ -15,9 +15,9 @@
 //! `com_lattice_` grid of 32x32 slots on a 36px pitch over a gold row, and one
 //! button pair sits at the bottom. The side split is taken from the element
 //! symbols themselves (`..._OTHER_SLOT_1xx`, `ifexchange.txt:341` /
-//! `..._MY_SLOT_2xx`, `:89`). `docs/re/ui/exchange-window.md:37` used to have
-//! the two ranges swapped — following it would have rendered our own goods in
-//! the partner's pane — but that doc agrees with this code since 2281556.
+//! `..._MY_SLOT_2xx`, `:89`). Swapping the two ranges would render our own
+//! goods in the partner's pane, so the id ranges decide the side, nothing
+//! else.
 //!
 //! Rects are consumed in **window** space and hung off the shell root rather
 //! than the chrome's content container, so the outer window measures the
@@ -28,7 +28,8 @@
 //! - the 11 anti-scam overlay elements at `x=9999` (portrait panes, the
 //!   `ch_red.ddj` 9-frame warning flipbook, the floating message box). 9999 is
 //!   a "positioned by code" sentinel — several are also wider than the window
-//!   itself — so the original's placement is not in the data we hold. [U]
+//!   itself — so the original's placement is not in the data, and stays
+//!   unknown.
 //! - `GDR_EXCHANGE_USER_NAME` (`:68`), the only guarded element with a real
 //!   rect: it is the fictitious-name warning overlay
 //!   (`UIIT_MSG_EXCHANGE_NAME_WARNING`) and there is no server signal wired to
@@ -36,22 +37,30 @@
 //! - the top and bottom spans of the two `com_lattice_outline_` frames: that
 //!   directory ships only six pieces (four corners + two sides, all 4x4 and
 //!   all distinct art), with no `mid_up`/`mid_down`, so which piece the
-//!   original stretches across those spans is [U]. The six that do exist are
+//!   original stretches across those spans is unknown. The six that do exist are
 //!   drawn where the data places them unambiguously.
 
+use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle};
+use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::character_data::{InventoryItem, ItemTypeData};
 
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
-use crate::plugins::hud::exchange::model::{self, ExchangeSession, ExchangeState};
+use crate::plugins::hud::exchange::model::{
+    self, ExchangeCarry, ExchangeCarryData, ExchangeSession, ExchangeState,
+};
 use crate::plugins::hud::game_window::{self, abs_node};
-use crate::plugins::hud::inventory::ui::format_thousands;
+use crate::plugins::hud::inventory::model::InventoryState;
+use crate::plugins::hud::inventory::ui::{drag_ghost_bundle, format_thousands, DragGhost};
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::net::agent::AgentConnection;
+use crate::plugins::net::inventory::Inventory;
+use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -196,10 +205,39 @@ impl ExchangeSide {
 
 #[derive(Component)]
 pub struct ExchangeSlotCell {
-    #[allow(dead_code)]
     pub side: ExchangeSide,
-    #[allow(dead_code)]
     pub index: usize,
+}
+
+/// Invisible drop catcher over our own pane, so a bag item dropped in the gaps
+/// between the 32px icons on the 36px pitch still stages instead of silently
+/// doing nothing. Sits under the slot cells (spawned first), which block it.
+#[derive(Component)]
+pub struct ExchangeOwnPaneCatch;
+
+/// The gold-staging popup behind our own money button (the storage window's
+/// deposit/withdraw popup is the precedent; `ifexchange.txt` has no rect for
+/// it — the original opens `IF_MSGBOX_MONEY_INPUT` by code, so its geometry is
+/// unknown and this reuses the shape we already ship).
+#[derive(Resource, Default)]
+pub struct ExchangeGoldModal {
+    pub open: bool,
+}
+
+/// The typed amount, parsed from the input every frame (empty = 0).
+#[derive(Resource, Default)]
+pub struct ExchangeGoldAmount(pub u64);
+
+#[derive(Component)]
+pub struct ExchangeGoldModalRoot;
+
+#[derive(Component)]
+pub struct ExchangeGoldAmountInput;
+
+#[derive(Component, Clone, Copy)]
+enum ExchangeGoldButton {
+    Set,
+    Cancel,
 }
 
 /// The single action button — confirm while our offer is open, approve once
@@ -264,8 +302,11 @@ pub fn sync_exchange_window(
         s,
     );
     commands
+        // Hovered so the staging/withdraw drop polls can ask "is the pointer
+        // over the trade window", exactly as the storage window does for its
+        // deposit drops.
         .entity(window.root)
-        .insert((ExchangeWindowRoot, GlobalZIndex(59)));
+        .insert((ExchangeWindowRoot, GlobalZIndex(59), Hovered::default()));
     // The X is a protocol act, not a hide: it sends 0x7084 like Cancel does.
     commands
         .entity(window.expect_close_button())
@@ -458,6 +499,18 @@ fn spawn_pane(
     spawn_lattice(body, asset_server, lattice, s);
     spawn_lattice_outline(body, asset_server, outline, s);
 
+    // Our own pane catches a dropped bag item anywhere inside it; the
+    // partner's does not exist as a drop target at all — you can never put
+    // something into the other side's pane.
+    if !partner {
+        body.spawn((
+            ExchangeOwnPaneCatch,
+            Hovered::default(),
+            abs_node(subframe, s),
+            Name::from("Exchange Own Pane Drop"),
+        ));
+    }
+
     // slots at their exact vanilla rects, over the lattice chrome
     for index in 0..(SLOT_COLS * SLOT_ROWS) {
         let mut cell = body.spawn((
@@ -468,6 +521,11 @@ fn spawn_pane(
             // an entity inspector
             Name::from(format!("Exchange Slot {}", side.slot_id(index))),
         ));
+        if !partner {
+            // picking a staged item back up (the withdraw half of the drag);
+            // the drop itself is routed by `withdraw_drop_off_exchange`
+            cell.observe(on_own_slot_press);
+        }
         // The staged list is add-ordered, not slot-indexed: the partner's
         // 0x308C carries each record's *inventory* slot, which says nothing
         // about which exchange cell it occupies. So fill left to right.
@@ -559,11 +617,12 @@ fn spawn_pane(
         Pickable::IGNORE,
     ));
     // The partner's money control is a CIFStatic wearing the *disabled* art
-    // (`:612`), not a button — you can never edit the other side's gold.
-    // Ours is a real CIFButton (`:593`), but staging rides 0x7034 sub-op 13,
-    // which is not wired yet (#36), so it is drawn disabled until it is.
+    // (`:612`), not a button — you can never edit the other side's gold. Ours
+    // is a real CIFButton (`:593`): it opens the amount popup, which sends
+    // 0x7034 sub-op 13, and it greys out once our offer is locked
+    // (`gold_editable`, `InfoManager.cs:1068-1080`).
     let own_editable = !partner && session.gold_editable();
-    body.spawn((
+    let mut money = body.spawn((
         abs_node(money_btn, s),
         ImageNode {
             image: asset_server.load(if own_editable {
@@ -574,8 +633,13 @@ fn spawn_pane(
             image_mode: NodeImageMode::Stretch,
             ..default()
         },
-        Pickable::IGNORE,
     ));
+    if own_editable {
+        money.insert((Button, Hovered::default()));
+        money.observe(on_money_button);
+    } else {
+        money.insert(Pickable::IGNORE);
+    }
     body.spawn((
         abs_node((money_box.0, money_box.1, EXC_BOX_W, EXC_BOX_H), s),
         ImageNode {
@@ -722,7 +786,7 @@ fn spawn_lattice(
 /// `com_lattice_outline_`: four 4x4 corners plus the two vertically stretched
 /// sides. The directory ships no `mid_up`/`mid_down`, and the six pieces are
 /// all distinct art, so nothing here can stand in for the missing top/bottom
-/// spans — they stay undrawn rather than guessed. [U]
+/// spans — they stay undrawn rather than guessed.
 fn spawn_lattice_outline(
     parent: &mut ChildSpawnerCommands,
     asset_server: &AssetServer,
@@ -755,16 +819,22 @@ fn spawn_lattice_outline(
 /// both sides are locked — the two-stage lock, from one control.
 fn on_action_button(
     _: On<Activate>,
-    state: Res<ExchangeState>,
+    mut state: ResMut<ExchangeState>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    let Some(session) = state.session.as_ref() else {
+    let Some(session) = state.session.as_mut() else {
         return;
     };
+    // One press = one packet: the ack is ~50 ms away and a *second* 0x7082
+    // makes the server terminate the trade (`0xB082 02 1f18` + `0x3088 1f18`,
+    // see `hud::exchange::model` header note 3), so the flag is set here
+    // rather than waiting for the ack to flip `own_confirmed`.
     if session.can_confirm() {
         model::send_confirm(&conn);
+        session.request_in_flight = true;
     } else if session.can_approve() {
         model::send_approve(&conn);
+        session.request_in_flight = true;
     }
 }
 
@@ -773,6 +843,416 @@ fn on_action_button(
 /// showing no window for a trade the server still has open.
 fn on_exit_button(_: On<Activate>, conn: Query<&SilkroadConnection, With<AgentConnection>>) {
     model::send_exit(&conn);
+}
+
+// --- staging interaction: the last mile of the trade ------------------------
+//
+// Idea: there is exactly ONE carry mechanism in this HUD — the inventory's
+// (`InventoryState.drag` plus the shared `DragGhost`) — and this window
+// borrows it rather than growing a second one, exactly as the storage window
+// borrows it for deposits. Two polls route the two directions of the gesture,
+// because bevy_picking's DragDrop never reaches the press target (see the
+// header of `hud::inventory::ui`):
+//   * bag → pane: an inventory carry released or clicked over our pane sends
+//     sub-op 4 and the carry is consumed HERE, so no plain 0x7034 op-0 move
+//     goes out for that same drop (the storage-deposit precedent).
+//   * pane → bag: a press on a staged slot lifts it onto the cursor
+//     ([`ExchangeCarry`]), and letting go anywhere outside the trade window
+//     sends sub-op 5. That op has no target byte at all — the item never left
+//     the bag and the server picks where it lands — so "outside the window" is
+//     the entire information the gesture can carry.
+// Both refuse to send while no trade is open: that same drag then belongs to
+// the inventory alone.
+
+/// Press on one of OUR pane slots: lift the staged item onto the cursor. Backs
+/// off while an inventory carry is live — that drop is a staging drop and
+/// [`stage_drop_on_exchange`] owns it.
+#[allow(clippy::too_many_arguments)]
+fn on_own_slot_press(
+    press: On<Pointer<Press>>,
+    cells: Query<&ExchangeSlotCell>,
+    state: Res<ExchangeState>,
+    inv_state: Res<InventoryState>,
+    item_data: Res<ClientItemData>,
+    asset_server: Res<AssetServer>,
+    cam_query: Query<Entity, With<Camera2d>>,
+    mut carry: ResMut<ExchangeCarry>,
+    mut commands: Commands,
+) {
+    if press.event.button != PointerButton::Primary {
+        return;
+    }
+    if carry.0.is_some() || inv_state.drag.is_some() {
+        return;
+    }
+    let Ok(cell) = cells.get(press.entity) else {
+        return;
+    };
+    let Some(session) = state.session.as_ref() else {
+        return;
+    };
+    // the pane renders add-ordered, but the wire slot is the one the server
+    // assigned (`ExchangeSession::own_slots`)
+    let (Some(item), Some(&wire_slot)) = (
+        session.own_items.get(cell.index),
+        session.own_slots.get(cell.index),
+    ) else {
+        return;
+    };
+    let Some(icon) = item_data
+        .get(&(item.ref_id as i32))
+        .and_then(|row| row.icon_path())
+    else {
+        return;
+    };
+    let Ok(camera) = cam_query.single() else {
+        return;
+    };
+    let s = hud_scale();
+    let ghost = commands
+        .spawn(drag_ghost_bundle(
+            "Exchange Drag Ghost",
+            asset_server.load(icon),
+            press.pointer_location.position,
+            SLOT_SIZE * s,
+            camera,
+        ))
+        .id();
+    carry.0 = Some(ExchangeCarryData {
+        slot: wire_slot,
+        ghost,
+    });
+}
+
+/// Dropping a carried bag item on our pane stages it: sub-op 4, `source` the
+/// bag slot, `target` the first free pane slot. The pane slot is the client's
+/// choice (bag 0x29 goes into pane 0 as `042900`), and it is the
+/// first *free* one because a withdraw can leave a gap in the middle.
+#[allow(clippy::too_many_arguments)]
+pub fn stage_drop_on_exchange(
+    buttons: Res<ButtonInput<MouseButton>>,
+    state: Res<ExchangeState>,
+    catchers: Query<&Hovered, With<ExchangeOwnPaneCatch>>,
+    cells: Query<(&ExchangeSlotCell, &Hovered)>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    ghosts: Query<Entity, With<DragGhost>>,
+    mut inv_state: ResMut<InventoryState>,
+    mut commands: Commands,
+) {
+    if !buttons.just_released(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(source) = inv_state.drag else {
+        return;
+    };
+    let over_own_pane = catchers.iter().any(|hovered| hovered.get())
+        || cells
+            .iter()
+            .any(|(cell, hovered)| cell.side == ExchangeSide::Own && hovered.get());
+    if !over_own_pane {
+        return;
+    }
+    // Gate BEFORE consuming the carry: with no session (or a locked offer)
+    // this drag is not ours, and swallowing it would make the item vanish off
+    // the cursor without any packet at all.
+    let Some(request) = model::stage_item_request(&state, source) else {
+        return;
+    };
+    inv_state.drag = None;
+    for ghost in ghosts.iter() {
+        commands.entity(ghost).despawn();
+    }
+    model::send_staging(&conn, request);
+}
+
+/// Letting the carried pane item go outside the trade window withdraws it:
+/// sub-op 5 with the pane slot. Inside the window the carry survives, which is
+/// the vanilla click-carry (press to lift, click the destination). The gold
+/// popup counts as "inside": its scrim covers the window, so a click on OK
+/// would otherwise read as a click outside and put an unasked-for sub-op 5 on
+/// the wire alongside the sub-op 13.
+#[allow(clippy::too_many_arguments)]
+pub fn withdraw_drop_off_exchange(
+    buttons: Res<ButtonInput<MouseButton>>,
+    state: Res<ExchangeState>,
+    modal: Res<ExchangeGoldModal>,
+    roots: Query<&Hovered, With<ExchangeWindowRoot>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut carry: ResMut<ExchangeCarry>,
+    mut commands: Commands,
+) {
+    if !buttons.just_released(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(data) = &carry.0 else {
+        return;
+    };
+    if modal.open || roots.iter().any(|hovered| hovered.get()) {
+        return;
+    }
+    let request = model::unstage_item_request(&state, data.slot);
+    let data = carry.0.take().expect("checked above");
+    commands.entity(data.ghost).despawn();
+    if let Some(request) = request {
+        model::send_staging(&conn, request);
+    }
+}
+
+/// Our own money button opens the amount popup.
+fn on_money_button(_: On<Activate>, mut modal: ResMut<ExchangeGoldModal>) {
+    modal.open = true;
+}
+
+/// Rebuild the gold popup when it opens/closes — the storage window's popup,
+/// with one send button instead of two, because sub-op 13 is an absolute set:
+/// there is no "withdraw", only a smaller number.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_exchange_gold_modal(
+    modal: Res<ExchangeGoldModal>,
+    state: Res<ExchangeState>,
+    existing: Query<Entity, With<ExchangeGoldModalRoot>>,
+    inventories: Query<&Inventory, With<Player>>,
+    ui_strings: Res<ClientUiStrings>,
+    fonts: Res<FontAssets>,
+    asset_server: Res<AssetServer>,
+    cam_query: Query<Entity, With<Camera2d>>,
+    mut focus: ResMut<InputFocus>,
+    mut amount: ResMut<ExchangeGoldAmount>,
+    mut commands: Commands,
+) {
+    if !modal.is_changed() {
+        return;
+    }
+    for entity in existing.iter() {
+        commands.entity(entity).insert(ExchangeClosing);
+    }
+    if !modal.open {
+        if !existing.is_empty() {
+            focus.clear();
+        }
+        return;
+    }
+    let Ok(camera) = cam_query.single() else {
+        return;
+    };
+    amount.0 = 0;
+    let purse = inventories.single().map(|inv| inv.gold).unwrap_or(0);
+    let staged = state
+        .session
+        .as_ref()
+        .map(|session| session.own_gold)
+        .unwrap_or(0);
+    let s = hud_scale();
+    let text_font = |size: f32| TextFont {
+        font: fonts.two.clone().into(),
+        font_size: FontSize::Px(size * s),
+        ..default()
+    };
+    let button_style = ImageButtonStyle {
+        normal: asset_server.load("media://interface/ifcommon/com_button.ddj"),
+        hover: asset_server.load("media://interface/ifcommon/com_button_focus.ddj"),
+        press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
+        ..Default::default()
+    };
+
+    let mut input_entity = None;
+    commands
+        .spawn((
+            ExchangeGoldModalRoot,
+            Name::from("Exchange Gold Modal"),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            GlobalZIndex(66),
+            UiTargetCamera(camera),
+        ))
+        .with_children(|scrim| {
+            scrim
+                .spawn((
+                    Node {
+                        width: Val::Px(240.0 * s),
+                        height: Val::Px(120.0 * s),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.09, 0.08, 0.06)),
+                    Outline {
+                        width: Val::Px(1.0),
+                        color: Color::srgb(0.55, 0.45, 0.25),
+                        ..default()
+                    },
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new(
+                            ui_strings
+                                .get_or("UIIT_STT_EXCHANGE", "Exchange")
+                                .to_string(),
+                        ),
+                        text_font(8.5),
+                        TextColor(GOLD_TEXT),
+                        TextLayout::justify(Justify::Center),
+                        abs_node((0.0, 10.0, 240.0, 14.0), s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(format!(
+                            "{}: {}   {}: {}",
+                            ui_strings.get_or("UIIT_STT_INVENTORY", "Inventory"),
+                            format_thousands(purse),
+                            ui_strings.get_or("UIIT_STT_EXCHANGE", "Exchange"),
+                            format_thousands(staged),
+                        )),
+                        text_font(7.5),
+                        TextColor(BUTTON_TEXT),
+                        TextLayout::justify(Justify::Center),
+                        abs_node((0.0, 28.0, 240.0, 12.0), s),
+                        Pickable::IGNORE,
+                    ));
+                    let mut input_box = abs_node((60.0, 44.0, 120.0, 18.0), s);
+                    input_box.padding = UiRect::top(Val::Px(2.0 * s));
+                    input_entity = Some(
+                        panel
+                            .spawn((
+                                ExchangeGoldAmountInput,
+                                EditableText {
+                                    visible_lines: Some(1.0),
+                                    allow_newlines: false,
+                                    max_characters: Some(12),
+                                    ..default()
+                                },
+                                EditableTextFilter::new(|c: char| c.is_ascii_digit()),
+                                input_box,
+                                text_font(9.0),
+                                TextColor(Color::WHITE),
+                                TextLayout::justify(Justify::Center),
+                                TextCursorStyle {
+                                    color: Color::WHITE,
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.16, 0.14, 0.1)),
+                            ))
+                            .id(),
+                    );
+                    for (button, key, fallback, x) in [
+                        (ExchangeGoldButton::Set, "UIIT_CTL_OK", "OK", 40.0),
+                        (
+                            ExchangeGoldButton::Cancel,
+                            "UIIT_CTL_CANCEL",
+                            "Cancel",
+                            130.0,
+                        ),
+                    ] {
+                        panel
+                            .spawn((
+                                button,
+                                Button,
+                                Hovered::default(),
+                                abs_node((x, 76.0, 70.0, 24.0), s),
+                                ImageNode {
+                                    image: button_style.normal.clone(),
+                                    image_mode: NodeImageMode::Stretch,
+                                    ..default()
+                                },
+                                button_style.clone(),
+                            ))
+                            .observe(on_gold_modal_button)
+                            .with_children(|b| {
+                                b.spawn((
+                                    Text::new(ui_strings.get_or(key, fallback).to_string()),
+                                    text_font(8.0),
+                                    TextColor(BUTTON_TEXT),
+                                    TextLayout::justify(Justify::Center),
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        top: Val::Px(6.0 * s),
+                                        width: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    Pickable::IGNORE,
+                                ));
+                            });
+                    }
+                });
+        });
+    if let Some(input) = input_entity {
+        focus.set(input, FocusCause::Navigated);
+    }
+}
+
+/// Parse the typed amount (empty = 0).
+pub fn sync_exchange_gold_amount(
+    modal: Res<ExchangeGoldModal>,
+    inputs: Query<&EditableText, With<ExchangeGoldAmountInput>>,
+    mut amount: ResMut<ExchangeGoldAmount>,
+) {
+    if !modal.open {
+        return;
+    }
+    let Ok(editable) = inputs.single() else {
+        return;
+    };
+    let parsed = editable
+        .value()
+        .to_string()
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    if amount.0 != parsed {
+        amount.0 = parsed;
+    }
+}
+
+/// OK sends sub-op 13 with the typed amount, clamped to the purse. The pane
+/// keeps showing the OLD number until the 0xB034 ack arrives — the server has
+/// the last word on what we are offering, and a field that shows the typed
+/// value would lie for as long as the ack takes (~60 ms) or forever if the op
+/// is refused.
+fn on_gold_modal_button(
+    activate: On<Activate>,
+    buttons: Query<&ExchangeGoldButton>,
+    state: Res<ExchangeState>,
+    inventories: Query<&Inventory, With<Player>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    amount: Res<ExchangeGoldAmount>,
+    mut modal: ResMut<ExchangeGoldModal>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    modal.open = false;
+    if matches!(button, ExchangeGoldButton::Cancel) {
+        return;
+    }
+    let purse = inventories.single().map(|inv| inv.gold).unwrap_or(0);
+    let Some(request) = model::stage_gold_request(&state, amount.0, purse) else {
+        info!("exchange: gold not staged — no open, editable trade");
+        return;
+    };
+    model::send_staging(&conn, request);
+}
+
+/// The popup and the pane carry live and die with the trade.
+pub fn clear_exchange_extras(
+    state: Res<ExchangeState>,
+    mut modal: ResMut<ExchangeGoldModal>,
+    mut carry: ResMut<ExchangeCarry>,
+    mut commands: Commands,
+) {
+    if state.session.is_some() {
+        return;
+    }
+    if modal.open {
+        modal.open = false;
+    }
+    if let Some(data) = carry.0.take() {
+        commands.entity(data.ghost).despawn();
+    }
 }
 
 /// Despawn the previous window one frame after the rebuild.
@@ -786,14 +1266,25 @@ pub fn despawn_closing_exchange(
 }
 
 /// Drop the window and the trade when the world scene is left.
+#[allow(clippy::type_complexity)]
 pub fn cleanup_exchange(
-    roots: Query<Entity, With<ExchangeWindowRoot>>,
+    roots: Query<Entity, Or<(With<ExchangeWindowRoot>, With<ExchangeGoldModalRoot>)>>,
     mut state: ResMut<ExchangeState>,
+    mut modal: ResMut<ExchangeGoldModal>,
+    mut carry: ResMut<ExchangeCarry>,
     mut commands: Commands,
 ) {
     for entity in roots.iter() {
         commands.entity(entity).despawn();
     }
+    // The gold popup is a second root with its own full-screen scrim, so
+    // leaving the world without it would carry a click-eating overlay into the
+    // next scene; the carry's ghost is despawned with it (the storage
+    // `cleanup_storage` precedent).
+    if let Some(data) = carry.0.take() {
+        commands.entity(data.ghost).despawn();
+    }
+    modal.open = false;
     state.session = None;
 }
 
@@ -817,9 +1308,7 @@ mod test {
     /// Slot geometry is the load-bearing part of this window: the partner's
     /// twelve slots must land on ids 100-111 in the TOP pane and ours on
     /// 200-211 BELOW — getting it backwards would show our own goods as the
-    /// partner's offer. `docs/re/ui/exchange-window.md:37` stated the opposite
-    /// until 2281556; it agrees with this test now, so this is a regression
-    /// guard, no longer a documented disagreement.
+    /// partner's offer. This is the regression guard for that.
     #[test]
     fn the_partner_pane_is_the_hundreds_range_and_sits_above_ours() {
         assert_eq!(ExchangeSide::Partner.slot_id(0), 100);
