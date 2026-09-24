@@ -25,9 +25,9 @@
 //! modal and only its Confirm reaches the wire.
 //!
 //! ⚠️ **The opcode is unverified.** See [`InventoryOperationRequest::Drop`]:
-//! op 7 is named by exactly one secondary source and appears in none of our
-//! 191 captured 0x7034 bodies. The send is logged at `info!` on purpose, so the
-//! first live drop doubles as the capture that settles it.
+//! op 7 is named by exactly one secondary source and has never been seen on
+//! the wire. The send is logged at `info!` on purpose, so the first live drop
+//! shows whether it is right.
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -75,11 +75,13 @@ type DropTargetRoots = Or<(
     With<crate::plugins::hud::alchemy::ui::AlchemyWindowRoot>,
     With<crate::plugins::hud::alchemy::grant::GrantWindowRoot>,
     With<crate::plugins::hud::underbar::ui::UnderbarRoot>,
+    With<crate::plugins::hud::exchange::ui::ExchangeWindowRoot>,
+    With<crate::plugins::hud::stall::ui::StallWindowRoot>,
 )>;
 
 /// Raise a drop when a carried item is released on nothing.
 ///
-/// Idea: the six windows above each take a carried item by polling the same
+/// Idea: the windows above each take a carried item by polling the same
 /// mouse edge and clearing `InventoryState.drag` themselves. So "nobody took
 /// it" is simply: the edge happened, a carry is still live, and the pointer is
 /// not inside any of them.
@@ -146,7 +148,7 @@ enum DropConfirmButton {
 /// top and 16 at the bottom, so a 300x150 plate leaves a 268x94 interior — room
 /// for the warning line, the item name and a button row.
 const PLATE: (f32, f32) = (300.0, 150.0);
-/// `com_button.ddj` measures 76x24 (`options-screen.md`).
+/// `com_button.ddj` measures 76x24.
 const BUTTON: (f32, f32) = (76.0, 24.0);
 
 /// Raise the confirmation when a carried item is released on nothing.
@@ -246,7 +248,7 @@ pub fn sync_drop_confirm(
         )
         .to_string();
 
-    // Captured out of the button loop so the root can point Enter at Confirm
+    // Lifted out of the button loop so the root can point Enter at Confirm
     // (`hud::focus::HudDialog`).
     let mut confirm_button = None;
     let root = commands
@@ -269,9 +271,9 @@ pub fn sync_drop_confirm(
                     // `msgbox2_window_` *ring* and nothing else — the family has
                     // no centre piece, and its doc says it "leaves the interior
                     // to the caller". Without this the middle of the dialog is
-                    // the scrim showing through. `com_bg_tile_b.ddj` is what
-                    // `docs/re/ui/message-box.md` records for this family
-                    // (`GDR_MSGBOX_BG:CIFNormalTile`), and both sibling callers
+                    // the scrim showing through. `com_bg_tile_b.ddj` is this
+                    // family's interior art (`GDR_MSGBOX_BG:CIFNormalTile`),
+                    // and both sibling callers
                     // — `party::mode_modal` and `party_matching::dialogs` —
                     // spawn it here too.
                     plate.spawn((
@@ -384,8 +386,7 @@ fn on_drop_confirm_button(
 /// Put the drop on the wire, loudly.
 ///
 /// `info!` rather than `debug!` because this is the only unverified opcode the
-/// client sends by default: the line, plus `packet_dump/c2s/0x7034.log`, is the
-/// evidence that settles whether op 7 is right (see
+/// client sends by default, so the line says exactly what went out (see
 /// [`InventoryOperationRequest::Drop`]).
 fn send_drop(conn: &Query<&SilkroadConnection, With<AgentConnection>>, slot: u8, name: &str) {
     let Ok(connection) = conn.single() else {
@@ -558,6 +559,74 @@ mod test {
                 .map(|p| p.slot),
             first
         );
+    }
+
+    /// The trade window takes drops (staging), so a release over it — over
+    /// either pane — is never "on nothing". It was missing from the catcher
+    /// list, and a drop on the partner's pane asked to destroy the item.
+    #[test]
+    fn a_release_over_the_exchange_window_asks_nothing() {
+        let mut app = App::new();
+        app.add_message::<DroppedOnNothing>()
+            .init_resource::<DropConfirm>()
+            .insert_resource(InventoryState {
+                open: true,
+                drag: Some(13),
+                ..default()
+            })
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, detect_drop_on_nothing);
+        app.world_mut().spawn((
+            crate::plugins::hud::exchange::ui::ExchangeWindowRoot,
+            Hovered(true),
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+
+        let raised = app
+            .world()
+            .resource::<Messages<DroppedOnNothing>>()
+            .iter_current_update_messages()
+            .count();
+        assert_eq!(
+            raised, 0,
+            "a drop over the trade window is not a ground drop"
+        );
+    }
+
+    /// The own stall takes drops too (`stall::stock::stock_drop_on_stall`
+    /// opens the price box), so a release over its window is never "on
+    /// nothing". Missing from the catcher list, one drop raised BOTH the price
+    /// box and the "destroy item?" prompt.
+    #[test]
+    fn a_release_over_the_stall_window_asks_nothing() {
+        let mut app = App::new();
+        app.add_message::<DroppedOnNothing>()
+            .init_resource::<DropConfirm>()
+            .insert_resource(InventoryState {
+                open: true,
+                drag: Some(13),
+                ..default()
+            })
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, detect_drop_on_nothing);
+        app.world_mut().spawn((
+            crate::plugins::hud::stall::ui::StallWindowRoot,
+            Hovered(true),
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+
+        let raised = app
+            .world()
+            .resource::<Messages<DroppedOnNothing>>()
+            .iter_current_update_messages()
+            .count();
+        assert_eq!(raised, 0, "a drop over our own stall is not a ground drop");
     }
 
     /// The interior fill is derived from the plate, never typed in.

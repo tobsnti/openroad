@@ -7,7 +7,7 @@
 //! item stat readout and the original's bubble carries no data at all
 //! (`HelpString` is empty on all 302 `CIFSlotWithHelp` declarations, so its
 //! content path is code-side and unrecoverable from the archive). Grade this
-//! file as our item-stat panel, not against `docs/re/ui/help-tooltip-widget.md`.
+//! file as our item-stat panel, not against the original's bubble.
 //!
 //! Idea: a single hidden panel (own root, above the window) is rebuilt when
 //! `InventoryState.hovered_slot` changes and follows the cursor clamped to
@@ -33,9 +33,8 @@ use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::{
     equip_criteria, local_equip_context, EquipCriteria, EquipSlotCell, InventoryGridCell,
 };
+use crate::plugins::hud::item_cell::HoveredItem;
 use crate::plugins::hud::scale::hud_scale;
-use crate::plugins::hud::storage::model::StorageHoveredItem;
-use crate::plugins::hud::store::model::StoreHoveredGood;
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::net::inventory::{Inventory, BAG_FIRST_SLOT, SLOTS_PER_PAGE};
 use crate::plugins::player::Player;
@@ -56,6 +55,16 @@ const DIM_COLOR: Color = Color::srgb(0.65, 0.65, 0.65);
 /// The blue of magic ("blue") options — also the name color of an item that
 /// carries any.
 const MAGIC_COLOR: Color = Color::srgb(0.5, 0.7, 1.0);
+/// The price line of a shop catalog entry. **openroad design, not an original
+/// value**: the original client has no data-driven colour for this — its shop
+/// renders the price into its own detail board (`store/ui.rs`), never into a
+/// hover bubble, and the archive carries no colour for a tooltip price
+/// (`HelpString` is empty on all 302 `CIFSlotWithHelp` declarations, see the
+/// module header). Chosen as a desaturated gold so a price reads as currency
+/// next to the white `TEXT_COLOR` stat lines without competing with the gold
+/// `NAME_COLOR` of a Seal-grade name.
+const PRICE_COLOR: Color = Color::srgb(0.9, 0.85, 0.55);
+
 /// The "Dead" line on a COS scroll's tooltip.
 ///
 /// Red, and deliberately **not** the same colour as the slot icon's wash
@@ -146,18 +155,16 @@ pub fn on_slot_out(
 /// Rebuild the tooltip lines when the hovered slot changes; hidden when
 /// nothing (or an empty slot) is hovered, or while dragging.
 ///
-/// Serves three windows: the inventory publishes its hovered slot in
-/// [`InventoryState`], the storage window publishes the hovered item itself in
-/// [`StorageHoveredItem`], and the NPC shop publishes the hovered good's ref id
-/// in [`StoreHoveredGood`] (neither of the latter two has Over/Out observers —
-/// both poll `Hovered`). The inventory wins when several are hovered, since it
-/// draws on top; the shop comes last because it is a catalog row rather than a
-/// real item and renders the reduced block (see [`catalog_tooltip_lines`]).
+/// Serves every item grid through ONE hover resource: the inventory publishes
+/// its hovered *slot* in [`InventoryState`], and storage, guild storage and the
+/// NPC shop publish the hovered *item* in [`HoveredItem`] (their cells have no
+/// Over/Out observers, they poll `Hovered`). The inventory
+/// wins when both are hovered, since it draws on top. A shop entry is not an
+/// owned item — it renders as name + price, without inventing instance data.
 #[allow(clippy::too_many_arguments)]
 pub fn refresh_tooltip(
     state: Res<InventoryState>,
-    hovered_storage: Res<StorageHoveredItem>,
-    hovered_good: Res<StoreHoveredGood>,
+    hovered: Res<HoveredItem>,
     inventories: Query<&Inventory, With<Player>>,
     changed: Query<(), (With<Player>, Changed<Inventory>)>,
     players: Query<&CharacterInfo, With<Player>>,
@@ -165,28 +172,41 @@ pub fn refresh_tooltip(
     cos_state: Res<CosState>,
     item_data: Res<ClientItemData>,
     names: Res<ClientTextNames>,
-    ui_strings: Res<ClientUiStrings>,
     magic_options: Res<ClientMagicOptions>,
+    ui_strings: Res<ClientUiStrings>,
     fonts: Res<FontAssets>,
     roots: Query<Entity, With<InventoryTooltipRoot>>,
     mut visibilities: Query<&mut Visibility, With<InventoryTooltipRoot>>,
     mut commands: Commands,
 ) {
-    if !state.is_changed()
-        && !hovered_storage.is_changed()
-        && !hovered_good.is_changed()
-        && changed.is_empty()
-    {
+    if !state.is_changed() && !hovered.is_changed() && changed.is_empty() {
         return;
     }
-    let Ok(root) = roots.single() else {
-        return;
+    let root = match roots.single() {
+        Ok(root) => root,
+        Err(err) => {
+            // Both failure modes kill the tooltip silently, and both are the
+            // standing suspicion behind #428 ("inventory tooltips" gone in
+            // live play while every static reading found the path intact):
+            // `NoEntities` means the panel was never spawned or was cleaned up
+            // while the window lived on, `MultipleEntities` means two roots
+            // exist (a second `spawn_inventory_window` without the matching
+            // `cleanup_inventory_window`) and `single()` then refuses to paint
+            // into either. Say which one it is instead of returning mute.
+            warn_once!(
+                "inventory tooltip: expected exactly one InventoryTooltipRoot, \
+                 got {err:?} (no root spawned, or two roots from a duplicate \
+                 spawn_inventory_window) — the tooltip stays blank until a \
+                 scene change respawns it; suspected cause of #428"
+            );
+            return;
+        }
     };
     let item = state
         .hovered_slot
         .filter(|_| state.open && state.drag.is_none())
         .and_then(|slot| inventories.single().ok().and_then(|inv| inv.get(slot)))
-        .or(hovered_storage.0.as_ref());
+        .or(hovered.owned());
     // The requirement lines are reddened for the criteria *this* character
     // fails, through the same evaluator the slot wash uses — see
     // `ui::equip_criteria`.
@@ -197,49 +217,55 @@ pub fn refresh_tooltip(
         row.map(|row| equip_criteria(row, player_level, player_gender, &item_data, inventory))
             .unwrap_or(EquipCriteria::MET)
     };
-    let lines = match (item, hovered_good.0) {
-        (Some(item), _) => {
-            let row = item_data.get(&(item.ref_id as i32));
-            // Rarity probe. Seal grade is derived purely from the code-name
-            // suffix — there is no rarity column and no wire field — so when a
-            // Seal item does not glow in the bag, the only question is what its
-            // itemdata row actually says. One hover at `RUST_LOG=client=debug`
-            // answers it without a capture.
-            if let Some(row) = row {
-                debug!(
-                    "item probe: ref {} code {:?} rare {} seal {:?} icon {:?}",
-                    item.ref_id,
-                    row.code_name(),
-                    row.is_rare(),
-                    row.seal_tier(),
-                    row.icon_path(),
-                );
-            }
-            tooltip_lines(
-                item,
-                row,
-                &names,
-                &ui_strings,
-                &magic_options,
-                criteria(row),
-                PetContext {
-                    cos: &cos_state,
-                    char_data: &char_data,
-                },
-            )
-        }
-        (None, Some(ref_id)) => {
-            let row = item_data.get(&(ref_id as i32));
-            catalog_tooltip_lines(ref_id, row, &names, criteria(row))
-        }
-        (None, None) => {
+    // A catalog entry (shop stock) has no instance to describe: name, price and
+    // the itemdata-only lines are everything the data carries, so that is
+    // everything it shows (see `catalog_lines`).
+    let catalog = hovered.catalog().map(|(ref_id, price)| {
+        let row = item_data.get(&ref_id);
+        catalog_lines(ref_id, price, &item_data, &names, criteria(row))
+    });
+    let Some(item) = item else {
+        if let Some(lines) = catalog {
+            render_tooltip(root, lines, &fonts, &mut commands);
             for mut visibility in visibilities.iter_mut() {
-                *visibility = Visibility::Hidden;
+                *visibility = Visibility::Inherited;
             }
             return;
         }
+        for mut visibility in visibilities.iter_mut() {
+            *visibility = Visibility::Hidden;
+        }
+        return;
     };
 
+    let row = item_data.get(&(item.ref_id as i32));
+    let lines = tooltip_lines(
+        item,
+        row,
+        &item_data,
+        &names,
+        &magic_options,
+        &ui_strings,
+        criteria(row),
+        PetContext {
+            cos: &cos_state,
+            char_data: &char_data,
+        },
+    );
+    render_tooltip(root, lines, &fonts, &mut commands);
+    for mut visibility in visibilities.iter_mut() {
+        *visibility = Visibility::Inherited;
+    }
+}
+
+/// Paint the tooltip panel's lines. Shared by the owned-item and the shop
+/// (catalog) case so both look like the same tooltip.
+fn render_tooltip(
+    root: Entity,
+    lines: Vec<(String, Color)>,
+    fonts: &FontAssets,
+    commands: &mut Commands,
+) {
     let s = hud_scale();
     let mut root_commands = commands.entity(root);
     root_commands.despawn_related::<Children>();
@@ -271,9 +297,6 @@ pub fn refresh_tooltip(
             ));
         }
     });
-    for mut visibility in visibilities.iter_mut() {
-        *visibility = Visibility::Inherited;
-    }
 }
 
 /// Follow the cursor while visible, clamped into the window.
@@ -455,12 +478,14 @@ impl PetContext<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tooltip_lines(
     item: &InventoryItem,
     row: Option<&ItemDataRow>,
+    item_data: &ClientItemData,
     names: &ClientTextNames,
-    ui_strings: &ClientUiStrings,
     magic_options: &ClientMagicOptions,
+    ui_strings: &ClientUiStrings,
     criteria: EquipCriteria,
     pets: PetContext<'_>,
 ) -> Vec<(String, Color)> {
@@ -493,21 +518,19 @@ fn tooltip_lines(
         return lines;
     };
 
-    if let Some(sort) = sort_of_item(row) {
-        lines.push((format!("Sort of item: {sort}"), TEXT_COLOR));
-    }
-    if let Some(sex) = row.gender() {
-        lines.push((format!("Sex: {sex}"), criteria_color(criteria.sex_ok)));
-    }
-    if let Some(degree) = row.degree() {
-        if row.type_ids().is_some_and(|(_, tid2, _, _)| tid2 == 1) {
-            lines.push((format!("Degree: {degree} degrees"), TEXT_COLOR));
-        }
-    }
+    push_itemdata_lines(&mut lines, row, criteria);
     lines.push((String::new(), TEXT_COLOR));
 
     match &item.data {
-        ItemTypeData::Equipment(eq) => equipment_lines(&mut lines, row, eq, magic_options),
+        ItemTypeData::Equipment(eq) => equipment_lines(
+            &mut lines,
+            row,
+            eq,
+            item_data,
+            names,
+            magic_options,
+            ui_strings,
+        ),
         ItemTypeData::Expendable { stack_count, .. } => {
             let max = row.max_stack().unwrap_or(*stack_count as u32);
             lines.push((format!("Stack: {stack_count} / {max}"), TEXT_COLOR));
@@ -593,44 +616,16 @@ fn tooltip_lines(
     lines
 }
 
-/// Tooltip lines for a CATALOG row — a shop good, which is an item *type* and
-/// not an instance.
+/// The lines that come from *itemdata alone* — no instance needed, so an owned
+/// item and a shop catalog entry share them verbatim.
 ///
-/// The difference from [`tooltip_lines`] is what a catalog row cannot know:
-/// there is no opt level, no variance roll, no current durability and no magic
-/// options until the server rolls them at purchase. So the per-instance block
-/// is absent by construction rather than faked, and the stats that itemdata
-/// declares as a range are printed AS a range (`lower ~ upper`) instead of one
-/// rolled value with a `(+NN%)` suffix that would be an invention.
-///
-/// Everything else — name and its rarity colour, the sort/sex/degree header,
-/// the required-level footer and the Seal-grade line — is a property of the
-/// type and is shared with the instance tooltip.
-fn catalog_tooltip_lines(
-    ref_id: u32,
-    row: Option<&ItemDataRow>,
-    names: &ClientTextNames,
+/// `criteria` reddens the lines this character fails (main's `criteria_color`,
+/// carried in here because the two tooltips share this block).
+fn push_itemdata_lines(
+    lines: &mut Vec<(String, Color)>,
+    row: &ItemDataRow,
     criteria: EquipCriteria,
-) -> Vec<(String, Color)> {
-    let mut lines: Vec<(String, Color)> = Vec::new();
-
-    let name = row
-        .and_then(|row| row.name_key())
-        .and_then(|key| names.name(key))
-        .map(String::from)
-        .or_else(|| row.map(|row| row.code_name().clone()))
-        .unwrap_or_else(|| format!("Item #{ref_id}"));
-    let name_color = if row.is_some_and(|row| row.is_rare()) {
-        NAME_COLOR
-    } else {
-        TEXT_COLOR
-    };
-    lines.push((name, name_color));
-
-    let Some(row) = row else {
-        return lines;
-    };
-
+) {
     if let Some(sort) = sort_of_item(row) {
         lines.push((format!("Sort of item: {sort}"), TEXT_COLOR));
     }
@@ -642,60 +637,83 @@ fn catalog_tooltip_lines(
             lines.push((format!("Degree: {degree} degrees"), TEXT_COLOR));
         }
     }
+}
 
-    let before_stats = lines.len();
-    let mut range = |label: &str, low: StatRange, high: StatRange, unit: &str| {
-        if let (Some((min, _)), Some((_, max))) = (row.stat_range(low), row.stat_range(high)) {
-            lines.push((format!("{label} {min:.1} ~ {max:.1}{unit}"), TEXT_COLOR));
-        }
+/// The tooltip of a *catalog* entry (shop stock): the item's name in the
+/// itemdata-driven colour, its price, and the itemdata-only lines
+/// (sort/sex/degree, required level).
+///
+/// It carries **no instance data on purpose** — no durability, no sockets, no
+/// variance-rolled white stats, no magic options, and therefore no blue name
+/// either. A catalog row is a `ref_id` plus a price string; nobody owns the
+/// item yet, so those values do not exist anywhere in the data. Printing a
+/// plausible-looking default for them would be precisely the unsourced number
+/// ADR-0009 forbids, so the gap is deliberate: it is not a defect to "fix"
+/// later (rationale from `321e85cb`).
+fn catalog_lines(
+    ref_id: i32,
+    price: &str,
+    item_data: &ClientItemData,
+    names: &ClientTextNames,
+    criteria: EquipCriteria,
+) -> Vec<(String, Color)> {
+    let row = item_data.get(&ref_id);
+    let name = row
+        .and_then(|row| row.name_key())
+        .and_then(|key| names.name(key))
+        .map(String::from)
+        .or_else(|| row.map(|row| row.code_name().clone()))
+        .unwrap_or_else(|| format!("Item #{ref_id}"));
+    // Same name-colour precedence as the inventory, minus the blue tier: gold
+    // for a Seal-grade ("rare") code name, else the plain text colour.
+    // `MAGIC_COLOR` depends on `mag_params`, which only an instance carries.
+    let name_color = if row.is_some_and(ItemDataRow::is_rare) {
+        NAME_COLOR
+    } else {
+        TEXT_COLOR
     };
-    range(
-        "Phy. atk. pwr",
-        StatRange::PhyAtkMin,
-        StatRange::PhyAtkMax,
-        "",
-    );
-    range(
-        "Mag. atk. pwr",
-        StatRange::MagAtkMin,
-        StatRange::MagAtkMax,
-        "",
-    );
-    range("Phy. def. pwr", StatRange::Defense, StatRange::Defense, "");
-    range(
-        "Durability",
-        StatRange::Durability,
-        StatRange::Durability,
-        "",
-    );
-    if let Some(distance) = row.attack_distance() {
-        lines.push((format!("Attack distance {distance:.1} m"), TEXT_COLOR));
-    }
-    if lines.len() > before_stats {
-        lines.insert(before_stats, (String::new(), TEXT_COLOR));
-    }
-
-    if let Some(level) = row.required_level() {
-        lines.push((String::new(), TEXT_COLOR));
-        lines.push((
-            format!("Required level {level}"),
-            criteria_color(criteria.level_ok),
-        ));
-    }
-    if let Some(line) = armor_mix_line(criteria) {
-        lines.push(line);
-    }
-    match row.country() {
-        Some(0) => lines.push(("Chinese".to_string(), DIM_COLOR)),
-        Some(1) => lines.push(("European".to_string(), DIM_COLOR)),
-        _ => {}
-    }
-    while lines.last().is_some_and(|(text, _)| text.is_empty()) {
-        lines.pop();
-    }
-    if let Some(seal) = seal_tier_name(row) {
-        lines.push((String::new(), TEXT_COLOR));
-        lines.push((seal.to_string(), NAME_COLOR));
+    let mut lines = vec![(name, name_color), (price.to_string(), PRICE_COLOR)];
+    if let Some(row) = row {
+        let mut tail: Vec<(String, Color)> = Vec::new();
+        push_itemdata_lines(&mut tail, row, criteria);
+        // The stats itemdata declares as a range are printed AS a range
+        // (`lower ~ upper`). A catalog row has no variance roll, so a single
+        // number with the instance tooltip's `(+NN%)` suffix would be an
+        // invention — the range is what the data actually says.
+        let mut range = |label: &str, low: StatRange, high: StatRange| {
+            if let (Some((min, _)), Some((_, max))) = (row.stat_range(low), row.stat_range(high)) {
+                tail.push((format!("{label} {min:.1} ~ {max:.1}"), TEXT_COLOR));
+            }
+        };
+        range("Phy. atk. pwr", StatRange::PhyAtkMin, StatRange::PhyAtkMax);
+        range("Mag. atk. pwr", StatRange::MagAtkMin, StatRange::MagAtkMax);
+        range("Phy. def. pwr", StatRange::Defense, StatRange::Defense);
+        range("Durability", StatRange::Durability, StatRange::Durability);
+        if let Some(distance) = row.attack_distance() {
+            tail.push((format!("Attack distance {distance:.1} m"), TEXT_COLOR));
+        }
+        if let Some(level) = row.required_level() {
+            tail.push((
+                format!("Required level {level}"),
+                criteria_color(criteria.level_ok),
+            ));
+        }
+        if let Some(line) = armor_mix_line(criteria) {
+            tail.push(line);
+        }
+        match row.country() {
+            Some(0) => tail.push(("Chinese".to_string(), DIM_COLOR)),
+            Some(1) => tail.push(("European".to_string(), DIM_COLOR)),
+            _ => {}
+        }
+        if !tail.is_empty() {
+            lines.push((String::new(), TEXT_COLOR));
+            lines.extend(tail);
+        }
+        if let Some(seal) = seal_tier_name(row) {
+            lines.push((String::new(), TEXT_COLOR));
+            lines.push((seal.to_string(), NAME_COLOR));
+        }
     }
     lines
 }
@@ -716,11 +734,15 @@ fn has_magic_options(data: &ItemTypeData) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn equipment_lines(
     lines: &mut Vec<(String, Color)>,
     row: &ItemDataRow,
     eq: &EquipmentData,
+    item_data: &ClientItemData,
+    names: &ClientTextNames,
     magic_options: &ClientMagicOptions,
+    ui_strings: &ClientUiStrings,
 ) {
     let (_, _, tid3, _) = row.type_ids().unwrap_or((0, 0, 0, 0));
     let is_weapon = tid3 == 6;
@@ -882,7 +904,95 @@ fn equipment_lines(
         };
         lines.push((text, color));
     }
+    binding_option_lines(lines, eq, item_data, names, ui_strings);
     lines.push((String::new(), TEXT_COLOR));
+}
+
+/// The two tagged binding-option blocks of the item record — sockets (tag 1)
+/// and advanced elixirs (tag 2). Both were decoded and then dropped on the
+/// floor; this is the reader.
+///
+/// Order and labels come from the data, not from us: the wire writes the socket
+/// block before the elixir block, and textuisystem.txt supplies
+/// `UIIT_CTL_SOCKET_TAP_TITLE` "Socket" (row 4399),
+/// `UIIT_STT_SOCKET_EMPTY_SLOT` "Empty slot" (row 4423) and
+/// `UIIT_STT_SOCKET_TIP_UPPER_REINFOREC_USED` "Advanced elixir is in effect
+/// [+%d]" (row 4405) — the last is the original's own wording for an applied
+/// advanced elixir, `%d` being its `+N`. `Lv %d` for a socket stone follows
+/// `UIIT_MSG_SOCKET_ALCHEMY_SUCCESS` "…successfully upgrade to Lv[%d]"
+/// (row 4421).
+///
+/// What the shipped data does **not** carry is a layout for a socket line in
+/// the item tooltip: there is no `PARAM_SOCKET*` key (positive control on the
+/// same read path: `PARAM_ASTRAL` row 2406 and `PARAM_DUR` row 2390 are found
+/// by the same scan). So the socket line is a deliberate openroad decision
+/// (ADR-0009): one line per socket, `<slot>. <stone> Lv <value>`, with the
+/// stone resolved through itemdata when `BindingOption.id` is an item ref id
+/// (the socket stones are `ITEM_ETC_SOCKET_STONE_*`, ids 26082..=26095 in
+/// `itemdata_30000.txt`) and printed raw as `#<id>` when it is not — the id's
+/// meaning is unknown, so a raw labelled number is the honest rendering, and
+/// still strictly better than dropping the block. Colour is the panel's normal
+/// text colour: no colour source was found for these lines, and inventing one
+/// is exactly what ADR-0009 forbids.
+fn binding_option_lines(
+    lines: &mut Vec<(String, Color)>,
+    eq: &EquipmentData,
+    item_data: &ClientItemData,
+    names: &ClientTextNames,
+    ui_strings: &ClientUiStrings,
+) {
+    if !eq.sockets.is_empty() {
+        lines.push((
+            ui_strings
+                .get_or("UIIT_CTL_SOCKET_TAP_TITLE", "Socket")
+                .to_string(),
+            TEXT_COLOR,
+        ));
+    }
+    let empty = ui_strings
+        .get_or("UIIT_STT_SOCKET_EMPTY_SLOT", "Empty slot")
+        .to_string();
+    for socket in &eq.sockets {
+        // A hole without a stone arrives as a zero id/value pair.
+        let text = if socket.id == 0 || socket.value == 0 {
+            format!("{}. {empty}", socket.slot)
+        } else {
+            format!(
+                "{}. {} Lv {}",
+                socket.slot,
+                stone_name(socket.id, item_data, names),
+                socket.value
+            )
+        };
+        lines.push((text, TEXT_COLOR));
+    }
+    for elixir in &eq.adv_elixirs {
+        let template = ui_strings.get_or(
+            "UIIT_STT_SOCKET_TIP_UPPER_REINFOREC_USED",
+            "Advanced elixir is in effect  [+%d]",
+        );
+        lines.push((fill_decimal(template, elixir.value), TEXT_COLOR));
+    }
+}
+
+/// Display name of a socket stone id: its itemdata name when the id resolves as
+/// an item ref id, else the raw id (see [`binding_option_lines`]).
+fn stone_name(id: u32, item_data: &ClientItemData, names: &ClientTextNames) -> String {
+    item_data
+        .get(&(id as i32))
+        .and_then(|row| {
+            row.name_key()
+                .and_then(|key| names.name(key))
+                .map(String::from)
+                .or_else(|| Some(row.code_name().clone()))
+        })
+        .unwrap_or_else(|| format!("#{id}"))
+}
+
+/// Substitute the single `%d` of a textuisystem row; rows without one are
+/// returned unchanged rather than gaining an appended number.
+fn fill_decimal(template: &str, value: u32) -> String {
+    template.replacen("%d", &value.to_string(), 1)
 }
 
 /// The vanilla "Sort of item" label from the item's type ids.
@@ -931,11 +1041,11 @@ fn sort_of_item(row: &ItemDataRow) -> Option<&'static str> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use packets::agent::character_data::RentInfo;
+    use packets::agent::character_data::{BindingOption, RentInfo};
     use packets::agent::pet::{CosBody, CosGrowth, CosKind};
 
-    /// A summoned growth pet at `ref_obj_id`/`level`, shaped like the captured
-    /// Grey Wolf (see `hud::cos::info`'s own `wolf` fixture).
+    /// A summoned growth pet at `ref_obj_id`/`level`, shaped like the Grey
+    /// Wolf (see `hud::cos::info`'s own `wolf` fixture).
     fn summoned_wolf(ref_obj_id: u32, level: u8) -> crate::plugins::hud::cos::state::Cos {
         crate::plugins::hud::cos::state::Cos {
             unique_id: 0x0002_6cd1,
@@ -1046,14 +1156,14 @@ mod test {
             hovered_slot: hovered,
             ..default()
         })
-        .init_resource::<StorageHoveredItem>()
-        .init_resource::<StoreHoveredGood>()
+        .init_resource::<HoveredItem>()
         .init_resource::<ClientItemData>()
         .init_resource::<ClientCharacterData>()
         .init_resource::<CosState>()
         .init_resource::<ClientTextNames>()
         .init_resource::<ClientUiStrings>()
         .init_resource::<ClientMagicOptions>()
+        .init_resource::<ClientUiStrings>()
         .insert_resource(FontAssets {
             one: Handle::default(),
             two: Handle::default(),
@@ -1114,22 +1224,82 @@ mod test {
         assert_eq!(tooltip_state(&app, root).0, Visibility::Hidden);
     }
 
+    /// A shop entry paints the same panel as an owned item — that is the point
+    /// of the shared [`HoveredItem`]: the shop had no tooltip at all, while
+    /// the tooltip renderer sat two modules away.
+    #[test]
+    fn a_shop_hover_paints_the_same_panel() {
+        let (mut app, root) = tooltip_app(None);
+        app.world_mut().resource_mut::<HoveredItem>().0 =
+            Some(crate::plugins::hud::item_cell::HoveredItemKind::Catalog {
+                ref_id: 4,
+                price: "1,000 Gold".into(),
+            });
+        app.update();
+
+        assert_eq!(
+            *app.world().get::<Visibility>(root).expect("tooltip root"),
+            Visibility::Inherited,
+            "a hovered shop good must show the tooltip"
+        );
+        let (_, lines) = tooltip_state(&app, root);
+        // Name + price with the empty test itemdata; a loaded table adds the
+        // itemdata-only lines (sort/sex/degree/level) and nothing else.
+        assert_eq!(
+            lines, 2,
+            "a catalog tooltip is name + price plus itemdata-only lines"
+        );
+    }
+
+    /// The catalog branch takes its colours from itemdata and stops there.
+    /// Pinned because both halves are doctrine, not taste: the title colour is
+    /// the inventory's (`TEXT_COLOR`, gold only for a Seal-grade row), and the
+    /// price has a *named* colour with a written rationale instead of the
+    /// literal `srgb(0.9, 0.85, 0.55)` that used to sit inline.
+    ///
+    /// The no-instance-data rule is the assertion on the line *count*: with an
+    /// unloaded itemdata table there is no row, so a catalog entry is name +
+    /// price and cannot grow durability, sockets or rolled stats out of
+    /// nowhere. (An itemdata-backed case is not reachable from a test —
+    /// `ClientItemData`'s payload is private to `plugins::textdata`, so a test
+    /// can only build the empty table.)
+    #[test]
+    fn a_catalog_entry_is_coloured_from_itemdata_only() {
+        let item_data = ClientItemData::default();
+        let names = ClientTextNames::default();
+        let lines = catalog_lines(4, "1,000 Gold", &item_data, &names, EquipCriteria::MET);
+        assert_eq!(
+            lines,
+            vec![
+                ("Item #4".to_string(), TEXT_COLOR),
+                ("1,000 Gold".to_string(), PRICE_COLOR),
+            ]
+        );
+        assert_ne!(
+            lines[0].1,
+            Color::WHITE,
+            "the catalog title must use the inventory's text colour"
+        );
+    }
+
     /// The storage window has no hover observers of its own: it publishes the
     /// hovered item directly, and the same panel renders it (#428's path is
     /// shared, so a break here breaks both windows).
     #[test]
     fn a_storage_hover_paints_the_same_panel() {
         let (mut app, root) = tooltip_app(None);
-        app.world_mut().resource_mut::<StorageHoveredItem>().0 = Some(InventoryItem {
-            slot: 0,
-            rent: RentInfo::default(),
-            ref_id: 4,
-            data: ItemTypeData::Expendable {
-                stack_count: 1,
-                assimilation_prob: None,
-                mag_params: vec![],
-            },
-        });
+        app.world_mut().resource_mut::<HoveredItem>().0 = Some(
+            crate::plugins::hud::item_cell::HoveredItemKind::Owned(InventoryItem {
+                slot: 0,
+                rent: RentInfo::default(),
+                ref_id: 4,
+                data: ItemTypeData::Expendable {
+                    stack_count: 1,
+                    assimilation_prob: None,
+                    mag_params: vec![],
+                },
+            }),
+        );
         app.update();
         let (visibility, lines) = tooltip_state(&app, root);
         assert_eq!(visibility, Visibility::Inherited);
@@ -1153,5 +1323,84 @@ mod test {
         assert_eq!(pct_suffix(variance_roll(variance, Some(3))), " (+100%)");
         assert_eq!(pct_suffix(variance_roll(variance, Some(4))), " (+0%)");
         assert_eq!(pct_suffix(variance_roll(variance, None)), "");
+    }
+
+    fn equipment(sockets: Vec<BindingOption>, elixirs: Vec<BindingOption>) -> EquipmentData {
+        EquipmentData {
+            opt_level: 0,
+            variance: 0,
+            durability: 1,
+            mag_params: vec![],
+            socket_tag: 1,
+            sockets,
+            elixir_tag: 2,
+            adv_elixirs: elixirs,
+        }
+    }
+
+    /// Regression guard: the decoded socket/elixir blocks must reach the tooltip.
+    /// With no textuisystem loaded the fallbacks are the shipped strings.
+    #[test]
+    fn sockets_and_elixirs_render() {
+        let eq = equipment(
+            vec![
+                BindingOption {
+                    slot: 1,
+                    id: 26088,
+                    value: 5,
+                },
+                BindingOption {
+                    slot: 2,
+                    id: 0,
+                    value: 0,
+                },
+            ],
+            vec![BindingOption {
+                slot: 1,
+                id: 1,
+                value: 3,
+            }],
+        );
+        let mut lines = Vec::new();
+        binding_option_lines(
+            &mut lines,
+            &eq,
+            &ClientItemData::default(),
+            &ClientTextNames::default(),
+            &ClientUiStrings::default(),
+        );
+        let texts: Vec<&str> = lines.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Socket",
+                "1. #26088 Lv 5",
+                "2. Empty slot",
+                "Advanced elixir is in effect  [+3]",
+            ]
+        );
+    }
+
+    /// An item without either block adds nothing at all — no stray header.
+    #[test]
+    fn no_bindings_no_lines() {
+        let mut lines = Vec::new();
+        binding_option_lines(
+            &mut lines,
+            &equipment(vec![], vec![]),
+            &ClientItemData::default(),
+            &ClientTextNames::default(),
+            &ClientUiStrings::default(),
+        );
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn fill_decimal_leaves_templates_without_a_placeholder_alone() {
+        assert_eq!(
+            fill_decimal("Advanced elixir [+%d]", 7),
+            "Advanced elixir [+7]"
+        );
+        assert_eq!(fill_decimal("Advanced elixir", 7), "Advanced elixir");
     }
 }

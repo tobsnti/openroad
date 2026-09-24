@@ -14,9 +14,8 @@ use packets::agent::character_data::{InventoryItem, ItemTypeData, ParsedCharacte
 
 /// Wire slots 0..12 are the equipment slots; the bag starts at 13.
 pub const EQUIP_SLOT_COUNT: u8 = 13;
-/// Wire slot holding the equipped weapon. Capture-verified against real
-/// `packet_dump/0x3052.log` bodies (see the durability test below, where slot
-/// 6 is the weapon wearing down over the capture).
+/// Wire slot holding the equipped weapon, as seen in 0x3052 durability pushes
+/// (see the durability test below, where slot 6 is the weapon wearing down).
 pub const WEAPON_SLOT: u8 = 6;
 /// Wire slot holding the equipped ammunition (and the shield — vanilla shares
 /// the secondary hole between them, which is why `equip_slots` sends both here).
@@ -29,7 +28,7 @@ pub const SLOTS_PER_PAGE: u8 = 32;
 const DEFAULT_SIZE: u8 = 45;
 
 /// The highest slot a 0x3052 durability push may name. The original's handler
-/// bails out on `0x6f < slot` (`sro_client.exe@008adf50:62`) before touching
+/// bails out on `0x6f < slot` before touching
 /// either of its item arrays, so a push above it is silently dropped.
 pub const MAX_DURABILITY_SLOT: u8 = 0x6F;
 
@@ -41,8 +40,10 @@ pub struct Inventory {
     /// One entry per wire slot; `None` is an empty slot.
     pub slots: Vec<Option<InventoryItem>>,
     /// The separate avatar inventory (0x3013's second item section),
-    /// slot-indexed like `slots`. Display-only: go-sro implements no avatar
-    /// equip/unequip operations.
+    /// slot-indexed like `slots`. Moved in and out by 0x7034 ops 35/36 —
+    /// see [`Self::apply_avatar_move`]. (go-sro implements no avatar
+    /// operation, so against *that* server the acks never arrive and the
+    /// container stays display-only; the vanilla protocol has them.)
     pub avatar_slots: Vec<Option<InventoryItem>>,
     pub gold: u64,
 }
@@ -67,7 +68,7 @@ impl Inventory {
         // One line per bag item at join. Item-use (#215/#454) is addressed by
         // *wire slot* + packed type_id, and every live experiment so far had to
         // guess both; this makes the two numbers the request needs readable
-        // straight from the log instead of re-deriving them from a hex dump.
+        // directly in the log.
         for item in parsed.inventory.iter().flatten() {
             debug!(
                 "inventory: slot {} = ref {} ({:?})",
@@ -109,18 +110,18 @@ impl Inventory {
 
     /// Apply a server-confirmed pickup (0xB034 op 6): place the fully-parsed
     /// item at its slot. The server sends the authoritative post-pickup slot
-    /// state (verified: repeated expendable pickups carry the growing slot
-    /// total, not a delta), so this replaces rather than merges.
+    /// state (repeated expendable pickups carry the growing slot total, not a
+    /// delta), so this replaces rather than merges.
     pub fn gain_item(&mut self, item: InventoryItem) {
         // The slot comes straight off the wire, and one caller supplies it from
         // a pet-bag op (`hud/cos/state.rs`) whose slot field is the least
-        // capture-verified of the family. A gain into the equipment band is
+        // certain of the family. A gain into the equipment band is
         // therefore far more likely to be a decode error than a real event —
         // apply it (the server is authoritative) but never silently.
         if item.slot < BAG_FIRST_SLOT {
             warn!(
-                "inventory: gain of ref {} names EQUIPMENT slot {} — capture the 0xB034 \
-                 for decode; the bag starts at {BAG_FIRST_SLOT}",
+                "inventory: gain of ref {} names EQUIPMENT slot {} — the bag starts \
+                 at {BAG_FIRST_SLOT}",
                 item.ref_id, item.slot
             );
         }
@@ -144,13 +145,14 @@ impl Inventory {
     /// So a move onto a slot holding the **same `ref_id`** now merges, capped
     /// at the item's `max_stack`, with any overflow left behind in the source.
     ///
-    /// `[S]`, and deliberately loud about it: a merge and a swap produce a
-    /// byte-identical ack, and no `0x3040` quantity push ever follows a move on
-    /// this server, so the wire cannot confirm the outcome either way. The
-    /// merge is logged with its resulting counts so a disagreement shows up in
-    /// the log rather than as a silently wrong bag. Any later authoritative
-    /// packet — a 0x3040 quantity update, a fresh 0x3013 snapshot — overwrites
-    /// this, which is the intended correction path.
+    /// The merge is inferred, not confirmed, and deliberately loud about it: a
+    /// merge and a swap produce a byte-identical ack, and no `0x3040` quantity
+    /// push ever follows a move on this server, so the wire cannot confirm the
+    /// outcome either way. The merge is logged with its resulting counts so a
+    /// disagreement shows up in the log rather than as a silently wrong bag.
+    /// Any later authoritative packet — a 0x3040 quantity update, a fresh
+    /// 0x3013 snapshot — overwrites this, which is the intended correction
+    /// path.
     pub fn apply_move(
         &mut self,
         source: u8,
@@ -159,6 +161,9 @@ impl Inventory {
         item_data: &crate::plugins::textdata::ClientItemData,
     ) {
         if self.try_merge(source, target, amount, item_data) {
+            return;
+        }
+        if self.try_split(source, target, amount) {
             return;
         }
         // An UNEQUIP never swaps. The server accepts an equip→bag move only
@@ -196,6 +201,47 @@ impl Inventory {
             }
         }
         self.slots[target] = Some(moved);
+    }
+
+    /// Apply a server-confirmed avatar move (0x7034 ops 35/36). The two
+    /// containers are separate vectors, so this is a transfer, not the
+    /// index-swap [`Self::apply_move`] does: the record is taken out of one
+    /// side, renumbered to its new slot, and put into the other. Anything
+    /// already sitting in the destination swaps back the other way — that is
+    /// what makes dropping a new hat on an occupied avatar slot work, and it
+    /// mirrors `apply_move`'s swap rather than inventing a second rule.
+    ///
+    /// `avatar` is the avatar-container slot, `bag` the absolute inventory
+    /// slot (the wire carries the bag slot already biased by `+0x0D`,
+    /// `packets::agent::inventory::InventoryOperationRequest::AvatarToInventory`).
+    pub fn apply_avatar_move(&mut self, avatar: u8, bag: u8, into_avatar: bool) {
+        let (avatar_index, bag_index) = (avatar as usize, bag as usize);
+        if avatar_index >= self.avatar_slots.len() || bag_index >= self.slots.len() {
+            return;
+        }
+        let taken = if into_avatar {
+            self.slots[bag_index].take()
+        } else {
+            self.avatar_slots[avatar_index].take()
+        };
+        let Some(mut moved) = taken else {
+            return;
+        };
+        if into_avatar {
+            moved.slot = avatar;
+            if let Some(mut swapped) = self.avatar_slots[avatar_index].take() {
+                swapped.slot = bag;
+                self.slots[bag_index] = Some(swapped);
+            }
+            self.avatar_slots[avatar_index] = Some(moved);
+        } else {
+            moved.slot = bag;
+            if let Some(mut swapped) = self.slots[bag_index].take() {
+                swapped.slot = avatar;
+                self.avatar_slots[avatar_index] = Some(swapped);
+            }
+            self.slots[bag_index] = Some(moved);
+        }
     }
 
     /// Combine two stacks of the same item, if that is what this move is.
@@ -245,7 +291,7 @@ impl Inventory {
         let left = from_count - moved;
         info!(
             "inventory: merged {moved} of ref {} from slot {source} into {target} \
-             ({into_count} -> {}, {left} left behind) [S]",
+             ({into_count} -> {}, {left} left behind)",
             from.ref_id,
             into_count + moved,
         );
@@ -258,11 +304,40 @@ impl Inventory {
         true
     }
 
+    /// A move of *part* of a stack into an empty bag slot (the split box's
+    /// `0x7034` op 0 with `amount < stack`): the source keeps the rest, the
+    /// target gets a copy holding `amount`. Returns `false` for everything
+    /// else, so [`Self::apply_move`] falls through to relocate/swap.
+    fn try_split(&mut self, source: u8, target: u8, amount: u16) -> bool {
+        if source == target || source < BAG_FIRST_SLOT || target < BAG_FIRST_SLOT {
+            return false;
+        }
+        let Some(from) = self.get(source) else {
+            return false;
+        };
+        let Some(from_count) = stack_count(from) else {
+            return false;
+        };
+        if amount == 0 || amount >= from_count || self.get(target).is_some() {
+            return false;
+        }
+        let mut split = from.clone();
+        split.slot = target;
+        set_stack(Some(&mut split), amount);
+        set_stack(self.slots[source as usize].as_mut(), from_count - amount);
+        let index = target as usize;
+        if index >= self.slots.len() {
+            self.slots.resize(index + 1, None);
+        }
+        self.slots[index] = Some(split);
+        true
+    }
+
     /// Remove and return the whole slot — the counterpart of
     /// [`Self::gain_item`] for a server-confirmed move *out* of the bag whose
-    /// ack carries only slot numbers (the pick-pet ops 26/27,
-    /// `docs/re/systems/pet-pick-cos.md` §3): the receiving container has to
-    /// be handed the record, because the packet does not repeat it.
+    /// ack carries only slot numbers (the pick-pet ops 26/27): the receiving
+    /// container has to be handed the record, because the packet does not
+    /// repeat it.
     pub fn take_slot(&mut self, slot: u8) -> Option<InventoryItem> {
         self.slots.get_mut(slot as usize)?.take()
     }
@@ -293,11 +368,11 @@ impl Inventory {
     /// rather than guessed at.
     ///
     /// The wire slot is a single flat space, which our `slots` already is: the
-    /// original's handler (`sro_client.exe@008adf50:29,62-63`) splits it into
+    /// original's handler splits it into
     /// its own two arrays — `slot < 0x0D` indexes the equipment array, `0x0D..
     /// 0x6F` the inventory array as `slot - 0x0D` — and **ignores anything
-    /// above `0x6F`** (`:62`, the `0x6f < slot` bail). The bias is that split,
-    /// not a wire field, so only the upper bound is a real rule to keep.
+    /// above `0x6F`**. The bias is that split, not a wire field, so only the
+    /// upper bound is a real rule to keep.
     pub fn set_durability(&mut self, slot: u8, durability: u32) {
         if slot > MAX_DURABILITY_SLOT {
             return;
@@ -535,6 +610,27 @@ mod test {
         assert_eq!(inv.get(20).unwrap().ref_id, 200);
     }
 
+    /// The split box's ack: `01 00 17 0d 01 00 00` moved ONE piece of a
+    /// 1000-stack from 0x17 into the empty 0x0d. The model used to relocate
+    /// the whole record, showing 1000 in the target and nothing in the source
+    /// until relog.
+    #[test]
+    fn a_partial_move_into_an_empty_slot_splits_the_stack() {
+        let mut inv = inventory(45, vec![item(0x17, 100, Some(1000))]);
+
+        inv.apply_move(0x17, 0x0d, 1, &no_item_data());
+
+        assert_eq!(stack_at(&inv, 0x17), Some(999));
+        assert_eq!(stack_at(&inv, 0x0d), Some(1));
+        assert_eq!(inv.get(0x0d).unwrap().ref_id, 100);
+        assert_eq!(inv.get(0x0d).unwrap().slot, 0x0d);
+
+        // the whole stack (amount == count) is a plain relocate, not a split
+        inv.apply_move(0x17, 0x20, 999, &no_item_data());
+        assert_eq!(inv.get(0x17), None);
+        assert_eq!(stack_at(&inv, 0x20), Some(999));
+    }
+
     /// The unequip direction never swaps. go-sro accepts an equip→bag move
     /// only into an empty slot, so an ack naming an occupied one means our
     /// model drifted — and swapping there is what drew a bag item's icon in
@@ -672,8 +768,8 @@ mod test {
         }
     }
 
-    /// 0x3052, real `packet_dump/0x3052.log` bodies: slot 6 is the weapon and
-    /// slot 1 the chest, both wearing down over the capture.
+    /// 0x3052 durability pushes: slot 6 is the weapon and slot 1 the chest,
+    /// both wearing down over time.
     #[test]
     fn durability_push_updates_the_equipment_slot() {
         let mut inv = inventory(45, vec![equipment(6, 68), equipment(1, 47)]);
@@ -686,7 +782,7 @@ mod test {
     }
 
     /// The original's handler bails on `0x6f < slot` before it touches an item
-    /// array (`sro_client.exe@008adf50:62`), so a push above that band is
+    /// array, so a push above that band is
     /// dropped rather than folded into the flat slot space.
     #[test]
     fn durability_push_above_the_original_slot_band_is_ignored() {

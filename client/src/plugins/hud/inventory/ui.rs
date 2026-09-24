@@ -63,8 +63,8 @@ const UNEQUIPPABLE_TINT: Color = Color::srgb(1.0, 0.45, 0.45);
 /// Multiplicative icon tint for a COS scroll whose pet is dead.
 ///
 /// ⚠️ **Ours, not vanilla.** Media ships no state-specific icon art for a dead
-/// scroll and no RE doc records one, so the blue wash is a choice — reported as
-/// matching the original's look, but not measured from it. Independent of the
+/// scroll, so the blue wash is a choice — it matches the original's look but
+/// is not taken from it. Independent of the
 /// tooltip's `DEAD_PET_COLOR`, which is red: that one is a warning line, this
 /// is a state wash over the icon.
 const DEAD_PET_TINT: Color = Color::srgb(0.45, 0.6, 0.95);
@@ -80,7 +80,7 @@ const DEAD_PET_TINT: Color = Color::srgb(0.45, 0.6, 0.95);
 //   icon_edge_nasrun.ddj    512x32   16x1 = 16 frames
 //   icon_edge_legendry.ddj  640x64   20x2 = 40 frames
 //
-// (Measured from the DDS headers. A census of that folder finds nine
+// (The sizes are the DDS headers' own. A census of that folder finds nine
 // multi-frame 32px sheets in all; the other six are event items.)
 //
 // This is what the pulsing gold rectangle we used to draw was standing in for.
@@ -237,7 +237,12 @@ const EQUIP_SLOTS: [(u8, f32, f32, &str); 13] = [
 /// Bag page tabs: com_tab art is 60x24, drawn slightly narrower like vanilla.
 const TAB_W: f32 = 52.0;
 const TAB_H: f32 = 20.0;
-const MAX_TABS: u8 = 4;
+/// **Three**, not four: the wire caps the bag at 96 slots. `inventory.size` is
+/// 109 in every CHARACTER_DATA frame, and 109 - 13 equipment slots = 96 =
+/// 3 x [`SLOTS_PER_PAGE`]. The data ships exactly
+/// three page-label strings (`UIIT_CTL_BELOINGING`,
+/// `UIIT_STT_INVENTORY_EXTENSION_TEB`, `_TEB2`). A fourth tab could never fill.
+const MAX_TABS: u8 = 3;
 
 /// The window content: the left column (tabs over the inventory panel) next
 /// to the equipment panel; both panel tops align at the content origin.
@@ -306,8 +311,7 @@ pub struct SlotIcon;
 /// constant of the system that drives it.
 ///
 /// This replaced a static pulsing rectangle behind the icon, which was the
-/// stand-in for exactly this — `hud-inventory.md` §6 had already flagged that
-/// rectangle as an un-flagged non-original enhancement to remove.
+/// stand-in for exactly this and was a non-original enhancement.
 #[derive(Component)]
 pub struct SlotIconEffect {
     pub flipbook: Flipbook,
@@ -402,7 +406,25 @@ pub struct BagPanelCatch;
 
 // --- Spawning ---------------------------------------------------------------
 
+/// The entities one inventory-window instance owns: the window root, the
+/// tooltip panel (own root, above the window), a live drag ghost and the
+/// paper-doll clone. Spawn and cleanup share the filter so a respawn cannot
+/// leave one of the four behind.
+type InventoryWindowEntities = Or<(
+    With<InventoryRoot>,
+    With<tooltip::InventoryTooltipRoot>,
+    With<DragGhost>,
+    With<crate::plugins::hud::inventory::paperdoll::PaperDollClone>,
+)>;
+
 /// Spawn the (initially hidden) inventory window and its tooltip root.
+///
+/// Idempotent by clearing first: a second run without the matching
+/// [`cleanup_inventory_window`] used to leave *two* `InventoryTooltipRoot`s,
+/// and `refresh_tooltip`'s `roots.single()` then paints into neither — a
+/// tooltip that is silently dead for the rest of the session, which is the
+/// shape #428 reports. Dropping the stale set instead of skipping the spawn
+/// keeps the worse failure (no window at all) impossible.
 pub fn spawn_inventory_window(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -410,12 +432,24 @@ pub fn spawn_inventory_window(
     ui_strings: Res<ClientUiStrings>,
     mut images: ResMut<Assets<Image>>,
     cam_query: Query<Entity, With<Camera2d>>,
+    stale: Query<Entity, InventoryWindowEntities>,
     mut state: ResMut<InventoryState>,
 ) {
     let Ok(camera) = cam_query.single() else {
         warn!("inventory: no 2d camera to attach to");
         return;
     };
+    if !stale.is_empty() {
+        warn_once!(
+            "inventory: {} leftover window/tooltip entities at spawn time \
+             (a scene enter without the matching exit) — dropping them so the \
+             tooltip keeps exactly one root",
+            stale.iter().count()
+        );
+        for entity in stale.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
     // fresh session state (mirrors spawn_mini_info's vitals reset)
     *state = InventoryState::default();
 
@@ -493,15 +527,7 @@ pub fn spawn_inventory_window(
 }
 
 pub fn cleanup_inventory_window(
-    roots: Query<
-        Entity,
-        Or<(
-            With<InventoryRoot>,
-            With<tooltip::InventoryTooltipRoot>,
-            With<DragGhost>,
-            With<crate::plugins::hud::inventory::paperdoll::PaperDollClone>,
-        )>,
-    >,
+    roots: Query<Entity, InventoryWindowEntities>,
     mut commands: Commands,
 ) {
     for entity in roots.iter() {
@@ -829,8 +855,8 @@ fn spawn_equipment_panel(
                 });
         }
 
-        // avatar view: 5 display-only slots (hidden until toggled). No count
-        // label: avatar items are cosmetics and never stack.
+        // avatar view: the 5 slots of the separate avatar container (hidden
+        // until toggled); ops 35/36 move items in and out, see `avatar.rs`
         for (slot, x, y, stem) in AVATAR_SLOTS {
             panel
                 .spawn((
@@ -846,7 +872,12 @@ fn spawn_equipment_panel(
                 .with_children(|cell| {
                     spawn_slot_icon(cell, (EQ_SLOT_SIZE - ICON_SIZE) / 2.0, ICON_SIZE);
                     spawn_slot_icon_effect(cell, (EQ_SLOT_SIZE - ICON_SIZE) / 2.0, ICON_SIZE);
-                });
+                })
+                // ops 35/36 — put on / take off; see `inventory/avatar.rs`.
+                // No tooltip observers: `wire_slot_of` resolves bag and
+                // equipment cells only, and the avatar container has its own
+                // slot numbering — hovering one would name the wrong item.
+                .observe(super::avatar::on_avatar_press);
         }
 
         // equip/avatar view toggle (vanilla shows the *other* view's art)
@@ -1507,7 +1538,7 @@ pub fn format_thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -1531,9 +1562,24 @@ fn wire_slot_of(
 }
 
 /// Every equip slot an item is ALLOWED to occupy, derived from its itemdata
-/// TypeIDs (verified against a live capture: HA/SA/BA/LA/AA/FA armor pieces
-/// occupy wire slots 0/2/1/4/3/5). One slot for everything except a ring,
+/// TypeIDs: HA/SA/BA/LA/AA/FA armor pieces occupy wire slots 0/2/1/4/3/5.
+/// One slot for everything except a ring,
 /// which fits either hand.
+///
+/// The Chinese and the European families use the **same** TID4 → wire-slot
+/// pattern, so they share the arms below: TID3 1/2/3 are CH garment /
+/// protector / armor, 9/10/11 the EU light / heavy / robe counterparts
+/// (930 rows each), and TID3 5 vs 12 are the CH vs EU accessory sets
+/// (291 rows each). In `Media/server_dep/silkroad/textdata/itemdata_*.txt`
+/// (12 052 rows, TID in columns 10-13) every `3/1/{9,10,11}/N` row carries the
+/// `_HA_/_SA_/_BA_/_LA_/_AA_/_FA_` suffix of its CH twin, and `3/1/12/{1,2,3}`
+/// mirrors the earring/necklace/ring split of `3/1/5/*`. Without those arms
+/// 3709 of 8650 equippable rows (42.9 %) had no doll target at all.
+///
+/// Avatar items (`3/1/13/*` hat/dress/attach/flag, `3/1/14/1` NASRUN, 628
+/// rows) deliberately stay `None`: they live in the **separate** avatar slot
+/// space, not in wire slots 0..12, so there is no bag→doll move to
+/// name here. `right_click_action` keeps them from being *used* instead.
 ///
 /// Split from [`equip_target_slot`] because the two questions are different:
 /// "where does this go by default" needs the inventory to pick a free hand,
@@ -1546,8 +1592,8 @@ fn equip_slots(type_ids: (u32, u32, u32, u32)) -> Option<&'static [u8]> {
     // (3/3/4/1) and bolts (3/3/4/2) share the secondary hole with the shield,
     // exactly as vanilla does — hence slot 7 and its unchanged "shield" art.
     //
-    // Corpus-verified against the user's itemdata: the (3,3,4,_) bucket is
-    // exactly eight rows and every one is ammo, so matching on TID3 alone
+    // In the shipped itemdata the (3,3,4,_) bucket is exactly eight rows and
+    // every one is ammo, so matching on TID3 alone
     // cannot widen this to potions or scrolls.
     if (tid1, tid2, tid3) == (3, 3, 4) {
         return Some(&[7]);
@@ -1556,18 +1602,18 @@ fn equip_slots(type_ids: (u32, u32, u32, u32)) -> Option<&'static [u8]> {
         return None;
     }
     Some(match (tid3, tid4) {
-        (1..=3, 1) => &[0],  // head
-        (1..=3, 2) => &[2],  // shoulder
-        (1..=3, 3) => &[1],  // body
-        (1..=3, 4) => &[4],  // legs
-        (1..=3, 5) => &[3],  // gauntlets
-        (1..=3, 6) => &[5],  // boots
-        (4, _) => &[7],      // shield
-        (6, _) => &[6],      // weapon
-        (5, 1) => &[9],      // earring
-        (5, 2) => &[10],     // necklace
-        (5, 3) => &[11, 12], // ring — either hand
-        (7, _) => &[8],      // job gear
+        (1..=3 | 9..=11, 1) => &[0], // head
+        (1..=3 | 9..=11, 2) => &[2], // shoulder
+        (1..=3 | 9..=11, 3) => &[1], // body
+        (1..=3 | 9..=11, 4) => &[4], // legs
+        (1..=3 | 9..=11, 5) => &[3], // gauntlets
+        (1..=3 | 9..=11, 6) => &[5], // boots
+        (4, _) => &[7],              // shield
+        (6, _) => &[6],              // weapon
+        (5 | 12, 1) => &[9],         // earring
+        (5 | 12, 2) => &[10],        // necklace
+        (5 | 12, 3) => &[11, 12],    // ring — either hand
+        (7, _) => &[8],              // job gear
         _ => return None,
     })
 }
@@ -1896,6 +1942,14 @@ fn right_click_action(
     if let Some(target) = type_ids.and_then(|ids| equip_target_slot(ids, inventory)) {
         return RightClick::Move(target);
     }
+    // Equipment (`3/1/*`) that has no bag→doll target is NOT a consumable:
+    // the avatar classes 13/14 belong in the separate avatar slot space
+    //, and anything else in 3/1/*
+    // we do not map yet is an unknown equip class. Sending 0x704C for those
+    // would ask the server to *consume* a wearable — do nothing instead.
+    if matches!(type_ids, Some((3, 1, _, _))) {
+        return RightClick::Nothing;
+    }
     // The classes that act on a second inventory item arm instead of firing —
     // their 0x704C body needs that item's slot, which a right-click alone
     // cannot supply.
@@ -2042,6 +2096,7 @@ pub fn on_slot_press(
         });
         return;
     }
+    let was_idle = state.drag.is_none();
     match state.drag {
         None => {
             let cursor = press.pointer_location.position;
@@ -2065,6 +2120,43 @@ pub fn on_slot_press(
             }
             end_carry(&mut state, &ghosts, &mut commands);
         }
+    }
+    // Shift-click on a bag stack opens the split box instead of starting a
+    // carry — the original's own gesture (`GetKeyState(0x10)` + container
+    // `0x46` in the original's item-click dispatcher, see `inventory/split.rs`). The keyboard read
+    // and the prompt write go through `commands.queue`: this observer is
+    // already at Bevy's 16-parameter ceiling, and a 17th makes the whole
+    // tuple fail the trait with an error that names no type.
+    //
+    // Queued AFTER `begin_carry`, because commands run in order: the ghost
+    // that carry spawns must already exist when this closure despawns it,
+    // or it is left orphaned on the cursor with `drag` already cleared.
+    if was_idle {
+        commands.queue(move |world: &mut World| {
+            let shift = world
+                .get_resource::<ButtonInput<KeyCode>>()
+                .is_some_and(|keys| {
+                    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
+                });
+            if !shift {
+                return;
+            }
+            // The carry the match above started is undone here rather than
+            // prevented: the shift state is only readable inside this
+            // closure, which runs after the observer.
+            if crate::plugins::hud::inventory::split::open_split_prompt(world, slot) {
+                if let Some(mut state) = world.get_resource_mut::<InventoryState>() {
+                    state.drag = None;
+                }
+                let ghosts: Vec<Entity> = world
+                    .query_filtered::<Entity, With<DragGhost>>()
+                    .iter(world)
+                    .collect();
+                for ghost in ghosts {
+                    world.entity_mut(ghost).despawn();
+                }
+            }
+        });
     }
 }
 
@@ -2281,6 +2373,30 @@ mod test {
     use bevy::picking::pointer::{Location, PointerId};
     use bevy::window::WindowRef;
 
+    /// Commands run in queue order. The shift-click closure despawns the
+    /// carry's ghost, so it must be queued after `begin_carry` spawns it —
+    /// queued before, it found nothing, cleared `drag`, and the ghost then
+    /// spawned orphaned on the cursor.
+    #[test]
+    fn the_split_closure_is_queued_after_the_carry_it_undoes() {
+        let source = include_str!("ui.rs");
+        let start = source
+            .find("pub fn on_slot_press(")
+            .expect("on_slot_press exists");
+        let end = source[start..]
+            .find("pub fn on_slot_release(")
+            .expect("on_slot_release follows");
+        let body = &source[start..start + end];
+        let carry = body.find("begin_carry(").expect("the press starts a carry");
+        let queue = body
+            .find("commands.queue(")
+            .expect("the press queues the split closure");
+        assert!(
+            queue > carry,
+            "the split closure must be queued after begin_carry, or its ghost despawn runs first"
+        );
+    }
+
     /// An itemdata row carrying only the columns the equip criteria read:
     /// TID1..4 (9..12), required level (33) and sex (58; 0 = Woman, 1 = Man,
     /// anything else = universal).
@@ -2295,7 +2411,7 @@ mod test {
     fn an_icon_effect_starts_with_no_sheet_loaded() {
         let mut app = inventory_app();
         let mut found = 0;
-        let mut world = app.world_mut();
+        let world = app.world_mut();
         let mut query = world.query::<(&SlotIconEffect, &ImageNode)>();
         for (effect, image) in query.iter(&world) {
             assert_eq!(
@@ -2313,7 +2429,7 @@ mod test {
     }
 
     /// The icon-effect sheets are transcriptions of real art, so pin the
-    /// measurements: each sheet must tile **exactly** into 32x32 tiles — the
+    /// sizes: each sheet must tile **exactly** into 32x32 tiles — the
     /// icon's own size — and its declared frame count must be the grid it
     /// describes. A sheet whose grid does not divide cleanly is a mis-read
     /// header, and the animation would walk off the edge of the art.
@@ -2340,7 +2456,7 @@ mod test {
             let last = fb.frame_rect(sheet.frame_count - 1);
             assert!(last.max.x <= sheet.sheet.0 && last.max.y <= sheet.sheet.1);
         }
-        // the measurements themselves, from the DDS headers
+        // the sheet sizes, from the DDS headers
         assert_eq!(ICON_EFFECT_RARE.sheet, (256.0, 128.0));
         assert_eq!(ICON_EFFECT_RARE.frame_count, 32);
         assert_eq!(ICON_EFFECT_NASRUN.sheet, (512.0, 32.0));
@@ -2565,6 +2681,35 @@ mod test {
         );
     }
 
+    /// #428: `refresh_tooltip` needs `roots.single()` to succeed,
+    /// so a second `spawn_inventory_window` without the matching
+    /// `cleanup_inventory_window` in between is a silent dead tooltip — two
+    /// roots make `single()` return `MultipleEntities` and the system returns
+    /// before painting anything. The plain-spawn test above only pins the
+    /// single run; this one pins what a repeat does.
+    #[test]
+    fn spawning_the_window_twice_leaves_a_paintable_tooltip() {
+        let mut app = inventory_app();
+        assert_eq!(cells::<InventoryTooltipRoot>(&mut app).len(), 1);
+
+        app.world_mut()
+            .run_system_cached(spawn_inventory_window)
+            .expect("second spawn_inventory_window failed");
+        app.world_mut().flush();
+
+        assert_eq!(
+            cells::<InventoryTooltipRoot>(&mut app).len(),
+            1,
+            "a repeated spawn added a second tooltip root; refresh_tooltip's \
+             `roots.single()` then paints nothing at all (#428)"
+        );
+        assert_eq!(
+            cells::<InventoryRoot>(&mut app).len(),
+            1,
+            "a repeated spawn added a second inventory window"
+        );
+    }
+
     /// `Pointer<Over>.entity` is the entity the backend actually hit, so a
     /// pickable child (glow, icon, stack count, placeholder art) makes
     /// `on_slot_over`'s `grid.get(entity)` miss and the tooltip never opens.
@@ -2703,6 +2848,75 @@ mod test {
         assert_eq!(
             right_click_action(BAG_FIRST_SLOT + 5, Some((3, 1, 6, 2)), &inv),
             RightClick::Nothing,
+        );
+    }
+
+    /// The European families were once missing from `equip_target_slot`, so
+    /// 3709 of 8650 equippable rows
+    /// (42.9 %) had no doll target. Each family gets one case, and each wire
+    /// slot is the one its CH twin already used.
+    #[test]
+    fn european_armour_and_accessories_have_equip_targets() {
+        let inv = inventory(vec![]);
+        // 9 = EU light, 10 = EU heavy, 11 = EU robe — same TID4 pattern as
+        // the CH families (itemdata: `_HA_/_SA_/_BA_/_LA_/_AA_/_FA_`).
+        for tid3 in [1, 2, 3, 9, 10, 11] {
+            for (tid4, slot) in [(1, 0), (2, 2), (3, 1), (4, 4), (5, 3), (6, 5)] {
+                assert_eq!(
+                    equip_target_slot((3, 1, tid3, tid4), &inv),
+                    Some(slot),
+                    "3/1/{tid3}/{tid4}"
+                );
+            }
+        }
+        // 12 = EU accessories, mirroring the CH set 5/{1,2,3}.
+        for tid3 in [5, 12] {
+            assert_eq!(equip_target_slot((3, 1, tid3, 1), &inv), Some(9));
+            assert_eq!(equip_target_slot((3, 1, tid3, 2), &inv), Some(10));
+            assert_eq!(equip_target_slot((3, 1, tid3, 3), &inv), Some(11));
+        }
+        // A worn left ring pushes the next one to the right hand, for both.
+        let one_ring = inventory(vec![item(11, 100)]);
+        assert_eq!(equip_target_slot((3, 1, 12, 3), &one_ring), Some(12));
+
+        // Avatar items stay without a bag→doll target on purpose: their slot
+        // space is the avatar overlay, not wire slots 0..12.
+        for tid in [(3, 1, 13, 1), (3, 1, 13, 2), (3, 1, 13, 3), (3, 1, 14, 1)] {
+            assert_eq!(equip_target_slot(tid, &inv), None, "{tid:?}");
+        }
+    }
+
+    /// The half of that bug which reached the wire: an unmapped equippable
+    /// fell through `equip_target_slot` to `RightClick::Use`, so right-clicking
+    /// a European chest plate sent a 0x704C *use* for a piece of armour.
+    #[test]
+    fn right_click_on_equipment_never_sends_use() {
+        let inv = inventory(vec![item(BAG_FIRST_SLOT, 100)]);
+
+        // EU heavy body armour (3/1/10/3) now equips into the body slot.
+        assert_eq!(
+            right_click_action(BAG_FIRST_SLOT, Some((3, 1, 10, 3)), &inv),
+            RightClick::Move(1),
+        );
+        // EU necklace (3/1/12/2).
+        assert_eq!(
+            right_click_action(BAG_FIRST_SLOT, Some((3, 1, 12, 2)), &inv),
+            RightClick::Move(10),
+        );
+        // Avatar hat (3/1/13/1) and an equip class we do not map at all:
+        // no doll target, but still not a consumable.
+        for tid in [(3, 1, 13, 1), (3, 1, 14, 1), (3, 1, 99, 1)] {
+            assert_eq!(
+                right_click_action(BAG_FIRST_SLOT, Some(tid), &inv),
+                RightClick::Nothing,
+                "{tid:?} must not become a 0x704C UseItem"
+            );
+        }
+        // Positive control on the same call path: a real expendable is still
+        // used, so the guard above is not swallowing consumables.
+        assert_eq!(
+            right_click_action(BAG_FIRST_SLOT, Some((3, 3, 3, 2)), &inv),
+            RightClick::Use,
         );
     }
 

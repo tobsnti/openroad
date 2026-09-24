@@ -106,12 +106,12 @@ pub fn on_inventory_deltas(
             // to no fields at all and lands here.
             //
             // `warn!`, not `debug!`: this line is the tripwire for the six
-            // blocks we have never seen a sample of. Ammunition consumption is
-            // suspected to ride one of them (no 0x3040 appears in any capture
-            // to date), and at debug level that evidence reaches nobody.
+            // blocks with no known sample. Ammunition consumption is suspected
+            // to ride one of them — no 0x3040 for it has ever been seen — and
+            // at debug level nobody would notice.
             (update_type, None, None) => warn!(
                 "inventory: unhandled 0x3040 update mask {:#04x} on slot {} — \
-                 capture for decode",
+                 not decoded",
                 update_type, msg.slot
             ),
         }
@@ -126,10 +126,10 @@ pub fn on_inventory_deltas(
 
 /// Predict ammunition spend: one arrow per basic bow/crossbow swing.
 ///
-/// **`[S]`, and predicted rather than authoritative** — this server never
-/// reports ammo consumption at all. Capture-verified across one session: 500
-/// arrows at the 20:49 login and 402 at the 21:04 login, with no `0x3040`
-/// whatsoever, no quantity in any `0xB034` move ack (the unequip ack carries
+/// **Predicted rather than authoritative** — this server never reports ammo
+/// consumption at all. Over a session the arrow count drops (500 down to 402)
+/// with no `0x3040` whatsoever, no quantity in any `0xB034` move ack (the
+/// unequip ack carries
 /// `0`, and the equip ack merely echoes what the client asked for), and no
 /// `0x3052` naming the ammo slot. The true total arrives only in the next
 /// `0x3013`, so with no prediction the count sits visibly stale for a whole
@@ -196,12 +196,12 @@ pub fn on_gold_update(
 ///
 /// **The stack count is only on this packet.** The client used to assume the
 /// decrement "rides the ack's own inventory update", i.e. a follow-up 0x3040 —
-/// it does not. All 17 `0x3040` lines in the capture are COS-state pushes
-/// (mask `0x40`); not one carries a quantity, and none follows an item use. So
+/// it does not. Every observed `0x3040` is a COS-state push (mask `0x40`); not
+/// one carries a quantity, and none follows an item use. So
 /// a potion was consumed server-side while the bag kept showing the old count
 /// until the next full 0x3013.
 ///
-/// One HP-potion stack in slot `0x42`, straight from `packet_dump/0xb04c.log`:
+/// One HP-potion stack in slot `0x42`, as it arrives on the wire:
 ///
 /// ```text
 /// 01 42 0600 ec08   remaining 6
@@ -269,7 +269,7 @@ pub fn on_inventory_operation_response(
                         if record.op != 0 {
                             warn!(
                                 "inventory: 0xB034 chained record has op {:#04x}, not a move — \
-                                 capture for decode",
+                                 not decoded",
                                 record.op
                             );
                             continue;
@@ -297,7 +297,7 @@ pub fn on_inventory_operation_response(
                 if let Some(amount) = op.pickup_gold() {
                     // Gold is NOT applied here: the server sends the
                     // authoritative running total in a 0x304E right before
-                    // this packet (verified 1:1 in captures), handled by
+                    // this packet, handled by
                     // `on_gold_update`. Adding `amount` on top double-counts,
                     // which reads as the pickup granting less than it should
                     // (each 0x304E then corrects the inflated value back
@@ -312,7 +312,36 @@ pub fn on_inventory_operation_response(
                         inventory.gain_item(item.clone());
                     }
                 } else {
-                    warn!("inventory: pickup payload not understood — capture 0xB034 for decode");
+                    warn!("inventory: pickup payload not understood — 0xB034 tail not decoded");
+                }
+            }
+            // Ops 35/36 — the avatar container. Both sides live in this
+            // component, so unlike the storage/guild/pet ops there is no other
+            // system that could hold them: applied right here.
+            (
+                Some(InventoryOperationResult::AvatarToInventory {
+                    source,
+                    target,
+                    amount,
+                }),
+                _,
+            ) => {
+                debug!("inventory: avatar {source} -> bag {target} (x{amount})");
+                for mut inventory in inventories.iter_mut() {
+                    inventory.apply_avatar_move(*source, *target, false);
+                }
+            }
+            (
+                Some(InventoryOperationResult::InventoryToAvatar {
+                    source,
+                    target,
+                    amount,
+                }),
+                _,
+            ) => {
+                debug!("inventory: bag {source} -> avatar {target} (x{amount})");
+                for mut inventory in inventories.iter_mut() {
+                    inventory.apply_avatar_move(*target, *source, true);
                 }
             }
             // store buys/sells/buybacks are applied by
@@ -336,6 +365,20 @@ pub fn on_inventory_operation_response(
                 ),
                 _,
             ) => {}
+            // guild-warehouse ops are applied by
+            // `hud::guild_storage::model::on_guild_storage_operation` — same
+            // division of labour as the personal storage ops above (that
+            // system holds both containers, this one only the bag)
+            (
+                Some(
+                    InventoryOperationResult::GuildStorageToGuildStorage { .. }
+                    | InventoryOperationResult::InventoryToGuildStorage { .. }
+                    | InventoryOperationResult::GuildStorageToInventory { .. }
+                    | InventoryOperationResult::InventoryGoldToGuildStorage { .. }
+                    | InventoryOperationResult::GuildStorageGoldToInventory { .. },
+                ),
+                _,
+            ) => {}
             // the pick-pet bag ops are applied by
             // `hud::cos::state::apply_cos_bag_ops` — ops 26/27 carry only two
             // slot numbers, so the moved item record is known only to the
@@ -350,8 +393,33 @@ pub fn on_inventory_operation_response(
                 ),
                 _,
             ) => {}
+            // The player-trade staging ops (4/5/13) change nothing in the bag:
+            // the item stays where it is until 0x3087 completes the trade
+            // (the completed trade moves the items *silently*, see
+            // `hud::exchange::model` header note 4). The trade
+            // pane itself is fed by the self-targeted 0x308C that arrives
+            // ~20 ms before this ack, in `hud::exchange::model`.
+            (
+                Some(
+                    InventoryOperationResult::InventoryToExchange { .. }
+                    | InventoryOperationResult::ExchangeToInventory { .. }
+                    | InventoryOperationResult::InventoryGoldToExchange { .. },
+                ),
+                _,
+            ) => {}
+            // Op 15 — the server says the slot is empty now. On this server
+            // it is the ONLY thing that removes a consumed stack: 0x3040
+            // never arrives, so
+            // without this a drunk-empty potion stack stays in the bag until
+            // relog.
+            (Some(InventoryOperationResult::SlotCleared { slot, reason }), _) => {
+                debug!("inventory: slot {slot} cleared (reason {reason:#04x})");
+                for mut inventory in inventories.iter_mut() {
+                    inventory.take_slot(*slot);
+                }
+            }
             (Some(InventoryOperationResult::Unknown { op, .. }), _) => {
-                warn!("inventory: unknown 0xB034 op {op:#04x} — capture for decode");
+                warn!("inventory: unknown 0xB034 op {op:#04x} — not decoded");
             }
             (None, error) => {
                 warn!("inventory: operation rejected (error {:?})", error);
@@ -409,10 +477,8 @@ fn body_wrapper(
 ///
 /// **A swap removes the outgoing piece here**, because the wire never mentions
 /// it: moving a bag item onto an occupied equipment slot produces a second
-/// 0x3038 for that slot and no 0x3039 at all (capture-verified — two equips
-/// into slot 1 at 22:15:10 and 22:15:25 in `packet_dump/0x3038.log` with
-/// nothing between them in `0x3039.log`, while an explicit unequip at 22:36
-/// does send one). Attaching without removing left the old armor on the body
+/// 0x3038 for that slot and no 0x3039 at all, while an explicit unequip does
+/// send one. Attaching without removing left the old armor on the body
 /// underneath the new one.
 #[allow(clippy::too_many_arguments)]
 pub fn on_entity_equip(
@@ -431,8 +497,8 @@ pub fn on_entity_equip(
     for msg in reader.read() {
         // 0x3038 is broadcast for everyone in range; resolve the local
         // player first, then nearby remote players by NetworkId. The packet
-        // carries no opt level (capture-verified: 10 bytes,
-        // uid|slot|ref|one_handed) — the local player's +N tier resolves
+        // carries no opt level (10 bytes, uid|slot|ref|one_handed) — the
+        // local player's +N tier resolves
         // later from the settled inventory slot; remote players' tier is
         // UNKNOWN on a live equip, so they get no +N shine/flare until
         // respawn (the spawn record does carry opt levels).
@@ -641,14 +707,16 @@ pub fn on_entity_unequip(
 
 #[cfg(test)]
 mod test {
+    use bytes::Bytes;
+    use packets::agent::character_data::{InventoryItem, ItemTypeData, RentInfo};
+
     use super::*;
-    use packets::agent::character_data::{ItemTypeData, RentInfo};
 
     /// A player holding one stack of `count` potions in slot 13.
     fn app_with_stack(count: u16) -> App {
         let mut app = App::new();
         let mut slots = vec![None; 45];
-        slots[13] = Some(packets::agent::character_data::InventoryItem {
+        slots[13] = Some(InventoryItem {
             slot: 13,
             rent: RentInfo::default(),
             ref_id: 4,
@@ -682,7 +750,7 @@ mod test {
             slots[AMMO_SLOT as usize] = Some(packets::agent::character_data::InventoryItem {
                 slot: AMMO_SLOT,
                 rent: RentInfo::default(),
-                ref_id: 62, // ITEM_ETC_AMMO_ARROW_01, from the live capture
+                ref_id: 62, // ITEM_ETC_AMMO_ARROW_01
                 data: ItemTypeData::Expendable {
                     stack_count,
                     assimilation_prob: None,
@@ -831,5 +899,56 @@ mod test {
             .write_message(ItemUseResponse::Error { code: 0x18A5 });
         app.update();
         assert_eq!(stack_at(&app, 13), Some(6));
+    }
+
+    /// The 0xB034 op-15 frame is the only thing this server sends to remove a
+    /// consumed stack — it never sends 0x3040 — so the ack has to empty the
+    /// slot. Driven through the real system with a real frame (slot 0x17).
+    ///
+    /// Note the second path to the same effect that arrived with the HUD QoL
+    /// pass: `on_item_consumed` applies the 0xB04C ack's own `remaining`
+    /// (tests above). Both are kept — op 15 is the server's *separate*
+    /// removal record and arrives without an ack of its own.
+    #[test]
+    fn op_15_empties_the_slot() {
+        let mut app = App::new();
+        app.add_message::<InventoryOperationResponse>()
+            .init_resource::<ClientItemData>()
+            .init_resource::<InventoryState>()
+            .add_systems(Update, on_inventory_operation_response);
+
+        let mut slots = vec![None; 45];
+        slots[0x17] = Some(InventoryItem {
+            slot: 0x17,
+            rent: RentInfo::default(),
+            ref_id: 4,
+            data: ItemTypeData::Expendable {
+                stack_count: 1,
+                assimilation_prob: None,
+                mag_params: vec![],
+            },
+        });
+        let player = app
+            .world_mut()
+            .spawn((
+                Player,
+                Inventory {
+                    slots,
+                    avatar_slots: vec![],
+                    gold: 0,
+                },
+            ))
+            .id();
+
+        let frame = Bytes::from_static(&[0x01, 0x0f, 0x17, 0x02]);
+        let response = InventoryOperationResponse::try_from(frame).unwrap();
+        app.world_mut().write_message(response);
+        app.update();
+
+        let inventory = app.world().get::<Inventory>(player).unwrap();
+        assert!(
+            inventory.get(0x17).is_none(),
+            "op 15 must clear the slot, else the drunk-empty stack stays until relog"
+        );
     }
 }

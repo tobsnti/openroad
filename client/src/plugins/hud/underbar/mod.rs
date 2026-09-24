@@ -38,7 +38,10 @@ impl Plugin for UnderbarPlugin {
                     model::seed_quickslots_from_character_info,
                     model::on_experience_gain,
                     model::on_sp_update,
-                    ui::handle_slot_keys,
+                    // digits typed into any text box (the split box's amount)
+                    // are not quickslot presses
+                    ui::handle_slot_keys
+                        .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
                     cast::dispatch_item_use,
                     cast::log_item_use_response,
                     cast::play_item_use_effect,
