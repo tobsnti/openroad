@@ -558,6 +558,7 @@ packets! {
     // PartyMatchListRequest, which already owns that number.
     0x30C8 => PetData,
     0x30C9 => PetUpdate,
+    0x30CA => PetStateUpdate,
     0x30E7 => StuckDistanceWarning,
     0xB0C5 => PetActionResponse,
     0xB0C6 => PetTerminateResponse,

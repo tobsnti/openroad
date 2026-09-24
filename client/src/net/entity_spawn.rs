@@ -594,7 +594,7 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
         if kind != CosKind::GrabPet {
             let _pvp_state = r.u8()?;
         }
-        if kind == CosKind::Fellow {
+        if kind == CosKind::GuildGuard {
             let _owner_obj_id = r.u32()?;
         }
         owner_uid = Some(r.u32()?);
@@ -1195,7 +1195,7 @@ mod test {
             (
                 GUARD_REF,
                 RefType::Cos {
-                    kind: CosKind::Fellow,
+                    kind: CosKind::GuildGuard,
                 },
             ),
         ]);
@@ -1242,7 +1242,7 @@ mod test {
         assert_eq!(
             parsed.spawns[2].kind,
             SpawnKind::Cos {
-                kind: CosKind::Fellow,
+                kind: CosKind::GuildGuard,
                 pet_name: None,
                 owner_name: Some("GuildMate".into()),
                 owner_uid: Some(1002),

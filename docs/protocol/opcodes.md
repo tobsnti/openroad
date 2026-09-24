@@ -466,6 +466,7 @@ settings word and `0xB0C5` follow the binaries alone and are unconfirmed.
 |---|---|---|---|---|
 | `0x30C8` | PetData | S→C | experimental | header only; the tail layout is chosen by the model's `tid4`, which is not in the body — read through `PetData::body` |
 | `0x30C9` | PetUpdate | S→C | experimental | all seven arms modelled (`PetUpdatePayload`). Arm 3 is `{i64 exp_delta, u32 source_uid}` — **signed**, a death subtracts. Arm 2's item records need the itemdata resolver, so they are read through `PetUpdate::bag_items` |
+| `0x30CA` | PetStateUpdate | S→C | experimental | `{u32 uid, u8 mask}` plus one byte per set mask bit. The two bits are not confirmed: `COS_STATE_MASK_A/B` = 0x01/0x02 are the lowest bits of the only mask value we know, 0x03, so the *reader* is honest about the frame's width while the meaning of the bytes is not claimed |
 | `0x30E7` | StuckDistanceWarning | S→C | experimental | one reason byte; not COS-only (1 = job trade cart, 2 = quest monster). The distances the original prints are its own literals |
 | `0xB0C5` | PetActionResponse | S→C | experimental | 0x70C5 ack. The error code sits **between** the action echo and the uid, so the uid's offset moves with `result`; `item_gid` only on action 8 |
 | `0xB0C6` | PetTerminateResponse | S→C | experimental | success body empty; the guard is `result != 1`, not `== 2` |
@@ -480,8 +481,8 @@ settings word and `0xB0C5` follow the binaries alone and are unconfirmed.
 | `0x7117` | PetRenameRequest | C→S | experimental | `{u32, string}` (`IFCOSInfo.cpp`) |
 | `0x7420` | PetSettingsChangeRequest | C→S | experimental | shape from the vSRO server's own reader (`u32, u8, u32`), not from a client builder |
 
-Deliberately **not** wired: `0x30CA` and `0xB0C7` have known layouts but unknown
-semantics, so nothing could drive them honestly; `0x70C0`/`0x70C7` likewise.
+Deliberately **not** wired: `0xB0C7` has a known layout but unknown semantics,
+so nothing could drive it honestly; `0x70C0`/`0x70C7` likewise.
 `0x706C CLIENT_PET_DESTROY` shares its number with `PartyMatchListRequest` above,
 and one opcode maps to one type.
 
