@@ -21,6 +21,7 @@ use crate::plugins::config::ClientConfig;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::effects::EffectCommandsExt;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
+use crate::plugins::hud::cos::state::{CosState, HGP_FULL};
 use crate::plugins::hud::toast::{ShowToast, ToastKind};
 use crate::plugins::hud::underbar::model::SlotAction;
 use crate::plugins::net::agent::AgentConnection;
@@ -128,6 +129,60 @@ fn unpack_type_id(word: u16) -> (u32, u32, u32, u32) {
     )
 }
 
+/// `TypeID4` of the pet-food class — a **singleton class**: exactly one of the
+/// 12,052 shipped itemdata rows has the tuple `(3,3,1,9)`,
+/// `ITEM_COS_P_HGP_POTION_01` (id 7553, `itemdata_10000.txt`), packed `0x48EC`.
+/// The original's builder switches its body on this very nibble
+/// (`switch(type_id >> 0xB & 0x1F)`), i.e. the class selector is `TypeID4`.
+const ITEM_TID4_COS_HGP_POTION: u32 = 9;
+
+/// `UIIT_MSG_COSPETERR_HGPFULL_NODRINK` (`textdata/textuisystem.txt`, English
+/// column) — the sentence the original itself produces *before* sending, in
+/// its `TypeID4 == 9` arm.
+const HGP_FULL_KEY: &str = "UIIT_MSG_COSPETERR_HGPFULL_NODRINK";
+const HGP_FULL_FALLBACK: &str = "HGP recovery potion cannot be used because the pet is not hungry.";
+
+/// Why the pet-food potion is not put on the wire from here.
+///
+/// Two reasons, both from the original's own `TypeID4 == 9` arm:
+///
+/// 1. **The original refuses it locally when the pet is not hungry** — it reads
+///    the active COS's HGP (`u16 @ +0x10 / 10000`, the same per-10,000 value
+///    `hud::cos::state` stores) and answers with its own string instead of
+///    sending. So do we.
+/// 2. **This class carries a tail we cannot fill yet.** `TypeID4 == 9` builds
+///    `slot, type_id, u32 target, u8 kind`, i.e. `ItemUseRequest::WithTarget`.
+///    The target is the summon, but the value of the `kind` byte for a COS
+///    target is unknown: every direct caller of the builder passes `-1`.
+///    Sending the 3-byte `Simple` body instead would be exactly the short body
+///    #454 suspects behind the connection reset — so this refuses instead of
+///    guessing, and says what would close it.
+enum FoodRefusal {
+    /// Show the original's own sentence.
+    NotHungry,
+    /// Log only: there is no vanilla string for "our client cannot build this
+    /// body", and inventing one would be the defect.
+    TailUnknown,
+}
+
+fn food_refusal(t4: u32, cos: Option<&CosState>) -> Option<FoodRefusal> {
+    if t4 != ITEM_TID4_COS_HGP_POTION {
+        return None;
+    }
+    // `active_pet`: the HGP potion feeds the pet the pet windows act on — the
+    // attack pet if one is out, else the pick pet (`CosState`, which is a list
+    // since more than one COS can be out).
+    let full = cos
+        .and_then(|state| state.active_pet())
+        .and_then(|cos| cos.hgp)
+        .is_some_and(|hgp| hgp >= HGP_FULL);
+    Some(if full {
+        FoodRefusal::NotHungry
+    } else {
+        FoodRefusal::TailUnknown
+    })
+}
+
 /// Resolve a [`UseItemRequest`] to the 0x704C ItemUseRequest and send it: find
 /// the item's current slot in the live [`Inventory`] (which tracks
 /// server-confirmed moves/consumption, so the slot stays correct after the
@@ -148,6 +203,9 @@ pub fn dispatch_item_use(
     mut gate: ResMut<ItemUseGate>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     mut history: ResMut<ChatHistory>,
+    // The pet-food arm: the COS's HGP and the original's own sentence for it.
+    cos: Option<Res<CosState>>,
+    ui_strings: Option<Res<ClientUiStrings>>,
 ) {
     for request in requests.read() {
         let Ok(inventory) = inventories.single() else {
@@ -210,6 +268,30 @@ pub fn dispatch_item_use(
                 history.push(ChatLine::system(notice));
                 continue;
             }
+        }
+        // The pet-food class answers itself, as the original does
+        // (see [`food_refusal`]).
+        match food_refusal(t4, cos.as_deref()) {
+            Some(FoodRefusal::NotHungry) => {
+                let text = ui_strings
+                    .as_deref()
+                    .map_or(HGP_FULL_FALLBACK, |s| {
+                        s.get_or(HGP_FULL_KEY, HGP_FULL_FALLBACK)
+                    })
+                    .to_string();
+                history.push(ChatLine::system(text));
+                continue;
+            }
+            Some(FoodRefusal::TailUnknown) => {
+                info!(
+                    "underbar: not sending the HGP potion (ref {}) — its class wants \
+                     `WithTarget` (target + kind); the kind byte for a COS target is still \
+                     unmeasured (resolve the forwarder's caller in the original)",
+                    request.ref_id
+                );
+                continue;
+            }
+            None => {}
         }
         let Ok(conn) = conn.single() else {
             warn!("underbar: not using item, no agent connection");
@@ -411,6 +493,66 @@ pub fn play_item_use_effect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pet-food class is the only one this gate touches, and its two
+    /// outcomes are distinguished by the COS's own HGP. Positive control in
+    /// the same test: the wired HP potion (`TypeID4 = 1`, packed `0x08EC`)
+    /// must pass through untouched — otherwise this guard would silently
+    /// swallow every potion.
+    #[test]
+    fn only_the_pet_food_class_is_refused_and_full_hgp_names_the_reason() {
+        use crate::plugins::hud::cos::state::{Cos, CosState};
+        use packets::agent::pet::{CosBody, CosKind};
+
+        // A one-element list, because `CosState` holds every COS that is out;
+        // `food_refusal` reaches the one it means through `active_pet`, which
+        // this `GrowthPet` kind satisfies. `exp`/`level` are the no-growth-block
+        // seeding (`summon_seed` with `growth: None`) — this gate reads neither.
+        let with_hgp = |hgp: Option<u16>| CosState {
+            cos: vec![Cos {
+                unique_id: 1,
+                ref_obj_id: 2,
+                kind: CosKind::GrowthPet,
+                body: CosBody {
+                    hp: 0,
+                    unk_b: 0,
+                    growth: None,
+                    unk_f: None,
+                    name: None,
+                    inventory_size: 0,
+                    items: Vec::new(),
+                    unk_g: None,
+                    unk_h: None,
+                },
+                hgp,
+                exp: 0,
+                level: None,
+            }],
+        };
+
+        // TypeID4 1 (HP potion), 4 (COS HP potion) and 8 (Hwan) are not ours.
+        for other in [1u32, 2, 3, 4, 6, 8, 10] {
+            assert!(food_refusal(other, Some(&with_hgp(Some(HGP_FULL)))).is_none());
+        }
+        // Full HGP: the original's own sentence.
+        assert!(matches!(
+            food_refusal(ITEM_TID4_COS_HGP_POTION, Some(&with_hgp(Some(HGP_FULL)))),
+            Some(FoodRefusal::NotHungry)
+        ));
+        // Hungry, or no COS state at all: not a "not hungry" refusal — what
+        // stops the send there is the unmeasured `kind` byte.
+        assert!(matches!(
+            food_refusal(
+                ITEM_TID4_COS_HGP_POTION,
+                Some(&with_hgp(Some(HGP_FULL / 2)))
+            ),
+            Some(FoodRefusal::TailUnknown)
+        ));
+        assert!(matches!(
+            food_refusal(ITEM_TID4_COS_HGP_POTION, None),
+            Some(FoodRefusal::TailUnknown)
+        ));
+    }
 
     /// The item-use effect picks its table entry from the ack's own `type_id`,
     /// so the unpack has to be the exact inverse of the pack — a shifted field
