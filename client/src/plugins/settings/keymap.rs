@@ -337,6 +337,12 @@ pub const KEY_COS_FOLLOW: u16 = 3019;
 pub const KEY_COS_ATTACK: u16 = 3020;
 /// Offensive/defensive toggle.
 pub const KEY_COS_AI_TYPE: u16 = 3021;
+/// Opens the community window (`KeyCommunity`, `U` by default).
+pub const KEY_COMMUNITY: u16 = 3007;
+/// Reply to the newest whisper: opens the chat input prefilled with `$sender `
+/// (`hud/chat/input.rs`). `SROptionSet.dat` (two real files, byte-identical)
+/// id 3023 = `0x52` = `R`.
+pub const KEY_REPLY_WHISPER: u16 = 3023;
 
 /// Win32 VK code ↔ [`KeyCode`]. One table, both directions, so they cannot drift.
 ///

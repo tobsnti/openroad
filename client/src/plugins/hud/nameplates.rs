@@ -10,6 +10,8 @@
 //! component, set at spawn for players (packet name) and NPCs/monsters
 //! (localized characterdata name).
 
+use std::collections::HashSet;
+
 use bevy::ecs::system::SystemParam;
 use bevy::light::NotShadowCaster;
 use bevy::log::warn_once;
@@ -28,6 +30,7 @@ use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::net::entities::{
     DisplayName, DropRarity, RemoteEntity, SealDrop, UniqueMonster,
 };
+use crate::plugins::net::party::PartyRoster;
 use crate::plugins::net::stall::StallOwner;
 use crate::plugins::player::Player;
 use crate::plugins::settings::keymap::KEY_VIEW_DROP_ITEM;
@@ -143,6 +146,12 @@ pub struct NameplateInput<'w> {
     chat: Res<'w, ChatState>,
     config: Res<'w, crate::plugins::config::ClientConfig>,
     time: Res<'w, Time>,
+    /// `Option` on purpose: the roster belongs to the networking core
+    /// (`plugins::net::party`), and the offline preview scenes that also show
+    /// nameplates build no network plugins at all — a plain `Res` would fail
+    /// parameter validation and panic the schedule there. No roster simply
+    /// means no party colouring.
+    party: Option<Res<'w, PartyRoster>>,
 }
 
 fn drop_item_names_held(
@@ -190,6 +199,10 @@ fn sub_lines_text(
 
 /// The label colour per entity kind, from the configurable [`NameplateColors`].
 ///
+/// `party` marks a *player* the local [`PartyRoster`] lists (see
+/// [`party_member_names`]); it is ignored for every other kind, so a
+/// same-named monster cannot borrow the party colour.
+///
 /// Ground drops follow the same precedence the inventory tooltip uses for an
 /// item's name (`inventory/tooltip.rs`): gold for Seal-grade, else blue when
 /// the drop carries magic ("blue") options, else plain. The two inputs come
@@ -201,6 +214,7 @@ fn label_color(
     colors: &NameplateColors,
     kind: RemoteEntity,
     unique: bool,
+    party: bool,
     drop: Option<&DropRarity>,
     seal: bool,
 ) -> Color {
@@ -208,11 +222,39 @@ fn label_color(
         RemoteEntity::Monster if unique => colors.unique_monster,
         RemoteEntity::Monster => colors.monster,
         RemoteEntity::Npc => colors.npc,
+        RemoteEntity::Player if party => colors.party,
         RemoteEntity::Player => colors.player,
         RemoteEntity::Item if seal => colors.item_rare,
         RemoteEntity::Item if drop.is_some_and(DropRarity::has_options) => colors.item_magic,
         RemoteEntity::Item => colors.item,
     }
+}
+
+/// The party members' names, for the colour lookup above.
+///
+/// The roster is keyed by the server's member id (JID) while a spawned entity
+/// carries a per-sighting `NetworkId`, and no packet correlates the two — so
+/// the name is the only join key we have, exactly as the `/partyinvite`
+/// resolution in `hud::chat::input` already does it. Consequence, stated
+/// rather than hidden: a party member out of spawn range simply has no plate,
+/// and two players sharing a name would share the colour (the server
+/// enforces unique character names, so this is theoretical).
+///
+/// The local player is in the roster too (0x3065 sends the full party), but
+/// its plate is drawn by the separate own-name branch with
+/// `colors.local_player`, so it never reaches this set.
+fn party_member_names(roster: Option<&PartyRoster>) -> HashSet<&str> {
+    roster
+        .map(|roster| {
+            roster
+                .members
+                .iter()
+                // A record whose presence mask never named a name has none:
+                // `filter_map` drops it instead of colouring an empty plate.
+                .filter_map(|member| member.name.as_deref())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn spawn_nameplate_pool(
@@ -398,6 +440,7 @@ pub fn update_nameplates(
     let show_guild = toggle_on(&options, OPT_GUILD_NAME);
     let show_dropped_items = drop_item_names_held(&input.keys, &options, input.chat.input_open);
     let hover_bold = input.config.nameplates.hover_bold;
+    let party_names = party_member_names(input.party.as_deref());
 
     // A COS spawns as an NPC to inherit movement/selection/plates, so the
     // mount you are riding would otherwise carry a plate right under the
@@ -434,7 +477,14 @@ pub fn update_nameplates(
         visible.push((
             px,
             name.0.clone(),
-            label_color(&colors, *kind, unique, drop, seal),
+            label_color(
+                &colors,
+                *kind,
+                unique,
+                party_names.contains(name.0.as_str()),
+                drop,
+                seal,
+            ),
             underlined(entity),
             sub_lines_text(guild.filter(|_| show_guild), stall, cos_owner),
         ));
@@ -687,6 +737,74 @@ mod tests {
         assert_eq!(
             sub_lines_text(Some(&guild), Some(&stall), None),
             "\nNomads\nCheap elixirs"
+        );
+    }
+
+    /// Party awareness: a party member's plate takes the party colour,
+    /// a stranger's stays the plain player colour, and no other kind is
+    /// affected by roster membership.
+    #[test]
+    fn party_members_get_the_party_colour_and_nobody_else_does() {
+        let colors = NameplateColors::default();
+        assert_ne!(colors.party, colors.player);
+
+        assert_eq!(
+            label_color(&colors, RemoteEntity::Player, false, true, None, false),
+            colors.party
+        );
+        assert_eq!(
+            label_color(&colors, RemoteEntity::Player, false, false, None, false),
+            colors.player
+        );
+        // membership must not leak into the other kinds
+        assert_eq!(
+            label_color(&colors, RemoteEntity::Npc, false, true, None, false),
+            colors.npc
+        );
+        assert_eq!(
+            label_color(&colors, RemoteEntity::Monster, false, true, None, false),
+            colors.monster
+        );
+        assert_eq!(
+            label_color(&colors, RemoteEntity::Monster, true, true, None, false),
+            colors.unique_monster
+        );
+    }
+
+    /// The roster is joined by name (there is no id correlation on the wire),
+    /// and an absent roster — offline preview scenes — colours nobody.
+    #[test]
+    fn party_member_names_come_from_the_roster_and_default_to_empty() {
+        use crate::plugins::net::party::tests::{core, party_data};
+
+        assert!(party_member_names(None).is_empty());
+
+        let mut roster = PartyRoster::default();
+        roster.apply_data(&party_data(vec![core(1, "Alice", 25000)]));
+        let names = party_member_names(Some(&roster));
+        assert!(names.contains("Alice"));
+        assert!(!names.contains("Bob"));
+    }
+
+    /// The colour is a config key with a *sourced* default: `FF9AFFD0` is the
+    /// original's compiled PARTY chat colour (jump table, case 4). Nameplates
+    /// have no colour table of their own, so the borrowing is deliberate and
+    /// must stay overridable.
+    #[test]
+    fn the_party_colour_is_configurable_and_defaults_to_the_clients_party_colour() {
+        use crate::plugins::config::chat::parse_argb;
+        let defaults = NameplateSettings::default();
+        assert_eq!(defaults.colors.party, "FF9AFFD0");
+        assert_eq!(
+            defaults.colors.resolved().party,
+            parse_argb("FF9AFFD0").unwrap()
+        );
+
+        let custom: NameplateSettings = serde_yaml::from_str("colors:\n  party: \"FF00FF00\"")
+            .expect("nameplate settings parse");
+        assert_eq!(
+            custom.colors.resolved().party,
+            parse_argb("FF00FF00").unwrap()
         );
     }
 

@@ -270,7 +270,7 @@ The record arrives chunked (BEGIN → DATA… → END) and is parsed once assemb
 | `0x34B3` | GuildDataBegin | S→C | experimental | marker; whether it carries a prefix is unknown |
 | `0x3101` | GuildDataBody | S→C | experimental | one chunk, raw; assemble then `GuildData::parse` |
 | `0x34B4` | GuildDataEnd | S→C | experimental | marker |
-| `0x30FF` | GuildPlayerLog | S→C | wired | **the original does have a parser**: `u32 gid`, `u32 guild_id`, `u16+N guild name`, then **only if the name length ≠ 0** `u16+M grant name`, `u32 crest rev`, `u32 union id`, `u32 union crest rev`, `u8 fortress position` (a **bit-valued** enum: 1 commander, 2 sub-commander, 4 battle-manager, 8 product-manager, 0x10 trainer-manager, 0x20 engineer) and `u8 relation flag`. It is a guild-tag update, not an activity log |
+| `0x30FF` | EntityGuildUpdate | S→C | wired | **the original does have a parser**: `u32 gid`, `u32 guild_id`, `u16+N guild name`, then **only if the name length ≠ 0** `u16+M grant name`, `u32 crest rev`, `u32 union id`, `u32 union crest rev`, `u8 fortress position` (a **bit-valued** enum: 1 commander, 2 sub-commander, 4 battle-manager, 8 product-manager, 0x10 trainer-manager, 0x20 engineer) and `u8 relation flag`. It is a guild-tag update, not an activity log |
 | `0x38F5` | GuildUpdate | S→C | experimental | `update_type` only; per-type payload raw |
 | `0xB0F0` | GuildCreatedData | S→C | experimental | success + the same record inline |
 | `0x70F9` | GuildNoticeEditRequest | C→S | experimental | title + message |
@@ -304,10 +304,11 @@ confirmed on the wire, so all are `experimental`.
 ### Guild union / alliance
 
 Requests and acks share the same handler cluster as the guild ack form above.
-`0x3102` (union roster push) stays unwired — its record was never decoded.
+`0x3102` (the union roster push) is decoded from the original's own handler.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
+| `0x3102` | UnionRoster | S→C | experimental | union roster push; decoded from the original's handler |
 | `0x70FB` | UnionInviteRequest | C→S | experimental | target-addressed `u32`, like the guild invite |
 | `0x70FC` | UnionLeaveRequest | C→S | experimental | **empty body** — a real layout, not a missing one |
 | `0x70FD` | UnionExpelRequest | C→S | experimental | one `u32`; guild or its master is unknown |
@@ -368,8 +369,7 @@ they are carried as `unk_*`; outside a war they are all zero. Arithmetic:
 ## Party (wire only — no consumer yet, see EP-14)
 
 Read from the original client's parser and builder; none of them is confirmed
-on the wire, so all are `experimental`. `0xB067` stays unwired because its body
-is recorded nowhere.
+on the wire, so all are `experimental`.
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
@@ -383,7 +383,7 @@ is recorded nowhere.
 | `0x706A` | PartyMatchEditedRequest | C→S | experimental | **SPEC only** — no original-client builder |
 | `0x706B` | PartyMatchDeleteRequest | C→S | experimental |  |
 | `0x706C` | PartyMatchListRequest | C→S | experimental | number shared with CLIENT_PET_DESTROY |
-| `0x706D` | PartyMatchJoinNotify | S→C | experimental | bidirectional opcode; only the S→C notify is registered |
+| `0x706D` | PartyMatchJoin | S→C | experimental | bidirectional opcode with two unrelated bodies; one codec serves both, as for `0x3080` |
 | `0xB069` | PartyMatchCreationResponse | S→C | experimental | **SPEC only** — no original-client parser |
 | `0xB06A` | PartyMatchEditedResponse | S→C | experimental | **SPEC only** — no original-client parser |
 | `0xB06B` | PartyMatchDeleteResponse | S→C | experimental | number present only on success |
@@ -391,6 +391,7 @@ is recorded nowhere.
 | `0x3068` | PartyDistribution | S→C | experimental | item handed to a member; the tail's width is the ITEM's class, read behind a resolver |
 | `0xB060` | PartyCreateResponse | S→C | experimental | the **create** ack (not the invite ack — attribution corrected); JID on success, `u16` code on failure |
 | `0xB062` | PartyInviteResponse | S→C | experimental | the invite ack; empty on success, the invitation itself is `0x3080` |
+| `0xB067` | PartyJoinResponse | S→C | experimental | the join ack; its body is read from the wire |
 | `0xB06D` | PartyMatchJoinAck | S→C | experimental | branches on `result == 1`, not `== 2` — both tails are `u16` |
 
 ## Quest marks (wire only — the quest system itself is not built yet)

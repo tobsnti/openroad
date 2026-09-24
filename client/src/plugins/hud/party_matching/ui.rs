@@ -36,14 +36,13 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
-use packets::agent::party::{PartyMatchDeleteRequest, PartyMatchListRequest, PartySetup};
+use packets::agent::party::{
+    PartyMatchDeleteRequest, PartyMatchJoin, PartyMatchListRequest, PartySetup,
+};
 use packets::Packet;
-
-use bytes::Bytes;
 
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
-use crate::net::frame::SilkroadFrame;
 use crate::plugins::hud::game_window::{self, abs_node};
 use bevy::log::warn_once;
 
@@ -1077,28 +1076,17 @@ fn send(conn: &Query<&SilkroadConnection, With<AgentConnection>>, packet: Packet
 
 /// 0x706D outbound — "let me into party `number`".
 ///
-/// Built as a frame rather than as a `Packet` because `packets!` maps **one
-/// type per opcode** and 0x706D's registration belongs to the inbound
-/// `PartyMatchJoinNotify`: the opcode is genuinely bidirectional with two
-/// different bodies, and an unparsed *inbound* packet is the failure that costs
-/// something. The outbound body is a bare `u32`, so it is emitted directly with
-/// the same field values `Into<SilkroadFrame> for Packet` uses — the send path
-/// fills in count, crc and encryption afterwards.
+/// This used to hand-build a `SilkroadFrame` with a literal `0x706D` and four
+/// raw bytes, because `packets!` maps **one type per opcode** and the
+/// registration belonged to the inbound struct. It does not any more: the
+/// registry maps [`PartyMatchJoin`], one hand-written codec that decodes the
+/// inbound notify and encodes this outbound request, so the opcode number and
+/// the body layout live in the packet layer where every other opcode's do.
+/// (The threshold on that construction is written at the enum: at the THIRD
+/// genuinely two-way opcode, `packets!` gets a direction axis and both
+/// hand-written codecs move onto it.)
 fn send_join_request(conn: &Query<&SilkroadConnection, With<AgentConnection>>, number: u32) {
-    let Ok(conn) = conn.single() else {
-        warn!("party match: no agent connection");
-        return;
-    };
-    let frame = SilkroadFrame::Packet {
-        count: 0,
-        crc: 0,
-        opcode: 0x706D,
-        encrypted: 0,
-        data: Bytes::copy_from_slice(&number.to_le_bytes()),
-    };
-    if let Err(e) = conn.get_sender().send(frame) {
-        error!("network: failed to send party match join: {}", e.0);
-    }
+    send(conn, Packet::from(PartyMatchJoin::Request { number }));
 }
 
 /// Reopen the board when the roster page's "Party match" button asks.

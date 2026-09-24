@@ -44,10 +44,15 @@ pub enum ChatLineKind {
 }
 
 impl ChatLineKind {
-    /// Line color from the user-configurable palette (`config.yaml` `chat.colors`).
+    /// Line color from the user-configurable palette (`config.yaml`
+    /// `chat.colors`), whose defaults are the original client's compiled
+    /// per-`chat_type` table. The
+    /// groupings mirror that switch: GM chat and notices share one case there,
+    /// stall falls to the white default, and NPC has its own colour.
     pub fn color(self, colors: &ChatColors) -> Color {
         match self {
-            ChatLineKind::All | ChatLineKind::Npc | ChatLineKind::Stall => colors.normal,
+            ChatLineKind::All | ChatLineKind::Stall => colors.normal,
+            ChatLineKind::Npc => colors.npc,
             ChatLineKind::AllGm | ChatLineKind::Notice | ChatLineKind::System => colors.gm_notice,
             ChatLineKind::Global => colors.global,
             ChatLineKind::Party => colors.party,
@@ -232,7 +237,7 @@ pub struct ChatState {
     /// `/r`, `/re`, `/R` spellings, textuisystem L672-675) needs. The original
     /// keeps this state too; nothing in the data says whether it survives a
     /// zone change or is cleared on logout, so we simply keep the newest
-    /// sender for the session (`docs/re/ui/hud-chat.md` §6-11).
+    /// sender for the session.
     pub last_whisper_from: Option<String>,
     /// Which channel an unprefixed line is sent on — the 2009 chat-mode
     /// dropdown's selection (`GDR_CHAT_MODE_*`), not the tab being read.

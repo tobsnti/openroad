@@ -326,6 +326,29 @@ mod tests {
         assert!(config.diagnostics_enabled());
     }
 
+    /// The shipped example file is what the documented setup copies to
+    /// `config.yaml`, so every colour written in it *replaces* the built-in
+    /// default at runtime. Drift between the two therefore ships a palette
+    /// the code's own docs do not describe — and it had drifted: four chat
+    /// colours still carried the invented values that predate the sourced
+    /// table, and `chat.colors.npc` and `nameplates.colors.party` were missing
+    /// entirely, so a user who followed the README got neither the original's
+    /// NPC purple nor its party colour.
+    #[test]
+    fn the_example_files_colours_are_the_built_in_defaults() {
+        let config = example_config();
+        assert_eq!(
+            config.chat.colors,
+            super::chat::ChatColorSettings::default(),
+            "config.example.yaml's chat colours drifted from the defaults"
+        );
+        assert_eq!(
+            config.nameplates.colors,
+            super::nameplates::NameplateColorSettings::default(),
+            "config.example.yaml's nameplate colours drifted from the defaults"
+        );
+    }
+
     /// The whole `config.example.yaml` must deserialize into [`ClientConfig`]
     /// through the *same* loader `main()` uses.
     ///

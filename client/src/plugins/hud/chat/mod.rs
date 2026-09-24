@@ -39,6 +39,7 @@ impl Plugin for ChatPlugin {
                     // closes the chat input (the toggle checks `input_open`)
                     input::handle_chat_enter
                         .after(crate::plugins::system_window::toggle_system_window),
+                    input::reply_to_last_whisper_shortcut,
                     input::refresh_whisper_panel,
                     ui::update_chat_tab_visuals,
                     ui::update_chat_mode_popup,

@@ -11,7 +11,8 @@ use bevy::prelude::*;
 
 use packets::agent::party::{
     PartyData, PartyMatchCreationResponse, PartyMatchDeleteResponse, PartyMatchEditedResponse,
-    PartyMatchEntry, PartyMatchJoinAck, PartyMatchJoinNotify, PartyMatchListResponse,
+    PartyMatchEntry, PartyMatchJoin, PartyMatchJoinAck, PartyMatchJoinNotify,
+    PartyMatchListResponse,
 };
 
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
@@ -258,12 +259,20 @@ pub fn on_match_list(
 }
 
 /// 0x706D inbound — somebody wants to join the party we advertised.
+/// 0x706D travels **both ways** with two unrelated bodies, so the registry maps
+/// the one type that covers both ([`PartyMatchJoin`]) rather than the inbound
+/// struct alone. Decoding only ever yields the notify arm — the client never
+/// receives its own request — but destructuring it here is what makes that
+/// explicit instead of assumed.
 pub fn on_join_request(
-    mut reader: MessageReader<PartyMatchJoinNotify>,
+    mut reader: MessageReader<PartyMatchJoin>,
     mut state: ResMut<PartyMatchState>,
 ) {
     for message in reader.read() {
-        state.dialog = MatchDialog::ReqJoin(Box::new(message.clone()));
+        let PartyMatchJoin::Notify(notify) = message else {
+            continue;
+        };
+        state.dialog = MatchDialog::ReqJoin(Box::new(notify.clone()));
     }
 }
 

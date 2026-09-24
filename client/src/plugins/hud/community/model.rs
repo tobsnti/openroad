@@ -12,7 +12,7 @@
 //! CHATTING_BLOCKING_SYSTEM` / `#else #ifdef WHISPER_BLOCKING_SYSTEM`; both
 //! symbols are defined in `config/define.txt`, so the **first** branch wins and
 //! `GDR_COMMUNITY_BLOCKING:CIFBlocking` (id 15) is the live page, while
-//! `CIFWhisperBlocking` is dead (`docs/re/ui/hud-guild-window.md:52`).
+//! `CIFWhisperBlocking` is dead.
 
 use bevy::prelude::*;
 
@@ -85,12 +85,9 @@ pub struct CommunityState {
 }
 
 impl Default for CommunityState {
-    /// The data has no selection key at all, so whichever page the shell opens
-    /// on is a code-side choice rather than a vanilla default. Mail is the
-    /// retained one: it was picked when it was the only page with a body, and
-    /// Guild rendering too is no reason to move it, because the entry points
-    /// that mean a specific page now say so — the under-bar menu's Guild row
-    /// sets `page` before it opens the shell (`underbar/menu_popup.rs`).
+    /// Mail is the only page with a body today, so it is what the shell opens
+    /// on — a code-side choice, not a vanilla default (the data has no
+    /// selection key at all).
     fn default() -> Self {
         Self {
             open: false,
@@ -110,5 +107,24 @@ mod test {
     fn page_ids_match_ifcommunity() {
         let ids: Vec<u16> = CommunityPage::ALL.iter().map(|p| p.id()).collect();
         assert_eq!(ids, vec![10, 11, 12, 13, 14, 15]);
+    }
+}
+
+/// `KeyCommunity` (`U` by default) toggles the window.
+///
+/// Same story as the action window: the Key Map tab offered the binding and
+/// nothing read the id, so the key was dead. See
+/// `settings::keymap::KEY_COMMUNITY`.
+pub fn toggle_community_window(
+    keys: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
+    chat: Res<crate::plugins::hud::chat::model::ChatState>,
+    options: Res<crate::plugins::settings::options::GameOptions>,
+    mut state: ResMut<CommunityState>,
+) {
+    let Some(key) = options.key_for(crate::plugins::settings::keymap::KEY_COMMUNITY) else {
+        return;
+    };
+    if keys.just_pressed(key) && !chat.input_open {
+        state.open = !state.open;
     }
 }
