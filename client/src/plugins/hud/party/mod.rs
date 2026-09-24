@@ -1,3 +1,24 @@
+//! The party roster window (P) — `ifparty.txt`'s `GDR_PARTY` page.
+//!
+//! Idea: the whole party wire side lands in
+//! [`crate::plugins::net::party::PartyRoster`] (0x3065 full roster + 0x3864
+//! deltas) and this window is the *reader*: it owns no party state, sends no
+//! packet of its own except the player's own verbs, and repaints purely off
+//! `PartyRoster`'s change detection. The direction of the dependency matters —
+//! `plugins/net/**` must keep running headless, so the HUD reads the net
+//! resource and never the other way round (AGENTS.md).
+//!
+//! Layout, art and colours are transcribed from the PK2
+//! (`resinfo/ifparty.txt`, `resinfo/ifpartyslot.txt`); `ui.rs` names the origin
+//! of every constant and the deliberate deviations (window shell,
+//! y-rebase).
+//!
+//! Note: this page used to auto-open the first time a party existed,
+//! because membership was otherwise invisible until somebody pressed P. That
+//! deviation's premise is gone — the always-on quick-party board
+//! (`hud/quick_party.rs`, `ginterface.txt:683` `GDR_QUICKPARTYBOARD`) is built
+//! now — so the page is a plain toggle again, like the original's.
+
 pub mod mode_modal;
 pub mod model;
 pub mod ui;

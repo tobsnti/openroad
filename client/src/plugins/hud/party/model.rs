@@ -20,8 +20,7 @@ use crate::plugins::settings::options::GameOptions;
 
 /// Rows the board draws: one pinned leader row plus seven slots. Eight is also
 /// the party's own maximum, confirmed three independent ways — the EXP-shared
-/// capacity rule, this 1+7 layout, and the dead legacy tree's `PNAME0..7`
-/// (`docs/re/ui/hud-party-window.md` §3h).
+/// capacity rule, this 1+7 layout, and the dead legacy tree's `PNAME0..7`.
 pub const PARTY_ROWS: usize = 8;
 
 /// Whether the party window is up. Toggled by `KeyParty` and by the under-bar
@@ -130,15 +129,23 @@ pub fn roster_rows(roster: &PartyRoster) -> Vec<Option<&PartyMemberCore>> {
     rows
 }
 
-/// The local player's own party JID, found by name.
+/// The local player's own party JID.
 ///
-/// The client is never told its own JID: 0x3065 names the *leader*, not "you",
-/// and the party wire shares no id with the entity stream. So the only join
-/// available is the character name, which is the same one
-/// [`quick_party_rows`], the map markers and the party-chat echo filter all
-/// use. `None` when the roster has not named us — a partial presence mask is
-/// enough for that.
+/// "The client is never told its own JID" was this function's premise, and it is
+/// **wrong**: 0xB060 (party created) and 0xB067 (party joined) both carry it in
+/// their success arm, pinned against the 0x3065 of the same instant (see
+/// `PartyJoinResponse`). `net::party` reads it there, so the ack is asked first
+/// here.
+///
+/// The name match stays as the *fallback*, and it has to: 0x3065 also arrives
+/// unasked — logging back into a party we were already in produces a roster with
+/// no ack in front of it, and then no ack ever fires. A name is unique per server
+/// in this game, so the match is exact rather than a heuristic. `None` when
+/// neither source has named us — a partial presence mask is enough for that.
 pub fn local_member_id(roster: &PartyRoster, local_name: Option<&str>) -> Option<u32> {
+    if roster.local_member_id != 0 {
+        return Some(roster.local_member_id);
+    }
     let local = local_name?;
     roster
         .members
@@ -218,11 +225,13 @@ pub fn member_vitals(
 ) -> (f32, f32) {
     // A record whose mask never named hp/mp says nothing about the bars. Empty
     // is the only reading that does not invent a value.
+    // The two nibbles are NOT one scale: HP is 1-based over 9 with nibble 0
+    // meaning *dead*, MP is a plain decile. `nibble * 10` reports 110 % for the
+    // HP nibble of 11 that a real vitals frame carries, which is why this goes
+    // through
+    // `hp_fill`/`mp_fill` and not through a percentage.
     let (wire_hp, mp) = match member.hp_mp() {
-        Some(packed) => (
-            packed.hp_percent() as f32 / 100.0,
-            packed.mp_percent() as f32 / 100.0,
-        ),
+        Some(packed) => (packed.hp_fill().as_f32(), packed.mp_fill().as_f32()),
         None => (0.0, 0.0),
     };
     let hp = match (smooth, precise_hp) {

@@ -36,6 +36,20 @@ pub struct NameplateColorSettings {
     pub local_player: String,
     /// Other players.
     pub player: String,
+    /// Players in your party.
+    ///
+    /// **Origin, not invention** (ADR 0009): `FF9AFFD0` is the v1.188
+    /// client's own compiled PARTY colour — case 4 of the chat-line colour
+    /// switch (`mov ebp, 0xff9affd0`) reached through the
+    /// 16-entry jump table. The *nameplate* side has no table of its own — no
+    /// FontColor for floating names exists in any `Media/` resinfo file and
+    /// none was found in the client itself either, so borrowing the
+    /// client's single compiled "party" colour is our stated choice rather
+    /// than a sampled overhead pixel. Rationale: it is the one party colour
+    /// the original actually ships, it already reads as "party" to a player
+    /// through the chat window, and it separates cleanly from
+    /// `player` (`FFB2D9FF`, blue) at a glance.
+    pub party: String,
     pub npc: String,
     pub monster: String,
     /// Unique/world-boss monsters.
@@ -56,6 +70,7 @@ impl Default for NameplateColorSettings {
         Self {
             local_player: "FFFFFFFF".into(),
             player: "FFB2D9FF".into(),
+            party: "FF9AFFD0".into(),
             npc: "FFB2D9FF".into(),
             monster: "FFFFFFFF".into(),
             unique_monster: "FFFF8C1A".into(),
@@ -74,6 +89,7 @@ impl Default for NameplateColorSettings {
 pub struct NameplateColors {
     pub local_player: Color,
     pub player: Color,
+    pub party: Color,
     pub npc: Color,
     pub monster: Color,
     pub unique_monster: Color,
@@ -106,6 +122,7 @@ impl NameplateColorSettings {
         NameplateColors {
             local_player: parse("local_player", &self.local_player, &defaults.local_player),
             player: parse("player", &self.player, &defaults.player),
+            party: parse("party", &self.party, &defaults.party),
             npc: parse("npc", &self.npc, &defaults.npc),
             monster: parse("monster", &self.monster, &defaults.monster),
             unique_monster: parse(

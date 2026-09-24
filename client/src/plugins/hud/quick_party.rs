@@ -41,7 +41,6 @@
 
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::picking::hover::Hovered;
-use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -402,17 +401,6 @@ pub fn compute_quick_party_views(
     let caution = config.hud.low_vitals_caution_percent as f32 / 100.0;
     let local_name = local.single().ok().map(|name| name.0.as_str());
 
-    // Index the spawned entities by name once. The lookup below used to scan
-    // every `RemoteEntity`'s `DisplayName` with string equality *per member*, so
-    // a full party in a crowded town paid members x entities string compares
-    // every frame — this system has no needs-refresh gate because the smooth HP
-    // bars have to stay live, which makes the inner loop's shape the thing that
-    // matters.
-    let spawned_by_name: HashMap<&str, Option<&EntityVitals>> = nearby
-        .iter()
-        .map(|(display, vitals)| (display.0.as_str(), vitals))
-        .collect();
-
     views.0 = quick_party_rows(&roster, local_name)
         .iter()
         .map(|member| {
@@ -422,7 +410,10 @@ pub fn compute_quick_party_views(
                 // `member_id` is a JID and a spawn is keyed by its network id,
                 // so the only join available is the name — the same one the
                 // minimap's party signs already use.
-                let spawned = spawned_by_name.get(name.as_str()).copied();
+                let spawned = nearby
+                    .iter()
+                    .find(|(display, _)| display.0 == name)
+                    .map(|(_, vitals)| vitals);
                 let precise_hp = spawned
                     .flatten()
                     .map(|vitals| vitals.fill())
@@ -501,88 +492,58 @@ pub fn refresh_quick_party(
     let s = hud_scale();
     let view = |row: usize| views.0.get(row).and_then(|view| view.as_ref());
 
-    // Every write below is compared first. This system cannot take a
-    // needs-refresh run condition -- the HP bars follow live vitals, so it has
-    // to look every frame -- but *looking* every frame need not mean *writing*
-    // every frame, and the difference is not cosmetic: a `Node` mutation marks
-    // the UI tree dirty, and bevy_ui then re-runs the whole Taffy layout.
-    // Unconditional writes here held `ui_layout_system` at a measured
-    // 1.88 ms/frame across three capture windows (docs/perf-baselines.md), on a
-    // board whose eight slots change a few times a minute.
     for (slot, mut visibility) in slots.iter_mut() {
-        visibility.set_if_neq(visible(view(slot.0).is_some()));
+        *visibility = visible(view(slot.0).is_some());
     }
     for (marker, mut text) in names.iter_mut() {
-        // Compared before the clone, so an unchanged name allocates nothing.
-        let name = view(marker.0).map(|v| v.name.as_str()).unwrap_or_default();
-        if text.0 != name {
-            text.0 = name.to_string();
-        }
+        text.0 = view(marker.0).map(|v| v.name.clone()).unwrap_or_default();
     }
     for (marker, mut node) in hp.iter_mut() {
-        let width = gauge_fill_width(view(marker.0).map(|v| v.hp).unwrap_or(0.0), Q_HP.2 * s);
-        if node.width != width {
-            node.width = width;
-        }
+        node.width = gauge_fill_width(view(marker.0).map(|v| v.hp).unwrap_or(0.0), Q_HP.2 * s);
     }
     for (marker, mut node) in mp.iter_mut() {
-        let width = gauge_fill_width(view(marker.0).map(|v| v.mp).unwrap_or(0.0), Q_MP.2 * s);
-        if node.width != width {
-            node.width = width;
-        }
+        node.width = gauge_fill_width(view(marker.0).map(|v| v.mp).unwrap_or(0.0), Q_MP.2 * s);
     }
     for (marker, mut image, mut visibility) in portraits.iter_mut() {
         match view(marker.0) {
             Some(row) => {
-                visibility.set_if_neq(Visibility::Inherited);
+                *visibility = Visibility::Inherited;
                 // The fallback is the round backdrop plate — `qpt_face.ddj` is
                 // an opaque black disc, not a face.
                 let path = row
                     .portrait
                     .clone()
                     .unwrap_or_else(|| format!("{ART_QUICK}qpt_face.ddj"));
-                let handle = asset_server.load(path);
-                if image.image != handle {
-                    image.image = handle;
-                }
+                image.image = asset_server.load(path);
             }
-            None => {
-                visibility.set_if_neq(Visibility::Hidden);
-            }
+            None => *visibility = Visibility::Hidden,
         }
     }
     for (marker, mut visibility) in status.iter_mut() {
-        visibility.set_if_neq(visible(view(marker.0).is_some_and(|row| row.far_away)));
+        *visibility = visible(view(marker.0).is_some_and(|row| row.far_away));
     }
     for (marker, mut image, mut visibility) in races.iter_mut() {
         match view(marker.0) {
             Some(row) => {
-                visibility.set_if_neq(Visibility::Inherited);
+                *visibility = Visibility::Inherited;
                 let art = if row.european {
                     "com_kindred_europe16.ddj"
                 } else {
                     "com_kindred_china16.ddj"
                 };
-                let handle = asset_server.load(format!("{ART_COMMON}{art}"));
-                if image.image != handle {
-                    image.image = handle;
-                }
+                image.image = asset_server.load(format!("{ART_COMMON}{art}"));
             }
-            None => {
-                visibility.set_if_neq(Visibility::Hidden);
-            }
+            None => *visibility = Visibility::Hidden,
         }
     }
     for (marker, mut visibility) in crowns.iter_mut() {
-        visibility.set_if_neq(visible(view(marker.0).is_some_and(|row| row.crown)));
+        *visibility = visible(view(marker.0).is_some_and(|row| row.crown));
     }
     let frame = CAUTION.rect_at(time.elapsed_secs());
     for (marker, mut image, mut visibility) in cautions.iter_mut() {
         let lit = view(marker.0).is_some_and(|row| if marker.1 { row.low_hp } else { row.low_mp });
-        visibility.set_if_neq(visible(lit));
-        // The rect genuinely advances while lit -- this guard only spares the
-        // frames where the animation lands on the same cell.
-        if lit && image.rect != Some(frame) {
+        *visibility = visible(lit);
+        if lit {
             image.rect = Some(frame);
         }
     }
@@ -744,6 +705,69 @@ impl Plugin for QuickPartyPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rule 7, asserted on the registration **text** because nothing else can
+    /// see it: `cargo build`, `cargo test` and `make ci` are all green with an
+    /// unregistered plugin (the board simply never appears) and with an ungated
+    /// `Update` system that asks for a scene-only resource — the process then
+    /// dies in the loading screen on parameter validation. Only the 40-second
+    /// smoke run (`NETCHECK=1 cargo run -p client`, AGENTS.md) sees either.
+    /// This board takes `FontAssets` at spawn, so it must never run outside a
+    /// HUD scene.
+    ///
+    /// Carried over from the deleted `hud/party/mod.rs`
+    /// (`ad582ea7`, `the_quick_party_board_is_gated_on_the_hud_scenes_and_cleaned_up`),
+    /// which the upstream party merge (#860) dropped when the board moved into
+    /// its own module and its own plugin.
+    #[test]
+    fn the_quick_party_board_is_registered_gated_on_the_hud_scenes_and_cleaned_up() {
+        // The registration text, up to (not including) this test module — so
+        // the literals searched for cannot match themselves.
+        let registration = include_str!("quick_party.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first part");
+        // `mod.rs` resolves next to this file: the HUD registry.
+        let registry = include_str!("mod.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first part");
+
+        assert!(
+            registry.contains("quick_party::QuickPartyPlugin,"),
+            "the board's plugin is not in the HUD registry, so nothing builds it"
+        );
+        assert!(
+            registration.contains("OnEnter(SceneState::GameWorld), spawn_quick_party_board"),
+            "the board is never spawned"
+        );
+        assert!(
+            registration.contains("OnExit(SceneState::GameWorld), cleanup_quick_party_board"),
+            "the board is not despawned when the world scene ends"
+        );
+
+        // Exactly one `Update` registration, and it is gated. A second block
+        // is what slips through ungated in a merge, so two is a failure too.
+        assert_eq!(
+            registration.matches("                Update,").count(),
+            1,
+            "the board should register its Update systems in one gated block"
+        );
+        let update = registration
+            .split_once("                Update,")
+            .expect("the board registers no Update systems any more")
+            .1;
+        let block = &update[..update.find("\n    }").unwrap_or(update.len())];
+        assert!(
+            block.contains(".run_if("),
+            "the board's Update systems run in every scene, including the \
+             loading screen — they need a HUD-scene run condition"
+        );
+        assert!(
+            block.contains("in_state(SceneState::GameWorld)"),
+            "the board's Update gate no longer names the world scene"
+        );
+    }
 
     /// Same headless guard the roster page carries, for the same reason: this
     /// painter holds six `&mut Visibility` queries, and Bevy proves them

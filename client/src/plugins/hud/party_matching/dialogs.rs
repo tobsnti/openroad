@@ -150,7 +150,6 @@ enum DialogButton {
     AutoCancel,
     JoinAccept,
     JoinDecline,
-    ProgressCancel,
 }
 
 impl DialogButton {
@@ -763,7 +762,15 @@ fn build_reqjoin(
         abs_node(REQJOIN_MASTERY_LABEL, s),
         Pickable::IGNORE,
     ));
-    let masteries = [notify.mastery_primary, notify.mastery_secondary];
+    // The masteries are the pair under the RECORD's `0x08` bit, not the two
+    // `u32`s at header offsets 12/16 this used to read: those two are unnamed in
+    // the binary (`PartyMatchJoinNotify::unk_dword03/04`) and only looked like
+    // masteries because go-sro's builder happens to put them there. A record
+    // whose mask does not name them draws no icon, which is the honest state.
+    let masteries = [
+        notify.applicant.mastery_primary.unwrap_or(0),
+        notify.applicant.mastery_secondary.unwrap_or(0),
+    ];
     for index in 0..2 {
         plate.spawn((
             abs_node(REQJOIN_ICON_FRAMES[index], s),
@@ -872,7 +879,9 @@ fn build_reqjoin(
 fn build_progress(
     plate: &mut RelatedSpawnerCommands<ChildOf>,
     asset_server: &AssetServer,
-    fonts: &FontAssets,
+    // Unused since the footer went (the dialog declares no button); kept in the
+    // signature because `spawn_dialog` calls all four builders alike.
+    _fonts: &FontAssets,
     ui_strings: &ClientUiStrings,
     elapsed: f32,
     font: &impl Fn(f32) -> TextFont,
@@ -935,28 +944,17 @@ fn build_progress(
                 });
         });
 
-    spawn_footer(
-        plate,
-        asset_server,
-        fonts,
-        ui_strings,
-        [
-            (
-                DialogButton::ProgressCancel,
-                (145.0, 124.0, 76.0, 24.0),
-                "UIIS_CTL_CANCEL",
-                "Cancel",
-            ),
-            // The second slot is unused: the wait dialog has one button.
-            (
-                DialogButton::ProgressCancel,
-                (0.0, -100.0, 0.0, 0.0),
-                "",
-                "",
-            ),
-        ],
-        s,
-    )
+    // **No button at all, and the data says so — it is not an omission.** This
+    // dialog used to get a Cancel here. `CIFButton` occurs **0** times in
+    // `ifpartyjoinprogress.txt` and **0** times in `ifpartymatch.txt`'s
+    // `Section = JoinProgress`, against **15** in the rest of `ifpartymatch.txt`
+    // as the positive control. There is no C->S opcode to withdraw an
+    // application either, so the
+    // button could only have closed the dialog locally while the request stayed
+    // on the wire — telling the player they cancelled something they did not.
+    // The progress dialog therefore also has no affirmative button for
+    // Enter to press (`DialogButton::is_confirm`).
+    None
 }
 
 // --- Shared builders --------------------------------------------------------
@@ -1298,7 +1296,7 @@ fn on_dialog_button(
             }
             state.dialog = MatchDialog::None;
         }
-        DialogButton::RegisterCancel | DialogButton::AutoCancel | DialogButton::ProgressCancel => {
+        DialogButton::RegisterCancel | DialogButton::AutoCancel => {
             state.dialog = MatchDialog::None;
         }
     }
