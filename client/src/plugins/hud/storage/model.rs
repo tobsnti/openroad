@@ -21,7 +21,6 @@
 
 use bevy::prelude::*;
 
-use packets::agent::character_data::InventoryItem;
 use packets::agent::inventory::{InventoryOperationResponse, InventoryOperationResult};
 use packets::agent::storage::{
     parse_storage_items, StorageDataBegin, StorageDataChunk, StorageDataEnd, StorageDataRequest,
@@ -40,14 +39,11 @@ use crate::plugins::textdata::ClientItemData;
 /// Storage pages are the vanilla 6x5 grid.
 pub const STORAGE_SLOTS_PER_PAGE: u8 = 30;
 
-/// The storage item currently under the cursor, as a clone so the tooltip can
-/// render it without reaching into the window.
-///
-/// Deliberately NOT a field of [`StorageState`]: `sync_storage_window`
-/// rebuilds the whole window whenever that resource changes, so hover state
-/// living there would despawn and respawn the grid on every mouse move.
-#[derive(Resource, Default)]
-pub struct StorageHoveredItem(pub Option<InventoryItem>);
+// Hover state used to live here as `StorageHoveredItem`; it is now
+// `hud::item_cell::HoveredItem`, shared by every item grid. It stays out of
+// `StorageState` for the original reason: `sync_storage_window` rebuilds the
+// whole window when that resource changes, so hover state there would despawn
+// and respawn the grid on every mouse move.
 
 /// The 0x3049 chunks between a 0x3047 begin and its 0x3048 end. The server
 /// may split the item section across several packets, so nothing can be
