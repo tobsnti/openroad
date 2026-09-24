@@ -33,20 +33,12 @@ pub struct StoreState {
     pub session: Option<StoreSession>,
 }
 
-/// The itemdata ref id of the shop good under the cursor, for the shared item
-/// tooltip (`inventory::tooltip`).
-///
-/// A ref id and not an [`InventoryItem`] because a shop good is a CATALOG row,
-/// not an instance: it has no opt level, no variance roll, no durability and
-/// no magic options yet — those are rolled by the server at purchase. The
-/// tooltip renders the type-level block for it (see `catalog_tooltip_lines`).
-///
-/// Deliberately its own resource rather than a field of [`StoreState`], for
-/// the same reason [`super::super::storage::model::StorageHoveredItem`] is:
-/// `sync_store_window` rebuilds the whole window when `StoreState` changes,
-/// so hover state living there would respawn the grid on every mouse move.
-#[derive(Resource, Default)]
-pub struct StoreHoveredGood(pub Option<u32>);
+// Hover state for the shop used to live here as `StoreHoveredGood`; it is now
+// published into `hud::item_cell::HoveredItem` (as a `Catalog` entry carrying
+// the price), the one hover resource every item grid shares. It stays out of
+// `StoreState` either way: `sync_store_window` rebuilds the whole window when
+// that resource changes, so hover state living there would respawn the grid on
+// every mouse move.
 
 #[derive(Clone, Debug)]
 pub struct StoreSession {
@@ -65,8 +57,10 @@ pub struct StoreSession {
     /// The buyback tray: what this session sold, indexed by the server's
     /// `slot_buyback` byte. Session-local and 5 deep, oldest evicted — the
     /// eviction is the server's, we only mirror the index it names
-    /// (`docs/re/systems/npc-shop.md` §3). No UI yet: where the strip sits
-    /// depends on an unresolved `#ifdef` question (doc §9.5).
+    ///. Rendered into the five reserved
+    /// `BuybackSlot` sites of the redeem strip (`ui.rs`, rects from
+    /// `resinfo/ifstore.txt:1269-1414`); buying an entry BACK is still
+    /// wire-gated on the unknown C->S 0x7034 op-34 request body.
     pub buyback: [Option<BuybackEntry>; BUYBACK_TRAY_DEPTH],
 }
 
@@ -113,10 +107,77 @@ pub struct RepairMode(pub bool);
 #[derive(Resource, Default)]
 pub struct PendingRepair(pub Option<RepairOp>);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RepairOp {
     One(u8),
     All,
+}
+
+/// The store's local (pre-wire) messages, as `(textuisystem key, the English
+/// text that key ships with)`. The key is the source, the literal is only the
+/// fallback for a client started without the string table — both taken from
+/// the user's own `server_dep/silkroad/textdata/textuisystem.txt`:
+/// L1258, L1888, L1589, L1743, L1253 (UTF-16LE, tab-separated, English is the
+/// last column).
+pub type UiText = (&'static str, &'static str);
+
+/// "Are you sure to sell %s?" — the original asks before a sell leaves the
+/// client (`textuisystem.txt:1258`).
+pub const SELL_RECONFIRM: UiText = ("UIIT_MSG_SELL_RECONFIRM", "Are you sure to sell %s?");
+/// The refusal for an item the shop does not deal in (`:1888`). Used for an
+/// item whose itemdata `CanSell` (col 17) is 0 — there is no more specific
+/// key in this table.
+pub const CANNOT_DEAL_AT_SHOP: UiText = (
+    "UIIT_MSG_STRGERR_CANNOT_DEAL_AT_SHOP",
+    "Cannot trade the selected item at the current shop.",
+);
+/// `:1589` — the repair estimate exceeds the carried gold.
+pub const NOT_ENOUGH_REPAIR_GOLD: UiText = (
+    "UIIT_MSG_STRGERR_NOT_ENOUGH_REPAIR_GOLD",
+    "Cannot repair due to insufficient gold",
+);
+/// `:1743` — the clicked slot is not a repairable item at all.
+pub const CANNOT_BE_REPAIRED: UiText = (
+    "UIIT_MSG_STRGERR_CANNOT_BE_REPAIRED",
+    "The selected item is unrepairable.",
+);
+/// `:1253` — nothing in the bag/equipment is damaged.
+pub const NO_ITEM_TO_REPAIR: UiText = (
+    "UIIT_MSG_STRGERR_THERE_IS_NO_ITEM_TO_REPAIR",
+    "No item needs repairing.",
+);
+
+/// Would this sell be refused locally? `sell_price()` is the `CanSell`
+/// (itemdata col 17) gate itself — a row without an NPC sell value is a
+/// quest/mall item the shop does not deal in, and the original answers that
+/// with a msgbox instead of sending an op-9 (`inventory-items.md` §4.1 pins
+/// the `Can*` block: CanTrade 16, CanSell 17, ... CanThrow 25). A missing row
+/// is refused too: we do not know the item, so we do not offer it for sale.
+pub fn sell_refusal(
+    row: Option<&crate::assets::textdata::itemdata::ItemDataRow>,
+) -> Option<UiText> {
+    match row.and_then(|row| row.sell_price()) {
+        Some(_) => None,
+        None => Some(CANNOT_DEAL_AT_SHOP),
+    }
+}
+
+/// Would this repair be refused locally, before anything goes on the wire?
+/// The three refusals the original knows by name, in the order it can decide
+/// them: not a repairable item, nothing damaged, not enough gold. The caller
+/// resolves `repairable`/`damaged` from the inventory + itemdata (this stays
+/// data-free so it is testable without the loaded archives).
+pub fn repair_refusal(cost: u64, gold: u64, repairable: bool, damaged: bool) -> Option<UiText> {
+    if !repairable {
+        return Some(CANNOT_BE_REPAIRED);
+    }
+    if !damaged {
+        return Some(NO_ITEM_TO_REPAIR);
+    }
+    if cost > gold {
+        return Some(NOT_ENOUGH_REPAIR_GOLD);
+    }
+    None
 }
 
 /// The vanilla pre-repair confirmation msgbox (repairing costs gold):
@@ -124,6 +185,51 @@ pub enum RepairOp {
 #[derive(Resource, Default)]
 pub struct RepairConfirm {
     pub prompt: Option<RepairPrompt>,
+}
+
+/// The store's ONE msgbox. Every local message the shop shows goes through
+/// this resource and the single renderer in `ui.rs` (the shape the repair
+/// confirmation already had): a notice has just OK, a confirmation has
+/// OK + Cancel and carries the action OK performs. `RepairConfirm` stays the
+/// inbox the inventory window writes into (`inventory/ui.rs`), and
+/// `ui::translate_repair_confirm` turns it into a prompt here — so there is
+/// exactly one modal path, not one per message.
+#[derive(Resource, Default)]
+pub struct StoreMsgBox {
+    pub prompt: Option<StoreMsgPrompt>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoreMsgPrompt {
+    /// Body text, already resolved through the string table.
+    pub message: String,
+    /// Optional second line (the repair cost estimate).
+    pub detail: Option<String>,
+    pub action: StoreMsgAction,
+}
+
+/// What OK does. `Notice` is a one-button acknowledgement (a local refusal);
+/// the other two send the request the user just confirmed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StoreMsgAction {
+    Notice,
+    Repair(RepairOp),
+    Sell {
+        slot: u8,
+        quantity: u16,
+        npc_id: u32,
+    },
+}
+
+impl StoreMsgBox {
+    /// Show a one-button local refusal/notice.
+    pub fn notice(&mut self, message: String) {
+        self.prompt = Some(StoreMsgPrompt {
+            message,
+            detail: None,
+            action: StoreMsgAction::Notice,
+        });
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +285,7 @@ pub fn repair_cost_estimate(
 
 /// Apply the EXPERIMENTAL 0xB03E repair ack: restore durability on the
 /// pending slot (or all damaged equipment). The raw tail is hexdumped on
-/// every ack — the first live capture pins the real response layout.
+/// every ack — the response layout is not settled yet.
 pub fn on_repair_response(
     mut reader: MessageReader<ItemRepairResponse>,
     mut pending: ResMut<PendingRepair>,
@@ -189,7 +295,7 @@ pub fn on_repair_response(
 ) {
     for msg in reader.read() {
         info!(
-            "store: repair ack (0xB03E) result {} tail {} — capture for decode",
+            "store: repair ack (0xB03E) result {} tail {} — not decoded",
             msg.result,
             hexdump(&msg.tail, 48)
         );
@@ -215,11 +321,14 @@ pub fn on_repair_response(
     }
 }
 
-/// The repair mode + confirm dialog are bound to the store session.
+/// The repair mode, the confirm inbox and the msgbox are bound to the store
+/// session: walking away from the NPC takes the dialog down with it, and a
+/// left-behind msgbox would keep its click-swallowing scrim on screen.
 pub fn clear_repair_mode_with_store(
     state: Res<StoreState>,
     mut repair: ResMut<RepairMode>,
     mut confirm: ResMut<RepairConfirm>,
+    mut msgbox: ResMut<StoreMsgBox>,
 ) {
     if state.session.is_none() {
         if repair.0 {
@@ -227,6 +336,9 @@ pub fn clear_repair_mode_with_store(
         }
         if confirm.prompt.is_some() {
             confirm.prompt = None;
+        }
+        if msgbox.prompt.is_some() {
+            msgbox.prompt = None;
         }
     }
 }
@@ -315,7 +427,7 @@ pub fn on_store_response(
                 };
                 let Some((slots, echoed_quantity)) = op.bought() else {
                     warn!(
-                        "store: buy ack tail {} not understood — capture 0xB034 for decode \
+                        "store: buy ack tail {} not understood \
                          (inventory now stale until next login)",
                         packets::hexdump(tail, 24)
                     );
@@ -409,6 +521,68 @@ fn record_buyback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::textdata::itemdata::ItemDataRow;
+
+    /// An itemdata row with just the columns these gates read: `CanSell` 17
+    /// and `SellPrice` 31.
+    fn row(can_sell: &str, sell_price: &str) -> ItemDataRow {
+        let mut fields = vec![String::from("0"); 60];
+        fields[17] = String::from(can_sell);
+        fields[31] = String::from(sell_price);
+        ItemDataRow(fields)
+    }
+
+    /// An unsellable item (quest/mall: `CanSell` 0) is refused with the
+    /// original's own message, and the refusal is what the drop path checks
+    /// BEFORE a quantity prompt exists — so no op-9 can be built for it.
+    /// A missing row is refused too (we do not sell what we cannot price).
+    #[test]
+    fn unsellable_item_is_refused_and_never_priced() {
+        let unsellable = row("0", "200");
+        assert_eq!(sell_refusal(Some(&unsellable)), Some(CANNOT_DEAL_AT_SHOP));
+        assert_eq!(unsellable.sell_price(), None);
+        assert_eq!(sell_refusal(None), Some(CANNOT_DEAL_AT_SHOP));
+        // the sellable control on the same read path
+        let sellable = row("1", "427");
+        assert_eq!(sell_refusal(Some(&sellable)), None);
+        assert_eq!(sellable.sell_price(), Some(427));
+    }
+
+    /// The sell reconfirmation body is the shipped template with the item
+    /// name in its `%s` (textuisystem.txt:1258) — not an invented sentence.
+    #[test]
+    fn sell_reconfirm_fills_the_shipped_template() {
+        let (key, template) = SELL_RECONFIRM;
+        assert_eq!(key, "UIIT_MSG_SELL_RECONFIRM");
+        assert!(template.contains("%s"));
+        assert_eq!(
+            template.replacen("%s", "Sword x5", 1),
+            "Are you sure to sell Sword x5?"
+        );
+    }
+
+    /// The three local repair refusals, in the order the original can decide
+    /// them, plus the accepting case (nothing refused -> a 0x703E goes out).
+    #[test]
+    fn repair_refusals_cover_the_three_named_messages() {
+        // not equipment / no durability at all
+        assert_eq!(
+            repair_refusal(10, 1_000, false, false),
+            Some(CANNOT_BE_REPAIRED)
+        );
+        // repairable but undamaged (also "Repair all" with nothing damaged)
+        assert_eq!(
+            repair_refusal(0, 1_000, true, false),
+            Some(NO_ITEM_TO_REPAIR)
+        );
+        // damaged but the estimate exceeds the carried gold
+        assert_eq!(
+            repair_refusal(1_001, 1_000, true, true),
+            Some(NOT_ENOUGH_REPAIR_GOLD)
+        );
+        // exactly affordable is allowed (the server is authoritative anyway)
+        assert_eq!(repair_refusal(1_000, 1_000, true, true), None);
+    }
 
     #[test]
     fn buyback_tray_mirrors_the_servers_index_and_evicts() {

@@ -14,13 +14,21 @@
 //! inventory's grid opens the quantity modal (scrim + panel with the item
 //! icon and a digits-only amount input), and OK sends the 0x7034 op-8.
 //! Dragging a bag item onto the store window opens the same modal in sell
-//! mode (op-9), pre-filled with the slot's full stack count. Application of
-//! both is server-confirmed only (model.rs).
+//! mode (op-9), pre-filled with the slot's full stack count, and a sell is
+//! asked back once more (`UIIT_MSG_SELL_RECONFIRM`) before it goes out.
+//! Application of both is server-confirmed only (model.rs).
+//!
+//! The quantity modal is vanilla's `MsgBoxStore` (`ifmessagebox.txt:575`) on
+//! the msgbox family's shared background; every local message the shop shows
+//! — that confirmation, the repair confirmation and the local refusals
+//! (unsellable item, the three repair errors) — goes through the ONE msgbox
+//! renderer `sync_store_msgbox` fed by `model::StoreMsgBox`.
 //!
 //! The repurchase ("buy back") strip below the detail board is live in this
-//! media (`RESTORE_SOLDITEM_INSHOP` is defined) and is drawn empty on purpose:
-//! its frame, label and five slot rects are authored data, but no known packet
-//! delivers the sold-item list.
+//! media (`RESTORE_SOLDITEM_INSHOP` is defined): its frame, label and five
+//! slot rects are authored data and the five slots are filled from the
+//! session tray the sell acks feed. Buying an entry back is still wire-gated
+//! (the C->S op-34 request body is unknown, so a tray click sends nothing).
 
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
@@ -39,7 +47,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::scale::hud_scale;
-use crate::plugins::hud::store::model::{PendingStoreOp, StoreHoveredGood, StoreOp, StoreState};
+use crate::plugins::hud::store::model::{PendingStoreOp, StoreOp, StoreState};
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::Inventory;
@@ -103,6 +111,57 @@ const DETAIL_RECT: (f32, f32, f32, f32) = content_rect((40.0, 279.0, 174.0, 54.0
 /// `GDR_STORE_BTN_REPAIR` (`:1462`) / `_REPAIRALL` (`:1443`).
 const REPAIR_RECT: (f32, f32, f32, f32) = content_rect((86.0, 332.0, 76.0, 24.0));
 const REPAIR_ALL_RECT: (f32, f32, f32, f32) = content_rect((166.0, 332.0, 76.0, 24.0));
+
+// --- the buy/sell quantity msgbox (`ifmessagebox.txt Section = MsgBoxStore`,
+// :575-844). It has no window rect of its own — the box is code-created, so
+// the panel is the msgbox family's shared background and every element rect
+// is the vanilla rect minus that background's origin.
+/// `Section = Create`, `GDR_MSGBOX_BG:CIFNormalTile` (`ifmessagebox.txt:6`).
+///
+/// The four items below are the *family's* shared background, tile and two
+/// shared arts, not the shop's: `hud/inventory/split.rs` builds vanilla's
+/// `MsgBoxDivideCount` on exactly the same background. They stay here, with
+/// the box that transcribed them first, instead of moving into a new shared
+/// module — the same "it lives with whoever owned it first" rule the storage
+/// window's gold popup follows (`hud/storage/mod.rs`).
+pub const MSGBOX_BG: (f32, f32, f32, f32) = (16.0, 40.0, 284.0, 122.0);
+pub const MSGBOX_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_b.ddj";
+pub const MODAL_QUANTITY_DDJ: &str = "media://interface/messagebox/msgbox_quantity.ddj";
+pub const MODAL_ITEMWINDOW_DDJ: &str = "media://interface/messagebox/msgbox_itemwindow.ddj";
+const MODAL_ITEMINFO_DDJ: &str = "media://interface/messagebox/msgbox_iteminfo.ddj";
+
+/// An `ifmessagebox.txt` rect in the msgbox panel's own space.
+pub const fn msgbox_rect(rect: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    (rect.0 - MSGBOX_BG.0, rect.1 - MSGBOX_BG.1, rect.2, rect.3)
+}
+
+/// `GDR_MBS_STATIC_ICONWND` (:826) / `_ICON` (:807).
+const MODAL_ICON_WND: (f32, f32, f32, f32) = msgbox_rect((18.0, 44.0, 48.0, 48.0));
+const MODAL_ICON: (f32, f32, f32, f32) = msgbox_rect((25.0, 51.0, 32.0, 32.0));
+/// `GDR_MBS_STATIC_NAME1` (:788) and its ClientRect inset `0,7,0,29`; the
+/// second row is `_NAME2` (:769, inset `0,7,0,7`).
+const MODAL_NAME_BOARD: (f32, f32, f32, f32) = msgbox_rect((73.0, 44.0, 212.0, 48.0));
+const MODAL_NAME_TEXT: (f32, f32, f32, f32) = msgbox_rect((73.0, 51.0, 212.0, 12.0));
+const MODAL_NAME2_TEXT: (f32, f32, f32, f32) = msgbox_rect((73.0, 60.0, 212.0, 14.0));
+/// The 3-part price row: `_PRICET1` (:653), `_PRICE` (:691), `_PRICET2` (:672).
+const MODAL_PRICE_LABEL: (f32, f32, f32, f32) = msgbox_rect((77.0, 71.0, 43.0, 12.0));
+const MODAL_PRICE_VALUE: (f32, f32, f32, f32) = msgbox_rect((127.0, 68.0, 121.0, 17.0));
+const MODAL_PRICE_UNIT: (f32, f32, f32, f32) = msgbox_rect((255.0, 71.0, 23.0, 12.0));
+/// `GDR_MBS_EDIT_AMOUNT` (:634) on `msgbox_quantity.ddj` (42x24 art = its own
+/// rect), its text inset by the ClientRect `7,5,7,5`, and the `UIIT_STT_UNIT`
+/// static next to it (`_STATIC_AMOUNT` :615).
+const MODAL_AMOUNT_EDIT: (f32, f32, f32, f32) = msgbox_rect((20.0, 102.0, 42.0, 24.0));
+const MODAL_AMOUNT_TEXT: (f32, f32, f32, f32) = msgbox_rect((27.0, 107.0, 28.0, 14.0));
+const MODAL_AMOUNT_UNIT: (f32, f32, f32, f32) = msgbox_rect((64.0, 108.0, 12.0, 12.0));
+/// Our -/+ stepper, in the authored gap between the unit static (ends at
+/// vanilla x 76) and the OK button (starts at vanilla x 123) on the edit's
+/// own row — see the rationale at its spawn site.
+const MODAL_STEPPER_X: (f32, f32) = (msgbox_rect((78.0, 0.0, 0.0, 0.0)).0, 84.0);
+const MODAL_STEPPER_Y: f32 = 65.0;
+/// `GDR_MBS_BTN_OK` (:596) / `_CANCEL` (:577), both 76x22.
+const MODAL_OK_X: f32 = msgbox_rect((123.0, 0.0, 0.0, 0.0)).0;
+const MODAL_CANCEL_X: f32 = msgbox_rect((203.0, 0.0, 0.0, 0.0)).0;
+const MODAL_BUTTON_Y: f32 = msgbox_rect((0.0, 124.0, 0.0, 0.0)).1;
 
 // The repurchase ("buy back") strip, live because `RESTORE_SOLDITEM_INSHOP` is
 // defined. Which packet fills these slots is UNKNOWN — there is no builder, no
@@ -293,10 +352,10 @@ fn current_entry(session: &crate::plugins::hud::store::model::StoreSession) -> (
 }
 
 /// The good shown in a grid cell on the current page/tab, if any.
-fn good_at<'a>(
-    session: &'a crate::plugins::hud::store::model::StoreSession,
+fn good_at(
+    session: &crate::plugins::hud::store::model::StoreSession,
     cell: usize,
-) -> Option<&'a crate::assets::textdata::shops::ShopGood> {
+) -> Option<&crate::assets::textdata::shops::ShopGood> {
     let (group, chunk) = current_entry(session);
     let tab = session.layout.pages.get(group)?.tabs.get(session.tab)?;
     let wanted = (chunk * SLOTS_PER_PAGE + cell) as u8;
@@ -703,10 +762,19 @@ pub fn sync_store_window(
         }
 
         // The repurchase ("buy back") strip: the redeem frame, its label and
-        // five reserved slots. Deliberately empty — which packet delivers the
-        // sold-item list is UNKNOWN (no builder, no parser, no dump sample), so
-        // the frame and label are data and an item in a slot would be an
-        // invention. `BuybackSlot` reserves the fill site for when it lands.
+        // the five tray slots.
+        //
+        // A *sell* ack delivers the sold-item list. Op 9's tail is
+        // `npc_model u32, slot_buyback u8`
+        // (`packets/src/agent/inventory.rs:634-645`; `0xFF` = not
+        // buyback-able), and `model::record_buyback` mirrors it into the
+        // 5-deep session tray. What is still unknown is the C->S op-34
+        // *request*, so the slots draw the tray but do not buy back yet.
+        //
+        // Read this before "fixing" the missing click: the ORIGINAL has no send
+        // arm for op 34 either — everything its serializer writes for that op
+        // sits behind a flag no call site ever sets. Wiring a click here means
+        // inventing a request body the vanilla client never sends.
         content.spawn((
             abs_node(BUYBACK_REDEEM_RECT, s),
             ImageNode {
@@ -729,7 +797,7 @@ pub fn sync_store_window(
             Pickable::IGNORE,
         ));
         for (index, x) in BUYBACK_SLOT_XS.iter().enumerate() {
-            content.spawn((
+            let mut slot = content.spawn((
                 BuybackSlot(index),
                 abs_node(
                     (*x, BUYBACK_SLOT_Y, BUYBACK_SLOT_SIZE, BUYBACK_SLOT_SIZE),
@@ -737,6 +805,45 @@ pub fn sync_store_window(
                 ),
                 Pickable::IGNORE,
             ));
+            let Some(entry) = session.buyback[index] else {
+                continue;
+            };
+            let icon = item_data
+                .get(&(entry.ref_id as i32))
+                .and_then(|row| row.icon_path());
+            slot.with_children(|slot| {
+                if let Some(icon) = icon {
+                    slot.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        ImageNode {
+                            image: asset_server.load(icon),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
+                // stack count, bottom-right like every other item grid
+                if entry.quantity > 1 {
+                    slot.spawn((
+                        Text::new(entry.quantity.to_string()),
+                        text_font(7.0),
+                        TextColor(PRICE_COLOR),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(1.0 * s),
+                            bottom: Val::Px(1.0 * s),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
+            });
         }
     });
 }
@@ -792,35 +899,102 @@ fn on_repair_button(
     }
 }
 
-/// Marker + buttons of the repair confirmation msgbox.
+/// Marker + buttons of the store's ONE msgbox: the repair confirmation, the
+/// sell reconfirmation and every local refusal are the same box (vanilla's
+/// `ifmessagebox.txt` family is likewise one shape with different bodies) —
+/// a notice has OK only, a confirmation OK + Cancel.
 #[derive(Component)]
-pub struct RepairConfirmRoot;
+pub struct StoreMsgBoxRoot;
 
 #[derive(Component, Clone, Copy)]
-enum RepairConfirmButton {
+enum MsgBoxButton {
     Ok,
     Cancel,
 }
 
-/// Rebuild the repair confirmation msgbox on prompt changes — the quantity
-/// modal's scrim + panel chrome, with the vanilla message and the prorated
-/// cost estimate (server authoritative).
-pub fn sync_repair_confirm(
-    confirm: Res<crate::plugins::hud::store::model::RepairConfirm>,
-    existing: Query<Entity, With<RepairConfirmRoot>>,
+/// `RepairConfirm` is the inbox the repair entry points write into (the
+/// "Repair all" button here, a single-item click in `inventory/ui.rs`); this
+/// turns it into a msgbox prompt. The three local refusals the original knows
+/// by name are decided first (`model::repair_refusal`), so an unrepairable
+/// item, an undamaged inventory or too little gold produce the vanilla
+/// message instead of a 0x703E request.
+pub fn translate_repair_confirm(
+    mut confirm: ResMut<crate::plugins::hud::store::model::RepairConfirm>,
+    inventories: Query<&Inventory, With<Player>>,
+    item_data: Res<ClientItemData>,
+    // `damaged_slots` now also asks whether an item is repairable at all
+    // (#862): `MATTR_NOT_REPARABLE` is a blue option, not an itemdata column.
+    magic_options: Res<crate::plugins::textdata::ClientMagicOptions>,
+    ui_strings: Res<ClientUiStrings>,
+    mut msgbox: ResMut<crate::plugins::hud::store::model::StoreMsgBox>,
+) {
+    use crate::plugins::hud::store::model::{
+        repair_refusal, RepairOp, StoreMsgAction, StoreMsgPrompt,
+    };
+    if !confirm.is_changed() {
+        return;
+    }
+    let Some(prompt) = confirm.prompt.take() else {
+        return;
+    };
+    let inventory = inventories.single().ok();
+    let (repairable, damaged) = match prompt.op {
+        // a single slot: it must hold equipment with a rolled durability max
+        // (accessories and expendables have none) and be below it
+        RepairOp::One(slot) => inventory
+            .and_then(|inv| inv.get(slot))
+            .and_then(|item| match &item.data {
+                ItemTypeData::Equipment(eq) => item_data
+                    .get(&(item.ref_id as i32))
+                    .and_then(|row| crate::plugins::net::inventory::max_durability(row, eq))
+                    .map(|max| (true, eq.durability < max)),
+                _ => None,
+            })
+            .unwrap_or((false, false)),
+        // "Repair all" is a bulk op — the only local question is whether
+        // anything is damaged at all
+        RepairOp::All => (
+            true,
+            inventory.is_some_and(|inv| !inv.damaged_slots(&item_data, &magic_options).is_empty()),
+        ),
+    };
+    let gold = inventory.map(|inv| inv.gold).unwrap_or(0);
+    if let Some((key, fallback)) = repair_refusal(prompt.cost, gold, repairable, damaged) {
+        msgbox.notice(ui_strings.get_or(key, fallback).to_string());
+        return;
+    }
+    let cost_line = format!(
+        "{}: {} Gold",
+        ui_strings.get_or("PARAM_REPAIRING_CHARGES", "Repairing cost"),
+        prompt.cost
+    );
+    msgbox.prompt = Some(StoreMsgPrompt {
+        message: prompt.message,
+        detail: Some(cost_line),
+        action: StoreMsgAction::Repair(prompt.op),
+    });
+}
+
+/// Rebuild the store msgbox on prompt changes — the quantity modal's
+/// scrim + panel chrome, with the vanilla message and (for the repair
+/// confirmation) the prorated cost estimate (server authoritative).
+pub fn sync_store_msgbox(
+    msgbox: Res<crate::plugins::hud::store::model::StoreMsgBox>,
+    existing: Query<Entity, With<StoreMsgBoxRoot>>,
     ui_strings: Res<ClientUiStrings>,
     fonts: Res<FontAssets>,
     asset_server: Res<AssetServer>,
     cam_query: Query<Entity, With<Camera2d>>,
     mut commands: Commands,
 ) {
-    if !confirm.is_changed() {
+    use crate::plugins::hud::store::model::StoreMsgAction;
+    if !msgbox.is_changed() {
         return;
     }
     for entity in existing.iter() {
         commands.entity(entity).insert(StoreClosing);
     }
-    let Some(prompt) = &confirm.prompt else {
+    let Some(prompt) = &msgbox.prompt else {
         return;
     };
     let Ok(camera) = cam_query.single() else {
@@ -838,18 +1012,24 @@ pub fn sync_repair_confirm(
         press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
         ..Default::default()
     };
-    let cost_line = format!(
-        "{}: {} Gold",
-        ui_strings.get_or("PARAM_REPAIRING_CHARGES", "Repairing cost"),
-        prompt.cost
-    );
+    // A notice is acknowledged, not answered: one centred OK, like vanilla's
+    // one-button boxes. Everything else keeps Confirm/Cancel side by side.
+    let notice = prompt.action == StoreMsgAction::Notice;
+    let buttons: &[(MsgBoxButton, &str, &str, f32)] = if notice {
+        &[(MsgBoxButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", 80.0)]
+    } else {
+        &[
+            (MsgBoxButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", 35.0),
+            (MsgBoxButton::Cancel, "UIIT_CTL_CANCEL", "Cancel", 125.0),
+        ]
+    };
     // Captured out of the button loop so the root can point Enter at Confirm
     // (`hud::focus::HudDialog`).
     let mut confirm_button = None;
     let root = commands
         .spawn((
-            RepairConfirmRoot,
-            Name::from("Repair Confirm"),
+            StoreMsgBoxRoot,
+            Name::from("Store Msgbox"),
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
@@ -886,24 +1066,18 @@ pub fn sync_repair_confirm(
                         abs_node((10.0, 10.0, 220.0, 34.0), s),
                         Pickable::IGNORE,
                     ));
-                    panel.spawn((
-                        Text::new(cost_line),
-                        text_font(8.0),
-                        TextColor(PRICE_COLOR),
-                        TextLayout::justify(Justify::Center),
-                        abs_node((10.0, 48.0, 220.0, 14.0), s),
-                        Pickable::IGNORE,
-                    ));
-                    for (button, key, fallback, x) in [
-                        (RepairConfirmButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", 35.0),
-                        (
-                            RepairConfirmButton::Cancel,
-                            "UIIT_CTL_CANCEL",
-                            "Cancel",
-                            125.0,
-                        ),
-                    ] {
-                        let is_ok = matches!(button, RepairConfirmButton::Ok);
+                    if let Some(detail) = &prompt.detail {
+                        panel.spawn((
+                            Text::new(detail.clone()),
+                            text_font(8.0),
+                            TextColor(PRICE_COLOR),
+                            TextLayout::justify(Justify::Center),
+                            abs_node((10.0, 48.0, 220.0, 14.0), s),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                    for (button, key, fallback, x) in buttons.iter().copied() {
+                        let is_ok = matches!(button, MsgBoxButton::Ok);
                         let mut spawned = panel.spawn((
                             button,
                             Button,
@@ -916,7 +1090,7 @@ pub fn sync_repair_confirm(
                             },
                             button_style.clone(),
                         ));
-                        spawned.observe(on_repair_confirm_button);
+                        spawned.observe(on_msgbox_button);
                         if is_ok {
                             confirm_button = Some(spawned.id());
                         }
@@ -946,45 +1120,68 @@ pub fn sync_repair_confirm(
     }
 }
 
-/// Confirm sends the EXPERIMENTAL 0x703E request; Cancel just closes.
-fn on_repair_confirm_button(
+/// OK performs the prompt's action: a notice is just acknowledged, a repair
+/// confirmation sends the EXPERIMENTAL 0x703E request, a sell reconfirmation
+/// sends the op-9 the user just confirmed. Cancel closes without a packet.
+fn on_msgbox_button(
     activate: On<Activate>,
-    buttons: Query<&RepairConfirmButton>,
+    buttons: Query<&MsgBoxButton>,
     state: Res<crate::plugins::hud::store::model::StoreState>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
-    mut confirm: ResMut<crate::plugins::hud::store::model::RepairConfirm>,
-    mut pending: ResMut<crate::plugins::hud::store::model::PendingRepair>,
+    mut msgbox: ResMut<crate::plugins::hud::store::model::StoreMsgBox>,
+    mut pending_repair: ResMut<crate::plugins::hud::store::model::PendingRepair>,
+    mut pending_store: ResMut<PendingStoreOp>,
 ) {
-    use crate::plugins::hud::store::model::RepairOp;
+    use crate::plugins::hud::store::model::{RepairOp, StoreMsgAction};
     let Ok(button) = buttons.get(activate.entity) else {
         return;
     };
-    let Some(prompt) = confirm.prompt.take() else {
+    let Some(prompt) = msgbox.prompt.take() else {
         return;
     };
-    if matches!(button, RepairConfirmButton::Cancel) {
+    if matches!(button, MsgBoxButton::Cancel) {
         return;
     }
-    let Some(session) = &state.session else {
-        return;
-    };
-    let request = match prompt.op {
-        RepairOp::One(slot) => packets::agent::inventory::ItemRepairRequest::One {
+    let packet: Packet = match prompt.action {
+        StoreMsgAction::Notice => return,
+        StoreMsgAction::Repair(op) => {
+            let Some(session) = &state.session else {
+                return;
+            };
+            let request = match op {
+                RepairOp::One(slot) => packets::agent::inventory::ItemRepairRequest::One {
+                    slot,
+                    npc_unique_id: session.npc_id,
+                },
+                RepairOp::All => packets::agent::inventory::ItemRepairRequest::All {
+                    npc_unique_id: session.npc_id,
+                },
+            };
+            pending_repair.0 = Some(op);
+            info!("store: sending {:?} (experimental 0x703E v2)", request);
+            Packet::from(request)
+        }
+        StoreMsgAction::Sell {
             slot,
-            npc_unique_id: session.npc_id,
-        },
-        RepairOp::All => packets::agent::inventory::ItemRepairRequest::All {
-            npc_unique_id: session.npc_id,
-        },
+            quantity,
+            npc_id,
+        } => {
+            let request = InventoryOperationRequest::Sell {
+                slot,
+                quantity,
+                npc_unique_id: npc_id,
+            };
+            pending_store.0 = Some(StoreOp::Sell { slot, quantity });
+            info!("store: sending {:?}", request);
+            Packet::from(request)
+        }
     };
     let Ok(conn) = conn.single() else {
-        warn!("store: no agent connection, dropping repair request");
+        warn!("store: no agent connection, dropping store request");
         return;
     };
-    pending.0 = Some(prompt.op);
-    info!("store: sending {:?} (experimental 0x703E v2)", request);
-    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
-        error!("network: failed to send ItemRepairRequest: {}", e.0);
+    if let Err(e) = conn.get_sender().send(packet.into()) {
+        error!("network: failed to send store request: {}", e.0);
     }
 }
 
@@ -1039,22 +1236,61 @@ fn on_page_press(
     }
 }
 
-/// Show the hovered good in the detail board.
+/// Show the hovered good in the detail board, and publish it for the shared
+/// item tooltip.
+///
+/// The original shows the help bubble over these slots too: the store's 30
+/// goods cells are `CIFSlotWithHelpForPackage`, and the help bubble IS the
+/// item tooltip. The detail board stays — vanilla
+/// draws both. One system rather than two publishers of the same hover: the
+/// board and the tooltip read the same cell, and a second polling system was
+/// a second answer to one question.
 pub fn update_store_detail(
     state: Res<StoreState>,
     cells: Query<(&StoreSlotCell, &Hovered)>,
     item_data: Res<ClientItemData>,
     item_index: Res<ClientItemIndex>,
     names: Res<ClientTextNames>,
+    carry: Res<StoreCarry>,
+    inv_state: Res<InventoryState>,
+    mut hovered_item: ResMut<crate::plugins::hud::item_cell::HoveredItem>,
     mut detail: Query<&mut Text, With<StoreDetailText>>,
 ) {
     let Some(session) = &state.session else {
+        // Only the shop's own catalog entry, never the shared resource: this
+        // system runs every frame with no shop open, and `clear()` there took
+        // the warehouse's and the inventory's hover with it.
+        hovered_item.clear_catalog();
         return;
     };
+    // Suppressed mid-carry, matching the inventory and storage tooltips.
+    let carrying = carry.0.is_some() || inv_state.drag.is_some();
     let hovered = cells
         .iter()
         .find(|(_, hovered)| hovered.get())
+        .filter(|_| !carrying)
         .and_then(|(cell, _)| good_at(session, cell.cell));
+    // The same hover also feeds the shared tooltip, so the shop has one at all
+    // (the detail board alone is easy to miss). Published as a *catalog*
+    // entry: a shop good is a ref id and a price, not an owned item with
+    // durability and stats.
+    match hovered {
+        Some(good) => {
+            let ref_id = item_index.id(&good.item_codename);
+            let kind =
+                ref_id.map(
+                    |ref_id| crate::plugins::hud::item_cell::HoveredItemKind::Catalog {
+                        ref_id,
+                        price: priced(good.price, good.currency),
+                    },
+                );
+            if hovered_item.catalog().map(|(id, _)| id) != ref_id {
+                hovered_item.0 = kind;
+            }
+        }
+        None => hovered_item.clear_catalog(),
+    }
+
     let text = hovered
         .map(|good| {
             let name = item_index
@@ -1070,44 +1306,6 @@ pub fn update_store_detail(
         if node.0 != text {
             text.clone_into(&mut node.0);
         }
-    }
-}
-
-/// Publish the hovered good's itemdata ref for the shared item tooltip
-/// (`inventory::tooltip`), the way the storage window publishes its hovered
-/// item — polled from the cells' `Hovered` components, since the goods grid
-/// carries no Over/Out observers.
-///
-/// The original shows the help bubble over these slots too: the store's 30
-/// goods cells are `CIFSlotWithHelpForPackage` (`docs/re/ui/hud-store-window.md`
-/// §4), and the help bubble IS the item tooltip
-/// (`docs/re/ui/help-tooltip-widget.md`). The detail board stays — vanilla
-/// draws both.
-///
-/// Suppressed mid-carry, matching the inventory and storage tooltips.
-pub fn track_store_hover(
-    state: Res<StoreState>,
-    cells: Query<(&StoreSlotCell, &Hovered)>,
-    carry: Res<StoreCarry>,
-    inv_state: Res<InventoryState>,
-    item_index: Res<ClientItemIndex>,
-    mut hovered: ResMut<StoreHoveredGood>,
-) {
-    let carrying = carry.0.is_some() || inv_state.drag.is_some();
-    let ref_id = state
-        .session
-        .as_ref()
-        .filter(|_| !carrying)
-        .and_then(|session| {
-            cells
-                .iter()
-                .find(|(_, hovered)| hovered.get())
-                .and_then(|(cell, _)| good_at(session, cell.cell))
-        })
-        .and_then(|good| item_index.id(&good.item_codename))
-        .map(|id| id as u32);
-    if hovered.0 != ref_id {
-        hovered.0 = ref_id;
     }
 }
 
@@ -1298,8 +1496,10 @@ pub fn sell_drop_on_store(
     item_data: Res<ClientItemData>,
     names: Res<ClientTextNames>,
     ghosts: Query<Entity, With<crate::plugins::hud::inventory::ui::DragGhost>>,
+    ui_strings: Res<ClientUiStrings>,
     mut inv_state: ResMut<InventoryState>,
     mut modal: ResMut<QuantityModal>,
+    mut msgbox: ResMut<crate::plugins::hud::store::model::StoreMsgBox>,
     mut commands: Commands,
 ) {
     if !buttons.just_released(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) {
@@ -1335,10 +1535,17 @@ pub fn sell_drop_on_store(
         ItemTypeData::Expendable { stack_count, .. } => (*stack_count).max(1),
         _ => 1,
     };
-    // per-unit NPC sell value: itemdata col 31 (col 17 CanSell gates it) —
-    // unsellable items (quest/mall) don't open the modal at all
+    // An item the shop does not deal in (itemdata `CanSell` col 17 = 0:
+    // quest/mall items) is refused with the original's own message and never
+    // reaches the modal — so no op-9 can be built for it at all. Used to be
+    // an `info!` line nobody sees (npc-shop.md §6.5).
+    if let Some((key, fallback)) = crate::plugins::hud::store::model::sell_refusal(row) {
+        msgbox.notice(ui_strings.get_or(key, fallback).to_string());
+        return;
+    }
+    // per-unit NPC sell value: itemdata col 31, gated by the same CanSell
+    // column the refusal above tested, so this cannot fail here
     let Some(unit_price) = row.and_then(|row| row.sell_price()) else {
-        info!("store: {name} cannot be sold to NPCs");
         return;
     };
     modal.prompt = Some(QuantityPrompt {
@@ -1396,10 +1603,17 @@ pub fn sync_quantity_modal(
         press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
         ..Default::default()
     };
-    let title = if prompt.sell {
-        format!("Sell {}", prompt.name)
+    // Vanilla's own buy/sell quantity box, `ifmessagebox.txt`
+    // `Section = MsgBoxStore` (:575-844). The box carries no window size of
+    // its own (it is code-created), so the panel is the shared msgbox
+    // background `GDR_MSGBOX_BG` `16,40,284,122` (`Section = Create`, :6) and
+    // every element rect below is its vanilla rect minus that origin (16,40)
+    // — the same "keep the vanilla numbers at the call site" rule as the
+    // store window above.
+    let direction = if prompt.sell {
+        ui_strings.get_or("UIIT_STT_SELL", "Sell")
     } else {
-        format!("Buy {}", prompt.name)
+        ui_strings.get_or("UIIT_STT_BUY", "Buy")
     };
     // selling defaults to the whole stack (vanilla feel); buying to 1
     let initial = if prompt.sell { prompt.max.max(1) } else { 1 };
@@ -1407,10 +1621,7 @@ pub fn sync_quantity_modal(
     let icon = item_data
         .get(&prompt.ref_id)
         .and_then(|row| row.icon_path());
-    let price_line = format!(
-        "x{initial}   {}",
-        priced(prompt.unit_price * initial as u64, prompt.currency)
-    );
+    let price_line = priced(prompt.unit_price * initial as u64, prompt.currency);
 
     let mut input_entity = None;
     // Captured out of the button loop so the root can point Enter at Confirm
@@ -1439,11 +1650,18 @@ pub fn sync_quantity_modal(
             scrim
                 .spawn((
                     Node {
-                        width: Val::Px(220.0 * s),
-                        height: Val::Px(110.0 * s),
+                        width: Val::Px(MSGBOX_BG.2 * s),
+                        height: Val::Px(MSGBOX_BG.3 * s),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.09, 0.08, 0.06)),
+                    // `com_bg_tile_b` is the msgbox background in the data
+                    // (:6); stretched rather than tiled, as elsewhere in this
+                    // window (`DETAIL_TILE`).
+                    ImageNode {
+                        image: asset_server.load(MSGBOX_TILE),
+                        image_mode: NodeImageMode::Stretch,
+                        ..default()
+                    },
                     Outline {
                         width: Val::Px(1.0),
                         color: Color::srgb(0.55, 0.45, 0.25),
@@ -1451,18 +1669,19 @@ pub fn sync_quantity_modal(
                     },
                 ))
                 .with_children(|panel| {
+                    // item window + icon (:826 `18,44,48,48`, :807 `25,51,32,32`)
                     panel.spawn((
-                        Text::new(title),
-                        text_font(8.5),
-                        TextColor(NAME_COLOR),
-                        TextLayout::justify(Justify::Center),
-                        abs_node((0.0, 10.0, 220.0, 14.0), s),
+                        abs_node(MODAL_ICON_WND, s),
+                        ImageNode {
+                            image: asset_server.load(MODAL_ITEMWINDOW_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
                         Pickable::IGNORE,
                     ));
-                    // the traded item's icon, left of the amount row
                     if let Some(icon) = &icon {
                         panel.spawn((
-                            abs_node((14.0, 28.0, 24.0, 24.0), s),
+                            abs_node(MODAL_ICON, s),
                             ImageNode {
                                 image: asset_server.load(icon.clone()),
                                 image_mode: NodeImageMode::Stretch,
@@ -1471,10 +1690,88 @@ pub fn sync_quantity_modal(
                             Pickable::IGNORE,
                         ));
                     }
-                    // - [amount input] +
+                    // name board (:788 `73,44,212,48`, art `msgbox_iteminfo.ddj`)
+                    // with its two client rows: the item name in the board's own
+                    // client rect (inset `0,7,0,29`) and the direction word in
+                    // the `_NAME2` static (:769, inset `0,7,0,7`).
+                    panel.spawn((
+                        abs_node(MODAL_NAME_BOARD, s),
+                        ImageNode {
+                            image: asset_server.load(MODAL_ITEMINFO_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(prompt.name.clone()),
+                        text_font(8.5),
+                        TextColor(NAME_COLOR),
+                        TextLayout::justify(Justify::Center),
+                        abs_node(MODAL_NAME_TEXT, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(direction.to_string()),
+                        text_font(8.0),
+                        TextColor(PRICE_COLOR),
+                        TextLayout::justify(Justify::Center),
+                        abs_node(MODAL_NAME2_TEXT, s),
+                        Pickable::IGNORE,
+                    ));
+                    // the 3-part price row (:653 label, :691 value, :672 unit)
+                    panel.spawn((
+                        Text::new(ui_strings.get_or("UIIT_STT_PRICE", "Price").to_string()),
+                        text_font(8.0),
+                        TextColor(NAME_COLOR),
+                        abs_node(MODAL_PRICE_LABEL, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        ModalTotalText,
+                        Text::new(price_line),
+                        text_font(8.5),
+                        TextColor(PRICE_COLOR),
+                        TextLayout::justify(Justify::Right),
+                        abs_node(MODAL_PRICE_VALUE, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(ui_strings.get_or("UIIT_STT_GOLD", "Gold").to_string()),
+                        text_font(8.0),
+                        TextColor(NAME_COLOR),
+                        abs_node(MODAL_PRICE_UNIT, s),
+                        Pickable::IGNORE,
+                    ));
+                    // quantity edit: `GDR_MBS_EDIT_AMOUNT` (:634) `20,102,42,24`
+                    // on `msgbox_quantity.ddj` (42x24 — the art is its own
+                    // rect), text inset by its ClientRect `7,5,7,5`; the
+                    // `UIIT_STT_UNIT` static sits right of it (:615).
+                    panel.spawn((
+                        abs_node(MODAL_AMOUNT_EDIT, s),
+                        ImageNode {
+                            image: asset_server.load(MODAL_QUANTITY_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(ui_strings.get_or("UIIT_STT_UNIT", "Unit").to_string()),
+                        text_font(8.0),
+                        TextColor(NAME_COLOR),
+                        abs_node(MODAL_AMOUNT_UNIT, s),
+                        Pickable::IGNORE,
+                    ));
+                    // Deliberate deviation (ADR-0009): vanilla has no stepper
+                    // here, only the edit box. Keeping -/+ costs no authored
+                    // space — they sit in the gap the data leaves between the
+                    // `UIIT_STT_UNIT` static (ends vanilla x 76) and the OK
+                    // button (starts vanilla x 123) — and clicking a stack up
+                    // and down is the affordance a player expects.
                     for (button, label, x) in [
-                        (ModalButton::Minus, "-", 50.0),
-                        (ModalButton::Plus, "+", 150.0),
+                        (ModalButton::Minus, "-", MODAL_STEPPER_X.0),
+                        (ModalButton::Plus, "+", MODAL_STEPPER_X.1),
                     ] {
                         panel
                             .spawn((
@@ -1484,14 +1781,14 @@ pub fn sync_quantity_modal(
                                 Text::new(label),
                                 text_font(11.0),
                                 TextColor(Color::srgb(0.9, 0.9, 0.9)),
-                                abs_node((x, 32.0, 20.0, 18.0), s),
+                                abs_node((x, MODAL_STEPPER_Y, 20.0, 18.0), s),
                             ))
                             .observe(on_modal_button);
                     }
                     // digits-only text input, clamped to the max stack by
                     // `sync_modal_amount` (empty = 1); opens pre-filled with
                     // the initial amount (a sell defaults to the full stack)
-                    let mut input_box = abs_node((76.0, 31.0, 68.0, 18.0), s);
+                    let mut input_box = abs_node(MODAL_AMOUNT_TEXT, s);
                     input_box.padding = UiRect::top(Val::Px(2.0 * s));
                     let mut editable = EditableText {
                         visible_lines: Some(1.0),
@@ -1516,29 +1813,25 @@ pub fn sync_quantity_modal(
                                     color: Color::WHITE,
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgb(0.16, 0.14, 0.1)),
                             ))
                             .id(),
                     );
-                    panel.spawn((
-                        ModalTotalText,
-                        Text::new(price_line),
-                        text_font(8.5),
-                        TextColor(PRICE_COLOR),
-                        TextLayout::justify(Justify::Center),
-                        abs_node((30.0, 52.0, 160.0, 12.0), s),
-                        Pickable::IGNORE,
-                    ));
+                    // OK (:596 `123,124,76,22`) / Cancel (:577 `203,124,76,22`)
                     for (button, key, fallback, x) in [
-                        (ModalButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", 25.0),
-                        (ModalButton::Cancel, "UIIT_CTL_CANCEL", "Cancel", 115.0),
+                        (ModalButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", MODAL_OK_X),
+                        (
+                            ModalButton::Cancel,
+                            "UIIT_CTL_CANCEL",
+                            "Cancel",
+                            MODAL_CANCEL_X,
+                        ),
                     ] {
                         let is_ok = matches!(button, ModalButton::Ok);
                         let mut spawned = panel.spawn((
                             button,
                             Button,
                             Hovered::default(),
-                            abs_node((x, 66.0, 80.0, 24.0), s),
+                            abs_node((x, MODAL_BUTTON_Y, 76.0, 22.0), s),
                             ImageNode {
                                 image: button_style.normal.clone(),
                                 image_mode: NodeImageMode::Stretch,
@@ -1558,7 +1851,7 @@ pub fn sync_quantity_modal(
                                 TextLayout::justify(Justify::Center),
                                 Node {
                                     position_type: PositionType::Absolute,
-                                    top: Val::Px(6.0 * s),
+                                    top: Val::Px(5.0 * s),
                                     width: Val::Percent(100.0),
                                     ..default()
                                 },
@@ -1580,13 +1873,16 @@ pub fn sync_quantity_modal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn on_modal_button(
     activate: On<Activate>,
     buttons: Query<&ModalButton>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     amount: Res<ModalAmount>,
+    ui_strings: Res<ClientUiStrings>,
     mut inputs: Query<&mut EditableText, With<ModalAmountInput>>,
     mut modal: ResMut<QuantityModal>,
+    mut msgbox: ResMut<crate::plugins::hud::store::model::StoreMsgBox>,
     mut pending: ResMut<PendingStoreOp>,
 ) {
     let Ok(button) = buttons.get(activate.entity) else {
@@ -1618,28 +1914,41 @@ fn on_modal_button(
         }
         ModalButton::Ok => {
             let quantity = amount.0;
-            let request = if prompt.sell {
-                pending.0 = Some(StoreOp::Sell {
-                    slot: prompt.slot,
-                    quantity,
+            // A sell is asked back before it goes on the wire, like the
+            // original: `UIIT_MSG_SELL_RECONFIRM` "Are you sure to sell %s?"
+            // with the item name in the `%s`. Confirming there is what sends
+            // the op-9 (`on_msgbox_button`); a buy is not reconfirmed —
+            // vanilla only guards the irreversible direction.
+            if prompt.sell {
+                let (key, fallback) = crate::plugins::hud::store::model::SELL_RECONFIRM;
+                let template = ui_strings.get_or(key, fallback);
+                let name = if quantity > 1 {
+                    format!("{} x{quantity}", prompt.name)
+                } else {
+                    prompt.name.clone()
+                };
+                msgbox.prompt = Some(crate::plugins::hud::store::model::StoreMsgPrompt {
+                    message: template.replacen("%s", &name, 1),
+                    detail: None,
+                    action: crate::plugins::hud::store::model::StoreMsgAction::Sell {
+                        slot: prompt.slot,
+                        quantity,
+                        npc_id: prompt.npc_id,
+                    },
                 });
-                InventoryOperationRequest::Sell {
-                    slot: prompt.slot,
-                    quantity,
-                    npc_unique_id: prompt.npc_id,
-                }
-            } else {
-                pending.0 = Some(StoreOp::Buy {
-                    ref_id: prompt.ref_id,
-                    opt_level: prompt.opt_level,
-                    quantity,
-                });
-                InventoryOperationRequest::Buy {
-                    tab: prompt.tab,
-                    slot: prompt.slot,
-                    quantity,
-                    npc_unique_id: prompt.npc_id,
-                }
+                modal.prompt = None;
+                return;
+            }
+            pending.0 = Some(StoreOp::Buy {
+                ref_id: prompt.ref_id,
+                opt_level: prompt.opt_level,
+                quantity,
+            });
+            let request = InventoryOperationRequest::Buy {
+                tab: prompt.tab,
+                slot: prompt.slot,
+                quantity,
+                npc_unique_id: prompt.npc_id,
             };
             modal.prompt = None;
             let Ok(conn) = conn.single() else {
@@ -1678,10 +1987,9 @@ pub fn sync_modal_amount(
     if amount.0 != parsed {
         amount.0 = parsed;
     }
-    let line = format!(
-        "x{parsed}   {}",
-        priced(prompt.unit_price * parsed as u64, prompt.currency)
-    );
+    // the price row shows the total for the current amount; the amount
+    // itself is the edit box next to it (vanilla splits the two)
+    let line = priced(prompt.unit_price * parsed as u64, prompt.currency);
     for mut text in totals.iter_mut() {
         if text.0 != line {
             line.clone_into(&mut text.0);
@@ -1690,7 +1998,7 @@ pub fn sync_modal_amount(
 }
 
 /// The quantity modal and buy-carry are bound to the store session (parity
-/// with the storage window's `clear_modal_with_storage`): when the session
+/// with the storage window's `clear_carry_with_storage`): when the session
 /// ends with them open (walk-away, deselect, another NPC's dialog), the
 /// prompt reset lets `sync_quantity_modal` despawn the click-swallowing
 /// scrim and clear the input focus, and the carry ghost is despawned.
@@ -1720,9 +2028,18 @@ pub fn despawn_closing_store(closing: Query<Entity, With<StoreClosing>>, mut com
 /// OnExit cleanup.
 pub fn cleanup_store(
     mut commands: Commands,
-    windows: Query<Entity, Or<(With<StoreWindowRoot>, With<ModalRoot>, With<StoreGhost>)>>,
+    windows: Query<
+        Entity,
+        Or<(
+            With<StoreWindowRoot>,
+            With<ModalRoot>,
+            With<StoreMsgBoxRoot>,
+            With<StoreGhost>,
+        )>,
+    >,
     mut state: ResMut<StoreState>,
     mut modal: ResMut<QuantityModal>,
+    mut msgbox: ResMut<crate::plugins::hud::store::model::StoreMsgBox>,
     mut carry: ResMut<StoreCarry>,
 ) {
     for entity in windows.iter() {
@@ -1730,6 +2047,7 @@ pub fn cleanup_store(
     }
     state.session = None;
     modal.prompt = None;
+    msgbox.prompt = None;
     carry.0 = None;
 }
 
@@ -1784,8 +2102,16 @@ mod test {
     /// The repurchase slots run on a 35px pitch, not the main grid's 36. At 36
     /// the fifth slot's right edge would land past the 188px width of
     /// `com_redeem_window.ddj`, i.e. art overrunning its own frame.
+    ///
+    /// The second assertion is the regression guard for the tray rendering:
+    /// the fill loop indexes `session.buyback[index]` per slot site, so the
+    /// site count and the tray depth must stay equal or the window panics.
     #[test]
     fn buyback_slots_use_a_35px_pitch_inside_the_redeem_frame() {
+        assert_eq!(
+            BUYBACK_SLOT_XS.len(),
+            crate::plugins::hud::store::model::BUYBACK_TRAY_DEPTH
+        );
         for pair in BUYBACK_SLOT_XS.windows(2) {
             assert_eq!(pair[1] - pair[0], 35.0);
         }
@@ -1801,5 +2127,90 @@ mod test {
         );
         // GDR_STORE_ICON_SLOT_* are all y 289.
         assert_eq!(BUYBACK_SLOT_Y, 289.0 - game_window::CONTENT_TOP);
+    }
+
+    /// The quantity msgbox is `MsgBoxStore` (`ifmessagebox.txt:575`) laid out
+    /// on the msgbox family's shared background (`:6`, `16,40,284,122`), so
+    /// every element must be its vanilla rect minus that origin and must fit
+    /// inside the panel. `msgbox_quantity.ddj` is 42x24 and the edit's rect is
+    /// 42x24 — art and rect are the same size, which is the check that we are
+    /// using the authored piece and not stretching it.
+    #[test]
+    fn quantity_modal_sits_in_the_msgbox_background_space() {
+        let cases = [
+            ((18.0, 44.0), MODAL_ICON_WND),
+            ((25.0, 51.0), MODAL_ICON),
+            ((73.0, 44.0), MODAL_NAME_BOARD),
+            ((77.0, 71.0), MODAL_PRICE_LABEL),
+            ((127.0, 68.0), MODAL_PRICE_VALUE),
+            ((255.0, 71.0), MODAL_PRICE_UNIT),
+            ((20.0, 102.0), MODAL_AMOUNT_EDIT),
+            ((64.0, 108.0), MODAL_AMOUNT_UNIT),
+        ];
+        for ((vanilla_x, vanilla_y), ours) in cases {
+            assert_eq!(ours.0, vanilla_x - MSGBOX_BG.0, "x of vanilla {vanilla_x}");
+            assert_eq!(ours.1, vanilla_y - MSGBOX_BG.1, "y of vanilla {vanilla_y}");
+            assert!(
+                ours.0 >= 0.0 && ours.0 + ours.2 <= MSGBOX_BG.2,
+                "{ours:?} inside the panel width"
+            );
+            assert!(
+                ours.1 >= 0.0 && ours.1 + ours.3 <= MSGBOX_BG.3,
+                "{ours:?} inside the panel height"
+            );
+        }
+        // the authored art size == the authored edit rect (42x24)
+        assert_eq!((MODAL_AMOUNT_EDIT.2, MODAL_AMOUNT_EDIT.3), (42.0, 24.0));
+        assert!(MODAL_QUANTITY_DDJ.ends_with("messagebox/msgbox_quantity.ddj"));
+        // OK/Cancel keep the vanilla 80px pitch and stay inside the panel
+        assert_eq!(MODAL_CANCEL_X - MODAL_OK_X, 80.0);
+        assert!(MODAL_CANCEL_X + 76.0 <= MSGBOX_BG.2);
+        assert_eq!(MODAL_BUTTON_Y, 124.0 - MSGBOX_BG.1);
+        // our stepper sits in the gap the data leaves (vanilla x 76..123)
+        for x in [MODAL_STEPPER_X.0, MODAL_STEPPER_X.1] {
+            assert!(x >= 76.0 - MSGBOX_BG.0, "stepper right of the unit static");
+            assert!(x + 20.0 <= MODAL_OK_X, "stepper left of the OK button");
+        }
+    }
+
+    /// The shop shares `HoveredItem` with every other item grid, and
+    /// [`update_store_detail`] runs every frame — including with no shop open.
+    /// Clearing the whole resource there erased what the warehouse had just
+    /// published (`storage/ui.rs::track_storage_hover`), so the tooltip in the
+    /// (guild) warehouse flickered or never appeared. A publisher retracts
+    /// only what it published.
+    #[test]
+    fn a_closed_shop_leaves_another_windows_hover_alone() {
+        use crate::plugins::hud::item_cell::{HoveredItem, HoveredItemKind};
+        use packets::agent::character_data::{InventoryItem, ItemTypeData, RentInfo};
+
+        let warehouse_item = InventoryItem {
+            slot: 3,
+            rent: RentInfo::default(),
+            ref_id: 3626,
+            data: ItemTypeData::Expendable {
+                stack_count: 1,
+                assimilation_prob: None,
+                mag_params: Vec::new(),
+            },
+        };
+        let mut app = App::new();
+        app.init_resource::<StoreState>()
+            .init_resource::<ClientItemData>()
+            .init_resource::<ClientItemIndex>()
+            .init_resource::<ClientTextNames>()
+            .init_resource::<StoreCarry>()
+            .init_resource::<InventoryState>()
+            .insert_resource(HoveredItem(Some(HoveredItemKind::Owned(
+                warehouse_item.clone(),
+            ))))
+            .add_systems(Update, update_store_detail);
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<HoveredItem>().owned(),
+            Some(&warehouse_item),
+            "a shop that is not even open must not clear another window's hover"
+        );
     }
 }
