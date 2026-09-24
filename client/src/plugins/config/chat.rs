@@ -21,36 +21,38 @@ pub struct ChatSettings {
 
 /// AARRGGBB hex per chat channel.
 ///
-/// Sourced from the original client (the local RE notes): the
-/// PK2 really has no colour table — `ifchatviewer.txt` carries white on every
-/// `GDR_LIST_*` — but the v1.188 client compiles one in, as a switch on the
-/// wire `chat_type` inside the chat-line formatter (jump table
-/// at, one `mov ebp, imm32` per case, `0xAARRGGBB`). The defaults
-/// below are those immediates verbatim, each with its address. They stay
+/// Sourced from the original client: the PK2 really has no colour table — `ifchatviewer.txt`
+/// carries white on every `GDR_LIST_*` — but the v1.188 client compiles one
+/// in, as a switch on the wire `chat_type` inside the chat-line formatter: a
+/// 16-entry jump table with one `mov ebp, imm32` per case, the immediate being
+/// the `0xAARRGGBB` colour. The defaults below are those immediates verbatim,
+/// and each field names the `chat_type` case it was read from — that case
+/// number is the citation a reader can re-derive the value from. They stay
 /// config-driven so a user can override them; a deliberate deviation from the
 /// original (contrast, accessibility) is fine but must say why.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct ChatColorSettings {
-    /// All/local chat, stall lines and the unnamed types — `or ebp,-1` @.
+    /// All/local chat, stall lines and every unnamed type — the switch's
+    /// *default* arm, which sets the colour with `or ebp,-1` (= `0xFFFFFFFF`).
     pub normal: String,
-    /// Whisper (chat_type 2, shared with 10) — @.
+    /// Whisper — `chat_type` case 2, shared with case 10.
     pub whisper: String,
-    /// Party (chat_type 4) — @.
+    /// Party — `chat_type` case 4.
     pub party: String,
-    /// Guild (chat_type 5) — @.
+    /// Guild — `chat_type` case 5.
     pub guild: String,
-    /// GM chat + notices (chat_type 3 and 7 share one case) and our client info
-    /// lines — @.
+    /// GM chat and notices — `chat_type` cases 3 and 7 share one arm; our own
+    /// client info lines reuse it.
     pub gm_notice: String,
-    /// Union/alliance (chat_type 11) — @.
+    /// Union/alliance — `chat_type` case 11.
     pub union: String,
-    /// Academy (chat_type 16) — @.
+    /// Academy — `chat_type` case 16.
     pub academy: String,
-    /// Global (chat_type 6) — @.
+    /// Global — `chat_type` case 6.
     pub global: String,
-    /// NPC dialog lines (chat_type 13) — @. Its own case in the
-    /// original, not the `normal` white we used to fold it into.
+    /// NPC dialog lines — `chat_type` case 13. Its own arm in the original,
+    /// not the `normal` white we used to fold it into.
     pub npc: String,
 }
 
@@ -141,10 +143,11 @@ impl Default for ChatColors {
 mod tests {
     use super::*;
 
-    /// Guard the sourced table (the local RE notes): each
-    /// default is an instruction immediate out of the original client, so a
-    /// future edit that swaps one for an invented value fails here. Addresses
-    /// live on the fields; this asserts the resolved sRGB bytes.
+    /// Guard the sourced table: each default is an
+    /// instruction immediate out of the original client, so a future edit that
+    /// swaps one for an invented value fails here. The `chat_type` case each
+    /// immediate was read from is named on the field; this asserts the
+    /// resolved sRGB bytes.
     #[test]
     fn defaults_are_the_original_clients_compiled_colors() {
         let colors = ChatColorSettings::default().resolved();
@@ -156,15 +159,19 @@ mod tests {
                 (argb >> 24) as u8,
             )
         };
-        assert_eq!(colors.normal, expect(0xFFFF_FFFF), "ALL @");
-        assert_eq!(colors.whisper, expect(0xFF9F_FFFE), "PM @");
-        assert_eq!(colors.gm_notice, expect(0xFFFF_AEC3), "GM/notice @");
-        assert_eq!(colors.party, expect(0xFF9A_FFD0), "party @");
-        assert_eq!(colors.guild, expect(0xFFFF_B541), "guild @");
-        assert_eq!(colors.global, expect(0xFFFF_FF00), "global @");
-        assert_eq!(colors.union, expect(0xFFC2_F573), "union @");
-        assert_eq!(colors.npc, expect(0xFFDB_ADF8), "NPC @");
-        assert_eq!(colors.academy, expect(0xFF64_C7FF), "academy @");
+        assert_eq!(colors.normal, expect(0xFFFF_FFFF), "ALL (default arm)");
+        assert_eq!(colors.whisper, expect(0xFF9F_FFFE), "PM, chat_type 2");
+        assert_eq!(
+            colors.gm_notice,
+            expect(0xFFFF_AEC3),
+            "GM/notice, chat_type 3/7"
+        );
+        assert_eq!(colors.party, expect(0xFF9A_FFD0), "party, chat_type 4");
+        assert_eq!(colors.guild, expect(0xFFFF_B541), "guild, chat_type 5");
+        assert_eq!(colors.global, expect(0xFFFF_FF00), "global, chat_type 6");
+        assert_eq!(colors.union, expect(0xFFC2_F573), "union, chat_type 11");
+        assert_eq!(colors.npc, expect(0xFFDB_ADF8), "NPC, chat_type 13");
+        assert_eq!(colors.academy, expect(0xFF64_C7FF), "academy, chat_type 16");
     }
 
     /// A partial `chat.colors` block keeps the sourced defaults for the keys it
@@ -178,6 +185,25 @@ mod tests {
         assert_eq!(colors.party, Color::srgba_u8(0x10, 0x20, 0x30, 0xFF));
         assert_eq!(colors.npc, Color::srgba_u8(0xDB, 0xAD, 0xF8, 0xFF));
         assert_eq!(colors.whisper, Color::srgba_u8(0x9F, 0xFF, 0xFE, 0xFF));
+    }
+
+    /// The public-tree scrub (264c3176) removed the local RE file paths and
+    /// the instruction addresses from this file's docs, but cut several
+    /// sentences mid-clause: what was left promised a citation ("each with its
+    /// address", "— @.") that no longer stood anywhere, which under ADR 0009
+    /// reads as nine unsourced magic numbers. Pinned here because prose is
+    /// exactly what no other test looks at.
+    #[test]
+    fn no_doc_promises_a_citation_it_no_longer_carries() {
+        let src = include_str!("chat.rs");
+        // The production half only: this test names the stubs verbatim.
+        let docs = src.split("#[cfg(test)]").next().expect("a first half");
+        for stub in ["— @.", "each with its address", "(jump table\n/// at,"] {
+            assert!(
+                !docs.contains(stub),
+                "a scrubbed citation stub is back: {stub:?}"
+            );
+        }
     }
 
     #[test]

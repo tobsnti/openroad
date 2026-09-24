@@ -449,23 +449,29 @@ chat:
   # client has no idle fade (it ships a manual transparency slider), so this
   # is off by default and opt-in as non-original behaviour.
   idle_fade: false
-  # No per-channel colour table exists in the PK2 — the original's values are
-  # compiled into the client — so these are our own defaults, not vanilla.
+  # No per-channel colour table exists in the PK2 — the original compiles its
+  # values into the client, one `mov ebp, 0xAARRGGBB` per `chat_type` case of
+  # the chat-line colour switch. These are those immediates verbatim (see
+  # `client/src/plugins/config/chat.rs`), so the stock client reads like the
+  # original; override any of them if you want a different palette.
   colors:
-    normal: "FFFFFFFF"     # local/All chat (and NPC lines)
-    whisper: "FF00FFFF"
-    party: "FF00FF00"
-    guild: "FFFFB541"
-    gm_notice: "FFFF00FF"  # GM chat, notices, client info lines
-    union: "FFC2F573"
-    academy: "FF64C7FF"
-    global: "FFFFFF00"
+    normal: "FFFFFFFF"     # local/All chat, stalls, unnamed types
+    whisper: "FF9FFFFE"    # chat_type 2 (and 10)
+    party: "FF9AFFD0"      # chat_type 4
+    guild: "FFFFB541"      # chat_type 5
+    gm_notice: "FFFFAEC3"  # chat_type 3/7, and our client info lines
+    union: "FFC2F573"      # chat_type 11
+    academy: "FF64C7FF"    # chat_type 16
+    global: "FFFFFF00"     # chat_type 6
+    npc: "FFDBADF8"        # chat_type 13
 
 # Floating name labels over characters (AARRGGBB hex).
 nameplates:
   colors:
     local_player: "FFFFFFFF"    # your own character
     player: "FFB2D9FF"          # other players
+    party: "FF9AFFD0"           # party members: the original's compiled
+                                # PARTY chat colour (chat_type case 4)
     npc: "FFB2D9FF"
     monster: "FFFFFFFF"
     unique_monster: "FFFF8C1A"  # unique / world-boss monsters

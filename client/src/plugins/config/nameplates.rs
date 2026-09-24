@@ -29,7 +29,7 @@ impl Default for NameplateSettings {
 }
 
 /// AARRGGBB hex per nameplate kind.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct NameplateColorSettings {
     /// Your own character's name.

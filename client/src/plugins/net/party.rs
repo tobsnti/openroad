@@ -224,10 +224,20 @@ impl PartyRoster {
                     self.upsert(joined);
                 }
             }
-            // 3 — member left or was kicked.
+            // 3 — member left or was kicked. When the departing jid is *ours*,
+            // the party is over for us: the original branches on exactly that
+            // (see `PartyUpdate::leave_reason` in `packets/src/agent/party.rs`)
+            // and tears the window down instead of dropping one row. Dropping only the row
+            // would leave `is_active()` true, so the next invite would go out
+            // as 0x7062 (invite into a party) instead of 0x7060, and a stale
+            // `local_member_id` would decide the master test of the next party.
             3 => {
                 if let Some(member_id) = update.member_id {
-                    self.members.retain(|m| m.member_id != Some(member_id));
+                    if member_id != 0 && member_id == self.local_member_id {
+                        self.dismiss();
+                    } else {
+                        self.members.retain(|m| m.member_id != Some(member_id));
+                    }
                 }
             }
             // 6 — some member fields changed. The id is in the envelope, not in
@@ -766,6 +776,45 @@ pub(crate) mod tests {
         assert!(roster.members.is_empty());
         assert!(!roster.is_active());
         assert_eq!(roster.master_join_id, None);
+    }
+
+    /// Type 3 is two different events in one opcode: *someone else* left (drop
+    /// one row) or *we* left (the party is over). The original branches on the
+    /// departing jid being our own; dropping only our row would keep
+    /// `is_active()` true, so the next invite would go out as 0x7062 and a
+    /// stale `local_member_id` would answer the master test of the next party.
+    #[test]
+    fn our_own_leave_tears_the_party_down() {
+        let mut roster = PartyRoster::default();
+        roster.apply_data(&party_data(vec![
+            core(1, "Alice", 25000),
+            core(2, "Bob", 25000),
+        ]));
+        roster.local_member_id = 2;
+
+        // someone else leaving is still only a row
+        roster.apply_update(&PartyUpdate {
+            member_id: Some(1),
+            leave_reason: Some(1),
+            ..update(3)
+        });
+        assert!(roster.is_active(), "we are still in the party");
+        assert_eq!(roster.local_member_id, 2);
+
+        // ...and our own jid leaving ends it
+        roster.apply_update(&PartyUpdate {
+            member_id: Some(2),
+            leave_reason: Some(1),
+            ..update(3)
+        });
+        assert!(roster.members.is_empty());
+        assert!(!roster.is_active(), "the party must be gone");
+        assert_eq!(
+            roster.local_member_id, 0,
+            "the jid was scoped to that party"
+        );
+        assert_eq!(roster.master_join_id, None);
+        assert_eq!(roster.party_number, 0);
     }
 
     /// The regression the presence-mask rewrite exists to prevent: a delta names

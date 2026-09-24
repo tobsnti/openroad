@@ -312,7 +312,7 @@ pub enum RosterColumn {
 #[derive(Component, Clone, Copy)]
 pub struct GuildRosterOnline(pub usize);
 
-/// Which roster row the player last clicked, or `None`.
+/// Which roster **member** the player last clicked, by name, or `None`.
 ///
 /// The window needs one because 0x70F4 (expel) is the family's only
 /// **name-addressed** operation (`packets/src/agent/guild.rs`, builder
@@ -320,8 +320,15 @@ pub struct GuildRosterOnline(pub usize);
 /// name a member — and the only member names the client holds are the record's.
 /// `friend.rs` set the pattern for this page group: one selection resource, the
 /// command column acts on it.
+///
+/// It stores the *name*, not the row: `net::guild` replaces `roster.data`
+/// wholesale on every push, so a member leaving makes every later row shift up.
+/// A stored row index would then resolve to a different person, and "Withdraw"
+/// would expel whoever moved into the clicked line. The name is the identity
+/// the request itself uses, so it survives the reshuffle; if the named member
+/// is gone from the new record, nothing is selected any more.
 #[derive(Resource, Default, Debug, PartialEq, Eq)]
-pub struct GuildRosterSelection(pub Option<usize>);
+pub struct GuildRosterSelection(pub Option<String>);
 
 /// A clickable roster row, by index into [`GuildRoster`]'s member list.
 ///
@@ -543,13 +550,17 @@ fn on_guild_roster_row_press(
     let Ok(row) = rows.get(press.entity) else {
         return;
     };
-    let members = roster.data.as_ref().map(|d| d.members.len()).unwrap_or(0);
+    let members = roster
+        .data
+        .as_ref()
+        .map(|d| d.members.as_slice())
+        .unwrap_or(&[]);
     selection.0 = row_selection(row.0, members);
 }
 
 /// The rule, apart from the query plumbing so it can be pinned by a test.
-fn row_selection(row: usize, member_count: usize) -> Option<usize> {
-    (row < member_count).then_some(row)
+fn row_selection(row: usize, members: &[packets::agent::guild::GuildMember]) -> Option<String> {
+    members.get(row).map(|m| m.name.clone())
 }
 
 /// Slot 3, "Withdraw": expel the selected roster member — 0x70F4.
@@ -581,7 +592,15 @@ fn on_guild_expel(
 ) {
     let Some(target) = selection
         .0
-        .and_then(|row| roster.data.as_ref()?.members.get(row))
+        .as_deref()
+        .and_then(|name| {
+            roster
+                .data
+                .as_ref()?
+                .members
+                .iter()
+                .find(|m| m.name == name)
+        })
         .cloned()
     else {
         history.push(ChatLine::system(EXPEL_NO_SELECTION));
@@ -1257,8 +1276,12 @@ pub fn update_guild_roster(
     // The selection plate: visible only where a member sits *and* is selected,
     // so an out-of-range selection (a shorter record after a kick) draws
     // nothing rather than a bar under an empty row.
+    let selected_row = selection
+        .0
+        .as_deref()
+        .and_then(|name| members.iter().position(|m| m.name == name));
     for (piece, mut node) in bars.iter_mut() {
-        node.display = if selection.0 == Some(piece.row) && piece.row < members.len() {
+        node.display = if selected_row == Some(piece.row) && piece.row < members.len() {
             Display::Flex
         } else {
             Display::None
@@ -1711,10 +1734,36 @@ mod test {
     /// acts on somebody.
     #[test]
     fn only_an_occupied_roster_row_can_be_selected() {
-        assert_eq!(row_selection(1, 2), Some(1));
-        assert_eq!(row_selection(4, 2), None, "past the record's end");
-        assert_eq!(row_selection(0, 0), None, "an empty record selects nothing");
-        assert_eq!(row_selection(VISIBLE_ROWS - 1, VISIBLE_ROWS), Some(5));
+        let members = record().members;
+        assert_eq!(row_selection(1, &members), Some(members[1].name.clone()));
+        assert_eq!(row_selection(4, &members), None, "past the record's end");
+        assert_eq!(
+            row_selection(0, &[]),
+            None,
+            "an empty record selects nothing"
+        );
+    }
+
+    /// The regression this selection model exists to prevent: `net::guild`
+    /// replaces `roster.data` wholesale, so a member leaving shifts every later
+    /// row up. Selecting row 1 ("Master") and then losing row 0 must still
+    /// expel *that* member — a stored row index would now name the person who
+    /// moved into the line.
+    #[test]
+    fn expel_follows_the_member_when_rows_shift() {
+        let mut full = record();
+        full.members.insert(0, member("Aide", false));
+        let clicked = row_selection(1, &full.members).expect("row 1 is occupied");
+        assert_eq!(clicked, "Grunt");
+
+        // The push that drops row 0: everyone below moves up by one, so the
+        // clicked row now carries "Master" instead.
+        let mut shrunk = full.clone();
+        shrunk.members.remove(0);
+        assert_eq!(shrunk.members[1].name, "Master", "the roster shifted up");
+
+        let (_, sent) = expel_case_with(Some(clicked), "Master", GuildPermissions::MASTER, shrunk);
+        assert_eq!(sent, vec![GuildAction::Kick("Grunt".into())]);
     }
 
     /// The expel chain end to end: a master with the selected non-self row
@@ -1754,12 +1803,25 @@ mod test {
         own_name: &str,
         own_permissions: u32,
     ) -> (App, Vec<GuildAction>) {
+        let data = record();
+        let selected = selection.and_then(|row| row_selection(row, &data.members));
+        expel_case_with(selected, own_name, own_permissions, data)
+    }
+
+    /// The same run, but with the selection already resolved to a name and the
+    /// record given explicitly — what a shifted roster needs.
+    fn expel_case_with(
+        selection: Option<String>,
+        own_name: &str,
+        own_permissions: u32,
+        data: GuildData,
+    ) -> (App, Vec<GuildAction>) {
         let mut app = App::new();
         app.add_message::<GuildAction>()
             .init_resource::<ChatHistory>()
             .init_resource::<ClientUiStrings>()
             .insert_resource(GuildRosterSelection(selection));
-        let mut data = record();
+        let mut data = data;
         // Row 0 is "Grunt", row 1 is "Master": give the acting character the
         // permissions under test on whichever row carries their name.
         for member in data.members.iter_mut() {
