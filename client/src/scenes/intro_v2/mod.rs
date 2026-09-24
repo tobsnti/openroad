@@ -58,7 +58,7 @@ pub enum IntroV2State {
     /// (race plates over the stage, resinfo/pscharacterselect.txt §Select).
     RegionSelect,
     /// Character creation. **Deliberately a sub-state of [`SceneState::IntroV2`],
-    /// not a `SceneState` of its own** (settled for #645).
+    /// not a `SceneState` of its own.**
     ///
     /// In the original, create *is* its own screen — its own resinfo tree
     /// `pscharactercreate{china,_europe}.txt` with its own red chrome (honoured
@@ -68,7 +68,7 @@ pub enum IntroV2State {
     /// live agent connection (`character_select::disconnect_from_agent_server`
     /// is held across the whole sub-flow on purpose). A separate `SceneState`
     /// tears all four down and rebuilds them, which changes behaviour rather
-    /// than fixing it — the same call #372 made for the world scenes.
+    /// than fixing it.
     ///
     /// Region select points the same way: modelling it as a separate scene state
     /// is a defect of that module. The direction of travel here is fewer states
@@ -477,9 +477,12 @@ impl Plugin for IntroV2ScenePlugin {
                 (
                     chrome::update_info_text,
                     // the bars are spawned once for the scene, so the art
-                    // follows the state (#371: create declares RED bars)
+                    // follows the state (create declares RED bars)
                     chrome::update_chrome_art,
                     fade::on_fade_to_black,
+                    // A screen on its way in does not take clicks yet
+                    // (`fade::FadingIn`).
+                    fade::tick_fade_in,
                     net::on_gateway_login_response,
                     net::on_agent_login_response,
                     // The one arm a silent server does not have: without it the
@@ -620,11 +623,11 @@ const OPTION_TXT: &str = "config/option.txt";
 /// Resolve the cutscene the intro plays, preferring the user's own data over
 /// anything we could ship.
 ///
-/// Idea: the camera path is SRO data, so no `.intro` is committed and a release
+/// The camera path is SRO data, so no `.intro` is committed and a release
 /// download has none — but the script it is transcribed from sits in the user's
 /// own `Media.pk2`, and `IntroScene::from_camera_script` is already the whole
-/// converter. So we read it at startup instead of requiring a hand-run tool
-/// (#569). Three sources, in order of how explicit the user was:
+/// converter, so it is read at startup instead of requiring a hand-run tool.
+/// Three sources, in order of how explicit the user was:
 ///
 /// 1. `assets/intros/<name>.intro` on disk — a hand-authored or pre-converted
 ///    path wins, which is what keeps `make cutscene convert` meaningful.
@@ -813,7 +816,7 @@ fn start_background_audio(
 
     // Spawned even when BGM is off — muted is a *paused sink*, not a missing
     // entity, so turning BGM on mid-scene starts the track instead of doing
-    // nothing until the next scene load (#647).
+    // nothing until the next scene load.
     commands.spawn((
         AudioPlayer::new(asset_server.load(intro_scene_data.0.music())),
         options.audio.bgm_playback_settings(),
@@ -1056,12 +1059,12 @@ mod test {
         assert_eq!(fill_placeholders("%d and %d", &[3]), "3 and %d");
     }
 
-    /// #645, ownership half: character creation lives *inside* the intro scene.
-    /// The state graph is what makes creation share the char-select stage,
-    /// world origin, cinematic camera and agent connection — promoting
-    /// `CharacterCreate` to its own `SceneState` would tear all four down on
-    /// entry. Pinned here so the promotion cannot happen silently; the
-    /// rationale and its citations sit on the variant itself.
+    /// Ownership: character creation lives *inside* the intro scene. The state
+    /// graph is what makes creation share the char-select stage, world origin,
+    /// cinematic camera and agent connection — promoting `CharacterCreate` to
+    /// its own `SceneState` would tear all four down on entry. Pinned here so
+    /// the promotion cannot happen silently; the rationale and its citations
+    /// sit on the variant itself.
     #[test]
     fn character_create_is_a_sub_state_of_the_intro_scene() {
         let mut app = App::new();

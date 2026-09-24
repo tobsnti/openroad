@@ -92,10 +92,55 @@ pub fn on_fade_to_black(
     commands.entity(fade_entity).insert(TweenAnim::new(tween));
 }
 
+/// A screen root that is on its way in and has not settled yet.
+///
+/// [`show_screen`] makes the root `Visible` in the same frame it starts the
+/// 250 ms delay plus 250 ms fade, and it touches neither `Pickable` nor
+/// `InteractionDisabled` — so for half a second a screen accepts clicks aimed
+/// at the screen it is replacing. That is a real path into the login form: the
+/// server window's Select button (y 475..515) and the login form's Connect
+/// (y 460..501) overlap, as they do in the original, and the original never
+/// shows both at once. One double-click on Select then commits the shard *and*
+/// presses Connect on the form that is still fading in.
+///
+/// The marker is what the observers of the appearing screen ask before they act;
+/// [`tick_fade_in`] takes it off once the fade is over.
+#[derive(Component)]
+pub struct FadingIn {
+    timer: Timer,
+}
+
+/// The delay plus the fade of [`show_screen`], i.e. how long a screen is on its
+/// way in.
+pub const FADE_IN_SECS: f32 = 0.5;
+
+impl Default for FadingIn {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(FADE_IN_SECS, TimerMode::Once),
+        }
+    }
+}
+
+/// Drops [`FadingIn`] from every root that has finished appearing.
+pub fn tick_fade_in(
+    time: Res<Time>,
+    mut fading: Query<(Entity, &mut FadingIn)>,
+    mut commands: Commands,
+) {
+    for (entity, mut fade) in fading.iter_mut() {
+        if fade.timer.tick(time.delta()).just_finished() {
+            commands.entity(entity).remove::<FadingIn>();
+        }
+    }
+}
+
 /// Makes the screen root marked with `M` visible and fades all of its
 /// image/text descendants in (250ms delay so a simultaneous
-/// [`hide_screen`] of the previous screen finishes first, then 250ms fade,
-/// matching the old intro's timing).
+/// [`hide_screen`] of the previous screen finishes first, then 250ms fade).
+///
+/// The root is marked [`FadingIn`] for that half second, so a click meant for
+/// the screen on its way out cannot act on this one.
 pub fn show_screen<M: Component>(
     roots: Query<Entity, With<M>>,
     mut visibilities: Query<&mut Visibility>,
@@ -108,6 +153,7 @@ pub fn show_screen<M: Component>(
         if let Ok(mut visibility) = visibilities.get_mut(root) {
             *visibility = Visibility::Visible;
         }
+        commands.entity(root).insert(FadingIn::default());
 
         for entity in std::iter::once(root).chain(children_query.iter_descendants(root)) {
             if images.contains(entity) {
