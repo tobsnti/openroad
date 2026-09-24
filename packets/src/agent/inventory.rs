@@ -7,7 +7,7 @@
 //! operation (op byte 6, skrillax `PickupItem`) is what the server answers a
 //! 0x7074 Pickup action with; its item payload is type-dependent (rent info +
 //! ref id + class-dependent content), so it stays a raw tail with best-effort
-//! accessors until live captures pin it. Unknown op bytes are preserved
+//! accessors until the remaining cases are confirmed. Unknown op bytes are preserved
 //! raw — never a decode failure.
 
 use bevy::prelude::Message;
@@ -24,17 +24,15 @@ use sro_macro_derive::*;
 /// The pseudo inventory slot gold pickups report (skrillax `GOLD_SLOT`).
 pub const INVENTORY_SLOT_GOLD: u8 = 0xFE;
 
-/// A sell ack's `slot_buyback` when the sold item cannot be bought back
-/// (`docs/re/systems/npc-shop.md` §3).
+/// A sell ack's `slot_buyback` when the sold item cannot be bought back.
 pub const BUYBACK_SLOT_NONE: u8 = 0xFF;
 
 /// Op 28's `slot` sentinel: the pick pet grabbed the item, but it did **not**
 /// land in the character's inventory — and the body **ends there**, with no
-/// item record behind it (`docs/re/systems/pet-pick-cos.md` §3, xBot
-/// `PacketParser.cs:2122-2127`). It pairs with the client's own
-/// `UIIT_MSG_COSPETERR_CANT_PICKITEM2` ("grab setting turned OFF because the
-/// character's inventory is full"). A decoder that reads an item body
-/// unconditionally after op 28 desyncs the stream, which is why this is a
+/// item record behind it (xBot `PacketParser.cs:2122-2127`). It pairs with the
+/// client's own `UIIT_MSG_COSPETERR_CANT_PICKITEM2` ("grab setting turned OFF
+/// because the character's inventory is full"). A decoder that reads an item
+/// body unconditionally after op 28 desyncs the stream, which is why this is a
 /// named constant and not an inline `254`.
 pub const PET_PICKUP_SLOT_NONE: u8 = 0xFE;
 
@@ -43,26 +41,59 @@ pub const PET_PICKUP_SLOT_NONE: u8 = 0xFE;
 /// the server clamps it to what is actually present.
 ///
 /// Buy/sell are EXPERIMENTAL community-documented vSRO ops (8/9), not yet
-/// verified against our reference server (`docs/net-inventory-0x7034.md`).
+/// confirmed against a live server (`docs/net-inventory-0x7034.md`).
 ///
-/// The storage ops (1/2/3 items, 11/12 gold) come from xBot-WinForms'
-/// `SRTypes.InventoryItemMovement` enum + its `MoveItem` builders
-/// (2026-08-08, `docs/net-storage-0x3047-0x3049.md`), not yet verified live.
-/// The item ops use the builder's *uniqueID* overload
-/// (`type, slotInitial, slotFinal, npc u32`) — the only storage call site in
-/// that project does; the alternate overload writes a `quantity u16` instead,
-/// which is the probe variant if these are rejected. The gold ops mirror
-/// `EditGoldExchange` (`type, gold u64`) with the NPC id appended, which is
-/// the unverified part there.
+/// ## The storage and guild-storage ops
+///
+/// The op bytes 1/2/3/11/12 (personal warehouse) and 29/30/31/32/33 (guild
+/// warehouse) were once only assumed from xBot (no licence; facts only — xBot
+/// names the same movement kinds in an enum), with the request tail an open
+/// question (`quantity u16` vs `uniqueID u32`). They now follow the v1.188
+/// client itself, which settles the tails — including that the **gold ops carry
+/// no NPC id at all**:
+///
+/// * the original's item-move builder fills one request struct and dispatches
+///   on a (source container, target container) pair: `0x46` = inventory,
+///   `0x13` = storage, `0x91` = **guild storage**, `0x1a` = exchange pane,
+///   `0x0f` = NPC shop, `0` = ground. `0x13→0x13` writes op 1, `0x46→0x13`
+///   op 2, `0x13→0x46` op 3, `0x91→0x91` op 29, `0x46→0x91` op 30,
+///   `0x91→0x46` op 31.
+/// * the gold builder is a second function: `0x13→0x46` op 11, `0x46→0x13`
+///   op 12, `0x46→0x1a` op 13, `0x46→0x91` op **32**, `0x91→0x46` op **33**,
+///   `0x46→0` op 10 (drop to ground).
+/// * the serializer both call writes the op byte, then switches on it. Struct
+///   offsets: `+3` source slot, `+4` target slot, `+6` quantity u16, `+0xc`
+///   NPC unique id u32, `+0x90` gold u64. The writers are plain sized memcpys,
+///   i.e. little-endian. Arms: ops 1 **and 29** share one arm writing
+///   `+3, +4, u16@+6, u32@+0xc`; ops 2/3 **and 30/31** share one writing
+///   `+3, +4, u32@+0xc`; ops 10/11/12/13 **and 32/33** share one writing
+///   `u64@+0x90` and **nothing else**.
+///
+/// The same serializer arms produce four bodies whose bytes are already known:
+/// op 0 `Move` (`+3, +4, u16@+6`), op 9 `Sell` (`+3, u16@+6, u32@+0xc`), op 8
+/// `Buy` (`+2, +3, u16@+6, u32@+0xc`, `0800000300ba000000`) and op 13's bare
+/// `u64` (`0d6400000000000000`). So the two corrections this reading forces
+/// (op 1 gained the `amount u16` it was missing; ops 11/12 lost an
+/// `npc_unique_id` they never had) stand on the same footing as those four
+/// known-good layouts. Neither of the two has been seen on the wire, so nothing
+/// regressed here.
+///
+/// Slot numbering: the original's builders add `+0x0D` to *inventory* slots
+/// because their bag index is bag-relative. Our slots are already the server's
+/// absolute numbering, so nothing here biases anything (same rule as
+/// [`ItemUseRequest`]).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub enum InventoryOperationRequest {
     #[sro_packet(value = 0)]
     Move { source: u8, target: u8, amount: u16 },
     /// Move an item between two storage slots (storage session open).
+    /// `amount` is the stack size to move — the original passes the source
+    /// item's own stack count, i.e. the whole stack unless the UI is splitting.
     #[sro_packet(value = 1)]
     StorageToStorage {
         source: u8,
         target: u8,
+        amount: u16,
         npc_unique_id: u32,
     },
     /// Deposit: inventory `source` → storage `target`. The fee is applied
@@ -97,12 +128,11 @@ pub enum InventoryOperationRequest {
     },
     /// Drop the whole of inventory `slot` on the ground at the player's feet.
     ///
-    /// **[S], and the weakest-sourced op in this enum.** Only skrillax's
+    /// **Assumed, and the weakest-sourced op in this enum.** Only skrillax's
     /// `InventoryOperation` table names op **7** as the item drop
     /// (`docs/net-inventory-0x7034.md:24-26`); go-sro implements neither it nor
-    /// any of the 26 further ops it merely names. Our own corpus is silent:
-    /// **191 captured C→S 0x7034 bodies carry ops 00/08/09 and nothing else**,
-    /// so this arm has never been observed on the wire.
+    /// any of the 26 further ops it merely names, and the op has never been
+    /// seen on the wire.
     ///
     /// The body is the slot alone. A drop has no destination to name, and no
     /// quantity — stack splitting is a separate mechanism the client does not
@@ -112,20 +142,18 @@ pub enum InventoryOperationRequest {
     /// ⚠️ **A wrong op byte here is not a no-op.** A rejected 0x7034 op draws
     /// no response at all (`docs/net-inventory-0x7034.md:113`), and repeating a
     /// mis-shaped opcode is what reset the connection for 0x704C (#215). The
-    /// first live drop is therefore the capture that settles this: read the
-    /// leading byte back out of `packet_dump/c2s/0x7034.log` and the answer out
-    /// of `packet_dump/0xb034.log`, and record the result in
-    /// `docs/re/ui/hud-inventory.md` §U1 either way.
+    /// first live drop settles this: the leading byte the client sends and the
+    /// answer the server gives should be checked against this arm.
     #[sro_packet(value = 7)]
     Drop { slot: u8 },
     /// Move an item between two of a pick pet's own bag slots.
     ///
-    /// **[S] — the request bodies for ops 25/26/27 are in no recovered source.**
-    /// The 0xB034 *responses* are [V] (`docs/re/systems/pet-pick-cos.md` §3),
-    /// and go-sro names these ops but ships no handler arm, so the shape here
-    /// is inferred the way every other op pair in this packet is built: the
-    /// request carries the same subject the response echoes — the COS uid plus
-    /// the slots — in response order. `[U]` until CAPTURE_LIST F5 records one.
+    /// **Assumed — the request bodies for ops 25/26/27 are in no known source.**
+    /// The 0xB034 *responses* are known, and go-sro names these ops but ships no
+    /// handler arm, so the shape here is inferred the way every other op pair in
+    /// this packet is built: the request carries the same subject the response
+    /// echoes — the COS uid plus the slots — in response order. It stays
+    /// unconfirmed until one is seen on the wire.
     ///
     /// Ops 26/27 carry **no quantity**: the response layout has none, so pet
     /// moves are whole-slot and there is no split to request.
@@ -136,27 +164,128 @@ pub enum InventoryOperationRequest {
         target: u8,
         amount: u16,
     },
-    /// Take out of the pet bag into the character's inventory. [S], see
-    /// [`Self::PetToPet`].
+    /// Stage inventory `source` into exchange-pane slot `target`
+    /// (player trade). **No NPC id and no quantity** — unlike the storage ops
+    /// 1/2/3 this is a bare three-byte body, and it moves the *whole* stack.
+    /// Known bodies: `042900` (bag 41 → pane 0) and `041901` (bag 25 → pane 1),
+    /// both acked `01 04 …`. Staging a 19-piece bolt stack moves all 19
+    /// (`0x308C` reports `stack = 0x0013`), so there is no quantity field to
+    /// append.
+    #[sro_packet(value = 4)]
+    InventoryToExchange { source: u8, target: u8 },
+    /// Take a staged item back out of exchange-pane slot `source`. **One byte
+    /// only** — the destination is chosen server-side (the item never left the
+    /// bag). The body `0500` draws the ack `010500` and a self 0x308C with
+    /// `item_count = 0`.
+    #[sro_packet(value = 5)]
+    ExchangeToInventory { source: u8 },
+    /// Set the gold on one's own side of the trade — absolute amount, not a
+    /// delta: staging 100 sends `0d6400000000000000`, and the completed trade
+    /// moves exactly 100 (0x304E bookkeeping). The values 5000 and 1 behave the
+    /// same way. No NPC id.
+    #[sro_packet(value = 13)]
+    InventoryGoldToExchange { amount: u64 },
+    /// Withdraw gold: storage → inventory (op 10 is drop-gold-to-ground).
+    /// **No NPC id** — the gold arm of the original's inventory-op serializer
+    /// writes the `u64` and returns (see the type doc); the session the server
+    /// books this against is the one 0x703C opened.
+    #[sro_packet(value = 11)]
+    StorageGoldToInventory { amount: u64 },
+    /// Deposit gold: inventory → storage. No NPC id, same arm as op 11/13.
+    #[sro_packet(value = 12)]
+    InventoryGoldToStorage { amount: u64 },
+    /// Op 29 — move an item between two **guild** storage slots. Same arm as
+    /// op 1, so the same body: `source, target, amount u16, npc u32`.
+    #[sro_packet(value = 29)]
+    GuildStorageToGuildStorage {
+        source: u8,
+        target: u8,
+        amount: u16,
+        npc_unique_id: u32,
+    },
+    /// Op 30 — deposit into the guild warehouse: inventory `source` → guild
+    /// `target`. Whole slot, no quantity (same arm as op 2).
+    #[sro_packet(value = 30)]
+    InventoryToGuildStorage {
+        source: u8,
+        target: u8,
+        npc_unique_id: u32,
+    },
+    /// Op 31 — withdraw from the guild warehouse: guild `source` → inventory
+    /// `target`. Whole slot (same arm as op 3).
+    #[sro_packet(value = 31)]
+    GuildStorageToInventory {
+        source: u8,
+        target: u8,
+        npc_unique_id: u32,
+    },
+    /// Op 26 — take a whole slot **out of the COS bag** into the player's
+    /// inventory (pet/transport → inventory).
+    ///
+    /// Body order is the client's own, from the same serializer the type doc
+    /// above uses: ops 26 and 27 share one arm that writes the `u32@+0xc` first
+    /// and then `+3` and `+4` — the reverse of the storage arm (ops 2/3/30/31),
+    /// which writes its two slots first and the id last. The `u32` is the COS
+    /// unique id, not an NPC id.
+    ///
+    /// The order agrees independently with the **response** layout
+    /// (`0xB034` op 26 = `cosUid:u32, petSlot:u8, invSlot:u8`, xBot
+    /// `PacketParser.cs:2094-2096`), and `+3`/`+4` are source/target throughout
+    /// this serializer — hence
+    /// pet slot then inventory slot here, and the other way round in op 27.
+    ///
+    /// **No quantity**: pet↔inventory moves are whole-slot only, which the
+    /// arm shows (it writes no `u16@+6`) and the response doc states.
     #[sro_packet(value = 26)]
     PetToInventory {
         cos_unique_id: u32,
         pet_slot: u8,
         inventory_slot: u8,
     },
-    /// Put an inventory item into the pet bag. [S], see [`Self::PetToPet`].
+    /// Op 27 — put a whole inventory slot **into the COS bag**. Same arm and
+    /// therefore the same three fields as op 26, with the two slots swapped
+    /// (`+3` = source = inventory slot, `+4` = target = pet slot), matching
+    /// the response layout `cosUid:u32, invSlot:u8, petSlot:u8`
+    /// (`PacketParser.cs:2108-2110`).
     #[sro_packet(value = 27)]
     InventoryToPet {
         cos_unique_id: u32,
         inventory_slot: u8,
         pet_slot: u8,
     },
-    /// Withdraw gold: storage → inventory (op 10 is drop-gold-to-ground).
-    #[sro_packet(value = 11)]
-    StorageGoldToInventory { amount: u64, npc_unique_id: u32 },
-    /// Deposit gold: inventory → storage.
-    #[sro_packet(value = 12)]
-    InventoryGoldToStorage { amount: u64, npc_unique_id: u32 },
+    /// Op 35 (`0x23`) — take an avatar item **off**: avatar `source` →
+    /// inventory `target`. Two bytes, no NPC id and no quantity.
+    ///
+    /// From the client's own move dispatcher and its serializer:
+    /// * the original's item-move builder switches on the **source container
+    ///   id** — `0x0F` shop, `0x13` storage, `0x1A` exchange, `0x46` inventory,
+    ///   `0x7A` pet, `0x91` guild storage, and `0x4E` = the **avatar
+    ///   container**. Source `0x4e` with target `0x46` sets the record's op
+    ///   byte to `0x23` and fills `+3 = source` (the raw avatar slot) and
+    ///   `+4 = target + 0x0D` — the same bag bias our slot numbers already
+    ///   carry, so `target` is our absolute inventory slot.
+    /// * the original's inventory-op serializer writes the request as
+    ///   `+3 u8, +4 u8` and nothing else (the shared slot-writing tail).
+    ///
+    /// The same two functions produce op 8 as
+    /// `tab u8, slot u8, quantity u16, npc u32`, which is byte-for-byte the
+    /// known buy body `0800000300ba000000`.
+    #[sro_packet(value = 35)]
+    AvatarToInventory { source: u8, target: u8 },
+    /// Op 36 (`0x24`) — put an item **on**: inventory `source` → avatar
+    /// `target`. Same arm and therefore the same two bytes as op 35, with the
+    /// slots swapped: the original's item-move builder, for source `0x46` and
+    /// target `0x4e`, sets `+3 = source + 0x0D` (inventory) and `+4 = target`
+    /// (the raw avatar slot).
+    #[sro_packet(value = 36)]
+    InventoryToAvatar { source: u8, target: u8 },
+    /// Op 32 — deposit gold into the guild account. No NPC id (same arm as
+    /// ops 11/12/13).
+    #[sro_packet(value = 32)]
+    InventoryGoldToGuildStorage { amount: u64 },
+    /// Op 33 — withdraw gold from the guild account.
+    #[sro_packet(value = 33)]
+    GuildStorageGoldToInventory { amount: u64 },
 }
 
 /// 0x703E — client → server item repair at an NPC (AGENT_INVENTORY_ITEM_REPAIR
@@ -166,7 +295,7 @@ pub enum InventoryOperationRequest {
 /// Layout v2 — **npc unique id FIRST**, then a type byte (1 = single +
 /// slot, 2 = all), the community-folklore shape. The v1 guess (0x7034 house
 /// style, discriminator first / npc id last) got clean `02 <code u16>`
-/// rejections (`02 0000` for One, `02 0003` for All, 2026-08-07) — no
+/// rejections (`02 0000` for One, `02 0003` for All) — no
 /// connection reset, so the server tolerated the LENGTHS; whether it
 /// misparsed the fields or refused semantically is still open. Hand-written
 /// wire impls: the derive writes the enum tag first, which can't express
@@ -225,10 +354,9 @@ impl From<ItemRepairRequest> for Bytes {
     }
 }
 
-/// 0xB03E — server → client repair ack. Never captured (no repair was ever
-/// performed against the reference server) — decoded tolerantly as
-/// `result u8` + raw tail, log-only; the first live repair pins it via
-/// `packet_dump/0xb03e.log`.
+/// 0xB03E — server → client repair ack. Never seen, because no repair has been
+/// performed against the reference server — decoded tolerantly as `result u8` +
+/// raw tail, log-only. The first live repair pins the body.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct ItemRepairResponse {
     pub result: u8,
@@ -280,39 +408,38 @@ impl From<ItemRepairResponse> for Bytes {
 ///
 /// | variant | tail | builder |
 /// |---|---|---|
-/// | [`Self::Simple`] | none | `FUN_00796660:550-570` with no target/extra set |
-/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` | `FUN_00796660:286-300` |
-/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes | `FUN_007901c0` (TypeID mask `0xf800 == 0x2800`) |
+/// | [`Self::Simple`] | none | the generic item-use builder, no target or extra set |
+/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` | the generic item-use builder |
+/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes | the name builder (TypeID `0x2800`) |
 ///
-/// `FUN_007901c0` writes the string through `FUN_0053d8c0`, which emits the
-/// `std::string` length as a `u16` and then that many bytes; `FUN_0053d460`
-/// (the `type_id` writer) is `FUN_00508fe0(x, 2)`, i.e. exactly two bytes.
+/// The name-carrying builder writes the string as a `std::string` length `u16`
+/// followed by that many bytes, and the `type_id` writer emits exactly two
+/// bytes.
 ///
 /// ## The `+0x0D` slot bias is already in `slot`
 ///
-/// The original's builders write `(char)param_1 + '\r'` — their index is
-/// **bag-relative**, so the bias skips the 13 equipment slots
-/// (`FUN_007901c0`, `FUN_00796660:286`), and the `0xB04C` handler subtracts it
-/// again (`FUN_0087a7b0`: `local_23c = (byte)((char)local_22c - 0xd)`). Our
-/// slots are the **server's own numbering**, where 0..12 are the equipment
+/// The original's builders write the slot as `index + 0x0D` — their index is
+/// **bag-relative**, so the bias skips the 13 equipment slots, and the `0xB04C`
+/// handler subtracts it again. Our slots are the **server's own numbering**,
+/// where 0..12 are the equipment
 /// slots and the bag starts at 13 (`client/src/plugins/net/inventory.rs`), i.e.
 /// the biased number already. So `slot` here is the wire slot and **nothing may
 /// add `0x0D` to it** — doing so would land 13 slots past the item.
 ///
-/// ## Parsing (we only ever send this)
+/// ## Parsing (this packet is only ever sent, never received)
 ///
 /// The wire carries no discriminator: the class lives in the sender's item data.
 /// [`TryFrom`] therefore decides by length — 3 bytes `Simple`, 8 bytes
 /// `WithTarget`, otherwise a `WithName` whose `u16` length must account for
 /// exactly the rest of the body. An 8-byte body is genuinely ambiguous (it could
 /// be a 3-character name); `WithTarget` wins because that is the common class.
-/// UNVERIFIED by capture — group C still has no `0x704C`/`0xB04C` line.
+/// Unconfirmed: no `0x704C`/`0xB04C` exchange has been observed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ItemUseRequest {
     /// Potions, pills, plain return scrolls — no tail.
     Simple { slot: u8, type_id: u16 },
     /// COS potions, bombs and the like: the target's entity id plus a one-byte
-    /// kind selector (`param_3` of `FUN_00796660`).
+    /// kind selector (the builder's third argument).
     WithTarget {
         slot: u8,
         type_id: u16,
@@ -325,23 +452,22 @@ pub enum ItemUseRequest {
     /// (`3,3,13,{8,11,12,15,16}`). See
     /// [`ItemDataRow::needs_target_slot`](../../../client/src/assets/textdata/itemdata.rs).
     ///
-    /// ⚠️ **`[U]` — the tail is spec-derived, not recovered.** `u8 targetSlot`
-    /// comes from Hyperbot's TID table (`docs/re/notes/item-use.md:78-92`),
-    /// which is explicitly uncaptured. It has *not* been read off the
-    /// original's own builder, and the precedent for trusting a table like this
-    /// is bad: `0x70CB` was wired the same way and the recovered builder later
-    /// showed it wrong in both width and field order.
+    /// ⚠️ **Unconfirmed — the tail is spec-derived.** `u8 targetSlot` comes
+    /// from Hyperbot's TID table, and it does not come from the original's own
+    /// builder. The precedent for trusting a table like this is bad: `0x70CB`
+    /// was wired the same way and the original's builder later showed it wrong
+    /// in both width and field order.
     ///
     /// A wrong body here does not fail quietly — the server reads past the end
     /// and drops the connection, which is the behaviour that motivated this
-    /// variant in the first place (we were sending a 3-byte [`Self::Simple`]
-    /// for a class that wants four). Recovering `FUN_00796660`'s tail switch is
-    /// what turns this `[U]` into `[V]`.
+    /// variant in the first place (the client was sending a 3-byte
+    /// [`Self::Simple`] for a class that wants four). The tail switch in the
+    /// original's own builder is what would settle this.
     ///
     /// `target_slot` is in the **server's own slot numbering**, exactly like
     /// `slot` — the `+0x0D` equipment bias is already baked into our slot
     /// numbers, so nothing may re-add it. Whether the *original* biases this
-    /// second byte too is one of the things the RE has to confirm.
+    /// second byte too is still open.
     WithSlot {
         slot: u8,
         type_id: u16,
@@ -460,48 +586,48 @@ impl From<ItemUseRequest> for Bytes {
 pub const ITEM_USE_ERROR_REUSE_DELAY: u16 = 0x185B;
 /// ⚠️ **Label refuted.** A live server returned this for a COS scroll used by a
 /// living character (`docs/net-item-use-0x704c.md`), so the SPEC name is wrong
-/// and the real meaning is `[U]`. Kept under its historical name only so the
+/// and the real meaning is unknown. Kept under its historical name only so the
 /// number is not silently reused.
 pub const ITEM_USE_ERROR_CHARACTER_DEAD: u16 = 0x1889;
 pub const ITEM_USE_ERROR_ITEM_GONE: u16 = 0x1809;
 /// The COS behind this scroll cannot be summoned — it is dead, or the scroll's
-/// rental period has expired. **[V]**, observed live 2026-08-18: clicking a
-/// dead attack pet's scroll answered `02 a4 18`.
+/// rental period has expired. Observed live: clicking a dead attack pet's
+/// scroll answered `02 a4 18`.
 pub const ITEM_USE_ERROR_COS_NOT_SUMMONABLE: u16 = 0x18A4;
 
 // --- Observed live, meaning UNKNOWN -----------------------------------------
 //
 // These are named only so the numbers are not silently reused and so a reader
-// can see what the capture actually contains. **None of them has a message**
+// can see which codes actually occur. **None of them has a message**
 // (`item_use_error_message` returns `None`), and that is deliberate: the
 // code→string table is server-side and is *not* derivable from the client's
 // archive. `textuisystem.txt` does carry the neighbouring COS strings, but the
-// two codes we can anchor sit 73 apart while their keys are 109 entries apart,
-// so the ordering hypothesis is refuted. Guessing here would put words in the
-// server's mouth.
+// two codes that can be anchored sit 73 apart while their keys are 109 entries
+// apart, so the ordering hypothesis is refuted. Guessing here would put words
+// in the server's mouth.
 
-/// **`[U]`** — by far the most common refusal in `packet_dump/0xb04c.log`
-/// (7 of 11 errors). Every occurrence is a COS summon on a scroll whose pet was
+/// **Meaning unknown** — by far the most common refusal, 7 of the 11 errors
+/// seen. Every occurrence is a COS summon on a scroll whose pet was
 /// unsummoned moments earlier, and it persists for 13+ minutes, which rules out
 /// a cooldown. See the timeline in `docs/net-item-use-0x704c.md`.
 pub const ITEM_USE_ERROR_COS_UNKNOWN_18A5: u16 = 0x18A5;
-/// **`[U]`** — observed 3× in the capture, always on a *rentable* COS scroll
+/// **Meaning unknown** — observed 3×, always on a *rentable* COS scroll
 /// (`(3,2,1,2)`). Note the value is not in the `0x18xx` family the other
 /// item-use errors share.
 pub const ITEM_USE_ERROR_UNKNOWN_0003: u16 = 0x0003;
-/// **`[U]`** — observed once, 2026-08-18.
+/// **Meaning unknown** — observed once.
 pub const ITEM_USE_ERROR_UNKNOWN_1849: u16 = 0x1849;
 
-/// The textdata key describing an item-use rejection, or `None` when we have no
-/// evidence for that code.
+/// The textdata key describing an item-use rejection, or `None` when the code
+/// has no known meaning.
 ///
 /// Returns a **key**, not English: the wording then comes from the user's own
 /// `textuisystem.txt` in their own language, the same way every other
 /// server-driven message is rendered.
 ///
-/// Deliberately sparse. Of the seven codes named above only two have a message
-/// we can defend — one from a live capture, one from the client's own reuse
-/// gate — and `0x1889`'s documented label is already **refuted** by a capture.
+/// Deliberately sparse. Of the seven codes named above only two have a
+/// defensible message — one seen live, one from the client's own reuse gate —
+/// and `0x1889`'s documented label is already **refuted** by the live answer.
 ///
 /// An unmapped code is **not** silent to the player: the caller
 /// (`hud::underbar::cast::log_item_use_response`) falls back to a neutral line
@@ -511,11 +637,11 @@ pub fn item_use_error_message(code: u16) -> Option<&'static str> {
     match code {
         // "Cannot summon because the period of summon item has expired, or pet
         // of the summon item is dead." — textuisystem.txt. Matches the observed
-        // cause exactly (a dead pet's scroll). [V]
+        // cause exactly (a dead pet's scroll).
         ITEM_USE_ERROR_COS_NOT_SUMMONABLE => Some("UIIT_MSG_COS_STATE_IS_NOT_SUMMONABLE"),
         // "Still have time to reuse the item." The client gates reuse locally
         // too, so the meaning is not in doubt even though the code itself is
-        // spec-derived. [S]
+        // only spec-derived.
         ITEM_USE_ERROR_REUSE_DELAY => Some("UIIT_MSG_STRGERR_WAIT_FOR_REUSE_DELAY"),
         _ => None,
     }
@@ -524,11 +650,9 @@ pub fn item_use_error_message(code: u16) -> Option<&'static str> {
 /// 0xB04C — server → client item-use result. `result == 1` is success (the used
 /// `slot`, the NEW stack count, and the echoed `type_id`); anything else is a
 /// u16 error code (§1.5, e.g. [`ITEM_USE_ERROR_REUSE_DELAY`]). The "else = error"
-/// discrimination is not a clean value tag, so the wire impls are hand-written
-/// (`docs/re/DRAFT_LAYOUTS.md` §1.6).
+/// discrimination is not a clean value tag, so the wire impls are hand-written.
 ///
-/// EXPERIMENTAL / SPEC-derived (`docs/re/DRAFT_LAYOUTS.md` §1.2) — capture group
-/// C verifies the wire order.
+/// EXPERIMENTAL / spec-derived — the wire order is not confirmed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ItemUseResponse {
     Success {
@@ -618,7 +742,7 @@ pub enum InventoryOperationResult {
     /// slot, and going back to a one-handed weapon moves it back in.
     ///
     /// The trailing byte after `amount` used to be called `unknown`; it is the
-    /// **count** of those extra records. Across the whole capture it is `0` on
+    /// **count** of those extra records. In every observed body it is `0` on
     /// every plain move and `1` on exactly five acks — all of them moves into
     /// weapon slot 6, all naming shield slot 7 in the tail:
     ///
@@ -643,33 +767,50 @@ pub enum InventoryOperationResult {
     },
     /// Op 7 — the item in `slot` was dropped on the ground.
     ///
-    /// **`[V]` capture-confirmed** (2026-08-26): `01 07 48` and `01 07 20`,
-    /// each answering a `07 <slot>` request, and in the second case followed by
+    /// Confirmed on the wire: `01 07 48` and `01 07 20`, each answering a
+    /// `07 <slot>` request, and in the second case followed by
     /// a `0x3015` ground-item spawn and a successful op-6 pickup of the same
     /// item two seconds later. The ack echoes the slot and nothing else.
     Drop { slot: u8 },
     /// Op 6 — an item/gold pickup landed in `slot`. The payload is
     /// type-dependent (skrillax `ItemPickupData`), kept raw with the
-    /// best-effort accessors below until live captures pin it.
+    /// best-effort accessors below until the remaining classes are known.
     Pickup { slot: u8, tail: Bytes },
     /// Op 8 — a store buy succeeded. EXPERIMENTAL: kept raw (assumed shape
     /// `count u8, slot u8 × count, quantity u16`, see [`Self::bought`])
-    /// until live captures pin it.
+    /// until the rest is known.
     Buy { tail: Bytes },
     /// Op 9 — a store sell succeeded. EXPERIMENTAL: kept raw (shape
     /// `slot u8, quantity u16, npc_model u32, slot_buyback u8`, see
-    /// [`Self::sold`] / [`Self::sold_buyback`]) until captures pin the rest.
+    /// [`Self::sold`] / [`Self::sold_buyback`]) until the rest is known.
     Sell { tail: Bytes },
     /// Op 34 — a store buyback succeeded: the tray slot `slot_buyback` came
     /// back into inventory `slot` as `quantity` pieces (xBot
-    /// `PacketParser.cs:2233-2245`). The C→S request body is UNKNOWN
-    /// (`docs/re/systems/npc-shop.md` §9.1), so nothing sends op 34 yet —
-    /// this decodes the ack should the server ever push one.
+    /// `PacketParser.cs:2233-2245`).
+    ///
+    /// This field order is confirmed a second time, independently of xBot, by
+    /// the client's own serializer: its op-34 arm writes, in this order,
+    /// `+4 u8` (the record's *target* slot), `+0x10 u8` (the same field op 9's
+    /// ack uses for the buyback tray index) and `+6 u16` (the quantity).
+    ///
+    /// The C→S request body stays unknown, and with a *reason*: that same arm
+    /// has **no send path at all** — everything it writes sits behind a flag
+    /// that every one of the serializer's 13 call sites clears. So the vanilla
+    /// client does not send op 34 through the op serializer, and no op-34
+    /// request is invented here.
     BuyBack {
         slot: u8,
         slot_buyback: u8,
         quantity: u16,
     },
+    /// Op 35 — the avatar item moved into the bag. The client's serializer
+    /// writes the ack arm of `case '#'` as `+3 u8, +4 u8, +6 u16` followed by
+    /// the same repeated-slot list op 0's ack carries; only the three fields
+    /// are decoded here, the list is ignored exactly as op 0 ignores it.
+    AvatarToInventory { source: u8, target: u8, amount: u16 },
+    /// Op 36 — the bag item moved into the avatar container (`case '$'`, same
+    /// arm and layout as op 35).
+    InventoryToAvatar { source: u8, target: u8, amount: u16 },
     /// Op 1 — a within-storage move: `source, target, amount` (xBot
     /// `InventoryItemMovement_StorageToStorage`, same shape as op 0 minus the
     /// trailing byte).
@@ -680,22 +821,50 @@ pub enum InventoryOperationResult {
     /// Op 3 — a withdraw: `storage slot, inventory slot` (xBot
     /// `InventoryItemMovement_StorageToInventory`).
     StorageToInventory { source: u8, target: u8 },
+    /// Op 4 — an item was staged into the trade: `inventory slot, exchange
+    /// slot`, echoing the request. Known bodies: `01042900` and `01041901`. The
+    /// item itself is described by the self-targeted 0x308C that arrives ~20 ms
+    /// earlier.
+    InventoryToExchange { source: u8, target: u8 },
+    /// Op 5 — a staged item was withdrawn: the **exchange** slot only, no
+    /// destination (body `010500`).
+    ExchangeToInventory { source: u8 },
+    /// Op 13 — the gold on one's own side of the trade was set to `amount`
+    /// (bodies `010d6400000000000000` and `010d8813000000000000`). Nothing is
+    /// added to the purse here — the
+    /// authoritative post-trade total arrives as 0x304E.
+    InventoryGoldToExchange { amount: u64 },
     /// Op 11 — gold moved storage → inventory; `amount` is subtracted from
     /// the storage total.
     StorageGoldToInventory { amount: u64 },
     /// Op 12 — gold moved inventory → storage; `amount` is added to the
     /// storage total.
     InventoryGoldToStorage { amount: u64 },
+    /// Op 29 — a move inside the **guild** warehouse:
+    /// `slotInitial, slotFinal, quantityMoved u16` — the same shape as op 1,
+    /// only the container differs (xBot `PacketParser.cs:2142-2194`, no
+    /// licence — facts and field layout only).
+    GuildStorageToGuildStorage { source: u8, target: u8, amount: u16 },
+    /// Op 30 — a deposit into the guild warehouse: `inventory slot, guild
+    /// slot`; whole record, the inventory slot is cleared (`:2195-2207`).
+    InventoryToGuildStorage { source: u8, target: u8 },
+    /// Op 31 — a withdraw: `guild slot, inventory slot` (`:2208-2220`).
+    GuildStorageToInventory { source: u8, target: u8 },
+    /// Op 32 — gold moved inventory → guild account; `amount` is a **delta**
+    /// added to the guild total (`:2221-2226`), exactly like op 12.
+    InventoryGoldToGuildStorage { amount: u64 },
+    /// Op 33 — gold moved guild account → inventory; `amount` is subtracted
+    /// from the guild total (`:2227-2232`).
+    GuildStorageGoldToInventory { amount: u64 },
     /// Op 17 — the pick pet grabbed an item off the ground straight into the
-    /// **pet's** bag: `cosUid:u32, slot:u8, <item body>`
-    /// (`docs/re/systems/pet-pick-cos.md` §3, xBot
+    /// **pet's** bag: `cosUid:u32, slot:u8, <item body>` (xBot
     /// `PacketParser.cs:1983-1986`). The item body is the same
     /// type-dependent record op 6 carries, so it is kept raw and decoded
     /// through [`Self::pet_pickup_item`] rather than as a fixed stack read.
     ///
     /// The doc also records a trailing `ownerName` that xBot has commented
-    /// out — `[U]`, so nothing here consumes it; whatever follows the item
-    /// record stays inside `tail`.
+    /// out; it is unconfirmed, so nothing here consumes it. Whatever follows
+    /// the item record stays inside `tail`.
     GroundToPet {
         cos_unique_id: u32,
         slot: u8,
@@ -734,6 +903,17 @@ pub enum InventoryOperationResult {
         slot: u8,
         tail: Bytes,
     },
+    /// Op 15 — the server declaring a slot empty: `slot u8, reason u8`.
+    ///
+    /// This is how *this* server removes a fully consumed stack. Four such
+    /// frames are known (`01 0f <slot> 02`), each paired within 20 ms with a
+    /// `0xB04C` use-ack for the same slot reporting **0** remaining. A use-ack
+    /// that still reports **2** remaining (`01 17 0200 ec11`) has no op 15
+    /// beside it.
+    ///
+    /// `reason` is kept raw: only `0x02` has ever been observed and its meaning
+    /// is unknown, so nothing branches on it.
+    SlotCleared { slot: u8, reason: u8 },
     /// Any other op byte — kept raw, log-only.
     Unknown { op: u8, tail: Bytes },
 }
@@ -752,8 +932,8 @@ impl InventoryOperationResult {
         }
     }
 
-    /// A store buy's destination slots + stack size. Tail shape
-    /// capture-VERIFIED on vSRO 1.188 (2026-08-06, two live buys):
+    /// A store buy's destination slots + stack size. The tail shape is
+    /// confirmed on vSRO 1.188 by two live buys:
     /// `tab u8, slot u8, dest_count u8, dest_slot u8 × count,
     /// quantity u16, unk u32 (0)` — e.g. `02 00 01 33 fa00 00000000` =
     /// store tab 2 slot 0 landed as 250 pieces in bag slot 0x33.
@@ -782,9 +962,9 @@ impl InventoryOperationResult {
     }
 
     /// The sell ack's trailing `npc_model u32, slot_buyback u8` — the shop
-    /// the item went to and the buyback-tray index it landed in
-    /// (`docs/re/systems/npc-shop.md` §3, xBot `PacketParser.cs:1857-1888`;
-    /// confirmed by `packet_dump/0xb034.log` line `01091b0100d700000001`).
+    /// the item went to and the buyback-tray index it landed in (xBot
+    /// `PacketParser.cs:1857-1888`, confirmed by the body
+    /// `01091b0100d700000001`).
     /// [`BUYBACK_SLOT_NONE`] means the item cannot be bought back. `None`
     /// when the tail is absent (older/shorter acks stay tolerated).
     pub fn sold_buyback(&self) -> Option<(u32, u8)> {
@@ -920,6 +1100,16 @@ impl TryFrom<Bytes> for InventoryOperationResponse {
                 slot_buyback: value[3],
                 quantity: u16::from_le_bytes(value[4..6].try_into().unwrap()),
             },
+            35 if value.len() >= 6 => InventoryOperationResult::AvatarToInventory {
+                source: value[2],
+                target: value[3],
+                amount: u16::from_le_bytes(value[4..6].try_into().unwrap()),
+            },
+            36 if value.len() >= 6 => InventoryOperationResult::InventoryToAvatar {
+                source: value[2],
+                target: value[3],
+                amount: u16::from_le_bytes(value[4..6].try_into().unwrap()),
+            },
             1 if value.len() >= 6 => InventoryOperationResult::StorageToStorage {
                 source: value[2],
                 target: value[3],
@@ -933,13 +1123,45 @@ impl TryFrom<Bytes> for InventoryOperationResponse {
                 source: value[2],
                 target: value[3],
             },
+            // --- player-trade staging
+            4 if value.len() >= 4 => InventoryOperationResult::InventoryToExchange {
+                source: value[2],
+                target: value[3],
+            },
+            5 if value.len() >= 3 => {
+                InventoryOperationResult::ExchangeToInventory { source: value[2] }
+            }
+            13 if value.len() >= 10 => InventoryOperationResult::InventoryGoldToExchange {
+                amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
+            },
             11 if value.len() >= 10 => InventoryOperationResult::StorageGoldToInventory {
                 amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
             },
             12 if value.len() >= 10 => InventoryOperationResult::InventoryGoldToStorage {
                 amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
             },
-            // --- pick-pet / COS bag ops (`docs/re/systems/pet-pick-cos.md` §3)
+            // --- guild warehouse: shape-identical to 1/2/3/11/12, only the
+            // container differs.
+            29 if value.len() >= 6 => InventoryOperationResult::GuildStorageToGuildStorage {
+                source: value[2],
+                target: value[3],
+                amount: u16::from_le_bytes(value[4..6].try_into().unwrap()),
+            },
+            30 if value.len() >= 4 => InventoryOperationResult::InventoryToGuildStorage {
+                source: value[2],
+                target: value[3],
+            },
+            31 if value.len() >= 4 => InventoryOperationResult::GuildStorageToInventory {
+                source: value[2],
+                target: value[3],
+            },
+            32 if value.len() >= 10 => InventoryOperationResult::InventoryGoldToGuildStorage {
+                amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
+            },
+            33 if value.len() >= 10 => InventoryOperationResult::GuildStorageGoldToInventory {
+                amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
+            },
+            // --- pick-pet / COS bag ops
             17 if value.len() >= 7 => InventoryOperationResult::GroundToPet {
                 cos_unique_id: u32::from_le_bytes(value[2..6].try_into().unwrap()),
                 slot: value[6],
@@ -964,11 +1186,17 @@ impl TryFrom<Bytes> for InventoryOperationResponse {
             // The sentinel is not a special case *here*: `slice(7..)` is empty
             // exactly when the body ended at the slot byte, which is what the
             // sentinel produces. Reading an item body unconditionally is what
-            // desyncs (`pet-pick-cos.md` §3), and this never does.
+            // desyncs the stream, and this never does.
             28 if value.len() >= 7 => InventoryOperationResult::GroundToPetToInventory {
                 cos_unique_id: u32::from_le_bytes(value[2..6].try_into().unwrap()),
                 slot: value[6],
                 tail: value.slice(7..),
+            },
+            // Op 15 — "slot N is now empty"; the only mechanism this server
+            // has for it, since it never sends 0x3040.
+            15 if value.len() >= 4 => InventoryOperationResult::SlotCleared {
+                slot: value[2],
+                reason: value[3],
             },
             _ => InventoryOperationResult::Unknown {
                 op,
@@ -1033,6 +1261,26 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u8(slot_buyback);
                 buf.put_u16_le(quantity);
             }
+            Some(InventoryOperationResult::AvatarToInventory {
+                source,
+                target,
+                amount,
+            }) => {
+                buf.put_u8(35);
+                buf.put_u8(source);
+                buf.put_u8(target);
+                buf.put_u16_le(amount);
+            }
+            Some(InventoryOperationResult::InventoryToAvatar {
+                source,
+                target,
+                amount,
+            }) => {
+                buf.put_u8(36);
+                buf.put_u8(source);
+                buf.put_u8(target);
+                buf.put_u16_le(amount);
+            }
             Some(InventoryOperationResult::StorageToStorage {
                 source,
                 target,
@@ -1053,12 +1301,53 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u8(source);
                 buf.put_u8(target);
             }
+            Some(InventoryOperationResult::InventoryToExchange { source, target }) => {
+                buf.put_u8(4);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::ExchangeToInventory { source }) => {
+                buf.put_u8(5);
+                buf.put_u8(source);
+            }
+            Some(InventoryOperationResult::InventoryGoldToExchange { amount }) => {
+                buf.put_u8(13);
+                buf.put_u64_le(amount);
+            }
             Some(InventoryOperationResult::StorageGoldToInventory { amount }) => {
                 buf.put_u8(11);
                 buf.put_u64_le(amount);
             }
             Some(InventoryOperationResult::InventoryGoldToStorage { amount }) => {
                 buf.put_u8(12);
+                buf.put_u64_le(amount);
+            }
+            Some(InventoryOperationResult::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount,
+            }) => {
+                buf.put_u8(29);
+                buf.put_u8(source);
+                buf.put_u8(target);
+                buf.put_u16_le(amount);
+            }
+            Some(InventoryOperationResult::InventoryToGuildStorage { source, target }) => {
+                buf.put_u8(30);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::GuildStorageToInventory { source, target }) => {
+                buf.put_u8(31);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::InventoryGoldToGuildStorage { amount }) => {
+                buf.put_u8(32);
+                buf.put_u64_le(amount);
+            }
+            Some(InventoryOperationResult::GuildStorageGoldToInventory { amount }) => {
+                buf.put_u8(33);
                 buf.put_u64_le(amount);
             }
             Some(InventoryOperationResult::GroundToPet {
@@ -1113,6 +1402,11 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u8(slot);
                 buf.extend_from_slice(&tail);
             }
+            Some(InventoryOperationResult::SlotCleared { slot, reason }) => {
+                buf.put_u8(15);
+                buf.put_u8(slot);
+                buf.put_u8(reason);
+            }
             Some(InventoryOperationResult::Unknown { op, tail }) => {
                 buf.put_u8(op);
                 buf.extend_from_slice(&tail);
@@ -1154,9 +1448,9 @@ pub struct EntityUnequip {
 }
 
 /// 0x3052 — server → client: the authoritative durability of one slot's
-/// equipment. Dump-verified against `packet_dump/0x3052.log` (five samples,
-/// all exactly 5 bytes; slots 1 and 6, values falling 49→47→46 as the gear
-/// wears). See `docs/net-inventory-events-0x3040.md`.
+/// equipment. Five known bodies, all exactly 5 bytes, on slots 1 and 6, with
+/// values falling 49→47→46 as the gear wears. See
+/// `docs/net-inventory-events-0x3040.md`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct InventoryItemDurabilityUpdate {
     pub slot: u8,
@@ -1174,7 +1468,7 @@ pub struct InventoryItemDurabilityUpdate {
 /// unrecognised `update_type` decodes to "no field" instead of failing the
 /// whole packet, matching that fall-through; trailing bytes are ignored.
 ///
-/// Layout is xBot-sourced only — there is no `packet_dump/0x3040.log`.
+/// Layout is xBot-sourced only — the packet has never been seen on the wire.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct InventoryItemUpdate {
     pub slot: u8,
@@ -1188,8 +1482,8 @@ pub struct InventoryItemUpdate {
 /// 0x3092 — server → client: the result of a bag-expansion purchase. The new
 /// slot count follows only on success.
 ///
-/// Layout is xBot-sourced only — there is no `packet_dump/0x3092.log`, so a
-/// failure tail (if any) is unknown and stays unparsed.
+/// Layout is xBot-sourced only — the packet has never been seen on the wire, so
+/// a failure tail (if any) is unknown and stays unparsed.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct InventoryCapacityUpdate {
     pub success: bool,
@@ -1232,12 +1526,12 @@ mod tests {
         ));
     }
 
-    /// The table maps only what we can defend. A plausible-looking sentence
+    /// The table maps only what is defensible. A plausible-looking sentence
     /// attached to the wrong code is worse than a raw hex value — `0x1889`'s
-    /// documented label was already refuted by a capture, which is exactly why
-    /// it stays unmapped.
+    /// documented label was already refuted by the live answer, which is
+    /// exactly why it stays unmapped.
     #[test]
-    fn item_use_errors_map_only_what_is_evidenced() {
+    fn item_use_errors_map_only_what_is_known() {
         assert_eq!(
             item_use_error_message(ITEM_USE_ERROR_COS_NOT_SUMMONABLE),
             Some("UIIT_MSG_COS_STATE_IS_NOT_SUMMONABLE"),
@@ -1247,8 +1541,8 @@ mod tests {
             item_use_error_message(ITEM_USE_ERROR_REUSE_DELAY),
             Some("UIIT_MSG_STRGERR_WAIT_FOR_REUSE_DELAY"),
         );
-        // Refuted label, and a code we have no reading for: both stay silent
-        // so the caller falls back to logging the raw code.
+        // Refuted label, and a code with no reading: both stay silent so the
+        // caller falls back to logging the raw code.
         assert_eq!(item_use_error_message(ITEM_USE_ERROR_CHARACTER_DEAD), None);
         assert_eq!(item_use_error_message(ITEM_USE_ERROR_ITEM_GONE), None);
         assert_eq!(item_use_error_message(0xFFFF), None);
@@ -1260,9 +1554,9 @@ mod tests {
     /// given a message. Naming them stops the numbers being reused; mapping
     /// them would be inventing the server's words.
     ///
-    /// `0x18A5` is the one to watch: it is 7 of the 11 refusals in the capture
-    /// and it sits one past `COS_NOT_SUMMONABLE`, which makes a COS meaning
-    /// tempting — and unevidenced. The code→string table is server-side.
+    /// `0x18A5` is the one to watch: it is 7 of the 11 refusals seen and it
+    /// sits one past `COS_NOT_SUMMONABLE`, which makes a COS meaning tempting —
+    /// and unsupported. The code→string table is server-side.
     #[test]
     fn codes_observed_without_a_reading_stay_unmapped() {
         for code in [
@@ -1273,10 +1567,10 @@ mod tests {
             assert_eq!(
                 item_use_error_message(code),
                 None,
-                "{code:#06x} has no evidenced meaning and must not be given one",
+                "{code:#06x} has no known meaning and must not be given one",
             );
         }
-        // pinned as the capture spells them
+        // pinned as the server spells them
         assert_eq!(ITEM_USE_ERROR_COS_UNKNOWN_18A5, 0x18A5);
         assert_eq!(ITEM_USE_ERROR_UNKNOWN_0003, 0x0003);
         assert_eq!(ITEM_USE_ERROR_UNKNOWN_1849, 0x1849);
@@ -1356,9 +1650,69 @@ mod tests {
         assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), sell);
     }
 
+    /// The three player-trade staging sub-ops, request and ack, against the
+    /// exact bytes the reference server exchanges. These are the ops the trade
+    /// window cannot fill its own pane without.
+    #[test]
+    fn the_exchange_staging_subops_roundtrip() {
+        // Bag slot 41 into pane slot 0.
+        let stage = InventoryOperationRequest::InventoryToExchange {
+            source: 0x29,
+            target: 0x00,
+        };
+        let bytes: Bytes = stage.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x04, 0x29, 0x00]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), stage);
+
+        // Take pane slot 0 back.
+        let withdraw = InventoryOperationRequest::ExchangeToInventory { source: 0x00 };
+        let bytes: Bytes = withdraw.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x05, 0x00]);
+        assert_eq!(
+            InventoryOperationRequest::try_from(bytes).unwrap(),
+            withdraw
+        );
+
+        // 100 gold (0x64), u64 LE.
+        let gold = InventoryOperationRequest::InventoryGoldToExchange { amount: 100 };
+        let bytes: Bytes = gold.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x0D, 0x64, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
+
+        // The acks, verbatim.
+        for (wire, expected) in [
+            (
+                Bytes::from_static(&[0x01, 0x04, 0x29, 0x00]),
+                InventoryOperationResult::InventoryToExchange {
+                    source: 0x29,
+                    target: 0x00,
+                },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x05, 0x00]),
+                InventoryOperationResult::ExchangeToInventory { source: 0x00 },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x0D, 0x64, 0, 0, 0, 0, 0, 0, 0]),
+                InventoryOperationResult::InventoryGoldToExchange { amount: 100 },
+            ),
+        ] {
+            let response = InventoryOperationResponse::try_from(wire.clone()).unwrap();
+            assert_eq!(response.operation.clone().unwrap(), expected);
+            assert_eq!(Bytes::from(response), wire);
+        }
+
+        // Staging outside a trade answers `021b18` (0x181B, "no trade
+        // session") — the same code the 0xB08x acks carry.
+        let refused =
+            InventoryOperationResponse::try_from(Bytes::from_static(&[0x02, 0x1B, 0x18])).unwrap();
+        assert_eq!(refused.error, Some(0x181B));
+        assert_eq!(refused.operation, None);
+    }
+
     #[test]
     fn buy_and_sell_responses_parse_best_effort() {
-        // live capture (vSRO 1.188): 01 08 <tab 2> <slot 0> <count 1>
+        // Live body (vSRO 1.188): 01 08 <tab 2> <slot 0> <count 1>
         // <dest 0x33> <quantity 250 LE> <unk u32 0>
         let bytes = Bytes::from_static(&[
             0x01, 0x08, 0x02, 0x00, 0x01, 0x33, 0xFA, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1382,7 +1736,7 @@ mod tests {
 
     #[test]
     fn sell_ack_tail_is_npc_model_and_buyback_slot() {
-        // real capture, packet_dump/0xb034.log: 01 09 1b 0100 d7000000 01
+        // Real ack body: 01 09 1b 0100 d7000000 01
         let bytes =
             Bytes::from_static(&[0x01, 0x09, 0x1b, 0x01, 0x00, 0xd7, 0x00, 0x00, 0x00, 0x01]);
         let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
@@ -1402,6 +1756,42 @@ mod tests {
         assert_eq!(op.sold_buyback(), None);
     }
 
+    /// The four real `0xB034` op-15 frames. Each is paired within 20 ms with a
+    /// `0xB04C` use-ack for the same slot reporting 0 remaining, which is what
+    /// makes this "the slot is empty now" and not something else.
+    #[test]
+    fn slot_cleared_ack_parses_the_four_frames() {
+        for (frame, slot) in [
+            ([0x01u8, 0x0f, 0x19, 0x02], 0x19u8),
+            ([0x01, 0x0f, 0x14, 0x02], 0x14),
+            ([0x01, 0x0f, 0x1c, 0x02], 0x1c),
+            ([0x01, 0x0f, 0x17, 0x02], 0x17),
+        ] {
+            let bytes = Bytes::copy_from_slice(&frame);
+            let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
+            assert_eq!(
+                response.operation,
+                Some(InventoryOperationResult::SlotCleared { slot, reason: 0x02 }),
+                "frame {frame:02x?}"
+            );
+            let back: Bytes = response.into();
+            assert_eq!(back, bytes);
+        }
+
+        // A truncated op-15 body has no slot to clear and must not be
+        // mis-read: it stays raw rather than guessing a reason byte.
+        let short = Bytes::from_static(&[0x01, 0x0f, 0x19]);
+        assert_eq!(
+            InventoryOperationResponse::try_from(short)
+                .unwrap()
+                .operation,
+            Some(InventoryOperationResult::Unknown {
+                op: 15,
+                tail: Bytes::from_static(&[0x19]),
+            })
+        );
+    }
+
     #[test]
     fn buyback_ack_roundtrips() {
         // xBot PacketParser.cs:2233-2245 — 01 22 <slot> <slot_buyback> <qty u16>
@@ -1417,6 +1807,56 @@ mod tests {
         );
         let back: Bytes = response.into();
         assert_eq!(back, bytes);
+    }
+
+    /// The two avatar ops, request and ack.
+    ///
+    /// Request: the original's item-move builder for the avatar container plus
+    /// the serializer's send arm (the shared slot-writing tail) — op byte,
+    /// source, target and nothing else. Ack: the same arm's receive half, with
+    /// three fields.
+    #[test]
+    fn avatar_ops_are_two_bare_slots_out_and_a_three_field_ack_back() {
+        let on = InventoryOperationRequest::InventoryToAvatar {
+            source: 0x0d,
+            target: 2,
+        };
+        let bytes: Bytes = on.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x24, 0x0d, 0x02]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), on);
+
+        let off = InventoryOperationRequest::AvatarToInventory {
+            source: 2,
+            target: 0x0d,
+        };
+        let bytes: Bytes = off.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x23, 0x02, 0x0d]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), off);
+
+        for (op, expected) in [
+            (
+                35u8,
+                InventoryOperationResult::AvatarToInventory {
+                    source: 2,
+                    target: 0x0d,
+                    amount: 1,
+                },
+            ),
+            (
+                36,
+                InventoryOperationResult::InventoryToAvatar {
+                    source: 2,
+                    target: 0x0d,
+                    amount: 1,
+                },
+            ),
+        ] {
+            let bytes = Bytes::from(vec![0x01, op, 0x02, 0x0d, 0x01, 0x00]);
+            let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
+            assert_eq!(response.operation, Some(expected));
+            let back: Bytes = response.into();
+            assert_eq!(back, bytes);
+        }
     }
 
     #[test]
@@ -1442,9 +1882,9 @@ mod tests {
     /// A two-handed equip: the server moves the weapon in and, in the same
     /// body, moves the shield out of slot 7 on its own.
     ///
-    /// **These are the real captured bytes** (2026-08-26T20:50:32.313Z), so
-    /// this pins the parser against the wire rather than against a reading of
-    /// it. Dropping the tail is what left the shield stuck in its slot and made
+    /// **These are the real wire bytes**, so this pins the parser against the
+    /// wire rather than against a reading of it. Dropping the tail is what left
+    /// the shield stuck in its slot and made
     /// every later move of it fail with `0x1809` "item gone".
     #[test]
     fn a_move_ack_carries_the_servers_own_follow_up_moves() {
@@ -1493,8 +1933,8 @@ mod tests {
         assert_eq!(chained.len(), 1, "only the complete record is read");
     }
 
-    /// Op 7 — `[V]`, the real bytes of a drop ack (2026-08-26T20:52:07.778Z).
-    /// It echoes the slot and nothing else.
+    /// Op 7 — the real bytes of a drop ack. It echoes the slot and nothing
+    /// else.
     #[test]
     fn a_drop_ack_names_the_emptied_slot() {
         let bytes = Bytes::from_static(&[0x01, 0x07, 0x20]);
@@ -1522,9 +1962,8 @@ mod tests {
         }
     }
 
-    /// The five COS-bag ops of `docs/re/systems/pet-pick-cos.md` §3, each with
-    /// the exact body the doc records — and each round-tripping, which is what
-    /// proves no field was invented or dropped.
+    /// The five COS-bag ops, each with the exact body the documentation
+    /// records, and each round-tripping, so no field was invented or dropped.
     #[test]
     fn pick_pet_bag_ops_decode_the_documented_bodies() {
         // op 25 PetToPet — the only pet op that carries a quantity (:2039-2042)
@@ -1572,9 +2011,9 @@ mod tests {
     }
 
     /// Ops 26/27 carry **no** quantity, so a pet<->inventory move is
-    /// whole-slot only; only the intra-container op 25 can split a stack
-    /// (`pet-pick-cos.md` §3, second trap). Pinned on the byte lengths so a
-    /// later "helpful" quantity field cannot be added silently.
+    /// whole-slot only; only the intra-container op 25 can split a stack.
+    /// Pinned on the byte lengths so a later "helpful" quantity field cannot be
+    /// added silently.
     #[test]
     fn pet_inventory_moves_carry_no_quantity() {
         let whole_slot = Bytes::from_static(&[0x01, 26, 0x39, 0x05, 0, 0, 4, 13]);
@@ -1619,9 +2058,8 @@ mod tests {
 
     /// The op-28 trap: `slot == 254` means the grab did **not** land in the
     /// character's inventory and the body **ends at the slot byte**. Reading
-    /// an item record there is what desyncs the stream
-    /// (`pet-pick-cos.md` §3, first trap), so the sentinel path must consume
-    /// nothing and yield no item.
+    /// an item record there is what desyncs the stream, so the sentinel path
+    /// must consume nothing and yield no item.
     #[test]
     fn op28_slot_254_sentinel_reads_no_item_body() {
         let bytes = Bytes::from_static(&[0x01, 28, 0x39, 0x05, 0, 0, PET_PICKUP_SLOT_NONE]);
@@ -1690,8 +2128,8 @@ mod tests {
         );
         assert_eq!(op.pickup_gold(), None);
 
-        // equipment item (live capture): opt_level, variance, durability,
-        // sockets — must NOT be misread as a giant stack
+        // equipment item: opt_level, variance, durability, sockets — must NOT
+        // be misread as a giant stack
         let bytes = Bytes::from_static(&[
             0x01, 0x06, 24, 0, 0, 0, 0, 0xC3, 0x05, 0, 0, // rent 0, ref 1475
             0x00, 0xC3, 0x84, 0x47, 0x12, 0, 0, 0, 0, // opt 0, variance
@@ -1738,15 +2176,19 @@ mod tests {
 
     #[test]
     fn storage_requests_roundtrip() {
-        // layouts from xBot's MoveItem(..., uint uniqueID) overload:
-        // type, slotInitial, slotFinal, npc u32
+        // Layouts from the original client's item-move builder and its
+        // inventory-op serializer (see the type doc). Op 1 shares its
+        // serializer arm with op 0/29 and therefore carries the quantity u16
+        // BEFORE the npc id — the arm writes +3, +4, u16@+6, u32@+0xc. Not yet
+        // confirmed on the wire.
         let mv = InventoryOperationRequest::StorageToStorage {
             source: 2,
             target: 7,
+            amount: 5,
             npc_unique_id: 0x539,
         };
         let bytes: Bytes = mv.clone().into();
-        assert_eq!(bytes.as_ref(), &[0x01, 2, 7, 0x39, 0x05, 0, 0]);
+        assert_eq!(bytes.as_ref(), &[0x01, 2, 7, 5, 0, 0x39, 0x05, 0, 0]);
         assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), mv);
 
         let deposit = InventoryOperationRequest::InventoryToStorage {
@@ -1770,17 +2212,168 @@ mod tests {
             withdraw
         );
 
-        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw
-        let gold = InventoryOperationRequest::InventoryGoldToStorage {
-            amount: 1000,
+        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw.
+        // Both are the bare u64 — the gold arm of the original's inventory-op
+        // serializer writes u64@+0x90 and returns, and op 13 (same arm) is
+        // known on the wire as exactly that: `0d6400000000000000`.
+        let gold = InventoryOperationRequest::InventoryGoldToStorage { amount: 1000 };
+        let bytes: Bytes = gold.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
+
+        let gold = InventoryOperationRequest::StorageGoldToInventory { amount: 1000 };
+        let bytes: Bytes = gold.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x0B, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
+    }
+
+    /// The five guild-warehouse ops. Every body here is derived from the
+    /// original client's own builder/serializer pair (op 29 shares the
+    /// serializer arm of ops 0/1, ops 30/31 that of ops 2/3, ops 32/33 that of
+    /// ops 10-13), and no guild transfer has been seen on the wire yet. What
+    /// the test nails down is the SHAPE, so a later body disagreeing with it
+    /// fails loudly instead of silently.
+    #[test]
+    fn guild_storage_requests_roundtrip() {
+        // op 29 — guild -> guild, the only guild op with a quantity
+        // (the original's item-move builder, container 0x91 -> 0x91)
+        let mv = InventoryOperationRequest::GuildStorageToGuildStorage {
+            source: 2,
+            target: 7,
+            amount: 5,
             npc_unique_id: 0x539,
         };
-        let bytes: Bytes = gold.clone().into();
+        let bytes: Bytes = mv.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x1D, 2, 7, 5, 0, 0x39, 0x05, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), mv);
+
+        // op 30 — deposit (the original's item-move builder, container 0x46 -> 0x91)
+        let deposit = InventoryOperationRequest::InventoryToGuildStorage {
+            source: 14,
+            target: 3,
+            npc_unique_id: 0x539,
+        };
+        let bytes: Bytes = deposit.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x1E, 14, 3, 0x39, 0x05, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), deposit);
+
+        // op 31 — withdraw (the original's item-move builder, container 0x91 -> 0x46)
+        let withdraw = InventoryOperationRequest::GuildStorageToInventory {
+            source: 3,
+            target: 14,
+            npc_unique_id: 0x539,
+        };
+        let bytes: Bytes = withdraw.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x1F, 3, 14, 0x39, 0x05, 0, 0]);
         assert_eq!(
-            bytes.as_ref(),
-            &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0, 0x39, 0x05, 0, 0]
+            InventoryOperationRequest::try_from(bytes).unwrap(),
+            withdraw
         );
-        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
+
+        // ops 32/33 — gold, bare u64, no npc id (the original's gold builder, gold arm)
+        let deposit = InventoryOperationRequest::InventoryGoldToGuildStorage { amount: 1000 };
+        let bytes: Bytes = deposit.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x20, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), deposit);
+
+        let withdraw = InventoryOperationRequest::GuildStorageGoldToInventory { amount: 1000 };
+        let bytes: Bytes = withdraw.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x21, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            InventoryOperationRequest::try_from(bytes).unwrap(),
+            withdraw
+        );
+    }
+
+    /// The two COS-bag ops the original's own serializer builds. Body order is
+    /// the serializer's, not mirrored from the response: its ops 26/27 arm
+    /// writes the **u32 first** (`+0xc`) and only then the two slots
+    /// (`+3`, `+4`), which is the opposite of the storage arm two tests up — so
+    /// a copy-paste from the guild ops would have put the id in the wrong
+    /// place.
+    ///
+    /// Op 30 above shares the *other* arm and keeps
+    /// `source, target, npc_unique_id` — the two arms really do differ, and
+    /// both are pinned here.
+    ///
+    /// Op 25 (`PetToPet`) is deliberately absent: the serializer has **no
+    /// case** for 0x19 (every value 0..=43 except 25 has one), i.e. the
+    /// original client never sends it, so no request is built for it here. Its
+    /// *response* stays decoded.
+    #[test]
+    fn cos_bag_requests_roundtrip() {
+        // op 26 — pet slot 5 out to bag slot 14, on COS uid 127851
+        let out = InventoryOperationRequest::PetToInventory {
+            cos_unique_id: 127_851,
+            pet_slot: 5,
+            inventory_slot: 14,
+        };
+        let bytes: Bytes = out.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x1A, 0x6B, 0xF3, 0x01, 0x00, 5, 14]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), out);
+
+        // op 27 — bag slot 14 into pet slot 5 (the same two numbers, swapped)
+        let into = InventoryOperationRequest::InventoryToPet {
+            cos_unique_id: 127_851,
+            inventory_slot: 14,
+            pet_slot: 5,
+        };
+        let bytes: Bytes = into.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x1B, 0x6B, 0xF3, 0x01, 0x00, 14, 5]);
+        assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), into);
+    }
+
+    /// The guild acks. The shapes come from xBot's parser
+    /// (`PacketParser.cs:2142-2232`, no licence — facts and field layout only,
+    /// nothing copied), which applies them to its guild-storage state. The byte
+    /// order is the personal ops' own, which are known from the wire.
+    #[test]
+    fn guild_storage_responses_roundtrip() {
+        for (bytes, expected) in [
+            (
+                Bytes::from_static(&[0x01, 0x1D, 2, 7, 5, 0]),
+                InventoryOperationResult::GuildStorageToGuildStorage {
+                    source: 2,
+                    target: 7,
+                    amount: 5,
+                },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x1E, 14, 3]),
+                InventoryOperationResult::InventoryToGuildStorage {
+                    source: 14,
+                    target: 3,
+                },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x1F, 3, 14]),
+                InventoryOperationResult::GuildStorageToInventory {
+                    source: 3,
+                    target: 14,
+                },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x20, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]),
+                InventoryOperationResult::InventoryGoldToGuildStorage { amount: 1000 },
+            ),
+            (
+                Bytes::from_static(&[0x01, 0x21, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]),
+                InventoryOperationResult::GuildStorageGoldToInventory { amount: 1000 },
+            ),
+        ] {
+            let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
+            assert_eq!(response.operation, Some(expected));
+            let back: Bytes = response.into();
+            assert_eq!(back, bytes);
+        }
+
+        // a truncated guild ack degrades to Unknown, never a decode failure
+        let response =
+            InventoryOperationResponse::try_from(Bytes::from_static(&[0x01, 0x1E, 14])).unwrap();
+        assert!(matches!(
+            response.operation,
+            Some(InventoryOperationResult::Unknown { op: 30, .. })
+        ));
     }
 
     #[test]
@@ -1877,7 +2470,7 @@ mod tests {
     /// slot 13 = the first bag slot (already the `+0x0D`-biased wire number).
     #[test]
     fn item_use_request_roundtrips_per_variant() {
-        // FUN_00796660:550 with no target set — HP potion (type_id 0x08EC).
+        // The generic builder with no target set — HP potion (type_id 0x08EC).
         let simple = ItemUseRequest::Simple {
             slot: 13,
             type_id: 0x08EC,
@@ -1886,7 +2479,8 @@ mod tests {
         assert_eq!(bytes.as_ref(), &[13, 0xEC, 0x08]);
         assert_eq!(ItemUseRequest::try_from(bytes).unwrap(), simple);
 
-        // FUN_00796660:286-300 — slot, type_id, target u32 LE, kind u8.
+        // The generic builder with a target — slot, type_id, target u32 LE,
+        // kind u8.
         let targeted = ItemUseRequest::WithTarget {
             slot: 14,
             type_id: 0x08EC,
@@ -1900,7 +2494,7 @@ mod tests {
         );
         assert_eq!(ItemUseRequest::try_from(bytes).unwrap(), targeted);
 
-        // FUN_007901c0 — slot, type_id, then FUN_0053d8c0's u16 length + ASCII.
+        // The name-carrying builder — slot, type_id, then a u16 length + ASCII.
         let named = ItemUseRequest::WithName {
             slot: 15,
             type_id: 0x09EC,
@@ -1957,10 +2551,10 @@ mod tests {
         assert_eq!(back, bytes);
     }
 
-    /// All five `packet_dump/0x3052.log` bodies: 5 bytes each, slot 6 is the
-    /// weapon and slot 1 the chest, both wearing down over the session.
+    /// All five known 0x3052 bodies: 5 bytes each, slot 6 is the weapon and
+    /// slot 1 the chest, both wearing down over the session.
     #[test]
-    fn inventory_durability_update_decodes_live_captures() {
+    fn inventory_durability_update_decodes_real_bodies() {
         for (wire, slot, durability) in [
             ([0x06u8, 0x31, 0, 0, 0], 6u8, 49u32),
             ([0x01, 0x2F, 0, 0, 0], 1, 47),

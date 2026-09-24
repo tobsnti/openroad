@@ -199,6 +199,10 @@ packets! {
 
     // Movement.
     0x7021 => MovementRequest,
+
+    // Quickslot bar persistence (0x7158 kind 1). Kind 2 of the same opcode is
+    // the auto-potion settings.
+    0x7158 => QuickSlotSaveRequest,
     0xB021 => MovementResponse,
     0xB023 => MovementPositionUpdate,
     // Turn-in-place. Only the S→C half is wired: the original parses 0xB024
@@ -213,11 +217,10 @@ packets! {
     // other subtypes keep their bytes.
     0x300C => NoticeUpdate,
 
-    // Entity events. Only the two confirmed
-    // ones are wired. Their two siblings stay documented-only — 0x305C
-    // ENTITY_DISPLAY_EFFECT (level-up glow, transform and buff visuals) and
-    // 0x3091 EMOTE_USE (one opcode aliased in both directions); neither has a
-    // parser in the original, so no layout is invented for them here.
+    // Entity events. Only the two confirmed ones are wired. Their sibling
+    // 0x305C ENTITY_DISPLAY_EFFECT (level-up glow, transform and buff visuals)
+    // stays documented-only; 0x3091 EMOTE_USE is wired below, its layout taken
+    // from the original's own builder.
     0x3011 => CharacterDied,
     0x304D => DropUnlocked,
 
@@ -225,6 +228,16 @@ packets! {
     // empty body). C→S despite the 0x3xxx range — the documented exception;
     // see agent/ingame.rs.
     0x3053 => GetUpRequest,
+
+    // Character posture/gait (action-window slots 1000 sit-stand and 1001
+    // walk-run): one byte, 2 walk / 3 run / 4 sit-stand toggle — read off the
+    // action window's own command dispatcher, see CharacterActionRequest.
+    0x704F => CharacterActionRequest,
+
+    // Emote (action-window slots 4000..=4006): one byte, the emote code. Like
+    // 0x3053 this is a C→S packet in the 0x3xxx range — the original ships a
+    // builder but no parser for it. Code table: see EmoteRequest.
+    0x3091 => EmoteRequest,
 
     // Hwan / berserk (mini-info jahwan button). The 0x70A7 action byte's enum
     // is unknown — see HwanActionRequest.
@@ -612,8 +625,9 @@ packets! {
     0x30B7 => StallEntityAction,
     0x30B8 => EntityStallCreate,
     0x30B9 => EntityStallDestroy,
-    // 0xB0B3 stall-talk snapshot. Its C→S partner 0x70B3 stays unwired:
-    // its request body is unknown.
+    // Stall talk. 0xB0B3 is the snapshot; its C→S partner 0x70B3 is a single
+    // u32 unique id.
+    0x70B3 => StallTalkRequest,
     0xB0B3 => StallTalkResponse,
     0x30BB => EntityStallTitleUpdate,
 
