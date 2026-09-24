@@ -17,6 +17,10 @@
 //! growth pet fights and a pick pet loots, so this resource holds a list keyed
 //! by unique id rather than the single slot it started as; every consumer that
 //! wants "the pet" asks for a kind.
+//!
+//! The refdata lookup, the kind resolution and the body decode are one shared
+//! function with one drop path ([`crate::plugins::cos::resolve_pet_data`]), so
+//! this window and the status stack can never disagree about what a summon is.
 
 use bevy::prelude::*;
 
@@ -28,6 +32,7 @@ use packets::agent::pet::{
     CosBody, CosGrowth, CosKind, PetData, PetUpdate, PetUpdatePayload, PET_UPDATE_UNSUMMONED,
 };
 
+use crate::plugins::cos::resolve_pet_data;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientLevelData};
@@ -130,14 +135,17 @@ impl CosState {
         self.first_of_kind(CosKind::GrowthPet)
             .or_else(|| self.first_of_kind(CosKind::GrabPet))
     }
-}
 
-/// Resolve a COS ref id to its [`CosKind`] through characterdata's `TypeID4`.
-///
-/// Thin wrapper over the one implementation of the tid gate — this module used
-/// to carry a second copy of it.
-pub fn cos_kind(char_data: &ClientCharacterData, ref_obj_id: u32) -> Option<CosKind> {
-    char_data.get(&(ref_obj_id as i32))?.cos_kind()
+    /// The COS whose bag the inventory page shows: the oldest summon that
+    /// actually *has* one (`0x30C8`'s `inventory_size > 0`).
+    ///
+    /// Keyed on the capacity rather than on a kind on purpose — a pick pet and
+    /// a transport both carry goods through the same 7x4 grid and the same
+    /// `0x7034` ops 26/27, while a growth pet reports capacity 0 and would
+    /// otherwise claim the page it can never fill.
+    pub fn bag_owner(&self) -> Option<&Cos> {
+        self.cos.iter().find(|cos| cos.body.inventory_size > 0)
+    }
 }
 
 /// Apply `0x30C8`: a COS was summoned (or re-sent).
@@ -148,15 +156,7 @@ pub fn on_pet_data(
     mut state: ResMut<CosState>,
 ) {
     for msg in reader.read() {
-        let Some(kind) = cos_kind(&char_data, msg.ref_obj_id) else {
-            warn!(
-                "cos: no characterdata COS row for ref {} — summon ignored",
-                msg.ref_obj_id
-            );
-            continue;
-        };
-        let Some(body) = msg.body(kind, &*item_data) else {
-            warn!("cos: 0x30C8 body for ref {} does not parse", msg.ref_obj_id);
+        let Some((_row, kind, body)) = resolve_pet_data(msg, &char_data, &item_data) else {
             continue;
         };
         let held = state.remove(msg.unique_id);

@@ -20,9 +20,11 @@ pub mod spawn;
 
 use bevy::prelude::*;
 
-use packets::agent::prelude::{PetData, PetPlayerMounted, PetUpdate};
+use packets::agent::prelude::{PetData, PetPlayerMounted, PetStateUpdate, PetUpdate};
 
+use crate::assets::textdata::characterdata::CharacterDataRow;
 use crate::plugins::combat::{Dying, EntityDied, Slain};
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::net::character_info::MovementSpeed;
 use crate::plugins::net::entities::{
     DisplayName, EntityVitals, NetworkEntities, RemoteEntity, RemoteMovement,
@@ -32,7 +34,7 @@ use crate::plugins::textdata::{
     ClientCharacterData, ClientItemData, ClientTextNames, ClientUiStrings,
 };
 use crate::scenes::{in_playable_world, SceneState};
-use packets::agent::pet::{CosKind, PetUpdatePayload};
+use packets::agent::pet::{CosBody, CosKind, PetUpdatePayload};
 
 use spawn::spawn_cos_entity;
 
@@ -148,6 +150,7 @@ impl Plugin for CosPlugin {
             .add_message::<PetData>()
             .add_message::<PetUpdate>()
             .add_message::<PetPlayerMounted>()
+            .add_message::<PetStateUpdate>()
             .add_systems(
                 Update,
                 (
@@ -166,6 +169,7 @@ impl Plugin for CosPlugin {
                                 .and_then(resource_exists::<ClientItemData>),
                         ),
                     on_pet_mounted,
+                    on_pet_state,
                     resolve_pending_mounts,
                     pet::handle_pet_commands,
                     pet::send_pet_attack_with_player,
@@ -214,6 +218,41 @@ fn reset_cos_state(
     }
 }
 
+/// The one place a `0x30C8` becomes `(refdata row, kind, decoded body)`.
+///
+/// `None` (with the one warning that explains which of the three steps failed)
+/// is the only drop path left.
+pub fn resolve_pet_data<'a>(
+    data: &PetData,
+    char_data: &'a ClientCharacterData,
+    item_data: &ClientItemData,
+) -> Option<(&'a CharacterDataRow, CosKind, CosBody)> {
+    let Some(row) = char_data.get(&(data.ref_obj_id as i32)) else {
+        warn!(
+            "cos: 0x30C8 for unknown model {} (uid {})",
+            data.ref_obj_id, data.unique_id
+        );
+        return None;
+    };
+    let Some(kind) = row.cos_kind() else {
+        warn!(
+            "cos: 0x30C8 model {} ({}) is not a COS row",
+            data.ref_obj_id,
+            row.code_name()
+        );
+        return None;
+    };
+    let Some(body) = data.body(kind, item_data) else {
+        warn!(
+            "cos: 0x30C8 tail failed to decode (uid {}, kind {kind:?}): {}",
+            data.unique_id,
+            packets::hexdump(&data.tail, 96)
+        );
+        return None;
+    };
+    Some((row, kind, body))
+}
+
 /// 0x30C8 — the per-summon data blob after a summon.
 ///
 /// The tail layout is picked by the model's tid4 (not on the wire), but every
@@ -229,27 +268,7 @@ fn on_pet_data(
     vitals: Query<&EntityVitals>,
 ) {
     for data in reader.read() {
-        let Some(row) = char_data.get(&(data.ref_obj_id as i32)) else {
-            warn!(
-                "cos: 0x30C8 for unknown model {} (uid {})",
-                data.ref_obj_id, data.unique_id
-            );
-            continue;
-        };
-        let Some(kind) = row.cos_kind() else {
-            warn!(
-                "cos: 0x30C8 model {} ({}) is not a COS row",
-                data.ref_obj_id,
-                row.code_name()
-            );
-            continue;
-        };
-        let Some(body) = data.body(kind, &*item_data) else {
-            warn!(
-                "cos: 0x30C8 tail failed to decode (uid {}, kind {kind:?}): {}",
-                data.unique_id,
-                packets::hexdump(&data.tail, 96)
-            );
+        let Some((row, kind, body)) = resolve_pet_data(data, &char_data, &item_data) else {
             continue;
         };
         info!(
@@ -343,7 +362,7 @@ fn on_pet_update(
                         info!("cos: uid {} was slain — dying", update.unique_id);
                         died.write(EntityDied(cos_entity));
                     } else if !dying.contains(cos_entity) {
-                        commands.entity(cos_entity).despawn();
+                        commands.entity(cos_entity).try_despawn();
                     }
                 }
             }
@@ -500,6 +519,21 @@ fn respawn_grown_cos(
     }
 }
 
+fn on_pet_state(mut reader: MessageReader<PetStateUpdate>, list: Res<ActiveCosList>) {
+    for msg in reader.read() {
+        let known = list.get(msg.unique_id).and_then(|c| c.name.as_deref());
+        info!(
+            "cos: 0x30CA uid={} ({}) mask={:#04x} a={:?} b={:?} \
+             (layout known, meaning not — unconsumed)",
+            msg.unique_id,
+            known.unwrap_or("not ours"),
+            msg.mask,
+            msg.state_a,
+            msg.state_b,
+        );
+    }
+}
+
 /// How many extra frames an ack whose *rider* has not spawned yet is kept
 /// before it is discarded. The spawn is always in the same network read or the
 /// one before it, so a couple of frames is generous; the cap is what stops a
@@ -537,6 +571,7 @@ fn on_pet_mounted(
     players: Query<Has<Player>>,
     mut rider: ResMut<RiderState>,
     mut deferred: Local<Vec<(PetPlayerMounted, u8)>>,
+    mut history: Option<ResMut<ChatHistory>>,
     mut commands: Commands,
 ) {
     // Acks held from earlier frames go first, so a rider that has since
@@ -546,7 +581,7 @@ fn on_pet_mounted(
 
     for (msg, age) in pending {
         if !msg.success {
-            info!("cos: mount request rejected by server");
+            report_mount_rejection(&mut history, msg.error_code);
             continue;
         }
         let (Some(player_uid), Some(is_mounting)) = (msg.player_unique_id, msg.is_mounting) else {
@@ -582,12 +617,21 @@ fn on_pet_mounted(
                 cos_uid,
                 if is_local { " (local)" } else { "" }
             );
-            commands.entity(player_entity).insert(RiderOf(cos_entity));
+            commands
+                .entity(player_entity)
+                .try_remove::<PendingMount>()
+                .insert(RiderOf(cos_entity));
             if is_local {
                 rider.0 = Some(cos_uid);
             }
         } else {
-            info!("cos: player {} dismounted", player_uid);
+            // `riding_unique_id` is read on the dismount arm too, so the COS
+            // being left is named by the packet instead of inferred from
+            // `RiderState`.
+            info!(
+                "cos: player {} dismounted from cos {:?}",
+                player_uid, msg.riding_unique_id
+            );
             commands
                 .entity(player_entity)
                 .try_remove::<RiderOf>()
@@ -598,6 +642,32 @@ fn on_pet_mounted(
                 rider.0 = None;
             }
         }
+    }
+}
+
+/// Report a refused mount/dismount (`0xB0CB` `result == 2`) instead of
+/// swallowing its code.
+///
+/// The code is printed **verbatim**, with no code→text table: the value space
+/// is not known, so a guessed mapping would be worse than the bare number — it
+/// *looks* right while being wrong, which is precisely the unsourced magic
+/// number ADR-0009 forbids. The neighbouring
+/// party acks print unmapped codes the same way
+/// (`net/party.rs::ack_feedback`, `net/job.rs:310`).
+///
+/// `ChatHistory` is a HUD resource and is therefore `Option`: the same rule the
+/// net layer follows (a missing `ResMut` fails Bevy parameter validation and
+/// panics the schedule rather than skipping the system), and the COS tests
+/// build apps without a HUD.
+fn report_mount_rejection(history: &mut Option<ResMut<ChatHistory>>, error_code: Option<u16>) {
+    let text = match error_code {
+        Some(code) => format!("Mount request refused by the server (code {code})."),
+        // A 3-byte failure whose code did not parse: still not silence.
+        None => "Mount request refused by the server.".to_string(),
+    };
+    warn!("cos: 0xB0CB {text}");
+    if let Some(history) = history {
+        history.push(ChatLine::system(text));
     }
 }
 
@@ -628,11 +698,13 @@ fn resolve_pending_mounts(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::assets::textdata::characterdata::CharacterData;
     use crate::plugins::net::character_info::MovementSpeed;
     use crate::plugins::net::entities::{NetworkId, RemoteMovement};
     use crate::plugins::player::{PlayerCommands, PlayerMoveOrder};
     use crate::plugins::world_origin::WorldOrigin;
     use packets::agent::pet::{CosKind, PET_UPDATE_UNSUMMONED};
+    use std::collections::HashMap;
 
     const LOCAL_UID: u32 = 0x8000_0001;
     const PLAYER_UID: u32 = 42;
@@ -671,6 +743,45 @@ mod test {
             .add_message::<PetPlayerMounted>()
             .add_systems(Update, (on_pet_mounted, resolve_pending_mounts));
         app
+    }
+
+    #[test]
+    fn a_refused_mount_reports_its_error_code() {
+        let mut app = ack_app();
+        app.init_resource::<ChatHistory>();
+        app.world_mut().write_message(PetPlayerMounted {
+            success: false,
+            player_unique_id: None,
+            is_mounting: None,
+            riding_unique_id: None,
+            // The 3-byte failure body `02 0d30`, as the original reads it.
+            error_code: Some(0x300d),
+        });
+        app.update();
+
+        let lines = app.world().resource::<ChatHistory>();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains(&0x300du16.to_string())),
+            "the refusal code must reach the player, not just the log"
+        );
+    }
+
+    /// The same arm without a HUD: a COS app built with no `ChatHistory` must
+    /// still run the system rather than fail parameter validation, which is the
+    /// failure mode the net layer's `Option<ResMut<_>>` rule exists for.
+    #[test]
+    fn a_refused_mount_without_a_chat_log_does_not_panic() {
+        let mut app = ack_app();
+        app.world_mut().write_message(PetPlayerMounted {
+            success: false,
+            player_unique_id: None,
+            is_mounting: None,
+            riding_unique_id: None,
+            error_code: None,
+        });
+        app.update();
     }
 
     fn mount_ack(player_uid: u32, cos_uid: u32) -> PetPlayerMounted {
@@ -1242,5 +1353,182 @@ mod test {
                 .is_none(),
             "and is not killed twice"
         );
+    }
+
+    /// **The regression this whole change exists for.** A mount ack can arrive
+    /// in the same network read as the COS's own spawn and be handled first, so
+    /// the COS is not in `NetworkEntities` yet when `on_pet_mounted` runs. The
+    /// old code `warn!`ed about an unknown cos uid and returned: `RiderState`
+    /// stayed `None` and the ride was dead client-side. The ack must survive as
+    /// a `PendingMount` until the COS exists.
+    #[test]
+    fn a_mount_ack_that_beats_its_cos_spawn_still_seats_the_rider() {
+        // A mount ack's two uids: player 0x1F341, horse 0x1F36B.
+        const PLAYER_UID: u32 = 0x1F341;
+        const HORSE_UID: u32 = 0x1F36B;
+
+        let (mut app, _cos, player) = riding_app();
+        app.world_mut()
+            .entity_mut(player)
+            .insert(NetworkId(PLAYER_UID));
+
+        // The ack arrives while the horse is still unspawned.
+        let ack = PetPlayerMounted::try_from(bytes::Bytes::from(vec![
+            0x01, 0x41, 0xf3, 0x01, 0x00, 0x01, 0x6b, 0xf3, 0x01, 0x00,
+        ]))
+        .expect("the 10-byte mount body decodes");
+        assert_eq!(ack.riding_unique_id, Some(HORSE_UID));
+        app.world_mut().write_message(ack);
+        app.update();
+
+        assert!(
+            app.world().get::<RiderOf>(player).is_none(),
+            "nothing to sit on yet"
+        );
+        assert_eq!(
+            app.world().get::<PendingMount>(player).map(|p| p.0),
+            Some(HORSE_UID),
+            "the ack must be remembered, not dropped"
+        );
+
+        // ... and the spawn lands one frame later.
+        let horse = app
+            .world_mut()
+            .spawn((
+                CosEntity {
+                    kind: CosKind::Vehicle,
+                    owner_uid: Some(PLAYER_UID),
+                },
+                NetworkId(HORSE_UID),
+                Transform::from_xyz(1.0, 0.0, 2.0),
+            ))
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world().get::<RiderOf>(player).map(|r| r.0),
+            Some(horse),
+            "the deferred mount resolves once the COS exists"
+        );
+        assert_eq!(
+            app.world().resource::<RiderState>().0,
+            Some(HORSE_UID),
+            "and the ride is live, so clicks route through 0x70C5"
+        );
+        assert!(app.world().get::<PendingMount>(player).is_none());
+    }
+
+    /// A dismount arriving while a mount is still deferred must cancel it —
+    /// otherwise `resolve_pending_mounts` re-seats the player a frame later.
+    #[test]
+    fn a_dismount_cancels_a_still_deferred_mount() {
+        let (mut app, _cos, player) = riding_app();
+        app.world_mut().entity_mut(player).insert(NetworkId(42));
+        app.world_mut().entity_mut(player).insert(PendingMount(999));
+
+        app.world_mut().write_message(PetPlayerMounted {
+            success: true,
+            player_unique_id: Some(42),
+            is_mounting: Some(false),
+            riding_unique_id: Some(999),
+            error_code: None,
+        });
+        app.update();
+        // Now spawn what the pending mount was waiting for.
+        app.world_mut()
+            .spawn((NetworkId(999), Transform::default()));
+        app.update();
+
+        assert!(app.world().get::<PendingMount>(player).is_none());
+        assert!(app.world().get::<RiderOf>(player).is_none());
+        assert_eq!(app.world().resource::<RiderState>().0, None);
+    }
+
+    /// A dismount ack, byte for byte: 10 bytes, and the COS uid sits after
+    /// `is_mounting = 0`. Read as 6 bytes (the old gate) the uid was `None`.
+    #[test]
+    fn the_dismount_ack_releases_the_rider() {
+        let (mut app, cos, player) = riding_app();
+        app.world_mut()
+            .entity_mut(player)
+            .insert(NetworkId(0x1F341));
+        app.world_mut().entity_mut(player).insert(RiderOf(cos));
+        app.world_mut().resource_mut::<RiderState>().0 = Some(LOCAL_UID);
+
+        let ack = PetPlayerMounted::try_from(bytes::Bytes::from(vec![
+            0x01, 0x41, 0xf3, 0x01, 0x00, 0x00, 0x6b, 0xf3, 0x01, 0x00,
+        ]))
+        .expect("the 10-byte dismount body decodes");
+        assert_eq!(
+            ack.riding_unique_id,
+            Some(0x1F36B),
+            "the dismount ack names the COS it releases"
+        );
+        app.world_mut().write_message(ack);
+        app.update();
+
+        assert!(app.world().get::<RiderOf>(player).is_none());
+        assert_eq!(app.world().resource::<RiderState>().0, None);
+    }
+
+    /// A `0x30C8` naming a tid4 6/7/8 row used to be **discarded** by both
+    /// consumers ("model N is not a COS row"), because `from_type_id4` had no
+    /// arm for the eight shipped rows. Now it resolves, so the packet survives
+    /// as far as its consumer.
+    ///
+    /// Positive control in the same test, on the same read path: a `1/2/3/1`
+    /// row still resolves to `Vehicle`, and a `1/2/4/1` row (the fortress
+    /// `COS_GUARD_*` family) still returns `None` — the tid3 gate is intact.
+    #[test]
+    fn an_unmapped_cos_class_is_no_longer_dropped() {
+        // MOB_QT_01_LADON_COS-shaped row: tid 1/2/3/6, one of the six tid4-6
+        // rows in the shipped characterdata (6/1/1 rows for tid4 6/7/8).
+        let mut table = HashMap::new();
+        table.insert(2001, char_row("MOB_QT_01_LADON_COS", (1, 2, 3, 6)));
+        table.insert(2002, char_row("COS_C_HORSE1", (1, 2, 3, 1)));
+        table.insert(2003, char_row("COS_GUARD_CH_TOWER", (1, 2, 4, 1)));
+        let char_data = ClientCharacterData::from_table(CharacterData(table));
+        let item_data = ClientItemData::default();
+
+        let resolved = resolve_pet_data(&pet_data(2001), &char_data, &item_data);
+        let (row, kind, body) = resolved.expect("a tid4-6 summon must not be dropped");
+        assert_eq!(kind, CosKind::Unmapped(6));
+        assert_eq!(row.code_name(), "MOB_QT_01_LADON_COS");
+        // The ungated prefix is read for every kind, so the body is real.
+        assert_eq!(body.hp, 500);
+        assert_eq!(body.inventory_size, 0);
+
+        assert_eq!(
+            resolve_pet_data(&pet_data(2002), &char_data, &item_data).map(|(_, k, _)| k),
+            Some(CosKind::Vehicle),
+            "positive control: the same read path still resolves a mount"
+        );
+        assert!(
+            resolve_pet_data(&pet_data(2003), &char_data, &item_data).is_none(),
+            "the TypeID3 == 3 gate still keeps the 1/2/4 fortress guards out"
+        );
+    }
+
+    /// A characterdata row wide enough for every column the COS accessors read
+    /// (`CanControl` is column 67), with only code name and type ids filled.
+    fn char_row(code: &str, tid: (u32, u32, u32, u32)) -> CharacterDataRow {
+        let mut fields = vec![String::new(); 105];
+        fields[2] = code.to_string();
+        fields[9] = tid.0.to_string();
+        fields[10] = tid.1.to_string();
+        fields[11] = tid.2.to_string();
+        fields[12] = tid.3.to_string();
+        CharacterDataRow(fields)
+    }
+
+    fn pet_data(ref_obj_id: u32) -> PetData {
+        let mut tail = 500u32.to_le_bytes().to_vec();
+        tail.extend_from_slice(&0u32.to_le_bytes());
+        tail.push(0);
+        PetData {
+            unique_id: 0x4242,
+            ref_obj_id,
+            tail: bytes::Bytes::from(tail),
+        }
     }
 }

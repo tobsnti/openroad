@@ -1,9 +1,11 @@
+pub mod follow_ban;
 pub mod info;
 pub mod inventory;
 pub mod model;
 pub mod setup;
 pub mod state;
 pub mod ui;
+pub mod unsummon_confirm;
 
 use bevy::prelude::*;
 
@@ -17,10 +19,18 @@ impl Plugin for CosPlugin {
 
         app.init_resource::<model::CosWindowState>()
             .init_resource::<state::CosState>()
+            .init_resource::<inventory::CosInventoryPage>()
+            .init_resource::<inventory::CosBagCarry>()
+            .init_resource::<unsummon_confirm::CosUnsummonConfirm>()
             .init_resource::<setup::CosSetupState>()
-            .init_resource::<inventory::CosBagPage>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_cos_window)
-            .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_cos_window)
+            .add_systems(
+                OnExit(SceneState::GameWorld),
+                (
+                    ui::cleanup_cos_window,
+                    unsummon_confirm::cleanup_cos_unsummon_confirm,
+                ),
+            )
             .add_systems(
                 Update,
                 (
@@ -36,8 +46,23 @@ impl Plugin for CosPlugin {
                     // 0xB034 pick-pet bag ops -> the COS bag + the inventory
                     state::apply_cos_bag_ops,
                     info::apply_cos_info,
-                    // ifcosinventory.txt page: the pick pet's bag grid
+                    // 0x30C8 cargo list + 0xB034 bag ops -> the 7x4 cargo grid
                     inventory::refresh_cos_inventory,
+                    // cargo carry half (0x7034 ops 26/27): unordered like the
+                    // warehouses', because the two drop systems are mutually
+                    // exclusive by state — one needs an inventory drag, the
+                    // other a cargo carry, and the pickup observer refuses to
+                    // start one while a drag is live.
+                    inventory::finish_cos_bag_carry,
+                    inventory::deposit_drop_on_cos_inventory,
+                    inventory::update_cos_bag_ghost,
+                    inventory::clear_carry_with_cos_window,
+                    // "all goods will be dropped on the ground" gate
+                    unsummon_confirm::sync_cos_unsummon_confirm,
+                    unsummon_confirm::drop_stale_unsummon_confirm,
+                    // 0xB074 result==3: the server's own refusal sentences,
+                    // including the transport follow ban (category 0x19)
+                    follow_ban::report_action_refusals,
                     // ifcossetup.txt page: 0x30C8/0xB420 -> the flag controls
                     setup::apply_cos_settings,
                     setup::refresh_cos_setup,

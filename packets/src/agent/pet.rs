@@ -72,6 +72,12 @@ use sro_macro_derive::*;
 /// The variant docs carry both numbers because the recovered evidence uses
 /// both: `TypeID4` is the refdata nibble, `kind` is the client's internal byte.
 /// Source: `docs/re/net/inbound/pet-cos.md` §0x30C8.
+///
+/// The original resolves five arms; the shipped data has **eight** `TypeID4`
+/// values (census over the shipped `characterdata*.txt`, all 10 files,
+/// 13,685 rows, 3,483 of them `TypeID1/2/3 = 1/2/3`: tid4 1→63, 2→39, 3→1260,
+/// 4→13, 5→2100, 6→6, 7→1, 8→1 rows). The last three get [`CosKind::Unmapped`]
+/// rather than a `None` that would drop the packet — see there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CosKind {
     /// `TypeID4` 1 → kind 0. Transport / vehicle. [S]
@@ -83,21 +89,35 @@ pub enum CosKind {
     GrowthPet,
     /// `TypeID4` 4 → kind 2. Grab / pick pet: named, no growth block. [S]
     GrabPet,
-    /// `TypeID4` 5 → kind 4. Mercenary / fellow. [V] — `FUN_0099ddb0` is
-    /// `kind == 4` and is exactly the gate that logs `Create Mercenary
-    /// Interface` at `00811500:23`.
-    Fellow,
+    /// `TypeID4` 5 → kind 4. **Guild guard**, not a mercenary/companion.
+    GuildGuard,
+    /// `TypeID4` 6, 7 or 8 — carried through with the raw nibble instead of
+    /// being dropped. The rows are in the shipped data; nothing else about
+    /// them is confirmed.
+    ///
+    /// These exist in the shipped data (8 rows) but not in the original's
+    /// five-arm resolver, so we have **no** kind byte and no body grammar for
+    /// them: tid4 6 = the six `MOB_QT_*_COS` rows, 7 = `NPC_CH_QT_MOONSHADOW_COS`,
+    /// 8 = `NPC_CH_QT_FLAMEMASTER_COS` (all eight are `*_QT_*`, i.e. quest
+    /// objects; `CanBeVehicle = 0` on all eight, `CanControl = 1` only on the
+    /// FLAMEMASTER row). Before this variant existed, `from_type_id4` returned
+    /// `None` for them and **both** 0x30C8 consumers discarded the packet.
+    /// Keeping the number is the non-guessing option: no gate below claims to
+    /// know these bodies (see [`PetData::body`]).
+    Unmapped(u8),
 }
 
 impl CosKind {
-    /// From the refdata `TypeID4` nibble.
+    /// From the refdata `TypeID4` nibble. Only the eight values the shipped
+    /// tables actually use resolve; anything else is not a COS row.
     pub fn from_type_id4(type_id4: u8) -> Option<Self> {
         Some(match type_id4 {
             1 => CosKind::Vehicle,
             2 => CosKind::Transport,
             3 => CosKind::GrowthPet,
             4 => CosKind::GrabPet,
-            5 => CosKind::Fellow,
+            5 => CosKind::GuildGuard,
+            6..=8 => CosKind::Unmapped(type_id4),
             _ => return None,
         })
     }
@@ -110,26 +130,29 @@ impl CosKind {
 
     /// The client's internal kind byte (`record+0x14`) — the value the body's
     /// gates are written against, kept so the gates below read like the
-    /// original's.
-    pub fn kind_byte(self) -> u8 {
-        match self {
+    /// original's. `None` for [`CosKind::Unmapped`]: the original's resolver
+    /// has no arm for tid4 6/7/8, so there *is* no kind byte for them and
+    /// inventing one would fabricate the body gates with it.
+    pub fn kind_byte(self) -> Option<u8> {
+        Some(match self {
             CosKind::Vehicle => 0,
             CosKind::Transport => 1,
             CosKind::GrabPet => 2,
             CosKind::GrowthPet => 3,
-            CosKind::Fellow => 4,
-        }
+            CosKind::GuildGuard => 4,
+            CosKind::Unmapped(_) => return None,
+        })
     }
 
-    /// `kind in {2, 3}` — the two kinds the original treats as *pets*: they
-    /// carry a name and the trailing `u8`.
-    /// Whether the local player can board this COS. The two transport kinds
-    /// are the rideable ones — pets and the mercenary follow on foot
-    /// (`docs/re/systems/mount.md`).
     pub fn is_rideable(self) -> bool {
         matches!(self, CosKind::Vehicle | CosKind::Transport)
     }
 
+    /// Client kind byte `in {2, 3}` (= `TypeID4` 4 and 3) — the two kinds the
+    /// original treats as *pets*: they carry a name and the trailing `u8`. The
+    /// body gates below are written in the client's kind byte, so `{2, 3}`
+    /// there and `is_pet()` here are the same set; the original's own code is
+    /// what decides it.
     pub fn is_pet(self) -> bool {
         matches!(self, CosKind::GrabPet | CosKind::GrowthPet)
     }
@@ -166,12 +189,6 @@ pub const PET_UPDATE_UNKNOWN_6: u8 = 6;
 pub const PET_UPDATE_MODEL_CHANGED: u8 = 7;
 
 /// The COS command codes carried by 0x70C5's action byte.
-///
-/// 1 and 8 are the two the original's builders emit
-/// (`docs/re/net/outbound/pet-cos.md` §0x70C5). 2 and 8 are independently [V]
-/// from the **server** side — `server-dec/004ecbc0_FUN_004ecbc0.c:68-86`
-/// branches on both when it writes the 0xB0C5 error ack. 4 (turn-in-place, a
-/// `u16` heading) comes from builders `009eb470`/`009eb6e0`.
 ///
 /// 9 and 11 appear in no binary we have; they are Hyperbot's `CosCommandType`
 /// (`packetEnums.hpp:459-465`) and are therefore [S]. Sending one is a probe —
@@ -292,10 +309,12 @@ pub struct CosBody {
     pub unk_b: u32,
     /// Growth block — `kind == 3` only.
     pub growth: Option<CosGrowth>,
-    /// `:167-177` — only for the two *pet* `TypeID4`s (3 and 4); the original
+    /// `:167-177` — only for the two *pet* `TypeID4`s (3 and 4), i.e. client
+    /// kind bytes 2 and 3, which is [`CosKind::is_pet`]; the original
     /// substitutes 0 when absent. [U]
     pub unk_f: Option<u32>,
-    /// `kind in {2, 3}` only (`:178-189`).
+    /// Client kind byte `in {2, 3}` only (`:178-189`) — the `is_pet` pair
+    /// again, *not* `TypeID4` 2 and 3.
     pub name: Option<String>,
     /// Slot capacity; always read (`:190-193`).
     pub inventory_size: u8,
@@ -306,19 +325,17 @@ pub struct CosBody {
     /// The **owning character's entity uid** (`kind not in {0, 4}`,
     /// `:263-272`).
     ///
-    /// **[V]** 2026-08-27: every `0x30C8` blob in the capture carries the value
-    /// `0x00031527`, and the `0x3020` at the same login reports the local
-    /// player's uid as exactly that. Holds for every blob in the dump.
-    /// *(Was `[U]`.)*
+    /// The value is *per session*, not a constant. What holds is the
+    /// *semantics*: it is an entity uid the same session already introduced.
     pub unk_g: Option<u32>,
-    /// The **summon scroll's inventory slot** (`kind in {2, 3}`, `:282-286`;
-    /// the original uses it as `H - 13`, i.e. as a bag index).
+    /// The **summon scroll's inventory slot** — client kind byte `in {2, 3}`
+    /// (`:282-286`), i.e. `TypeID4` 4 and 3, which is exactly
+    /// [`CosKind::is_pet`]; the two numberings name the same pair, see
+    /// [`CosKind`]. The original uses it as `H - 13`, i.e. as a bag index.
     ///
-    /// **[V]** 2026-08-27: it reads `0x17` on every blob while the scroll sat
-    /// in slot 0x17 and `0x41` on every blob after it moved to 0x41 — matching
-    /// the slot byte of the `0x3040` COS-state pushes exactly. The `- 13` is
-    /// `BAG_FIRST_SLOT`, so the original converts it to a bag-relative index.
-    /// *(Was `[U]`.)*
+    /// One byte wide and always the last byte of a pet body. That it *follows*
+    /// the scroll's slot rests on the original's own use of it as a bag index
+    /// and is not confirmed.
     pub unk_h: Option<u8>,
 }
 
@@ -401,7 +418,11 @@ impl PetData {
                 items.push(InventoryItem::read_with(&mut cursor, resolver).ok()?);
             }
         }
-        let unk_g = (!matches!(kind, CosKind::Vehicle | CosKind::Fellow))
+        let reads_unk_g = !matches!(
+            kind,
+            CosKind::Vehicle | CosKind::GuildGuard | CosKind::Unmapped(_)
+        );
+        let unk_g = reads_unk_g
             .then(|| u32::read_from(&mut cursor).ok())
             .flatten();
         let unk_h = kind
@@ -636,9 +657,9 @@ impl From<PetUpdate> for Bytes {
 /// back-to-back before any branch, and both vSRO server writers — `004ec640`
 /// (mount) and `004ec750` (dismount) — emit the transport uid on both paths.
 /// This module used to gate it on `is_mounting`, inheriting an xBot error, and
-/// so consumed 6 bytes of the 10-byte dismount: `packet_dump/0xb0cb.log` line 2
-/// is `0173e4010000d5e40100` with `is_mounting = 0` and a trailing uid we threw
-/// away exactly when the rider needed unlinking.
+/// so consumed 6 bytes of the 10-byte dismount body: the trailing uid was
+/// thrown away exactly when the rider needed unlinking. The success body is 10
+/// bytes on both paths.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetPlayerMounted {
     pub success: bool,
@@ -648,10 +669,32 @@ pub struct PetPlayerMounted {
     pub is_mounting: Option<bool>,
     #[sro_packet(when = "success")]
     pub riding_unique_id: Option<u32>,
-    /// The mount-message category is `0x0E` for this opcode. Value space [U].
     #[sro_packet(when = "!success")]
     pub error_code: Option<u16>,
 }
+
+/// 0x30CA — server → client COS state update: a mask, then up to two state
+/// bytes.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PetStateUpdate {
+    pub unique_id: u32,
+    pub mask: u8,
+    /// `mask & COS_STATE_MASK_A`. Meaning not confirmed.
+    #[sro_packet(when = "mask & COS_STATE_MASK_A != 0")]
+    pub state_a: Option<u8>,
+    /// `mask & COS_STATE_MASK_B`. Meaning not confirmed.
+    #[sro_packet(when = "mask & COS_STATE_MASK_B != 0")]
+    pub state_b: Option<u8>,
+}
+
+/// The two mask bits of 0x30CA (ADR-0009). The frames we know carry mask
+/// `0x03` followed by exactly two bytes, which pins the **field width** (two
+/// optional bytes) and nothing else: 0x01/0x02 are the lowest two bits of that
+/// mask, the cheapest reading that makes such a frame parse. Which bit gates
+/// which byte is not confirmed, nor what either byte means. Nothing in the
+/// client acts on them.
+pub const COS_STATE_MASK_A: u8 = 0x01;
+pub const COS_STATE_MASK_B: u8 = 0x02;
 
 /// 0xB420 — server → client settings-change ack (`FUN_008a7d20`;
 /// `docs/re/net/inbound/pet-cos.md` §0xB420). 10 bytes on success, 3 on error.
@@ -704,13 +747,14 @@ pub struct PetUnsummonRequest {
     pub unique_id: u32,
 }
 
-/// 0xB116 — the unsummon ack (`FUN_008a7b30`). Success is **empty**: the COS
-/// itself goes away via 0x30C9 arm 1, not through this packet.
+/// 0xB116 — server → client unsummon verdict, the ack for
+/// [`PetUnsummonRequest`].
+///
+/// Same two-field shape as [`PetPlayerMounted`]'s failure arm, deliberately —
+/// this is the family's generic ack, not a new convention.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetUnsummonResponse {
     pub success: bool,
-    /// COS error category `0x0C`. The server pushes small ints (3, 4) here, so
-    /// the value space is likely 1-byte-ish despite the `u16` width. [S]
     #[sro_packet(when = "!success")]
     pub error_code: Option<u16>,
 }
@@ -835,10 +879,7 @@ pub enum PetActionRequest {
         y: i32,
         z: i32,
     },
-    /// `action = 2` — send the COS at a target. The 9-byte `b4 b1 b4` shape of
-    /// builders `00791d40`/`008a5fd0`/`008afb50`; those are the *same*
-    /// functions that build the player's own 0x7074, which is the mechanism by
-    /// which a commanded COS takes over the ordinary attack path. [V]
+    /// `action = 2` — order the COS to attack `target_unique_id`.
     Attack {
         pet_unique_id: u32,
         target_unique_id: u32,
@@ -1023,6 +1064,39 @@ mod tests {
     }
 
     #[test]
+    fn attack_order_is_uid_action_target() {
+        let attack = PetActionRequest::Attack {
+            pet_unique_id: 127_851,
+            target_unique_id: 0x1F341,
+        };
+        let bytes: Bytes = attack.clone().into();
+        assert_eq!(
+            bytes.as_ref(),
+            &[0x6B, 0xF3, 0x01, 0x00, 2, 0x41, 0xF3, 0x01, 0x00]
+        );
+        assert_eq!(PetActionRequest::try_from(bytes).unwrap(), attack);
+
+        // positive control: the neighbouring action 8, same three fields
+        let pick = PetActionRequest::ItemPickUp {
+            pet_unique_id: 127_851,
+            item_unique_id: 0x1F341,
+        };
+        let bytes: Bytes = pick.clone().into();
+        assert_eq!(
+            bytes.as_ref(),
+            &[0x6B, 0xF3, 0x01, 0x00, 8, 0x41, 0xF3, 0x01, 0x00]
+        );
+        assert_eq!(PetActionRequest::try_from(bytes).unwrap(), pick);
+
+        // an action we do NOT build (3 = heading) still round-trips raw
+        let raw = Bytes::from_static(&[0x6B, 0xF3, 0x01, 0x00, 3, 0x34, 0x12]);
+        assert!(matches!(
+            PetActionRequest::try_from(raw).unwrap(),
+            PetActionRequest::Unknown { action: 3, .. }
+        ));
+    }
+
+    #[test]
     fn pet_data_splits_the_header_from_the_raw_tail_and_roundtrips() {
         let decoded = pet_data(vec![0xAA, 0xBB]);
 
@@ -1049,13 +1123,63 @@ mod tests {
         assert_eq!(CosKind::from_tid(0x1000 | 0x0184), Some(CosKind::Transport));
         assert_eq!(CosKind::from_tid(0x1800 | 0x0184), Some(CosKind::GrowthPet));
         assert_eq!(CosKind::from_tid(0x2000 | 0x0184), Some(CosKind::GrabPet));
-        assert_eq!(CosKind::from_tid(0x2800 | 0x0184), Some(CosKind::Fellow));
+        assert_eq!(
+            CosKind::from_tid(0x2800 | 0x0184),
+            Some(CosKind::GuildGuard)
+        );
         assert_eq!(CosKind::from_tid(0x0000), None);
         // The internal kind byte the body's gates are written against.
-        assert_eq!(CosKind::GrowthPet.kind_byte(), 3);
-        assert_eq!(CosKind::GrabPet.kind_byte(), 2);
+        assert_eq!(CosKind::GrowthPet.kind_byte(), Some(3));
+        assert_eq!(CosKind::GrabPet.kind_byte(), Some(2));
         assert!(CosKind::GrowthPet.is_pet() && CosKind::GrabPet.is_pet());
-        assert!(!CosKind::Vehicle.is_pet() && !CosKind::Fellow.is_pet());
+        assert!(!CosKind::Vehicle.is_pet() && !CosKind::GuildGuard.is_pet());
+    }
+
+    /// tid4 6/7/8 exist in the shipped tables (8 rows: six `MOB_QT_*_COS`, one
+    /// `NPC_CH_QT_MOONSHADOW_COS`, one `NPC_CH_QT_FLAMEMASTER_COS`) and used to
+    /// resolve to `None`, which made both 0x30C8 consumers drop the packet.
+    /// They now carry the raw nibble through — and claim nothing else: no kind
+    /// byte, not rideable, not a pet.
+    #[test]
+    fn unmapped_type_ids_keep_their_number_instead_of_being_dropped() {
+        for tid4 in 6..=8u8 {
+            assert_eq!(
+                CosKind::from_type_id4(tid4),
+                Some(CosKind::Unmapped(tid4)),
+                "tid4 {tid4} has shipped rows and must not resolve to None"
+            );
+        }
+        // 9+ has no row in any of the ten characterdata shards, so it stays
+        // "not a COS" — the arm is a data census, not a catch-all.
+        assert_eq!(CosKind::from_type_id4(9), None);
+        assert_eq!(
+            CosKind::from_tid(0x3000 | 0x0184),
+            Some(CosKind::Unmapped(6))
+        );
+
+        let unmapped = CosKind::Unmapped(6);
+        assert_eq!(unmapped.kind_byte(), None);
+        assert!(!unmapped.is_rideable());
+        assert!(!unmapped.is_pet());
+    }
+
+    #[test]
+    fn unmapped_body_reads_the_ungated_prefix() {
+        let mut tail = 7u32.to_le_bytes().to_vec(); // hp
+        tail.extend_from_slice(&0u32.to_le_bytes()); // unk_b
+        tail.push(0); // inventory_size
+        tail.extend_from_slice(&99u32.to_le_bytes()); // would-be unk_g
+
+        let resolver = MockResolver(ItemClass::Expendable { tid3: 1, tid4: 1 });
+        let body = pet_data(tail)
+            .body(CosKind::Unmapped(7), &resolver)
+            .expect("an unmapped kind must still decode its ungated prefix");
+
+        assert_eq!(body.hp, 7);
+        assert_eq!(body.inventory_size, 0);
+        assert!(body.name.is_none() && body.growth.is_none());
+        assert_eq!(body.unk_g, None);
+        assert_eq!(body.unk_h, None);
     }
 
     /// The growth pet is the arm that exercises every gated block at once:
@@ -1377,36 +1501,40 @@ mod tests {
         assert_eq!(decoded.payload, PetUpdatePayload::Unsummoned);
     }
 
+    /// A mount ack, byte for byte: player uid 0x1F341, horse uid 0x1F36B.
     #[test]
     fn pet_player_mounted_reads_the_ridden_pet_when_mounting() {
-        let mut wire = vec![1u8]; // success
-        wire.extend_from_slice(&777u32.to_le_bytes());
-        wire.push(1); // is_mounting
-        wire.extend_from_slice(&888u32.to_le_bytes());
+        let wire = hex("0141f30100016bf30100");
 
         let decoded = PetPlayerMounted::try_from(Bytes::from(wire)).unwrap();
 
         assert!(decoded.success);
-        assert_eq!(decoded.player_unique_id, Some(777));
+        assert_eq!(decoded.player_unique_id, Some(0x1F341));
         assert_eq!(decoded.is_mounting, Some(true));
-        assert_eq!(decoded.riding_unique_id, Some(888));
+        assert_eq!(decoded.riding_unique_id, Some(0x1F36B));
+        assert_eq!(decoded.error_code, None);
     }
 
-    /// The regression this module shipped with: dismounting still carries the
-    /// transport uid. These are the exact bytes of `packet_dump/0xb0cb.log`
-    /// line 2 — 10 bytes of which we used to consume 6.
+    /// The **dismount** ack is also 10 bytes and carries the COS uid *after*
+    /// `is_mounting = 0`. The old `when = "is_mounting == Some(true)"` gate
+    /// consumed 6 bytes and returned `riding_unique_id: None` here.
     #[test]
-    fn pet_player_mounted_reads_the_ridden_pet_when_dismounting_too() {
-        let wire =
-            Bytes::from_static(&[0x01, 0x73, 0xe4, 0x01, 0x00, 0x00, 0xd5, 0xe4, 0x01, 0x00]);
+    fn pet_player_mounted_reads_the_ridden_pet_when_dismounting() {
+        let wire = hex("01 41f30100 00 6bf30100");
+        assert_eq!(wire.len(), 10);
 
-        let decoded = PetPlayerMounted::try_from(wire.clone()).unwrap();
+        let decoded = PetPlayerMounted::try_from(Bytes::from(wire.clone())).unwrap();
 
-        assert_eq!(decoded.player_unique_id, Some(0x0001_e473));
+        assert_eq!(decoded.player_unique_id, Some(0x1F341));
         assert_eq!(decoded.is_mounting, Some(false));
-        assert_eq!(decoded.riding_unique_id, Some(0x0001_e4d5));
-        // and every one of the ten bytes is accounted for
-        assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
+        assert_eq!(
+            decoded.riding_unique_id,
+            Some(0x1F36B),
+            "the dismount ack names the COS it releases"
+        );
+        // Every byte accounted for: the round trip reproduces the body.
+        let back: Bytes = decoded.into();
+        assert_eq!(&back[..], &wire[..]);
     }
 
     #[test]
@@ -1436,6 +1564,37 @@ mod tests {
             assert!(AttackPetSettings(decoded.settings.unwrap()).is_offensive());
             assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
         }
+    }
+
+    #[test]
+    fn pet_state_update_reads_a_two_bit_mask_frame() {
+        for (raw, uid) in [
+            ("05fc0100030400", 0x0001_fc05u32),
+            ("32980200030400", 0x0002_9832u32),
+        ] {
+            let wire = hex(raw);
+            assert_eq!(wire.len(), 7);
+
+            let decoded = PetStateUpdate::try_from(Bytes::from(wire.clone())).unwrap();
+
+            assert_eq!(decoded.unique_id, uid);
+            assert_eq!(decoded.mask, 0x03);
+            assert_eq!(decoded.state_a, Some(4));
+            assert_eq!(decoded.state_b, Some(0));
+            let back: Bytes = decoded.into();
+            assert_eq!(&back[..], &wire[..]);
+        }
+    }
+
+    /// The mask really gates: bit 1 alone is a 6-byte frame whose single byte
+    /// is `state_b`, and a zero mask ends the body after the mask.
+    #[test]
+    fn pet_state_update_mask_selects_which_bytes_follow() {
+        let decoded = PetStateUpdate::try_from(Bytes::from(hex("0500000002ff"))).unwrap();
+        assert_eq!((decoded.state_a, decoded.state_b), (None, Some(0xFF)));
+
+        let decoded = PetStateUpdate::try_from(Bytes::from(hex("0500000000"))).unwrap();
+        assert_eq!((decoded.state_a, decoded.state_b), (None, None));
     }
 
     #[test]
