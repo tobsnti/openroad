@@ -98,6 +98,8 @@ table and the macro disagree, so coverage stays honest.
 | `0x300C` | NoticeUpdate | S→C | wired | unique spawned/killed; only subtype 5 is decoded, others kept raw |
 | `0x3011` | CharacterDied | S→C | wired | 1-byte `death_cause` |
 | `0x304D` | DropUnlocked | S→C | wired | drop `unique_id` |
+| `0x704F` | CharacterActionRequest | C→S | wired | posture/gait, one byte (2 walk / 3 run / 4 sit-stand toggle); the 2/3 pair is 0x30BF's own `MOTION_STATE_*` encoding |
+| `0x3091` | EmoteRequest | C→S | wired | emote code, one byte; C→S in the 0x3xxx range — the same documented exception as `0x3053` (builder only, no parser in the original) |
 
 ## Progression & vitals
 
@@ -218,10 +220,11 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0x3038` | EntityEquip | S→C | wired | 9 or **10** bytes — the trailing byte is read only when `ref_id` is TypeID 3.1.x |
 | `0x3039` | EntityUnequip | S→C | wired |  |
 | `0x3052` | InventoryItemDurabilityUpdate | S→C | wired | confirmed, 5 bytes |
-| `0x3040` | InventoryItemUpdate | S→C | wired | **byte 1 is a bitmask, not an updateType** — 8 bit-gated blocks, source-verified from ; the shipped struct models 2 of 8 |
-| `0x3092` | InventoryCapacityUpdate | S→C | wired | fixed 2 bytes, source-verified from : byte 0 is a **target kind** (1 inventory / 2 storage), not a success flag — there is no failure tail |
+| `0x3040` | InventoryItemUpdate | S→C | wired | **byte 1 is a bitmask, not an updateType** — 8 bit-gated blocks, read off the original client; the shipped struct models 2 of 8 |
+| `0x3092` | InventoryCapacityUpdate | S→C | wired | fixed 2 bytes, read off the original client: byte 0 is a **target kind** (1 inventory / 2 storage), not a success flag — there is no failure tail |
 | `0x704C` | ItemUseRequest | C→S | experimental | CLIENT_ITEM_USE; unconfirmed on the wire |
 | `0xB04C` | ItemUseResponse | S→C | experimental | unconfirmed on the wire |
+| `0x7158` | QuickSlotSaveRequest | C→S | wired | under-bar quickslot persistence; kind 1 of a kind-discriminated opcode (kind 2 is the auto-potion settings, unwired) |
 
 ## NPC interaction (talk / teleport / storage / repair)
 
@@ -445,6 +448,7 @@ resolver-taking accessors — no derive list mode can express either half.
 |---|---|---|---|---|
 | `0x70B1` | StallCreateRequest | C→S | experimental | title only; the original's 63-char cap is UI policy, not wire framing |
 | `0x70B2` | StallDestroyRequest | C→S | experimental | empty body |
+| `0x70B3` | StallTalkRequest | C→S | experimental | one `u32` unique id, from the builder's single 4-byte write |
 | `0x70B4` | StallBuyRequest | C→S | experimental | one slot byte |
 | `0x70B5` | StallLeaveRequest | C→S | experimental | empty body |
 | `0x70BA` | StallUpdateRequest | C→S | experimental | derived enum over the update type; trailing `unknown0` on the item types and State only |
@@ -460,10 +464,9 @@ resolver-taking accessors — no derive list mode can express either half.
 | `0xB0B3` | StallTalkResponse | S→C | experimental | the viewer's snapshot on entering a stall: header, the listing as raw rows, then the viewer id list |
 
 Not wired, with the reason written down rather than a guessed layout
-(`net-stall-0x30B7.md` §9): **`0x70B3`** (the C→S half of stall-talk — the pairing
-is certain, the body is not recorded anywhere), and **`0xB0BC` / `0xB0BE`**,
-which are not this family at all: their handlers sit next to `0xB0BD BuffAdd`,
-not with the stall handlers.
+(`net-stall-0x30B7.md` §9): **`0xB0BC` / `0xB0BE`**, which are not this family at
+all: their handlers sit next to `0xB0BD BuffAdd`, not with the stall handlers.
+`0x70B3`, the C→S half of stall-talk, is wired in the table above.
 
 ## Mail/memo + consignment (wire only — no consumer yet, see EP-17)
 
