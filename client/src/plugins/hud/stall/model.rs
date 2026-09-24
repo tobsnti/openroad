@@ -11,7 +11,7 @@ use bevy::prelude::*;
 /// The two states of `GDR_STALL_OWNERSTATE_*`. Both strings and both icons
 /// ship (`UIIT_STT_TRADING_NOW` / `UIIT_STT_STALL_MODIFYING`,
 /// `stl_condition_icon_01/_02.ddj`); **what drives the swap on the wire is
-/// UNKNOWN** (`docs/re/ui/hud-stall-window.md` §9-U4), so it is a local state
+/// UNKNOWN**, so it is a local state
 /// here and not a decoded field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 // `Modifying` is constructed by the wire half (#759) and by the preview scene;
@@ -31,6 +31,14 @@ pub enum StallTradingState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StallRow {
     pub name: String,
+    /// The item's ref id, straight out of the listing row
+    /// (`StallItemRow.item.ref_id` — the wire row embeds the shared item body,
+    /// `packets/src/agent/stall.rs`). Kept because re-pricing a listed row
+    /// (`0x70BA` type 1) reopens the price box on it and the box shows the
+    /// item's icon. Deliberately *only* the ref id and not a second item
+    /// representation: the icon and the name come out of itemdata here exactly
+    /// as everywhere else (`net::item_name`, `ClientItemData::icon_path`).
+    pub ref_id: u32,
     /// Read by the row template's quantity cell once the slot art lands
     /// (`ifstallslot.txt`); kept now so the model matches the wire row.
     #[allow(dead_code)]
@@ -45,7 +53,7 @@ pub struct StallState {
     /// True while the stall on screen is **ours** (`0xB0B1` accepted our
     /// create, #781). The window is one shell for both roles — owner-only
     /// controls are runtime-toggled, not a second window
-    /// (`docs/re/ui/hud-stall-window.md` §4) — so this flag is what tells a
+    /// — so this flag is what tells a
     /// buy from an edit.
     pub owner: bool,
     /// `UIIT_STT_STALL_DEFAULT_TITLE` is `[%s]'s stall.` — the default is
@@ -54,8 +62,7 @@ pub struct StallState {
     /// `UIIT_STT_STALL_DEFAULT_OWNERMSG`, same reasoning.
     pub greeting: String,
     pub trading: StallTradingState,
-    /// Ten cells, matching the grid and the wire capacity
-    /// (`docs/re/systems/stall.md:78-80`).
+    /// Ten cells, matching the grid and the wire capacity.
     pub slots: Vec<Option<StallRow>>,
 }
 

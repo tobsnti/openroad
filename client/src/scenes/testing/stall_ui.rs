@@ -33,6 +33,8 @@ fn open_stall_window(mut state: ResMut<StallState>) {
     ] {
         state.slots[index] = Some(StallRow {
             name: name.to_string(),
+            // The preview has no itemdata behind it; ref id 0 renders from the name.
+            ref_id: 0,
             quantity,
             price,
         });
