@@ -637,10 +637,11 @@ pub fn despawn_closing_dialogs(
 pub fn hide_dialog_while_store_open(
     store: Res<crate::plugins::hud::store::model::StoreState>,
     storage: Res<crate::plugins::hud::storage::model::StorageState>,
+    guild_storage: Res<crate::plugins::hud::guild_storage::model::GuildStorageState>,
     dialog: Res<NpcDialogState>,
     mut dialogs: Query<&mut Visibility, With<NpcDialogRoot>>,
 ) {
-    // Hide the dialog only while the CURRENTLY-OPEN NPC's own shop/storage window
+    // Hide the dialog only while the CURRENTLY-OPEN NPC's own service window
     // is up (it swaps in place of the dialog). A session left over from a
     // different NPC must never hide a freshly opened dialog (#217).
     let open_npc = dialog.npc();
@@ -649,6 +650,10 @@ pub fn hide_dialog_while_store_open(
         .as_ref()
         .is_some_and(|s| open_npc == Some(s.npc))
         || storage
+            .session
+            .as_ref()
+            .is_some_and(|s| open_npc == Some(s.npc))
+        || guild_storage
             .session
             .as_ref()
             .is_some_and(|s| open_npc == Some(s.npc));

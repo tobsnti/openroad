@@ -4,7 +4,7 @@
 //! Idea: this is the guild analogue of `hud::storage`, with one structural
 //! difference that decides the shape of the code — **the item stream is a
 //! reply, not a push the server volunteers**. The original's 0xB250 success
-//! arm sends 0x7252 itself (`sro_client.exe@0088f630` → `@00820980`,
+//! arm sends 0x7252 itself (the original's builder,
 //! `docs/net-guild-storage-0x7250.md`), so a consumer that opens and then
 //! waits for 0x3253 waits forever. Hence [`on_guild_storage_response`] is the
 //! system that asks for the contents.
@@ -16,13 +16,16 @@
 //! exact defect `docs/net-storage-0x3047-0x3049.md:162-165` records for the
 //! personal family.
 //!
-//! **No window.** `GDR_GUILDSTORAGEROOM` is explicitly not ported
-//! (`net-storage-0x3047-0x3049.md:227`), so this decodes into the model and
-//! stops there — that is the doc's own minimal first step. What *is* visible
-//! is the refusal path, which is where the player otherwise sees nothing.
+//! The window is [`super::ui`] — `GDR_GUILDSTORAGEROOM`
+//! (`resinfo/ginterface.txt:1353-1371`), the same `CIFStorageRoom` class and
+//! the same 254x317 frame as the personal warehouse, which is why it borrows
+//! `ifstorageroom.txt`'s interior rather than a layout file of its own (there
+//! is none). The guild `0x7034` item ops **29/30/31** are wired in `ui.rs` and
+//! applied here by [`on_guild_storage_operation`]; the gold ops 32/33 have
+//! encoders but no button yet (see `ui.rs`).
 //!
-//! Nothing here is capture-verified: no `packet_dump/*.log` exists for any of
-//! the seven opcodes and go-sro implements none of them.
+//! Nothing here is confirmed on the wire: none of the seven opcodes has ever
+//! been seen on a live line and go-sro implements none of them.
 
 use bevy::prelude::*;
 
@@ -32,6 +35,7 @@ use packets::agent::guild_storage::{
     GuildStorageDataChunk, GuildStorageDataEnd, GuildStorageListRequest, GuildStorageOpenRequest,
     GuildStorageResponse,
 };
+use packets::agent::prelude::{InventoryOperationResponse, InventoryOperationResult};
 use packets::{hexdump, Packet};
 
 use crate::net::connection::SilkroadConnection;
@@ -82,8 +86,9 @@ pub struct GuildStorageSession {
     pub npc_id: u32,
 }
 
-/// The guild warehouse as the server last described it. Model only: there is
-/// no window to render it yet (see the module note).
+/// The guild warehouse as the server last described it. Model only: the
+/// window in `guild_storage::ui` renders *from* this resource and never
+/// writes wire state into it.
 #[derive(Resource, Default)]
 pub struct GuildStorageState {
     pub session: Option<GuildStorageSession>,
@@ -92,6 +97,22 @@ pub struct GuildStorageState {
     pub items: Inventory,
     /// The item stream arrived for this session.
     pub synced: bool,
+    /// Visible page of the 6x5 window grid (`ui::sync_guild_storage_window`).
+    /// Lives here, not in the UI, for the personal warehouse's reason: the
+    /// window is rebuilt from this resource, so a page flip *is* a state change.
+    pub active_page: u8,
+}
+
+impl GuildStorageState {
+    /// Pages the window can flip through. Ceil-division of the server-declared
+    /// capacity (the `0x3254` `capacity:u8`) by the wire page size; at least 1,
+    /// so an unsynced warehouse still renders one empty page.
+    pub fn page_count(&self) -> u8 {
+        self.items
+            .size()
+            .div_ceil(crate::plugins::hud::storage::model::STORAGE_SLOTS_PER_PAGE)
+            .max(1)
+    }
 }
 
 /// Why an open attempt did not reach the wire. Split out so the gate is
@@ -113,7 +134,7 @@ pub enum GuildStorageGate {
 ///
 /// Deviation, stated (ADR-0009): the *server* is authoritative here and would
 /// refuse anyway. The client pre-check exists because the refusal it would send
-/// back is an uncaptured error code we could not map to a message, whereas
+/// back is an unknown error code that cannot be mapped to a message, whereas
 /// these three strings are in the player's own data.
 pub fn gate(level: Option<u8>, permissions: Option<GuildPermissions>) -> GuildStorageGate {
     let (Some(level), Some(permissions)) = (level, permissions) else {
@@ -170,6 +191,7 @@ pub fn open_guild_storage(
         });
         state.items = Inventory::default();
         state.synced = false;
+        state.active_page = 0;
         buffer.0.clear();
         let Ok(conn) = conn.single() else {
             continue;
@@ -192,23 +214,33 @@ pub fn on_guild_storage_response(
     mut reader: MessageReader<GuildStorageResponse>,
     ui_strings: Res<ClientUiStrings>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
-    state: Res<GuildStorageState>,
+    mut state: ResMut<GuildStorageState>,
     mut history: ResMut<ChatHistory>,
 ) {
     for msg in reader.read() {
         if !msg.is_success() {
             match msg.lock_holder() {
                 Some(holder) => {
-                    let text = format_template(ui_strings.get_or(IN_USE_KEY, IN_USE_FALLBACK), &[holder]);
+                    let text =
+                        format_template(ui_strings.get_or(IN_USE_KEY, IN_USE_FALLBACK), &[holder]);
                     warn!("guild storage: in use by '{holder}' (0xB250 0x4C48)");
                     history.push(ChatLine::system(text));
                 }
                 None => warn!(
-                    "guild storage: open refused (0xB250 result {}, error {:#06X}) — code table is uncaptured, record it in docs/net-guild-storage-0x7250.md",
+                    "guild storage: open refused (0xB250 result {}, error {:#06X}) — unknown code, see docs/net-guild-storage-0x7250.md",
                     msg.result,
                     msg.error_code.unwrap_or_default()
                 ),
             }
+            // The open failed, so there is no server-side session: drop the
+            // one we optimistically set at 0x7250 (:186). Leaving it standing
+            // opened a dead, empty window, kept the NPC dialog hidden
+            // (npc_dialog/ui.rs `hide_dialog_while_store_open`) and would send
+            // a 0x7251 close for a session the server never granted — which,
+            // on the in-use arm, is a close for *another member's* lock.
+            state.session = None;
+            state.synced = false;
+            state.items = Inventory::default();
             continue;
         }
         let Some(session) = state.session.as_ref() else {
@@ -218,12 +250,10 @@ pub fn on_guild_storage_response(
         let Ok(conn) = conn.single() else {
             continue;
         };
-        // [U] which value the original echoes: its 0xB250 arm stores a `u32`
-        // read from `FUN_00778b70()` (a client-side getter, NOT a field of the
-        // packet — 0xB250's success arm carries no body) and 0x7252 sends
-        // that. The NPC id we opened with is the only u32 this side of the
-        // exchange has; resolving observation is one `packet_dump/0x7252`
-        // capture from the original client against a live guild warehouse.
+        // Which value the original echoes here is unknown: its 0xB250 arm
+        // stores a `u32` from a client-side getter (0xB250's success arm
+        // carries no body) and 0x7252 sends that. The NPC id the window opened
+        // with is the only u32 this side of the exchange has.
         info!(
             "guild storage: requesting contents (0x7252, storage_id = npc {})",
             session.npc_id
@@ -238,6 +268,24 @@ pub fn on_guild_storage_response(
 }
 
 /// 0x3253 — the stream begins and carries the guild account's gold.
+///
+/// **The gold trap, checked against the personal warehouse** (task of this
+/// change): `storage/model.rs:329-347` applies gold-op acks to the STORAGE side
+/// only, because the server sends the player's authoritative new total in a
+/// `0x304E` right before the ack, and subtracting it a second time double-counted
+/// (a 1234 deposit read as 2468 gone). The guild family has the same trap
+/// **and it is unreachable today**: ops 32/33
+/// (guild gold deposit/withdraw) carry a *delta* — the client adds the amount
+/// to (or subtracts it from) its guild-storage gold (xBot `SRTypes.cs:157-161`,
+/// `PacketParser.cs:2221-2232`, no licence — facts only), byte-identical in
+/// shape to personal 11/12 —
+/// and the server moves the character's gold in its own transaction
+/// (`_UPDATE_CHAR_GOLD_FOR_GUILDCHEST`), i.e. the
+/// 0x304E path again. Since `packets` has no encoder for ops 29-33, the only
+/// writer of guild gold is this handler, so nothing can double-count yet.
+/// Whoever adds those ops applies **only** `state.items.gold` and leaves the
+/// player's `Inventory::gold` to `inventory::model::on_gold_update`. This rests
+/// on xBot plus the server strings and stays unconfirmed on the wire.
 pub fn on_guild_storage_begin(
     mut reader: MessageReader<GuildStorageDataBegin>,
     mut state: ResMut<GuildStorageState>,
@@ -247,7 +295,7 @@ pub fn on_guild_storage_begin(
         info!("guild storage: data begin (0x3253), gold {}", msg.gold);
         if !msg.tail.is_empty() {
             debug!(
-                "guild storage: 0x3253 has an unexpected tail {} — capture for decode",
+                "guild storage: 0x3253 has an unexpected tail {} — not decoded",
                 hexdump(&msg.tail, 24)
             );
         }
@@ -300,12 +348,96 @@ pub fn on_guild_storage_end(
                     gold,
                 };
                 state.synced = true;
+                // a smaller warehouse than the last stream must not leave the
+                // window paged past its end (the page grid reads
+                // `active_page * 30 + cell`)
+                let pages = state.page_count();
+                state.active_page = state.active_page.min(pages - 1);
             }
             Err(e) => warn!(
-                "guild storage: item section parse failed ({e:?}) — {} bytes: {} — capture for decode",
+                "guild storage: item section parse failed ({e:?}) — {} bytes: {}",
                 raw.len(),
                 hexdump(&raw, 64)
             ),
+        }
+    }
+}
+
+/// Apply the 0xB034 guild-warehouse acks (ops 29/30/31/32/33) — the exact
+/// mirror of `storage::model::on_storage_response`, and for the same reason:
+/// the ack carries the authoritative slots, so item records move between the
+/// player [`Inventory`] and [`GuildStorageState::items`] only on
+/// confirmation, never optimistically.
+///
+/// Gold (ops 32/33) applies to the **guild side only**. The player's own total
+/// is corrected by the 0x304E the server sends alongside (handled in
+/// `inventory::model::on_gold_update`); subtracting the amount here as well
+/// double-counted it in the personal warehouse — a 1234 deposit read as 2468
+/// gone until relog (`storage/model.rs`, the same trap as pickup gold). The
+/// rule is carried over rather than rediscovered.
+pub fn on_guild_storage_operation(
+    mut reader: MessageReader<InventoryOperationResponse>,
+    mut state: ResMut<GuildStorageState>,
+    mut inventories: Query<&mut Inventory, With<Player>>,
+    // For `apply_move`'s stack merging (#862): same-ref stackables combine
+    // instead of trading places, and that needs the item's `max_stack`.
+    item_data: Res<crate::plugins::textdata::ClientItemData>,
+) {
+    for msg in reader.read() {
+        let Some(operation) = &msg.operation else {
+            continue;
+        };
+        match *operation {
+            InventoryOperationResult::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount,
+            } => {
+                debug!("guild storage: moved {source} -> {target} (x{amount})");
+                state.items.apply_move(source, target, amount, &item_data);
+            }
+            InventoryOperationResult::InventoryToGuildStorage { source, target } => {
+                let Ok(mut inventory) = inventories.single_mut() else {
+                    continue;
+                };
+                let Some(mut item) = inventory
+                    .slots
+                    .get_mut(source as usize)
+                    .and_then(|slot| slot.take())
+                else {
+                    warn!("guild storage: deposit ack for an empty inventory slot {source}");
+                    continue;
+                };
+                debug!("guild storage: deposited slot {source} -> guild {target}");
+                item.slot = target;
+                state.items.gain_item(item);
+            }
+            InventoryOperationResult::GuildStorageToInventory { source, target } => {
+                let Some(mut item) = state
+                    .items
+                    .slots
+                    .get_mut(source as usize)
+                    .and_then(|slot| slot.take())
+                else {
+                    warn!("guild storage: withdraw ack for an empty guild slot {source}");
+                    continue;
+                };
+                debug!("guild storage: withdrew guild {source} -> slot {target}");
+                item.slot = target;
+                for mut inventory in inventories.iter_mut() {
+                    inventory.gain_item(item.clone());
+                }
+            }
+            // guild side only — see the note above
+            InventoryOperationResult::InventoryGoldToGuildStorage { amount } => {
+                debug!("guild storage: deposited {amount} gold (player total via 0x304E)");
+                state.items.gold = state.items.gold.saturating_add(amount);
+            }
+            InventoryOperationResult::GuildStorageGoldToInventory { amount } => {
+                debug!("guild storage: withdrew {amount} gold (player total via 0x304E)");
+                state.items.gold = state.items.gold.saturating_sub(amount);
+            }
+            _ => {}
         }
     }
 }
@@ -428,6 +560,43 @@ mod tests {
                 .is_empty(),
             "the buffer is consumed, so a second stream cannot inherit it"
         );
+    }
+
+    /// A refused open must not leave the optimistic session standing: the
+    /// window (`ui::sync_guild_storage_window`) renders on `session.is_some()`
+    /// and `npc_dialog::hide_dialog_while_store_open` hides the conversation
+    /// on it, so a stale session shows a dead, empty warehouse over a hidden
+    /// dialog — and later sends a 0x7251 close for a lock we never held.
+    #[test]
+    fn a_refused_open_drops_the_optimistic_session() {
+        let mut app = App::new();
+        app.add_message::<GuildStorageResponse>()
+            .init_resource::<ClientUiStrings>()
+            .init_resource::<ChatHistory>()
+            .insert_resource(GuildStorageState {
+                session: Some(GuildStorageSession {
+                    npc: Entity::from_raw_u32(7).unwrap(),
+                    npc_id: 42,
+                }),
+                synced: true,
+                ..default()
+            })
+            .add_systems(Update, on_guild_storage_response);
+
+        // the in-use refusal (0xB250 result 2, error 0x4C48, holder name)
+        app.world_mut().write_message(GuildStorageResponse {
+            result: 2,
+            error_code: Some(packets::agent::guild_storage::GUILD_STORAGE_IN_USE),
+            holder_name: Some("Kong".into()),
+        });
+        app.update();
+
+        let state = app.world().resource::<GuildStorageState>();
+        assert!(
+            state.session.is_none(),
+            "the refusal ends the session we opened optimistically"
+        );
+        assert!(!state.synced);
     }
 
     /// The in-use refusal is the one 0xB250 arm the original special-cases,
