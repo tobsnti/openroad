@@ -40,7 +40,7 @@ use packets::Packet;
 
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
-use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_width};
 use crate::plugins::hud::modal_dialog::{modal_plate_node, modal_scrim_node, spawn_modal_frame};
 use crate::plugins::hud::party::model::effective_setup;
@@ -998,7 +998,7 @@ fn spawn_section(
     spawn_nine_slice(
         plate,
         asset_server,
-        "media://interface/inventory/int_window_",
+        game_window::INT_WINDOW.dir,
         (
             SECTION_FRAME_X,
             SECTION_FRAMES[index],

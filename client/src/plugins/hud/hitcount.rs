@@ -7,10 +7,24 @@
 //! alpha fade, following its anchor entity while it lives (the last position
 //! is cached so killing-blow numbers survive the despawn frame). Art is
 //! `media://interface/hitcount/` — 36x60 digit canvases with the wavy
-//! per-digit vertical offset baked in, so adjacent native-size layout matches
-//! the original look. Color sets, pixel-verified: neutral = white = the local
-//! player's own damage, `_enemy` = red = damage received from monsters,
-//! `_player` = gray = other players' damage.
+//! per-digit vertical offset baked in, drawn into the engine's own cell size
+//! and advance ([`DIGIT_CELL_NORMAL`]) — the earlier "native size is the
+//! original look" reading was wrong, see there. Colour sets:
+//! neutral = the local player's own damage, `_enemy` = damage received from
+//! monsters, `_player` = other players' damage. That *assignment* is ours; the
+//! "pixel-verified" claim this header used to carry was retracted. The three
+//! art sets exist in the data; which situation each belongs to is an openroad
+//! reading.
+//!
+//! **Single-layer on purpose.** The two-layer shadow+core rendering of the
+//! neutral set, the digit clamping and the shared `world_anchor` projection
+//! were removed on the owner's request (`6c73e693`, ADR 0009) and are not
+//! reinstated here; only the *geometry* below is taken from the original,
+//! because a wrong cell size is a misread of the data rather than a look
+//! anyone chose.
+//! Known consequence, stated rather than smoothed: the restored digit loop
+//! keeps the LOW six digits, so damage above 999,999 renders as a different,
+//! smaller number instead of a clamped one.
 
 use bevy::prelude::*;
 use bevy::ui::{UiTargetCamera, UiTransform, Val2};
@@ -33,6 +47,66 @@ const MAX_DISTANCE: f32 = 600.0;
 /// Lifetime fraction after which the fade-out starts.
 const FADE_START: f32 = 0.5;
 
+/// Digit cell geometry for one damage state: destination size of the glyph and
+/// the x advance to the next digit (advance < width, so the digits overlap
+/// slightly — that kerning is the original's, not a rounding artefact).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DigitCell {
+    width: f32,
+    height: f32,
+    advance: f32,
+}
+
+/// Ordinary hit: **24x40, advance 22**.
+///
+/// Not chosen here: the original's popup-spawn code indexes a two-entry
+/// table of three floats (width, height, advance) with `state == 1 ? 1 : 0`;
+/// the table reads 24.0, 40.0, 22.0 followed by 36.0, 60.0, 33.0.
+const DIGIT_CELL_NORMAL: DigitCell = DigitCell {
+    width: 24.0,
+    height: 40.0,
+    advance: 22.0,
+};
+/// Critical hit: **36x60, advance 33** — the digit canvases' native size
+/// (same table, index 1, see [`DIGIT_CELL_NORMAL`]). Until this landed *every*
+/// hit was drawn at this size in a width-less flex row with advance 36, so a
+/// four-digit ordinary hit came out 144 px wide where the original draws 88.
+const DIGIT_CELL_CRITICAL: DigitCell = DigitCell {
+    width: 36.0,
+    height: 60.0,
+    advance: 33.0,
+};
+/// Extra vertical offset of a critical popup, in logical px.
+///
+/// The value is the original's: its popup-spawn code adds a `45.0`
+/// double to the record's `y` **only** when `state == 1`.
+///
+/// What the original offsets is the **word-glyph record**; the digit records
+/// that follow keep the base `y`. We spend the same 45 px as an upward shift of
+/// the whole critical popup instead, because our word sits in a column *below*
+/// the digits and would otherwise cover the target's head — a deliberate
+/// deviation under ADR-0009. The sign and the exact placement in the original
+/// are unconfirmed.
+const CRITICAL_Y_OFFSET: f32 = 45.0;
+
+/// Extra y shift for this popup's damage state.
+fn critical_y_offset(critical: bool) -> f32 {
+    if critical {
+        CRITICAL_Y_OFFSET
+    } else {
+        0.0
+    }
+}
+
+/// The cell geometry for this popup's damage state.
+fn digit_cell(critical: bool) -> DigitCell {
+    if critical {
+        DIGIT_CELL_CRITICAL
+    } else {
+        DIGIT_CELL_NORMAL
+    }
+}
+
 /// One slot root of the popup pool.
 #[derive(Component)]
 pub struct HitcountSlot;
@@ -48,6 +122,9 @@ pub struct ActivePopup {
     anchor: Entity,
     /// Last known anchor head point (kept when the anchor despawns).
     world: Vec3,
+    /// [`CRITICAL_Y_OFFSET`] for a critical, 0 otherwise — screen-space, so it
+    /// is applied after the projection rather than baked into `world`.
+    y_offset: f32,
 }
 
 /// The digit/critical image handles per [`HitcountSet`].
@@ -255,6 +332,7 @@ pub fn update_hitcounts(
             continue;
         };
         // child 0 = digit row, child 1 = the word glyph (see the pool spawn)
+        let geom = digit_cell(popup.critical);
         if let Ok(row_children) = children.get(slot_children[0]) {
             for (i, child) in row_children.iter().enumerate() {
                 let Ok((mut image, mut node)) = glyphs.get_mut(child) else {
@@ -265,6 +343,16 @@ pub fn update_hitcounts(
                         image.image = assets.digits[set][d].clone();
                         image.color = Color::WHITE;
                         node.display = Display::Flex;
+                        // Explicit destination size per damage state instead of
+                        // the canvas' native 36x60 (see
+                        // `DIGIT_CELL_NORMAL`). The advance is a negative right
+                        // margin, so the glyph still draws at its full cell
+                        // width while the next digit starts `advance` px along
+                        // — the original scales the same canvas into the same
+                        // box.
+                        node.width = Val::Px(geom.width);
+                        node.height = Val::Px(geom.height);
+                        node.margin.right = Val::Px(geom.advance - geom.width);
                     }
                     None => node.display = Display::None,
                 }
@@ -293,6 +381,7 @@ pub fn update_hitcounts(
             age: 0.0,
             anchor: popup.anchor,
             world: base + Vec3::Y * HEAD_OFFSET,
+            y_offset: critical_y_offset(popup.critical),
         });
     }
 
@@ -327,7 +416,7 @@ pub fn update_hitcounts(
         // ease-out rise: fast at spawn, settling near the top
         let rise = RISE_PX * t * (2.0 - t);
         node.left = Val::Px(px.x);
-        node.top = Val::Px(px.y - rise);
+        node.top = Val::Px(px.y - rise - active.y_offset);
         let alpha = ((1.0 - t) / (1.0 - FADE_START)).min(1.0);
         for child in children.iter_descendants(entity) {
             if let Ok((mut image, _)) = glyphs.get_mut(child) {
@@ -337,6 +426,45 @@ pub fn update_hitcounts(
         if *visibility != Visibility::Inherited {
             *visibility = Visibility::Inherited;
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// The visible regression this geometry fixed: every hit was
+    /// drawn in the digit canvas' native 36x60 with a 36 px advance, so an
+    /// ordinary four-digit hit came out 4*36 = 144 px wide where the original
+    /// draws 4*22 = 88. Values are the two entries of the original's float
+    /// table, selected by `state == 1`.
+    #[test]
+    fn digit_cells_use_the_engines_own_size_and_advance() {
+        let normal = digit_cell(false);
+        assert_eq!(normal.width, 24.0);
+        assert_eq!(normal.height, 40.0);
+        assert_eq!(normal.advance, 22.0);
+        let crit = digit_cell(true);
+        assert_eq!(crit.width, 36.0);
+        assert_eq!(crit.height, 60.0);
+        assert_eq!(crit.advance, 33.0);
+        // a four-digit ordinary hit is 88 px wide, not the old 144
+        assert_eq!(4.0 * normal.advance, 88.0);
+        // the advance is tighter than the cell in both states (the original's
+        // kerning), and a critical is strictly larger than an ordinary hit
+        for cell in [normal, crit] {
+            assert!(cell.advance < cell.width, "{cell:?}");
+        }
+        assert!(crit.height > normal.height);
+    }
+
+    /// Only a critical carries the `45.0` offset (added under the
+    /// damage-state branch). An ordinary hit must stay exactly on its anchor.
+    #[test]
+    fn only_a_critical_popup_carries_the_45px_offset() {
+        assert_eq!(CRITICAL_Y_OFFSET, 45.0);
+        assert_eq!(critical_y_offset(false), 0.0);
+        assert_eq!(critical_y_offset(true), 45.0);
     }
 }
 
@@ -370,7 +498,7 @@ impl Plugin for HitcountPlugin {
 }
 
 #[cfg(test)]
-mod test {
+mod block_test {
     use super::*;
 
     /// An avoided hit shows the BLOCK word alone. Its `amount` is 0 — the wire

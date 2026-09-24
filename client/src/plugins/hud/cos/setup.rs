@@ -35,7 +35,7 @@ use packets::Packet;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::cos::state::CosState;
-use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -64,8 +64,9 @@ struct OptionGroup {
 }
 const TAB_ART: (f32, f32) = (124.0, 28.0);
 const TAB_DDJ: &str = "media://interface/option/opt_video_tab.ddj";
-const GROUP_FRAME_DIR: &str = "media://interface/inventory/int_window_";
-const GROUP_FRAME_PIECE: f32 = 16.0;
+/// The shared `int_window_` board kit ([`game_window::INT_WINDOW`]).
+const GROUP_FRAME_DIR: &str = game_window::INT_WINDOW.dir;
+const GROUP_FRAME_PIECE: f32 = game_window::INT_WINDOW.piece;
 const OPTION_GROUPS: [OptionGroup; 3] = [
     OptionGroup {
         tab_pos: (21.0, 37.0),

@@ -61,6 +61,45 @@ const WINDOW_RIGHT: f32 = DESIGN_SCREEN_W - WINDOW_RECT.0 - WINDOW_RECT.2;
 
 // Element rects (x, y, w, h) in window space, verbatim from the resinfo.
 const VIEWPORT_RECT: (f32, f32, f32, f32) = (14.0, 57.0, 105.0, 105.0);
+
+// --- The round mask ----------------------------------------------------------
+//
+// Idea: the map viewport is a square, and the frame drawn on top is NOT an
+// opaque plate with a hole — `mm_window.ddj` is transparent over 13811 of its
+// 25760 px, because its outer silhouette is round too. Inside the viewport
+// rect the frame is transparent at **210 px that are not part of the map
+// disc**, all of them in rows 145..161 where the round silhouette curves back
+// inside the square. That is exactly the reported defect: the map's bottom
+// corners stick out past the ring.
+//
+// bevy 0.19 cannot clip a circle: `CalculatedClip` is a `Rect`
+// (`bevy_ui-0.19.0/src/ui_node.rs:2409`, written in `update.rs:78`) and
+// `BorderRadius` only rounds a node's *own* surface, never its children — so
+// a rounded viewport would leave the nine tile children square. An overlay
+// cannot help either: the leaking pixels sit *outside* the window silhouette,
+// where the world must show through, and UI cannot erase.
+//
+// What the art itself offers instead: the disc admits an **exact two-rectangle
+// cover**. In the art (`mm_alpha.ddj`, 104x104, 7999 opaque px, matching the
+// frame's hole at offset (14,58) with zero differing pixels), the disc is
+// 101x101 at (14,58) in frame
+// space. Rows 57..145 of the square carry **no** leaking pixel at all,
+// and rows 145..159 need only x 29..100 to hold every disc
+// pixel while touching no leaking one. Two clip rects, both derived from the
+// alpha channel, hence no invented number — and nothing of the map is drawn
+// outside the ring any more.
+const VIEWPORT_BANDS: [(f32, f32, f32, f32); 2] =
+    [(14.0, 57.0, 105.0, 88.0), (29.0, 145.0, 71.0, 14.0)];
+/// The disc the two bands cover, in frame space: centre and radius of
+/// `mm_alpha.ddj`'s opaque area (101x101 at (14,58)). Used to cull markers, so
+/// a dot can never land on one of the 210 leaking pixels. The map itself stays
+/// centred on the *rect* centre (66.5, 109.5) — §9-U1b is an open question
+/// about the art, not something to settle by taste here.
+const DISC_CENTER: (f32, f32) = (64.0, 108.0);
+const DISC_RADIUS: f32 = 50.5;
+/// The markers (dots, party signs, player arrow) live in one node spanning the
+/// whole disc, clipped to the square: 57..159 is where the disc has pixels.
+const MARKER_LAYER_RECT: (f32, f32, f32, f32) = (14.0, 57.0, 105.0, 102.0);
 const AREA_NAME_RECT: (f32, f32, f32, f32) = (12.0, 9.0, 104.0, 12.0);
 // `GDR_MINIMAP_TEXT_POS_X` (ifminimap.txt:63) and `..._TEXT_POS_Y` (:44): the
 // original labels the second readout **Y**, though it carries world Z.
@@ -78,8 +117,8 @@ const SIGN_MONSTER: &str = "media://interface/minimap/mm_sign_monster.ddj";
 const SIGN_NPC: &str = "media://interface/minimap/mm_sign_npc.ddj";
 const SIGN_OTHER_PLAYER: &str = "media://interface/minimap/mm_sign_otherplayer.ddj";
 const SIGN_UNIQUE: &str = "media://interface/minimap/mm_sign_unique.ddj";
-/// The party pair, both previously unused art (`docs/re/ui/hud-minimap.md`
-/// §4 lists 13 sign textures, 8 of them undrawn). Sizes are the DDS headers'
+/// The party pair, both previously unused art (the resinfo lists 13 sign
+/// textures, 8 of them undrawn). Sizes are the DDS headers'
 /// in the user's own PK2: the dot is 8x8 like every other dot, the arrow 16x16
 /// like `mm_sign_character`.
 const SIGN_PARTY: &str = "media://interface/minimap/mm_sign_party.ddj";
@@ -92,21 +131,49 @@ const ARROW_SIZE: f32 = 16.0;
 
 /// AREA_NAME FontColor from the resinfo (ARGB 255,239,218,164).
 const AREA_NAME_COLOR: Color = Color::srgb_u8(239, 218, 164);
-// UNKNOWN (docs/re/ui/hud-minimap.md §9-U9): the resinfo carries only
+// UNKNOWN: the resinfo carries only
 // `FontIndex=0` and never a size or a face, so both sizes below are invented.
 const AREA_FONT_SIZE: f32 = 10.0;
 const POS_FONT_SIZE: f32 = 9.0;
 
-/// Map scale steps in window-space px per 1920-unit region (256 = the tiles'
-/// native resolution). The minimum must stay above half the viewport width
-/// (52.5) so the 3x3 grid still covers the viewport when the player stands
-/// right on a region border.
-///
-/// UNKNOWN (hud-minimap.md §9-U4): only 256 is data-anchored — it is the
-/// tiles' native resolution, so index 2 is 1:1. No PK2 file specifies a zoom
-/// step table, so the other four steps and the default index are invented.
-const ZOOM_LEVELS: [f32; 5] = [64.0, 128.0, 256.0, 384.0, 512.0];
-const DEFAULT_ZOOM_IDX: usize = 2;
+// --- Zoom ---------------------------------------------------------------------
+//
+// Idea: vanilla's minimap zoom is NOT a step table over discrete levels — it
+// is one continuous float "window-space px per 1920-unit region" that eases
+// towards a click-set target. `CIFMinimap` keeps the pair as two adjacent
+// members: the scale actually drawn and the target the buttons move. The four
+// constants below are the literals the original's ctor, its two zoom-button
+// handlers and its per-frame ease use: ctor 160.0;
+// zoom-in `target += 19.2` clamped to 256.0; zoom-out
+// `target -= 19.2` clamped to 64.0; ease `scale += frame_ms * 0.05` toward the
+// target. The drawn scale is what the tile/marker placement multiplies with
+// (`x/1920 * scale`), so the unit is settled: px per region, exactly our `p`
+// below.
+//
+// Internal consistency check (not a second source, but it closes): the range
+// is exactly ten clicks — `64 + 10*19.2 = 256` — and the default sits exactly
+// on click five, `64 + 5*19.2 = 160`. That is why the previous invented table
+// `[64,128,256,384,512]` with a 256 default was wrong at the top by 2x: 256
+// is vanilla's *maximum* (the tiles' native resolution, i.e. 1:1 is the most
+// the client will ever show), never a middle step, and 384/512 magnify a
+// 256px tile past 1:1, which vanilla never does.
+/// Zoom-out clamp, the original's literal.
+/// It also satisfies our own coverage bound: the 3x3 grid must still cover
+/// the 101x101 px viewport disc with
+/// the player on a region border, i.e. `1.5 * p >= 50.5` -> `p >= 33.7`.
+const ZOOM_MIN: f32 = 64.0;
+/// Zoom-in clamp, the original's literal = one tile drawn
+/// 1:1 (`minimap/*.ddj` are 256x256 per region).
+const ZOOM_MAX: f32 = 256.0;
+/// One click, the original's literal: 19.2 px per region.
+const ZOOM_STEP: f32 = 19.2;
+/// Ctor default, the original's literal.
+const ZOOM_DEFAULT: f32 = 160.0;
+/// Easing speed of the drawn scale towards the target: vanilla adds
+/// `frame_ms * 0.05` px per frame, i.e. 50 px/s, frame-rate independent
+/// because the multiplier is the frame time. Expressed per second here
+/// because Bevy hands us `delta_secs`.
+const ZOOM_EASE_PX_PER_SEC: f32 = 50.0;
 
 const DOT_POOL_SIZE: usize = 64;
 /// A separate pool for party signs, sized to the party cap of 8
@@ -118,8 +185,15 @@ const PARTY_POOL_SIZE: usize = 8;
 /// Displayed-coordinate origin: game coords are world units / 10, offset so
 /// that 0 sits at region x 135 / z 92 (the vanilla sector formula).
 ///
-/// UNKNOWN (hud-minimap.md §6): the 135/92 offsets are community-sourced —
-/// nothing in the PK2 carries them.
+/// Two independent sides agree on the pair:
+/// - the wire: a position block for region 24744 (regionX 168 / regionZ 96,
+///   x = 1286.0, z = 1230.0, little endian) reproduces the original's head
+///   `X:6464` / `Y:891` with exactly these two offsets, and no other pair
+///   fits a second position in another region (25000).
+/// - the original's placement routine writes
+///   `(regionZ * 3 - 0x114) * 0x40`, i.e. `(regionZ - 92) * 192`, because
+///   `0x114 = 276 = 92 * 3` and `0x40 * 3 = 192` — so `offZ = 92` is a literal
+///   of the original. `offX = 135` rests on the wire side alone.
 const COORD_X_OFFSET: f32 = 135.0 * 192.0;
 const COORD_Z_OFFSET: f32 = 92.0 * 192.0;
 
@@ -127,7 +201,12 @@ const COORD_Z_OFFSET: f32 = 92.0 * 192.0;
 
 #[derive(Resource, Clone, Debug)]
 pub struct MinimapState {
-    pub zoom_idx: usize,
+    /// The scale actually drawn, in window-space px per 1920-unit region
+    /// (the original's drawn scale). Eased towards [`MinimapState::zoom_target`]
+    /// by [`ease_minimap_zoom`].
+    pub zoom: f32,
+    /// What the zoom buttons set (the original's zoom target).
+    pub zoom_target: f32,
     /// Region sector (x, z) the tile grid is currently centered on; `None`
     /// until the first player position is seen.
     pub center_region: Option<(i32, i32)>,
@@ -136,10 +215,30 @@ pub struct MinimapState {
 impl Default for MinimapState {
     fn default() -> Self {
         Self {
-            zoom_idx: DEFAULT_ZOOM_IDX,
+            zoom: ZOOM_DEFAULT,
+            zoom_target: ZOOM_DEFAULT,
             center_region: None,
         }
     }
+}
+
+/// Move the drawn scale towards the clicked target, the way vanilla does it
+/// (its minimap repaint does the same): a fixed px-per-millisecond crawl, not an
+/// interpolation factor, and clamped to the target on the step that would
+/// overshoot it. Vanilla runs this from the same function that repaints the
+/// tiles; we run it as its own system in front of them.
+pub fn ease_minimap_zoom(time: Res<Time>, mut state: ResMut<MinimapState>) {
+    let delta = state.zoom_target - state.zoom;
+    if delta == 0.0 {
+        return;
+    }
+    let step = ZOOM_EASE_PX_PER_SEC * time.delta_secs();
+    let zoom = if delta.abs() <= step {
+        state.zoom_target
+    } else {
+        state.zoom + step * delta.signum()
+    };
+    state.zoom = zoom;
 }
 
 /// Entity-dot sign textures, loaded once at spawn.
@@ -157,19 +256,28 @@ pub struct MinimapAssets {
 
 #[derive(Component, Default, Clone)]
 pub struct MinimapRoot;
-/// The clipped square map area; its tile/dot/arrow children are added by
-/// [`populate_minimap_viewport`].
+/// One clipped map band; its terrain-tile children are added by
+/// [`populate_minimap_viewport`]. There are two, indexing [`VIEWPORT_BANDS`]:
+/// together they are the round map hole, which a single rect cannot be.
 #[derive(Component, Default, Clone)]
-pub struct MinimapViewport;
-/// Marks a viewport whose children have been populated.
+pub struct MinimapViewport {
+    pub band: usize,
+}
+/// The clipped square the markers (dots, party signs, player arrow) live in.
+/// Separate from the tile bands because the markers are culled to the disc in
+/// code and would otherwise have to be drawn once per band.
+#[derive(Component, Default, Clone)]
+pub struct MinimapMarkerLayer;
+/// Marks a viewport or marker layer whose children have been populated.
 #[derive(Component)]
 pub struct MinimapViewportReady;
 /// One of the 3x3 terrain tile slots, at grid offset (dx, dz) from the
-/// player's region.
+/// player's region, in the band it was spawned into.
 #[derive(Component)]
 pub struct MinimapTile {
     dx: i8,
     dz: i8,
+    band: usize,
 }
 /// One slot of the entity-dot pool.
 #[derive(Component)]
@@ -413,7 +521,9 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
     let floor_font = fonts.nine.clone();
 
     let s = hud_scale();
-    let (vp_l, vp_t, vp_w, vp_h) = scaled(VIEWPORT_RECT, s);
+    let (b0_l, b0_t, b0_w, b0_h) = scaled(VIEWPORT_BANDS[0], s);
+    let (b1_l, b1_t, b1_w, b1_h) = scaled(VIEWPORT_BANDS[1], s);
+    let (ml_l, ml_t, ml_w, ml_h) = scaled(MARKER_LAYER_RECT, s);
     let (an_l, an_t, an_w, an_h) = scaled(AREA_NAME_RECT, s);
     let (px_l, px_t, px_w, px_h) = scaled(POS_X_RECT, s);
     let (pz_l, pz_t, pz_w, pz_h) = scaled(POS_Z_RECT, s);
@@ -436,19 +546,46 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
         GlobalZIndex(50)
         Pickable::IGNORE
         Children [
-            // clipped square map area; the black backdrop shows where tiles
-            // are missing (world edge) or still streaming in
+            // The map, in the two bands that add up to the frame's
+            // round hole (see VIEWPORT_BANDS). The black backdrop shows where
+            // tiles are missing (world edge) or still streaming in.
             (
-                MinimapViewport
+                MinimapViewport { band: 0 }
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(vp_l),
-                    top: px(vp_t),
-                    width: px(vp_w),
-                    height: px(vp_h),
+                    left: px(b0_l),
+                    top: px(b0_t),
+                    width: px(b0_w),
+                    height: px(b0_h),
                     overflow: {Overflow::clip()},
                 }
                 BackgroundColor(Color::BLACK)
+                Pickable::IGNORE
+            ),
+            (
+                MinimapViewport { band: 1 }
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(b1_l),
+                    top: px(b1_t),
+                    width: px(b1_w),
+                    height: px(b1_h),
+                    overflow: {Overflow::clip()},
+                }
+                BackgroundColor(Color::BLACK)
+                Pickable::IGNORE
+            ),
+            // the markers on top of both bands, in one square layer
+            (
+                MinimapMarkerLayer
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(ml_l),
+                    top: px(ml_t),
+                    width: px(ml_w),
+                    height: px(ml_h),
+                    overflow: {Overflow::clip()},
+                }
                 Pickable::IGNORE
             ),
             // the frame on top: opaque ring around a transparent circular
@@ -486,14 +623,16 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
                 image_button(zoom_in_style, zi_w, zi_h)
                 Node { position_type: PositionType::Absolute, left: px(zi_l), top: px(zi_t) }
                 on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
-                    state.zoom_idx = (state.zoom_idx + 1).min(ZOOM_LEVELS.len() - 1);
+                    // vanilla: target += 19.2, clamped at 256
+                    state.zoom_target = (state.zoom_target + ZOOM_STEP).min(ZOOM_MAX);
                 })
             ),
             (
                 image_button(zoom_out_style, zo_w, zo_h)
                 Node { position_type: PositionType::Absolute, left: px(zo_l), top: px(zo_t) }
                 on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
-                    state.zoom_idx = state.zoom_idx.saturating_sub(1);
+                    // vanilla: target -= 19.2, clamped at 64
+                    state.zoom_target = (state.zoom_target - ZOOM_STEP).max(ZOOM_MIN);
                 })
             ),
             // dungeon floor badge (art + number), shown only inside dungeons
@@ -561,12 +700,14 @@ fn button_style(asset_server: &AssetServer, stem: &str) -> ImageButtonStyle {
 pub fn populate_minimap_viewport(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    viewports: Query<Entity, (With<MinimapViewport>, Without<MinimapViewportReady>)>,
+    viewports: Query<(Entity, &MinimapViewport), Without<MinimapViewportReady>>,
+    layers: Query<Entity, (With<MinimapMarkerLayer>, Without<MinimapViewportReady>)>,
 ) {
     let s = hud_scale();
     let h = VIEWPORT_RECT.2 / 2.0;
-    for viewport in viewports.iter() {
-        let arrow: Handle<Image> = asset_server.load(SIGN_CHARACTER);
+    // each band draws the whole 3x3 grid and shows the slice its clip admits
+    for (viewport, band) in viewports.iter() {
+        let band = band.band;
         commands
             .entity(viewport)
             .insert(MinimapViewportReady)
@@ -574,7 +715,7 @@ pub fn populate_minimap_viewport(
                 for dz in -1..=1i8 {
                     for dx in -1..=1i8 {
                         parent.spawn((
-                            MinimapTile { dx, dz },
+                            MinimapTile { dx, dz, band },
                             ImageNode {
                                 image_mode: NodeImageMode::Stretch,
                                 ..default()
@@ -589,6 +730,14 @@ pub fn populate_minimap_viewport(
                         ));
                     }
                 }
+            });
+    }
+    for layer in layers.iter() {
+        let arrow: Handle<Image> = asset_server.load(SIGN_CHARACTER);
+        commands
+            .entity(layer)
+            .insert(MinimapViewportReady)
+            .with_children(|parent| {
                 for _ in 0..DOT_POOL_SIZE {
                     parent.spawn((
                         MinimapDot,
@@ -690,7 +839,7 @@ pub fn update_minimap_tiles(
 
     let s = hud_scale();
     let h = VIEWPORT_RECT.2 / 2.0;
-    let p = ZOOM_LEVELS[state.zoom_idx];
+    let p = state.zoom;
     let k = p / REGION_SIZE;
     // A dungeon floor with no shipped tile set shows the black backdrop.
     let no_dungeon_tiles = dungeon.as_ref().is_some_and(|ctx| ctx.group.is_none());
@@ -710,9 +859,16 @@ pub fn update_minimap_tiles(
             image.image = asset_server.load(path);
         }
 
-        // tile top edge = its region's north edge
-        let left = Val::Px((h + (tx as f32 * REGION_SIZE - gx) * k) * s);
-        let top = Val::Px((h - ((tz + 1) as f32 * REGION_SIZE - gz) * k) * s);
+        // tile top edge = its region's north edge. Positions are in the
+        // square viewport's space, so a band that starts elsewhere in the
+        // frame shifts them by its own origin — both bands then show the same
+        // map through different clips.
+        let (band_x, band_y) = (
+            VIEWPORT_BANDS[tile.band].0 - VIEWPORT_RECT.0,
+            VIEWPORT_BANDS[tile.band].1 - VIEWPORT_RECT.1,
+        );
+        let left = Val::Px((h + (tx as f32 * REGION_SIZE - gx) * k - band_x) * s);
+        let top = Val::Px((h - ((tz + 1) as f32 * REGION_SIZE - gz) * k - band_y) * s);
         let size = Val::Px(p * s);
         if node.left != left {
             node.left = left;
@@ -755,15 +911,7 @@ pub fn update_minimap_coords(
         return;
     };
     let (gx, gz) = player_global_xz(&origin, player_tf);
-    // Dungeon-local coordinates display as-is (no overworld origin offset).
-    let (disp_x, disp_z) = if dungeon.is_some() {
-        ((gx / 10.0).round() as i32, (gz / 10.0).round() as i32)
-    } else {
-        (
-            (gx / 10.0 - COORD_X_OFFSET).round() as i32,
-            (gz / 10.0 - COORD_Z_OFFSET).round() as i32,
-        )
-    };
+    let (disp_x, disp_z) = display_coords(gx, gz, dungeon.is_some());
 
     let set_text = |text: &mut Text, value: String| {
         if text.0 != value {
@@ -778,14 +926,38 @@ pub fn update_minimap_coords(
     }
 }
 
-/// One coordinate readout, e.g. `"X: 6400"`. The second axis is labelled **Y**
+/// The two integers behind the coordinate head. The original does **not**
+/// round: it composes `(region - offset) * 192` (an integer) with the int
+/// conversion of the negated tenth-coordinate, and that conversion truncates
+/// (in the original: `-1286.0/10 = -128.6 -> -128`, so the head
+/// reads `128`, and `Y:891` is `768 + trunc(1230/10)`).
+/// We only ever see the *global*
+/// world coordinate, so the equivalent operation on the composed value is
+/// `floor`, not `trunc`: the local tenth is never negative, so truncating it is
+/// flooring it, whereas truncating a *negative display value* (regions west or
+/// north of the 135/92 origin) would land one unit off.
+fn display_coords(gx: f32, gz: f32, in_dungeon: bool) -> (i32, i32) {
+    // Dungeon-local coordinates display as-is (no overworld origin offset).
+    if in_dungeon {
+        ((gx / 10.0).floor() as i32, (gz / 10.0).floor() as i32)
+    } else {
+        (
+            (gx / 10.0 - COORD_X_OFFSET).floor() as i32,
+            (gz / 10.0 - COORD_Z_OFFSET).floor() as i32,
+        )
+    }
+}
+
+/// One coordinate readout, e.g. `"X:6400"`. The second axis is labelled **Y**
 /// because the original element is `GDR_MINIMAP_TEXT_POS_Y`
 /// (`resinfo/ifminimap.txt:44`), even though the value it shows is world Z.
 ///
-/// UNKNOWN (hud-minimap.md §9-U8): the vanilla separator and sign handling are
-/// unconfirmed; this is our own rendering of the same two values.
+/// The vanilla format strings are `L"X:%3d"` and `L"Y:%3d"`
+/// (the original's placement routine): colon **without** a space,
+/// field width 3 padded on the left, `%d` so negatives carry a minus sign, and
+/// no thousands separator.
 fn coord_text(axis: char, value: i32) -> String {
-    format!("{axis}: {value}")
+    format!("{axis}:{value:>3}")
 }
 
 /// Area name of the player's region, from textzonename.txt. Inside a
@@ -862,7 +1034,7 @@ pub fn update_minimap_dots(
 
     let s = hud_scale();
     let h = VIEWPORT_RECT.2 / 2.0;
-    let k = ZOOM_LEVELS[state.zoom_idx] / REGION_SIZE;
+    let k = state.zoom / REGION_SIZE;
 
     let mut visible: Vec<(f32, f32, f32, Handle<Image>)> = Vec::new();
     for (transform, kind, unique) in entities.iter() {
@@ -877,9 +1049,17 @@ pub fn update_minimap_dots(
         let (ex, ez) = (-sro.x, sro.z);
         let cx = h + (ex - gx) * k;
         let cy = h - (ez - gz) * k;
-        // circle cull against the frame's round hole; overflow clip catches
-        // the square corners anyway
-        if (cx - h).powi(2) + (cy - h).powi(2) > (h + size / 2.0).powi(2) {
+        // Cull against the disc, not the square: a dot has to be
+        // fully inside `mm_alpha.ddj`'s hole, because the frame is
+        // transparent at 210 px of the square's bottom corners and anything
+        // drawn there hangs outside the round window. The disc
+        // is expressed in the square's space, hence the rect origin offset.
+        let (dcx, dcy) = (
+            DISC_CENTER.0 - VIEWPORT_RECT.0,
+            DISC_CENTER.1 - VIEWPORT_RECT.1,
+        );
+        let reach = (DISC_RADIUS - size / 2.0).max(0.0);
+        if (cx - dcx).powi(2) + (cy - dcy).powi(2) > reach.powi(2) {
             continue;
         }
         visible.push((cx, cy, size, image));
@@ -928,7 +1108,7 @@ pub fn update_minimap_dots(
 /// simply culled, but a party member out of view is the case the player most
 /// wants to see — which is what `mm_sign_partyarrow.ddj` exists for. The RE
 /// doc reads the four `*arrow` sign textures as "rim-clamped direction
-/// indicators for off-map targets" (`docs/re/ui/hud-minimap.md` §4, `[S]`),
+/// indicators for off-map targets" (speculative reading of the sign art),
 /// and that is what this implements: inside the hole the 8x8 dot at the true
 /// position, outside it the 16x16 arrow pushed back onto the rim along the
 /// same bearing, rotated to point at the member.
@@ -1013,7 +1193,7 @@ pub fn update_minimap_party_signs(
 
     let s = hud_scale();
     let h = VIEWPORT_RECT.2 / 2.0;
-    let k = ZOOM_LEVELS[state.zoom_idx] / REGION_SIZE;
+    let k = state.zoom / REGION_SIZE;
 
     let mut placements: Vec<PartySignPlacement> = Vec::new();
     for marker in markers.0.iter() {
@@ -1159,6 +1339,117 @@ mod tests {
         assert_eq!(ARROW_SIZE, 16.0);
     }
 
+    /// True if the frame-space point (x, y) is drawn by one of the map bands.
+    fn in_a_band(x: f32, y: f32) -> bool {
+        VIEWPORT_BANDS
+            .iter()
+            .any(|(bx, by, bw, bh)| x >= *bx && x < bx + bw && y >= *by && y < by + bh)
+    }
+
+    /// The map must not stick out of the round frame.
+    ///
+    /// Two facts about the art are pinned here. (1) The disc
+    /// `mm_alpha.ddj` cuts is 101x101 at (14,58), i.e. centre (64,108) radius
+    /// 50.5 — the bands must draw all of it, or the map would show a chord.
+    /// (2) Inside the viewport rect the frame is transparent at 210 px that
+    /// are NOT disc: none above row 145, and in rows 145..158 only at columns
+    /// x <= 27 or x >= 107. Anything the bands draw there hangs outside the
+    /// round window.
+    ///
+    /// The red control is the old single square (14,57,105,105): the same two
+    /// checks run against it below, and the second one fails — which is the
+    /// defect. Without it this test would only be asserting
+    /// that a rectangle contains itself.
+    #[test]
+    fn the_map_bands_cover_the_disc_and_nothing_that_leaks_past_the_frame() {
+        let old_square = |x: f32, y: f32| {
+            x >= VIEWPORT_RECT.0
+                && x < VIEWPORT_RECT.0 + VIEWPORT_RECT.2
+                && y >= VIEWPORT_RECT.1
+                && y < VIEWPORT_RECT.1 + VIEWPORT_RECT.3
+        };
+
+        // (1) every pixel of the disc is drawn — by both shapes
+        let mut disc_px = 0;
+        for row in 58..159 {
+            for col in 14..115 {
+                let (dx, dy) = (
+                    col as f32 + 0.5 - DISC_CENTER.0,
+                    row as f32 + 0.5 - DISC_CENTER.1,
+                );
+                if dx * dx + dy * dy <= DISC_RADIUS * DISC_RADIUS {
+                    disc_px += 1;
+                    assert!(
+                        in_a_band(col as f32 + 0.5, row as f32 + 0.5),
+                        "disc pixel ({col},{row}) is not in any band"
+                    );
+                    assert!(old_square(col as f32 + 0.5, row as f32 + 0.5));
+                }
+            }
+        }
+        // ~pi * 50.5^2; the loop must have actually run over the disc
+        assert!(disc_px > 7900 && disc_px < 8100, "disc pixels {disc_px}");
+
+        // (2) the leaking columns are drawn by NEITHER band ...
+        let mut leaking = 0;
+        for row in 145..162 {
+            for col in [14, 20, 27, 107, 112, 118] {
+                if row >= 159 || !(28..107).contains(&col) {
+                    leaking += 1;
+                    assert!(
+                        !in_a_band(col as f32 + 0.5, row as f32 + 0.5),
+                        "band draws the leaking pixel ({col},{row})"
+                    );
+                }
+            }
+        }
+        assert!(leaking > 0, "the leak sample must not be empty");
+        // ... and red: the old square drew them
+        assert!(old_square(14.5, 150.5));
+        assert!(old_square(118.5, 157.5));
+        assert!(old_square(66.5, 160.5));
+    }
+
+    /// A marker may only be drawn where the frame really is a hole: fully
+    /// inside the disc. Red control: the cull this replaced worked
+    /// from the *square's* centre with radius `h + size/2` = 56.5, which
+    /// admits points well outside the 50.5 disc.
+    #[test]
+    fn a_marker_is_culled_against_the_disc_not_the_square() {
+        let h = VIEWPORT_RECT.2 / 2.0;
+        let (dcx, dcy) = (
+            DISC_CENTER.0 - VIEWPORT_RECT.0,
+            DISC_CENTER.1 - VIEWPORT_RECT.1,
+        );
+        let disc_keeps = |cx: f32, cy: f32, size: f32| {
+            let reach = DISC_RADIUS - size / 2.0;
+            (cx - dcx).powi(2) + (cy - dcy).powi(2) <= reach.powi(2)
+        };
+        let old_keeps = |cx: f32, cy: f32, size: f32| {
+            (cx - h).powi(2) + (cy - h).powi(2) <= (h + size / 2.0).powi(2)
+        };
+
+        // the centre dot stays either way
+        assert!(disc_keeps(dcx, dcy, DOT_SIZE));
+        // a dot in the square's bottom-left corner is outside the disc: the
+        // old rule kept it (it is 55.6 from the square centre, under 56.5),
+        // the new one drops it
+        let (cx, cy) = (13.0, 91.0);
+        assert!(old_keeps(cx, cy, DOT_SIZE), "the red control must be red");
+        assert!(!disc_keeps(cx, cy, DOT_SIZE));
+        // and a dot right at the rim is only kept while it fits whole
+        assert!(disc_keeps(
+            dcx + DISC_RADIUS - DOT_SIZE / 2.0 - 0.01,
+            dcy,
+            DOT_SIZE
+        ));
+        assert!(!disc_keeps(
+            dcx + DISC_RADIUS - DOT_SIZE / 2.0 + 0.01,
+            dcy,
+            DOT_SIZE
+        ));
+    }
+
     /// The window placement is a transcription of the v1.188 resinfo, so pin it
     /// to the cited bytes: it previously drifted to a hand-picked `(4, 4)`
     /// top-right margin (issue #305).
@@ -1189,8 +1480,48 @@ mod tests {
     /// is labelled "Y" — it used to emit "Z" after the world-space field name.
     #[test]
     fn coordinate_labels_use_the_original_axis_letters() {
-        assert_eq!(coord_text('X', 6400), "X: 6400");
-        assert_eq!(coord_text('Y', -70), "Y: -70");
+        assert_eq!(coord_text('X', 6400), "X:6400");
+        assert_eq!(coord_text('Y', -70), "Y:-70");
+    }
+
+    /// `L"X:%3d"` / `L"Y:%3d"` are the original's format strings: no space after the
+    /// colon, no thousands separator, minus sign for negatives, and width 3
+    /// left-padded — visible only below 100.
+    #[test]
+    fn coordinate_readout_matches_the_vanilla_format_string() {
+        // The original's head, character for character.
+        assert_eq!(coord_text('X', 6464), "X:6464");
+        assert_eq!(coord_text('Y', 891), "Y:891");
+        // %d, not a locale format: no group separator even at five digits.
+        assert_eq!(coord_text('X', 12345), "X:12345");
+        // %d keeps the sign; "-70" already fills the 3-wide field.
+        assert_eq!(coord_text('Y', -70), "Y:-70");
+        assert_eq!(coord_text('X', -6), "X: -6");
+        // Width 3, padded on the left with spaces.
+        assert_eq!(coord_text('Y', 12), "Y: 12");
+        assert_eq!(coord_text('X', 0), "X:  0");
+    }
+
+    /// The original truncates the tenth-coordinate instead of rounding
+    /// (`1286.0 / 10 = 128.6` shows as `128`, and `Y:891` is
+    /// `(96 - 92) * 192 + 123`). We compose the global
+    /// coordinate first, so the faithful operation is `floor`.
+    #[test]
+    fn displayed_coordinates_truncate_the_tenth() {
+        // A position in region 24744 (regionX 168, regionZ 96),
+        // x = 1286.0, z = 1230.0 -> world units gx = 168 * 1920 + 1286.
+        let gx = 168.0 * 1920.0 + 1286.0;
+        let gz = 96.0 * 1920.0 + 1230.0;
+        assert_eq!(display_coords(gx, gz, false), (6464, 891));
+        // Rounding would have shown 6465 here; the .6 tenth must be dropped.
+        assert_eq!(display_coords(gx, gz, false).0, 6464);
+        // Dungeon-local readout truncates the same way.
+        assert_eq!(display_coords(1286.0, 1230.0, true), (128, 123));
+        // West/north of the 135/92 origin the display goes negative; one unit
+        // below the origin must read -1, not 0 (that is where a plain `trunc`
+        // would differ).
+        let below = (135.0 * 192.0 - 0.6) * 10.0;
+        assert_eq!(display_coords(below, below, false).0, -1);
     }
 
     /// Dot sizes are the sign textures' own dimensions: 8x8 for
@@ -1200,6 +1531,79 @@ mod tests {
         assert_eq!(DOT_SIZE, 8.0);
         assert_eq!(UNIQUE_DOT_SIZE, 12.0);
         assert_eq!(ARROW_SIZE, 16.0);
+    }
+
+    /// The four zoom constants are the original `CIFMinimap` literals
+    /// (see the module header), not a step table we invented.
+    /// Asserted as arithmetic so a future edit of any one of them has to face
+    /// the other three: the click range is exactly ten steps and the ctor
+    /// default sits exactly on step five.
+    #[test]
+    fn zoom_constants_are_the_measured_ones() {
+        assert_eq!(
+            (ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT),
+            (64.0, 256.0, 19.2, 160.0)
+        );
+        assert!(((ZOOM_MAX - ZOOM_MIN) / ZOOM_STEP - 10.0).abs() < 1e-4);
+        assert!((ZOOM_MIN + 5.0 * ZOOM_STEP - ZOOM_DEFAULT).abs() < 1e-4);
+        // 256 px per 1920-unit region is one `minimap/{x}x{z}.ddj` at 1:1 —
+        // vanilla's ceiling, which is why nothing magnifies past it.
+        assert_eq!(ZOOM_MAX, 256.0);
+    }
+
+    /// Ten zoom-out clicks reach the floor from the default and an eleventh
+    /// does not undershoot it; the same going up. Clicking is what a player
+    /// does, so the clamp is asserted through the button arithmetic.
+    #[test]
+    fn zoom_clicks_clamp_at_the_vanilla_bounds() {
+        let mut target = ZOOM_DEFAULT;
+        for _ in 0..5 {
+            target = (target - ZOOM_STEP).max(ZOOM_MIN);
+        }
+        assert!((target - ZOOM_MIN).abs() < 1e-4, "five clicks down = 64");
+        target = (target - ZOOM_STEP).max(ZOOM_MIN);
+        assert_eq!(target, ZOOM_MIN);
+
+        for _ in 0..10 {
+            target = (target + ZOOM_STEP).min(ZOOM_MAX);
+        }
+        assert!((target - ZOOM_MAX).abs() < 1e-3, "ten clicks up = 256");
+        target = (target + ZOOM_STEP).min(ZOOM_MAX);
+        assert_eq!(target, ZOOM_MAX);
+    }
+
+    /// The drawn scale crawls at 50 px/s and lands *on* the target instead of
+    /// oscillating around it (vanilla clamps on the overshooting step).
+    #[test]
+    fn zoom_eases_towards_the_target_and_stops_there() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<MinimapState>()
+            .add_systems(Update, ease_minimap_zoom);
+        app.world_mut().resource_mut::<MinimapState>().zoom_target = ZOOM_DEFAULT + ZOOM_STEP;
+
+        // one 100ms frame moves 5 px, not the whole step
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_millis(100));
+        app.update();
+        let zoom = app.world().resource::<MinimapState>().zoom;
+        assert!((zoom - (ZOOM_DEFAULT + 5.0)).abs() < 1e-3, "got {zoom}");
+
+        // a long frame lands exactly on the target and stays
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs(10));
+        app.update();
+        assert_eq!(
+            app.world().resource::<MinimapState>().zoom,
+            ZOOM_DEFAULT + ZOOM_STEP
+        );
+        app.update();
+        assert_eq!(
+            app.world().resource::<MinimapState>().zoom,
+            ZOOM_DEFAULT + ZOOM_STEP
+        );
     }
 }
 
@@ -1222,6 +1626,7 @@ impl Plugin for MinimapPlugin {
                 (
                     sync_minimap_dungeon_context,
                     populate_minimap_viewport,
+                    ease_minimap_zoom,
                     update_minimap_tiles,
                     update_minimap_coords,
                     update_minimap_area_name,

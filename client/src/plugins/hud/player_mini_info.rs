@@ -918,7 +918,10 @@ pub fn refresh_statup_button(
             let disable: Handle<Image> = asset_server.load(PLUS_BUTTON_DISABLE);
             style.normal = disable.clone();
             style.hover = disable.clone();
-            style.press = disable;
+            style.press = disable.clone();
+            // and the slot `disabled_art()` actually reads once
+            // `InteractionDisabled` is on the button (same as `character_info`).
+            style.disable = disable;
             commands.entity(entity).insert(InteractionDisabled);
         }
         image.image = style.normal.clone();
@@ -1388,8 +1391,8 @@ pub fn aim_portrait_camera(
             }
             let to_local = to_player * mesh_gt.affine();
             for i in 0..8 {
-                let corner = Vec3A::from(aabb.center)
-                    + Vec3A::from(aabb.half_extents)
+                let corner = aabb.center
+                    + aabb.half_extents
                         * Vec3A::new(
                             if i & 1 == 0 { -1.0 } else { 1.0 },
                             if i & 2 == 0 { -1.0 } else { 1.0 },

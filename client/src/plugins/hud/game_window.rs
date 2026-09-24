@@ -32,31 +32,176 @@ use bevy::ui_widgets::Button;
 use crate::assets::FontAssets;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
-/// Art extents of the frame pieces.
-const CHROME_SIDE: f32 = 40.0;
-const CHROME_TOP: f32 = 68.0;
-const CHROME_BOTTOM: f32 = 48.0;
+/// One 8-piece window-frame family, taken from its own art.
+///
+/// Idea: the shell used to hardcode `mframe_wnd_` because "a family name
+/// guarantees nothing about the pieces behind it" (see [`MFRAME_WND`] below).
+/// That reasoning holds — what does not follow from it is that a second
+/// family cannot exist. `msgbox2_window_` is the shell of 14 resinfo
+/// trees (39 references) and its pieces are a
+/// different size in every dimension, so the way to add it is to make the
+/// numbers data and require every field to come from the art.
+///
+/// Every field below comes from the decoded `.ddj`s. Do not add a
+/// family without doing the same.
+pub struct ChromeFamily {
+    /// Asset path prefix of the eight pieces.
+    pub dir: &'static str,
+    /// Width of the corner and side pieces (`*_left_side.ddj`).
+    pub side_w: f32,
+    /// Height of the top strip (`*_mid_up.ddj`).
+    pub top_h: f32,
+    /// Height of the bottom strip (`*_mid_down.ddj`).
+    pub bottom_h: f32,
+    /// Visible painted border on the left edge, from the art's column profile.
+    pub vis_left: f32,
+    /// Visible painted border on the right edge. Separate from `vis_left`
+    /// because `msgbox2_window_`'s two side pieces are **not** mirror images:
+    /// left paints 5 columns, right paints 7.
+    pub vis_right: f32,
+    /// Visible top edge = trim + title band + separator.
+    pub vis_top: f32,
+    /// Visible bottom edge, from the bottom strip's row profile.
+    pub vis_bottom: f32,
+    /// Title band inside the top strip: origin and height.
+    pub title_y: f32,
+    pub title_h: f32,
+    /// Whether the bottom strip has an authored horizontal period and must
+    /// tile instead of stretch (`msgbox2_window_mid_down` repeats every 16 px;
+    /// `mframe_wnd_mid_down` has no period).
+    pub tile_mid_down: bool,
+}
+
+/// The 8-piece family the in-game windows have always drawn.
+///
+/// It is deliberately **one** family per constant and not an
+/// `mframe_{name}_` helper: a family name guarantees nothing about the pieces
+/// behind it. `mframe_alc_` (4th-gen alchemy) ships seven **4x4 stubs** and
+/// packs the entire 376x376 window plate into its `right_up` slot, so a
+/// generic 9-slice helper would stretch a 4x4 across three window edges and
+/// hide the real art in a corner (#476). Measure every piece before adding a
+/// family here.
+pub const MFRAME_WND: ChromeFamily = ChromeFamily {
+    dir: "media://interface/frame/mframe_wnd_",
+    side_w: 40.0,
+    top_h: 68.0,
+    bottom_h: 48.0,
+    vis_left: 8.0,
+    vis_right: 8.0,
+    vis_top: 32.0,
+    vis_bottom: 12.0,
+    title_y: 6.0,
+    title_h: 22.0,
+    tile_mid_down: false,
+};
+
+/// `msgbox2_window_` — the shell of the job windows, the inventory, the guild
+/// window, the letter, party matching, the item mall family and gacha.
+///
+/// `Media/interface/messagebox/msgbox2_window_*.ddj` carries
+/// five distinct piece sizes — corners
+/// 16x16 and 16x40, sides 16x64, mids 64x40 and 64x16 — all **A1R5G5B5**
+/// (`pf.flags 0x41`), where `mframe_wnd_`'s mid/side pieces are opaque
+/// R5G6B5. The corners really use that alpha: `left_up`/`right_up` carry a
+/// 6-pixel transparent triangle, `left_down`/`right_down` a single corner
+/// pixel — the window is rounded, and stretching a corner would smear it.
+pub const MSGBOX2_WINDOW: ChromeFamily = ChromeFamily {
+    dir: "media://interface/messagebox/msgbox2_window_",
+    side_w: 16.0,
+    top_h: 40.0,
+    bottom_h: 16.0,
+    // The interior inset is the **piece extent**, not where the paint stops:
+    // 16 at the sides, 40 at the top, 16 at the bottom. Two authored rects
+    // close on that independently — `GDR_PARTYMATCH_REGISTER` `0,0,314,373`
+    // with `_MAIN_BG` `16,40,282,317`, and
+    // `GDR_PREV_JOB_INFO` `0,0,364,164` with its `_BG` `16,40,332,108`
+    // (`364 - 32 == 332`, `164 - 40 - 16 == 108`). Same numbers as
+    // `hud/modal_dialog.rs`'s `MODAL_{SIDE,TOP,BOTTOM}`, which read this
+    // family first for the dialog plates.
+    //
+    // (The *painted* trim is narrower — `left_side` paints 5 columns,
+    // `right_side` 7, `mid_down` 7 rows — so the art's dither runs on under
+    // the interior tile, exactly as it does in `mframe_wnd_`.)
+    vis_left: 16.0,
+    vis_right: 16.0,
+    vis_top: 40.0,
+    vis_bottom: 16.0,
+    title_y: 7.0,
+    title_h: 20.0,
+    tile_mid_down: true,
+};
+
+/// One nine-piece **board** ring — the frame a window draws *inside* itself
+/// around a content board, as opposed to [`ChromeFamily`], which is the
+/// window's outer shell (title band, close button, drag strip).
+///
+/// Idea: the same kit was being re-declared per module. The literal
+/// `"media://interface/inventory/int_window_"` stood at **nine** sites in
+/// eight modules (`appearance_change`, `autopotion/ui`, `cos/setup`,
+/// `cos/ui`, `inventory/ui`, `party_match/board`, `skill_window/ui`,
+/// `stall/ui`) — up from four an iteration earlier — and each one carried its
+/// own unsourced `16.0` next to it. The rects stay per-window (they are
+/// authored resinfo numbers and differ), the *kit* is one thing.
+pub struct BoardFrame {
+    /// Asset path prefix of the nine pieces.
+    pub dir: &'static str,
+    /// Extent of the corner pieces, which is also the ring's border width:
+    /// the side pieces are this wide and the mid strips this tall.
+    pub piece: f32,
+}
+
+impl BoardFrame {
+    /// Asset path of one piece of the kit — a ring piece (`left_up`,
+    /// `mid_up`, …) or a sibling plate authored in the same prefix
+    /// (`downbox`).
+    pub fn piece_path(&self, name: &str) -> String {
+        format!("{}{name}.ddj", self.dir)
+    }
+}
+
+/// `int_window_` — the board ring of the inventory, skill, stall, COS,
+/// autopotion, appearance-change and party-matching windows.
+///
+/// From the DDS headers of
+/// `Media/interface/inventory/int_window_*.ddj` (`width`/`height` at `DDS_HEADER+16`
+/// and `+12`, little-endian, the `.ddj`s carry a 20-byte `JMXVDDJ 1000`
+/// prefix before the `DDS ` magic):
+///
+/// | piece | extent | pixel format |
+/// |---|---|---|
+/// | `left_up`, `mid_up`, `right_up` | 16x16 | A1R5G5B5 (`pf.flags 0x41`) |
+/// | `left_side`, `right_side`, `left_down`, `right_down` | 16x16 | R5G6B5 (`0x40`) |
+/// | `mid_down` | **24x16** | R5G6B5 (`0x40`) |
+/// | `downbox` (sibling plate, not part of the ring) | 176x28 | R5G6B5 (`0x40`) |
+///
+/// So [`piece`](BoardFrame::piece) `= 16` is the art, not a guess: every
+/// corner is 16x16, the sides are 16 wide and both mid strips are 16 tall.
+/// `mid_down`'s 24 px width is not a layout input — the mids are stretched
+/// across the span between the corners, as they have always been.
+pub const INT_WINDOW: BoardFrame = BoardFrame {
+    dir: "media://interface/inventory/int_window_",
+    piece: 16.0,
+};
+
+/// Art extents of the default family's frame pieces. Kept as module constants
+/// because callers and tests read them; the shell itself goes through
+/// [`ChromeFamily`].
+const CHROME_SIDE: f32 = MFRAME_WND.side_w;
+const CHROME_TOP: f32 = MFRAME_WND.top_h;
+const CHROME_BOTTOM: f32 = MFRAME_WND.bottom_h;
 /// The title band inside the top strip (window units, from the art).
-const TITLE_Y: f32 = 6.0;
-const TITLE_H: f32 = 22.0;
+const TITLE_Y: f32 = MFRAME_WND.title_y;
+const TITLE_H: f32 = MFRAME_WND.title_h;
 /// Visible frame margins (see the module doc).
-pub const FRAME_VIS_SIDE: f32 = 8.0;
+pub const FRAME_VIS_SIDE: f32 = MFRAME_WND.vis_left;
 /// Top visible edge = the title band plus its separator lines.
-pub const FRAME_VIS_TOP: f32 = 32.0;
-pub const FRAME_VIS_BOTTOM: f32 = 12.0;
+pub const FRAME_VIS_TOP: f32 = MFRAME_WND.vis_top;
+pub const FRAME_VIS_BOTTOM: f32 = MFRAME_WND.vis_bottom;
 /// Padding between the visible frame edge and the content.
 pub const CHROME_PAD: f32 = 4.0;
 /// Content offset below the title band.
 pub const CONTENT_TOP: f32 = FRAME_VIS_TOP + CHROME_PAD;
 
-/// The 8-piece family this shell draws. It is deliberately **one** hardcoded
-/// family and not an `mframe_{name}_` helper: a family name guarantees
-/// nothing about the pieces behind it. `mframe_alc_` (4th-gen alchemy) ships
-/// seven **4x4 stubs** and packs the entire 376x376 window plate into its
-/// `right_up` slot, so a generic 9-slice helper would stretch a 4x4 across
-/// three window edges and hide the real art in a corner (#476). Measure every
-/// piece before adding a family here.
-const CHROME_DIR: &str = "media://interface/frame/mframe_wnd_";
 pub const BG_TILE_DDJ: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_d.ddj";
 
 /// The per-window parts of the shell that the data does **not** hold constant.
@@ -74,6 +219,10 @@ pub const BG_TILE_DDJ: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_d.
 /// own resinfo tree in a comment — inventing a letter here would be exactly
 /// the kind of unbacked constant this shell exists to avoid.
 pub struct GameWindowStyle {
+    /// Which frame family to draw. Defaults to [`MFRAME_WND`], the
+    /// one every existing window uses; the job/inventory/guild/letter trees
+    /// declare `msgbox2_window_` ([`MSGBOX2_WINDOW`]) in their own `DDJ=` line.
+    pub chrome: &'static ChromeFamily,
     /// Interior tile asset. Callers with no located resinfo tree keep the
     /// default.
     pub bg_tile: &'static str,
@@ -81,13 +230,20 @@ pub struct GameWindowStyle {
     /// [`GameWindow::close_button`] `== None`, so an unwired page cannot hold
     /// a dangling observer target.
     pub close_button: bool,
+    /// Caption colour. Defaults to [`TITLE_COLOR`], the 29-of-31 majority of
+    /// the corpus; the two windows whose `mframe_wnd_` block declares the pale
+    /// violet ([`TITLE_COLOR_VIOLET`]) pass it here rather than each deriving
+    /// a colour of their own.
+    pub title_color: Color,
 }
 
 impl Default for GameWindowStyle {
     fn default() -> Self {
         Self {
+            chrome: &MFRAME_WND,
             bg_tile: BG_TILE_DDJ,
             close_button: true,
+            title_color: TITLE_COLOR,
         }
     }
 }
@@ -105,6 +261,11 @@ const CLOSE_SIZE: f32 = 16.0;
 /// invisible green under RGBA) — so those two are RGB(239,153,255), a pale
 /// violet, *not* gold; gold is the rotated `"255,255,239,153"` (25 uses).
 const TITLE_COLOR: Color = Color::srgb_u8(255, 255, 255);
+/// The corpus' two exceptions, `GDR_COMMUNITY` and `GDR_QUESTINFO`: the same
+/// derivation as [`TITLE_COLOR`], one line further. It was already written out
+/// above and then thrown away by a hardcoded white — a derived value that
+/// nothing consumed. `GameWindowStyle::title_color` is what consumes it.
+pub const TITLE_COLOR_VIOLET: Color = Color::srgb_u8(239, 153, 255);
 
 const CLOSE_DDJ: &str = "media://interface/ifcommon/com_windowclose.ddj";
 const CLOSE_FOCUS_DDJ: &str = "media://interface/ifcommon/com_windowclose_focus.ddj";
@@ -118,22 +279,36 @@ const CLOSE_PRESS_DDJ: &str = "media://interface/ifcommon/com_windowclose_press.
 /// tile on Y instead — the same primitive the interior bg already uses. The
 /// mid pieces stay stretched: their variation is low-amplitude dither with no
 /// period to preserve, and the corners are fixed-size by construction.
-fn edge_image_mode(piece: &str, s: f32) -> NodeImageMode {
+fn edge_image_mode(family: &ChromeFamily, piece: &str, s: f32) -> NodeImageMode {
     match piece {
         "left_side" | "right_side" => NodeImageMode::Tiled {
             tile_x: false,
             tile_y: true,
             stretch_value: s,
         },
+        // `msgbox2_window_mid_down` repeats every 16 px horizontally (checked
+        // byte-identical column blocks), so stretching it across a 364-wide
+        // window would smear an authored period; `mframe_wnd_`'s has none.
+        "mid_down" if family.tile_mid_down => NodeImageMode::Tiled {
+            tile_x: true,
+            tile_y: false,
+            stretch_value: s,
+        },
         _ => NodeImageMode::Stretch,
     }
 }
 
-/// Outer window size (window units) wrapping a content area.
+/// Outer window size (window units) wrapping a content area, in the default
+/// family.
 pub fn outer_size(content_size: (f32, f32)) -> (f32, f32) {
+    outer_size_in(&MFRAME_WND, content_size)
+}
+
+/// [`outer_size`] for an arbitrary family.
+pub fn outer_size_in(family: &ChromeFamily, content_size: (f32, f32)) -> (f32, f32) {
     (
-        content_size.0 + 2.0 * (FRAME_VIS_SIDE + CHROME_PAD),
-        CONTENT_TOP + content_size.1 + CHROME_PAD + FRAME_VIS_BOTTOM,
+        content_size.0 + family.vis_left + family.vis_right + 2.0 * CHROME_PAD,
+        family.vis_top + CHROME_PAD + content_size.1 + CHROME_PAD + family.vis_bottom,
     )
 }
 
@@ -156,11 +331,16 @@ pub struct WindowGeometry {
 }
 
 impl WindowGeometry {
-    /// The shell's own margins around a content area.
+    /// The shell's own margins around a content area, in the default family.
     pub fn from_content(content_size: (f32, f32)) -> Self {
+        Self::from_content_in(&MFRAME_WND, content_size)
+    }
+
+    /// [`WindowGeometry::from_content`] for an arbitrary family.
+    pub fn from_content_in(family: &ChromeFamily, content_size: (f32, f32)) -> Self {
         Self {
-            outer: outer_size(content_size),
-            content_at: (FRAME_VIS_SIDE + CHROME_PAD, CONTENT_TOP),
+            outer: outer_size_in(family, content_size),
+            content_at: (family.vis_left + CHROME_PAD, family.vis_top + CHROME_PAD),
         }
     }
 }
@@ -216,6 +396,35 @@ struct ChromeDragStart {
     top: f32,
 }
 
+/// The design-space anchor a window was spawned with, kept on the root so the
+/// shell can put the window back on screen if it does not fit.
+///
+/// HUD anchors are transcribed from the original's 1024x768 layout while the
+/// window's *size* is multiplied by `hud_scale` — so on a 1600x900 screen at
+/// scale 1.5 a legitimately transcribed window can hang off the bottom edge
+/// (the teleport board: 556 units tall becomes 834 px, anchored at top 120,
+/// which puts its pager at y=954 in a 900 px window — reported 2026-08-17 as
+/// "sieht komplett falsch aus"). Rather than hand-tuning 21 anchor constants
+/// away from the values the data gives, the shell fits the window into the
+/// viewport once, and only while the player has not placed it themselves.
+#[derive(Component, Clone, Copy)]
+pub struct WindowAnchor {
+    pub right: f32,
+    pub top: f32,
+}
+
+/// Marks a window the player has actually dragged this session.
+///
+/// Position persistence keys off this, and not off "a window is open and the
+/// mouse was released": without the distinction every left-click wrote every
+/// open window's *spawn default* into `user_settings.yaml` as if the player
+/// had placed it there (observed 2026-08-17 — `MainPopup [24.0, 60.0]` is
+/// `inventory/ui.rs`'s own anchor). A stored default is not harmless: it
+/// outranks the anchor forever after, including the clamp that a smaller
+/// viewport applied once.
+#[derive(Component)]
+pub struct WindowDragged;
+
 /// Build the framed-window shell. The root is anchored by its right/top
 /// corner (`anchor_right_top`, physical px) — the drag observers rely on
 /// that anchoring.
@@ -246,6 +455,15 @@ pub fn spawn_game_window(
 /// [`spawn_game_window`] with the per-window parts spelled out. See
 /// [`GameWindowStyle`].
 #[allow(clippy::too_many_arguments)]
+/// The geometry [`spawn_game_window_styled`] derives — *in the family the style
+/// asks for*. `WindowGeometry::from_content` is the mframe default, so deriving
+/// through it while drawing `style.chrome` gave a caller that picks
+/// [`MSGBOX2_WINDOW`] the msgbox ring around mframe insets: content under the
+/// frame and a wrong outer size.
+fn styled_geometry(style: &GameWindowStyle, content_size: (f32, f32)) -> WindowGeometry {
+    WindowGeometry::from_content_in(style.chrome, content_size)
+}
+
 pub fn spawn_game_window_styled(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -263,7 +481,7 @@ pub fn spawn_game_window_styled(
         fonts,
         camera,
         title,
-        WindowGeometry::from_content(content_size),
+        styled_geometry(&style, content_size),
         None,
         anchor_right_top,
         scale,
@@ -289,7 +507,8 @@ pub fn spawn_game_window_with(
 ) -> GameWindow {
     let s = scale;
     let (window_w, window_h) = geometry.outer;
-    let piece = |name: &str| asset_server.load::<Image>(format!("{CHROME_DIR}{name}.ddj"));
+    let family = style.chrome;
+    let piece = |name: &str| asset_server.load::<Image>(format!("{}{name}.ddj", family.dir));
 
     let root = commands
         .spawn((
@@ -301,6 +520,10 @@ pub fn spawn_game_window_with(
                 width: Val::Px(window_w * s),
                 height: Val::Px(window_h * s),
                 ..default()
+            },
+            WindowAnchor {
+                right: anchor_right_top.0,
+                top: anchor_right_top.1,
             },
             UiTargetCamera(camera),
         ))
@@ -315,9 +538,9 @@ pub fn spawn_game_window_with(
         // butt-joined rects can land on fractional pixels at scaled/dragged
         // positions and open a 1px antialiasing seam at the joins; the art
         // is opaque and pattern-continuous there, so the overlap is invisible.
-        let sw = CHROME_SIDE;
-        let th = CHROME_TOP;
-        let bh = CHROME_BOTTOM;
+        let sw = family.side_w;
+        let th = family.top_h;
+        let bh = family.bottom_h;
         let edges = [
             // (rect, piece)
             ((0.0, 0.0, sw, th), "left_up"),
@@ -340,7 +563,7 @@ pub fn spawn_game_window_with(
                 abs_node(rect, s),
                 ImageNode {
                     image: piece(name),
-                    image_mode: edge_image_mode(name, s),
+                    image_mode: edge_image_mode(family, name, s),
                     ..default()
                 },
                 Pickable::IGNORE,
@@ -352,10 +575,10 @@ pub fn spawn_game_window_with(
         window.spawn((
             abs_node(
                 (
-                    FRAME_VIS_SIDE,
-                    FRAME_VIS_TOP,
-                    window_w - 2.0 * FRAME_VIS_SIDE,
-                    window_h - FRAME_VIS_TOP - FRAME_VIS_BOTTOM,
+                    family.vis_left,
+                    family.vis_top,
+                    window_w - family.vis_left - family.vis_right,
+                    window_h - family.vis_top - family.vis_bottom,
                 ),
                 s,
             ),
@@ -375,7 +598,7 @@ pub fn spawn_game_window_with(
         // the text, the close button and the drag observers
         window
             .spawn((
-                abs_node((0.0, TITLE_Y, window_w, TITLE_H), s),
+                abs_node((0.0, family.title_y, window_w, family.title_h), s),
                 Name::from(format!("{title} Title Bar")),
                 ChromeDragTarget(root),
             ))
@@ -392,7 +615,7 @@ pub fn spawn_game_window_with(
                             font_size: FontSize::Px(8.5 * s),
                             ..default()
                         },
-                        TextColor(TITLE_COLOR),
+                        TextColor(style.title_color),
                         TextLayout::justify(Justify::Center),
                         Node {
                             position_type: PositionType::Absolute,
@@ -558,6 +781,7 @@ fn on_chrome_drag(
     drag: On<Pointer<Drag>>,
     starts: Query<(&ChromeDragStart, &ChromeDragTarget)>,
     mut roots: Query<&mut Node>,
+    mut commands: Commands,
 ) {
     let Ok((start, target)) = starts.get(drag.entity) else {
         return;
@@ -567,6 +791,8 @@ fn on_chrome_drag(
     };
     node.right = Val::Px(start.right - drag.event.distance.x);
     node.top = Val::Px(start.top + drag.event.distance.y);
+    // Only a window that actually moved may be persisted (see `WindowDragged`).
+    commands.entity(target.0).insert(WindowDragged);
 }
 
 #[cfg(test)]
@@ -585,10 +811,24 @@ mod test {
         assert_eq!(node.height, Val::Px(24.0));
     }
 
-    /// `FontColor="255,255,255,255"` on 29 of the 31 `mframe_wnd_` blocks.
+    /// `FontColor="255,255,255,255"` on 29 of the 31 `mframe_wnd_` blocks —
+    /// and the two exceptions are not a rounding error to be ignored but a
+    /// per-window value, which is why the style carries it. The default has to
+    /// stay the majority colour; a window that wants the violet says so.
     #[test]
-    fn title_caption_is_pure_white() {
+    fn the_caption_colour_defaults_to_the_corpus_majority_and_the_exception_is_reachable() {
         assert_eq!(TITLE_COLOR.to_srgba(), Srgba::WHITE);
+        assert_eq!(
+            GameWindowStyle::default().title_color.to_srgba(),
+            Srgba::WHITE
+        );
+        // `ginterface.txt:546/:872` — ARGB "255,239,153,255", so RGB is the
+        // pale violet, not the rotated gold (which the corpus uses 25 times).
+        assert_eq!(
+            TITLE_COLOR_VIOLET.to_srgba(),
+            Srgba::rgb_u8(239, 153, 255),
+            "the derived exception must be the violet, not gold"
+        );
     }
 
     /// `left_side`/`right_side` carry a vertical motif that repeats every
@@ -600,7 +840,7 @@ mod test {
         for piece in ["left_side", "right_side"] {
             assert!(
                 matches!(
-                    edge_image_mode(piece, 1.5),
+                    edge_image_mode(&MFRAME_WND, piece, 1.5),
                     NodeImageMode::Tiled {
                         tile_x: false,
                         tile_y: true,
@@ -619,10 +859,107 @@ mod test {
             "right_down",
         ] {
             assert!(
-                matches!(edge_image_mode(piece, 1.5), NodeImageMode::Stretch),
+                matches!(
+                    edge_image_mode(&MFRAME_WND, piece, 1.5),
+                    NodeImageMode::Stretch
+                ),
                 "{piece} must keep stretching"
             );
         }
+    }
+
+    /// A style that picks the second family must get *that* family's geometry.
+    /// Deriving through `WindowGeometry::from_content` (the mframe default)
+    /// while drawing `style.chrome` is the shape this pins: the msgbox ring
+    /// around mframe insets, i.e. content under the frame. `GDR_PREV_JOB_INFO`
+    /// closes the msgbox case independently (`0,0,364,164` around a
+    /// `16,40,332,108` background).
+    #[test]
+    fn a_styled_window_is_measured_in_the_family_it_draws() {
+        let msgbox = styled_geometry(
+            &GameWindowStyle {
+                chrome: &MSGBOX2_WINDOW,
+                ..default()
+            },
+            (332.0, 108.0),
+        );
+        // The family's own insets plus our `CHROME_PAD` breathing room on each
+        // side. Ground truth for the insets: `GDR_PREV_JOB_INFO` is authored
+        // `0,0,364,164` around a `16,40,332,108` background, and that authored
+        // outer is exactly this minus the two pads on each axis.
+        assert_eq!(msgbox.outer, (372.0, 172.0));
+        assert_eq!(
+            (
+                msgbox.outer.0 - 2.0 * CHROME_PAD,
+                msgbox.outer.1 - 2.0 * CHROME_PAD
+            ),
+            (364.0, 164.0),
+            "the authored GDR_PREV_JOB_INFO rect, pad excluded"
+        );
+        assert_eq!(
+            msgbox.content_at,
+            (
+                MSGBOX2_WINDOW.vis_left + CHROME_PAD,
+                MSGBOX2_WINDOW.vis_top + CHROME_PAD
+            )
+        );
+        let mframe = styled_geometry(&GameWindowStyle::default(), (332.0, 108.0));
+        assert_ne!(
+            mframe.outer, msgbox.outer,
+            "the two families must not measure alike, or this proves nothing"
+        );
+        assert_ne!(mframe.content_at, msgbox.content_at);
+    }
+
+    /// The second family, off
+    /// `Media/interface/messagebox/msgbox2_window_*.ddj`. These are the numbers a window built on
+    /// this shell inherits, so they are asserted rather than trusted.
+    #[test]
+    fn the_msgbox2_family_carries_its_own_piece_sizes() {
+        let m = &MSGBOX2_WINDOW;
+        // corners 16x16 / 16x40, sides 16x64, mids 64x40 and 64x16
+        assert_eq!((m.side_w, m.top_h, m.bottom_h), (16.0, 40.0, 16.0));
+        // `mid_up` row profile: band rows 7..26 inclusive = 20 rows, inside
+        // the 40-tall top strip
+        assert_eq!((m.title_y, m.title_h), (7.0, 20.0));
+        assert!(m.title_y + m.title_h <= m.top_h);
+        // The interior inset is the piece extent, and two authored rects close
+        // on it: 314 - 2*16 == 282 (ifpartymatch) and 364 - 2*16 == 332,
+        // 164 - 40 - 16 == 108 (ifprevjobinfo).
+        assert_eq!((m.vis_left, m.vis_top, m.vis_bottom), (16.0, 40.0, 16.0));
+        assert_eq!(364.0 - m.vis_left - m.vis_right, 332.0);
+        assert_eq!(164.0 - m.vis_top - m.vis_bottom, 108.0);
+        // and it agrees with the module that read this family first
+        assert_eq!(m.vis_left, crate::plugins::hud::modal_dialog::MODAL_SIDE);
+        assert_eq!(m.vis_top, crate::plugins::hud::modal_dialog::MODAL_TOP);
+        assert_eq!(
+            m.vis_bottom,
+            crate::plugins::hud::modal_dialog::MODAL_BOTTOM
+        );
+        // and it is a smaller shell than mframe_wnd_ in every dimension
+        assert!(m.side_w < MFRAME_WND.side_w);
+        assert!(m.top_h < MFRAME_WND.top_h);
+        assert!(m.bottom_h < MFRAME_WND.bottom_h);
+    }
+
+    /// `msgbox2_window_mid_down` repeats every 16 px horizontally (byte-identical
+    /// column blocks in the decoded art), so it tiles where `mframe_wnd_`'s
+    /// stretches.
+    #[test]
+    fn the_msgbox2_bottom_strip_tiles_where_mframes_stretches() {
+        assert!(matches!(
+            edge_image_mode(&MSGBOX2_WINDOW, "mid_down", 1.0),
+            NodeImageMode::Tiled { tile_x: true, .. }
+        ));
+        assert!(matches!(
+            edge_image_mode(&MFRAME_WND, "mid_down", 1.0),
+            NodeImageMode::Stretch
+        ));
+        // the top strip has no period in either family
+        assert!(matches!(
+            edge_image_mode(&MSGBOX2_WINDOW, "mid_up", 1.0),
+            NodeImageMode::Stretch
+        ));
     }
 
     /// Escape closes a window by pressing its own (X), and the shell is what
@@ -666,5 +1003,83 @@ mod test {
         assert_eq!(style.bg_tile, BG_TILE_DDJ);
         assert!(style.bg_tile.ends_with("com_bg_tile_d.ddj"));
         assert!(style.close_button);
+    }
+
+    /// The board kit is the *inner* ring, not a third window shell: it must
+    /// keep the path and the 16 px border every one of its eight callers used
+    /// before they were pointed here, or this refactor moved pixels. Both
+    /// values are stated in [`INT_WINDOW`]'s doc comment (DDS headers of
+    /// `int_window_*.ddj`: corners 16x16, sides 16 wide, mids 16 tall).
+    #[test]
+    fn the_int_window_board_kit_is_the_authored_one() {
+        assert_eq!(INT_WINDOW.dir, "media://interface/inventory/int_window_");
+        assert_eq!(INT_WINDOW.piece, 16.0);
+        // it is a board ring, not a window shell — neither chrome family
+        // shares its art
+        assert_ne!(INT_WINDOW.dir, MFRAME_WND.dir);
+        assert_ne!(INT_WINDOW.dir, MSGBOX2_WINDOW.dir);
+        // the eight ring pieces and the `downbox` plate authored beside them
+        assert_eq!(
+            INT_WINDOW.piece_path("left_up"),
+            "media://interface/inventory/int_window_left_up.ddj"
+        );
+        assert_eq!(
+            INT_WINDOW.piece_path("downbox"),
+            "media://interface/inventory/int_window_downbox.ddj"
+        );
+    }
+
+    /// The reason [`INT_WINDOW`] exists. The literal
+    /// `"media://interface/inventory/int_window_"` had grown to **nine** sites
+    /// in eight modules (from four an iteration earlier), each with its own
+    /// `16.0` beside it, so the next window to draw this ring copied a number
+    /// with no source. The kit lives here; a module keeps only its own
+    /// authored rect. Scanned rather than trusted, the same way
+    /// `hud/scale.rs::no_module_declares_its_own_hud_scale_constant` scans for
+    /// re-declared HUD scales.
+    ///
+    /// The needle carries its opening quote, so prose and doc comments that
+    /// merely name `int_window_` (`small_popup.rs`, `collection.rs`,
+    /// `stall_network.rs`, …) are untouched — only an actual asset path is an
+    /// offence.
+    #[test]
+    fn only_the_board_kit_declares_the_int_window_asset_path() {
+        const NEEDLE: &str = "\"media://interface/inventory/int_window_";
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                // This file is where the one kit is allowed to live.
+                if path.file_name().and_then(|f| f.to_str()) == Some("game_window.rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (line, text) in text.lines().enumerate() {
+                    if text.contains(NEEDLE) {
+                        offenders.push(format!("{}:{}", path.display(), line + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these sites re-declare the `int_window_` board kit instead of \
+             using `game_window::INT_WINDOW`, so its piece extent is a copied \
+             number again: {offenders:?}"
+        );
     }
 }

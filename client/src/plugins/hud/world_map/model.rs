@@ -39,6 +39,10 @@ pub struct WorldMapState {
     pub dungeon_map: Option<(u16, u32)>,
     /// One-shot: center the viewport on the player after the next rebuild.
     pub center_on_player: bool,
+    /// Small-window mode, toggled by `GDR_WM_BTN_WNDSIZE` (id 7). Vanilla's
+    /// handler keeps this as a flag (0 = big, 1 = small) and resizes the shell between
+    /// 652x424 and 268x296; see `world_map/ui.rs` for the derived rects.
+    pub small: bool,
 }
 
 impl Default for WorldMapState {
@@ -48,6 +52,7 @@ impl Default for WorldMapState {
             current_map: 0,
             dungeon_map: None,
             center_on_player: true,
+            small: false,
         }
     }
 }

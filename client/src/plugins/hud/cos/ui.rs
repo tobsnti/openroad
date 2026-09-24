@@ -52,9 +52,9 @@ const CONTENT_H: f32 = WINDOW_SIZE.1
 /// The rect shared by `GDR_COS_IFRAME` and all three page controls, in vanilla
 /// window space (`ifcos.txt`).
 const PAGE_RECT_WINDOW: (f32, f32, f32, f32) = (12.0, 66.0, 331.0, 314.0);
-/// `int_window_*` frame pieces are 16px (as in inventory/skill window).
-const FRAME_PIECE: f32 = 16.0;
-const FRAME_DIR: &str = "media://interface/inventory/int_window_";
+/// The shared `int_window_` board kit ([`game_window::INT_WINDOW`]).
+const FRAME_PIECE: f32 = game_window::INT_WINDOW.piece;
+const FRAME_DIR: &str = game_window::INT_WINDOW.dir;
 
 /// Spawn anchor (right/top, physical px). **Ours**, not vanilla's — see the
 /// module note on `wndpos.dat`.

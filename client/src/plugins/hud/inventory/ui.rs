@@ -247,9 +247,10 @@ const CONTENT_H: f32 = EQ_H;
 const TAB_ON_DDJ: &str = "media://interface/ifcommon/com_tab_on.ddj";
 const TAB_OFF_DDJ: &str = "media://interface/ifcommon/com_tab_off.ddj";
 const MONEY_BTN_DDJ: &str = "media://interface/ifcommon/com_moneybutton.ddj";
-const DOWNBOX_DDJ: &str = "media://interface/inventory/int_window_downbox.ddj";
+const DOWNBOX_PIECE: &str = "downbox";
 const BG_TILE_DDJ: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_d.ddj";
-const INV_FRAME_DIR: &str = "media://interface/inventory/int_window_";
+/// The shared `int_window_` board kit ([`game_window::INT_WINDOW`]).
+const INV_FRAME_DIR: &str = game_window::INT_WINDOW.dir;
 const EQ_FRAME_DIR: &str = "media://interface/equipment/equip_window_";
 const LATTICE_DIR: &str = "media://interface/ifcommon/lattice_window/com_lattice_";
 const EQ_SLOT_DIR: &str = "media://interface/equipment/equip_slot_";
@@ -655,7 +656,7 @@ fn spawn_inventory_panel(
         body.spawn((
             abs_node(DOWNBOX_RECT, s),
             ImageNode {
-                image: asset_server.load(DOWNBOX_DDJ),
+                image: asset_server.load(game_window::INT_WINDOW.piece_path(DOWNBOX_PIECE)),
                 image_mode: NodeImageMode::Stretch,
                 ..default()
             },

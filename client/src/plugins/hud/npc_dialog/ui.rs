@@ -243,9 +243,14 @@ pub fn sync_dialog_window(
         s,
         game_window::GameWindowStyle::default(),
     );
-    commands
-        .entity(window.root)
-        .insert((NpcDialogRoot, GlobalZIndex(45)));
+    commands.entity(window.root).insert((
+        NpcDialogRoot,
+        GlobalZIndex(45),
+        // The dialog is titled with the NPC's name, so its shell `Name` differs
+        // per conversation; this keeps "where the player put the dialog"
+        // one answer for the whole session.
+        crate::plugins::hud::window_positions::SessionAnchorKey("npc_dialog"),
+    ));
     commands
         .entity(window.expect_close_button())
         .observe(on_close_button);

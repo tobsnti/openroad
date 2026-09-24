@@ -30,7 +30,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::character_info::model::{balance_text, CharacterInfoState, PlayerStats};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{font_px, hud_scale};
 use crate::plugins::hud::underbar::model::PlayerProgress;
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
@@ -106,6 +106,29 @@ const GRID_ROW_H: f32 = 15.0;
 // the icons at y-2 (:433/:300/:167) agree, so three controls confirm each row.
 const JOB_ROW_YS: [f32; 3] = [230.0, 248.0, 266.0];
 
+/// The `JobInfo.job_type` behind each drawn row. The panel lists trader, hunter,
+/// thief (that is the original's row order), but the wire numbers them trader 1,
+/// **thief 2**, hunter 3 — so the mapping is [1, 3, 2] and not `row + 1`.
+///
+/// Provenance, stated rather than implied (ADR-0009): the **row order** is read
+/// out of the tree (`GDR_PI_TEXT_MERCHANT` :357, `_HUNTER` :224, `_THIEF` :91 —
+/// see [`JOB_ROW_YS`]) and is certain. The **wire numbering** (trader 1,
+/// thief 2, hunter 3) is inferred from the enrolment fee ladder
+/// `(internal - 0x14) * 5000` — trader 0, thief 5000, hunter 10000 — and
+/// nothing in this tree pins it.
+/// A live `JobInfo` with a non-zero `job_type` settles it; until then the panel
+/// prints `-` on a mismatch rather than a level from the wrong row, which is
+/// the failure mode this mapping is chosen for.
+const JOB_ROW_TYPES: [u8; 3] = [1, 3, 2];
+
+/// The wire `job_type` for a drawn row, or `None` for a row the panel does not
+/// have. `CiValue::JobLevel` carries a plain `u8`, so indexing the table with it
+/// would panic on any value a future caller (or a deserialised layout) puts
+/// there; the three authored rows are the only ones with a mapping.
+fn job_row_type(row: u8) -> Option<u8> {
+    JOB_ROW_TYPES.get(row as usize).copied()
+}
+
 // The two brighter com_bg_tile_b panels behind the stats and job sections
 // (`GDR_PI_BG_TILE_B` 16,75,332,173 :1233, `GDR_PI_BG_TILE_B2` 16,260,332,60
 // :1214). Named rather than inline so the rebase test below can see them — as
@@ -154,8 +177,9 @@ pub enum CiValue {
     MagDef,
     MagBal,
     Parry,
-    /// Job level rows: 0 = merchant/trader, 1 = hunter, 2 = thief (matching
-    /// the vSRO `JobInfo.job_type` 1/2/3 minus one).
+    /// Job level rows in the order the original panel draws them: 0 = trader,
+    /// 1 = hunter, 2 = thief. The row index is *not* the wire value minus one —
+    /// see [`JOB_ROW_TYPES`].
     JobLevel(u8),
 }
 
@@ -219,11 +243,27 @@ pub fn spawn_character_info_window(
         .entity(window.expect_close_button())
         .observe(on_close_button);
 
-    let text_font = |size: f32| TextFont {
+    // `resinfo/ifplayerinfo.txt` gives every text control a `FontIndex`, and
+    // that index — not a hand-picked design size — is what decides the pixel
+    // height (`hud::scale::FONT_INDEX_PX`). All of this window's controls carry
+    // index 0 except the four HP/MP readouts, which carry 1
+    // (`GDR_PI_TEXT_HP`/`_HP_DAT`/`_MP`/`_MP_DAT`) and the three job exp
+    // strings. The sizes used to be 8.0/8.5 *before* `hud_scale`, i.e. the
+    // original's pixel height rendered into a window scaled 1.5x, which left
+    // every label filling half its box instead of the original's three
+    // quarters.
+    let text_font = |index: usize| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(font_px(index)),
         ..default()
     };
+    /// `GDR_PI_*` default: `FontIndex=INTEGER,"0"` -> 12 px.
+    const FI_DEFAULT: usize = 0;
+    // The four HP/MP readouts and the three job-exp statics carry
+    // `FontIndex=INTEGER,"1"` (11 px, 17 px scaled). They are drawn through the
+    // same `label`/`value` helpers as everything else and so render one pixel
+    // larger than authored — a stated 1 px deviation rather than a second pair
+    // of closures for two rows.
 
     // level readout, right-aligned on the title band (vanilla GDR_PI_TEXT_LEVEL)
     let (outer_w, _) = game_window::outer_size((CONTENT_W, CONTENT_H));
@@ -231,7 +271,7 @@ pub fn spawn_character_info_window(
         root.spawn((
             CiLevelText,
             Text::new(""),
-            text_font(8.5),
+            text_font(FI_DEFAULT),
             TextColor(TITLE_GOLD),
             TextLayout::justify(Justify::Right),
             abs_node((9.0, 8.0, outer_w - 36.0, 12.0), s),
@@ -261,7 +301,7 @@ pub fn spawn_character_info_window(
         let label = |rect, text: String, color: Color, justify: Justify| {
             (
                 Text::new(text),
-                text_font(8.0),
+                text_font(FI_DEFAULT),
                 TextColor(color),
                 TextLayout::justify(justify),
                 abs_node(rect, s),
@@ -272,7 +312,7 @@ pub fn spawn_character_info_window(
             (
                 field,
                 Text::new("-"),
-                text_font(8.0),
+                text_font(FI_DEFAULT),
                 TextColor(color),
                 TextLayout::justify(justify),
                 abs_node(rect, s),
@@ -755,8 +795,8 @@ pub fn refresh_character_info(
             }),
             CiValue::Hit => sheet.map_or("-".into(), |s| s.hit_rate.to_string()),
             CiValue::Parry => sheet.map_or("-".into(), |s| s.parry_rate.to_string()),
-            CiValue::JobLevel(row) => job
-                .filter(|j| j.job_type == row + 1)
+            CiValue::JobLevel(row) => job_row_type(*row)
+                .and_then(|job_type| job.filter(|j| j.job_type == job_type))
                 .map(|j| j.job_level.to_string())
                 .unwrap_or_else(|| "-".into()),
         };
@@ -801,7 +841,12 @@ pub fn refresh_character_info(
             let disable = asset_server.load::<Image>(format!("{stem}.ddj"));
             style.normal = disable.clone();
             style.hover = disable.clone();
-            style.press = disable;
+            style.press = disable.clone();
+            // and the `disable` slot itself — the button is about to carry
+            // `InteractionDisabled`, which is the slot the visuals system
+            // reads; leaving it unset reported `com_plus_button_disable.ddj`
+            // (which the archive does ship) as missing art.
+            style.disable = disable;
             commands.entity(entity).insert(InteractionDisabled);
         }
         image.image = style.normal.clone();
@@ -848,6 +893,30 @@ mod test {
             assert_eq!(our_x, vanilla_x - ORIGIN_X, "x of vanilla {vanilla_x}");
             assert_eq!(our_y, vanilla_y - ORIGIN_Y, "y of vanilla {vanilla_y}");
         }
+    }
+
+    /// The drawn row order (trader, hunter, thief) is not the wire order
+    /// (trader 1, thief 2, hunter 3), so the middle row must *not* answer for
+    /// `job_type == 2`. A `row + 1` mapping — the shape this replaced — would
+    /// print the thief level on the hunter row.
+    #[test]
+    fn the_job_rows_map_to_the_wire_numbering_not_to_row_plus_one() {
+        assert_eq!(job_row_type(0), Some(1), "row 0 draws the trader");
+        assert_eq!(job_row_type(1), Some(3), "row 1 draws the hunter, wire 3");
+        assert_eq!(job_row_type(2), Some(2), "row 2 draws the thief, wire 2");
+        // The two rows a `row + 1` table would get wrong — row 0 agrees by
+        // coincidence, which is exactly why the middle rows have to be named.
+        for row in [1u8, 2] {
+            assert_ne!(job_row_type(row), Some(row + 1), "row {row} is not row + 1");
+        }
+    }
+
+    /// `CiValue::JobLevel` carries a plain `u8`; a row the panel does not draw
+    /// must report "no mapping" instead of indexing the three-entry table.
+    #[test]
+    fn a_row_outside_the_panel_has_no_job_type() {
+        assert_eq!(job_row_type(3), None);
+        assert_eq!(job_row_type(u8::MAX), None);
     }
 
     /// `ifmainpopup.txt:55` — `GDR_PLAYERINFO` (ID 75) is `13,38,364,356`, so

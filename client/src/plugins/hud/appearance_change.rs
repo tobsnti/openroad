@@ -32,6 +32,7 @@ use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::FontAssets;
+use crate::plugins::hud::game_window;
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::textdata::ClientUiStrings;
@@ -53,10 +54,10 @@ const S_BUTTON: &str = "media://interface/ifcommon/com_s_button.ddj";
 /// (`hud/inventory/ui.rs:162`), so the button extents are corroborated by a
 /// second tree rather than assumed here.
 const ROTATE_DIR: &str = "media://interface/equipment/equip_rotate_";
-/// The `int_window_` nine-slice kit; its pieces are 16x16, as the other HUD
-/// windows that draw this ring already state.
-const INT_WINDOW_DIR: &str = "media://interface/inventory/int_window_";
-const INT_WINDOW_PIECE: f32 = 16.0;
+/// The `int_window_` nine-slice kit, from the one declaration in
+/// [`game_window::INT_WINDOW`].
+const INT_WINDOW_DIR: &str = game_window::INT_WINDOW.dir;
+const INT_WINDOW_PIECE: f32 = game_window::INT_WINDOW.piece;
 /// The stand-in border for the untranscribed `opt_inner_box_` kit.
 const INNER_BOX_BORDER: Color = Color::srgb(0.35, 0.33, 0.28);
 

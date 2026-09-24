@@ -66,6 +66,100 @@ pub fn apply_hud_scale(config: Res<ClientConfig>) {
     set_hud_scale(config.hud.hud_scale);
 }
 
+// --- The original's font ladder ---------------------------------------------
+
+/// The v1.188 client's five UI text sizes in **device pixels**, indexed by the
+/// `FontIndex` key that every `resinfo/if*.txt` control carries.
+///
+/// # Where the numbers come from
+///
+/// The original creates exactly five fonts and nothing else ever calls the
+/// creator: every call site of its font-slot constructor pushes one of the
+/// pairs `(0, 9) (1, 8) (2, 12) (3, 11) (4, 15)`. The shipped data states the
+/// same table independently:
+/// `Media/server_dep/silkroad/event/event_interface.txt:2` reads
+/// `//titlefont : 0 = "9", 1 = "8", 2 = "12", 3 = "11", 4 = "15"`.
+///
+/// Those five are **point** sizes. The slot constructor hands them to
+/// `CreateFontIndirectA` as `lfHeight = -MulDiv(pt, 96, 72)`, so at the era's
+/// 96 dpi the ladder is 12, 11, 16, 15, 20 pixels. A *negative* `lfHeight`
+/// asks GDI for a character height, which for a TrueType face is the em size —
+/// exactly what Bevy's `FontSize::Px` means, so the numbers transfer 1:1.
+///
+/// Across the 247 `resinfo` files: 3740 authored controls carry a
+/// `FontIndex` — index 0 appears 3547 times, 2 → 156, 1 → 30, 3 → 2, 4 → 2.
+/// Three sites in `ifchatbubblewindow.txt` (`:12,:31,:50`) ask for index **7**,
+/// which no slot in the binary covers; only one of the three carries text
+/// (`GDR_CHATBUBBLEWINDOW_CHATBOX:CIFTextBox`, `:44`), the other two are empty
+/// `CIFWnd` bubble ends.
+///
+/// The intro scene keeps its own copy of this ladder
+/// (`scenes::intro_v2::intro_font_px`) with the *opposite* out-of-range rule —
+/// it clamps to the largest entry. That is not a second opinion about the same
+/// question: the intro trees (`ps*.txt`) author only index 0 and 2, so no
+/// out-of-range value reaches it, and it is unscaled because the intro draws at
+/// the art's native size. The rule below is the HUD's, and the paragraph on
+/// [`ladder_px`] states the data it rests on.
+pub const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
+
+/// The `FontSize::Px` value for a control whose resinfo `FontIndex` is
+/// `index`, scaled by [`hud_scale`] like every other transcribed rect.
+///
+/// An out-of-range index falls back to 0, the index 3547 of 3740 authored
+/// controls use, rather than panicking on a data value.
+pub fn font_px(index: usize) -> f32 {
+    text_px(ladder_px(index))
+}
+
+/// The ladder entry for a resinfo `FontIndex`. Split out so it can be
+/// asserted without reading the process global the tests below race on.
+///
+/// An index the binary has no slot for falls back to **index 0**, the 9 pt
+/// body size 3547 of 3740 authored controls carry — not to the largest entry,
+/// which would render the one `ifchatbubblewindow.txt` FontIndex-7 site that
+/// carries text at nearly twice the size the rest of the chat uses.
+///
+/// The data behind the choice: the only out-of-range index in the shipped
+/// resinfo is 7, and it occurs in chat bubbles only. The eight other chat trees
+/// (`ifchatviewer`, `ifchatmodule`, `ifwholechat`, `ifchatoptionboard`,
+/// `ifchattingblocking(+slot)`, `ifcaschatview`, `ifsupporterchatwnd`) carry
+/// **104 controls, every one of them FontIndex 0**, so index 0 is the size of
+/// the surrounding chat text. What the original itself does with index 7 was
+/// not read out of the binary — this is a stated openroad decision under
+/// ADR-0009, not a transcribed rule.
+fn ladder_px(index: usize) -> f32 {
+    FONT_INDEX_PX
+        .get(index)
+        .copied()
+        .unwrap_or(FONT_INDEX_PX[0])
+}
+
+/// [`text_px`]'s rule without the process global, so it can be asserted
+/// without writing the one value the other tests here race on.
+///
+/// Private on purpose: a *fit* check elsewhere would have the same need (know
+/// what a design value rounds to at a given scale without writing the global),
+/// but no such call site exists in this tree yet, and `pub(crate)` on a
+/// helper nobody outside the module calls only invites the re-derivation of
+/// `(design * scale).round()` this module exists to remove.
+fn round_text_px(design_px: f32, scale: f32) -> f32 {
+    (design_px * scale).round()
+}
+
+/// Scale a text size the way [`hud_scale`] scales a rect, then **round to a
+/// whole pixel**.
+///
+/// The rounding is the point of this function. A rect may land on a half
+/// pixel — that is half a pixel of stretched texture and nobody sees it — but
+/// a font size may not: `hud_scale` 1.5 turns every odd entry of the ladder
+/// into a half (11 -> 16.5), and a fractional em rasterises the glyphs off the
+/// pixel grid, which is the blurry half of "font and spacing do not fit". One
+/// rule, one place; a caller that multiplies by `hud_scale()` itself is the
+/// bug this replaces.
+pub fn text_px(design_px: f32) -> f32 {
+    round_text_px(design_px, hud_scale())
+}
+
 pub struct HudScalePlugin;
 
 impl Plugin for HudScalePlugin {
@@ -124,6 +218,47 @@ mod test {
             "these sites re-declare the HUD scale instead of calling \
              `hud_scale()`, so `config.hud.hud_scale` cannot reach them: {offenders:?}"
         );
+    }
+
+    /// The ladder is data + binary, not taste: both sources are quoted in
+    /// `FONT_INDEX_PX`'s doc comment, and the order is the resinfo `FontIndex`
+    /// order (0 = 9 pt, the default of 3547 of 3740 authored controls), not
+    /// ascending size. A future edit that "tidies" it into 11,12,15,16,20
+    /// would silently re-point every FontIndex-0 label at 8 pt.
+    #[test]
+    fn the_font_ladder_is_the_originals_five_sizes_in_font_index_order() {
+        assert_eq!(FONT_INDEX_PX, [12.0, 11.0, 16.0, 15.0, 20.0]);
+        // -MulDiv(pt, 96, 72) for the pushed point sizes 9, 8, 12, 11, 15.
+        for (index, pt) in [9.0f32, 8.0, 12.0, 11.0, 15.0].into_iter().enumerate() {
+            assert_eq!(FONT_INDEX_PX[index], (pt * 96.0 / 72.0).round());
+        }
+    }
+
+    /// A fractional em is the blurry half of "font and spacing do not fit":
+    /// 11 px at scale 1.5 is 16.5, and it has to leave the rule as 17. Asserted
+    /// on the pure rule, not through the process global, because the test below
+    /// owns that global.
+    #[test]
+    fn a_scaled_text_size_is_always_a_whole_pixel() {
+        assert_eq!(round_text_px(12.0, 1.5), 18.0);
+        assert_eq!(round_text_px(11.0, 1.5), 17.0, "16.5 must not be rendered");
+        assert_eq!(round_text_px(15.0, 1.5), 23.0);
+        assert_eq!(round_text_px(12.0, 1.0), 12.0);
+    }
+
+    /// A resinfo `FontIndex` the binary has no slot for (7, in
+    /// `ifchatbubblewindow.txt`) must not index out of bounds — and it must
+    /// land on the body size, not on the 20 px headline entry: a clamp to the
+    /// last slot renders the one chat-bubble site that carries text at nearly
+    /// twice the size of the text around it. The intro scene's copy of the
+    /// ladder clamps instead, and says why in its own doc — it never sees an
+    /// out-of-range index.
+    #[test]
+    fn an_out_of_range_font_index_falls_back_to_the_body_size() {
+        assert_eq!(ladder_px(7), ladder_px(0));
+        assert_eq!(ladder_px(7), 12.0, "must not clamp to the 20 px entry");
+        assert_eq!(ladder_px(0), 12.0);
+        assert_eq!(ladder_px(4), 20.0, "an in-range index still resolves");
     }
 
     /// The knob has to move the number every surface multiplies by — and a
