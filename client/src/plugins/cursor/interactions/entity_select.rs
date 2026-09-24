@@ -32,6 +32,7 @@ use crate::plugins::camera::PlayerCamera;
 use crate::plugins::combat::{AttackOrder, Dying, PickupOrder};
 use crate::plugins::config::selection::{HighlightColors, SelectionDecalColors};
 use crate::plugins::config::ClientConfig;
+use crate::plugins::cos::spawn::LocallySpawned;
 use crate::plugins::cos::{interacts_as_character, CosEntity};
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::nav::decal::{decal_mesh, NavMeshDecal};
@@ -715,25 +716,44 @@ fn update_selection_decal(
 
 // --- Select-entity packet (0x7045) --------------------------------------------
 
+/// The uid a selection may put on the wire.
+///
+/// `None` for an entity the client invented ([`LocallySpawned`], e.g. the dev
+/// COS spawner): its uid is synthetic, no server knows it, and sending it
+/// only draws a rejection. The selection itself still works locally — only the
+/// packet is withheld.
+fn wire_selection_uid(
+    selected: Option<Entity>,
+    ids: &Query<&NetworkId>,
+    locals: &Query<(), With<LocallySpawned>>,
+) -> Option<u32> {
+    let entity = selected?;
+    if locals.contains(entity) {
+        return None;
+    }
+    ids.get(entity).ok().map(|id| id.0)
+}
+
 /// Tell the server about a new selection so it answers with 0xB045 (target
 /// info). Fire-and-forget: go-sro never responds for NPCs, so nothing here may
 /// wait on the reply.
 fn send_select_request(
     selected: Res<SelectedEntity>,
     ids: Query<&NetworkId>,
+    locals: Query<(), With<LocallySpawned>>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     if !selected.is_changed() || selected.is_added() {
         return;
     }
-    let Some(id) = selected.0.and_then(|entity| ids.get(entity).ok()) else {
+    let Some(id) = wire_selection_uid(selected.0, &ids, &locals) else {
         return;
     };
     // Offline sandbox has no agent connection — selection still works locally.
     let Ok(conn) = conn.single() else {
         return;
     };
-    let request = SelectEntityRequest { unique_id: id.0 };
+    let request = SelectEntityRequest { unique_id: id };
     if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
         error!("network: failed to send SelectEntityRequest: {}", e.0);
     }
@@ -767,4 +787,35 @@ pub fn apply_selection_colors(
     colors.rim_relative =
         config.graphics.rim.mode == crate::plugins::config::graphics::RimMode::Relative;
     *decal_colors = config.selection.decal.resolved();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::{IntoSystem, System};
+
+    /// The uid resolver the select packet goes through: a locally spawned COS
+    /// (dev spawner, synthetic uid) must not reach the wire, a server-owned
+    /// entity must.
+    #[test]
+    fn a_locally_spawned_entity_yields_no_wire_uid() {
+        let mut world = World::new();
+        let local = world.spawn((NetworkId(0x8000_0000), LocallySpawned)).id();
+        let remote = world.spawn(NetworkId(4711)).id();
+
+        let probe = move |ids: Query<&NetworkId>,
+                          locals: Query<(), With<LocallySpawned>>|
+              -> (Option<u32>, Option<u32>) {
+            (
+                wire_selection_uid(Some(local), &ids, &locals),
+                wire_selection_uid(Some(remote), &ids, &locals),
+            )
+        };
+        let mut system = IntoSystem::into_system(probe);
+        system.initialize(&mut world);
+        let (local_uid, remote_uid) = system.run((), &mut world).unwrap();
+
+        assert_eq!(local_uid, None, "a client-invented uid never goes out");
+        assert_eq!(remote_uid, Some(4711), "a server entity still selects");
+    }
 }
