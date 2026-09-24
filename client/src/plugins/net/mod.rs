@@ -1,3 +1,4 @@
+pub mod academy;
 pub mod agent;
 pub mod character_info;
 pub mod entities;
