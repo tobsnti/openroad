@@ -397,6 +397,9 @@ impl Plugin for IntroV2ScenePlugin {
                         .run_if(resource_exists::<character_create::CharCreateFocus>),
                     character_create::update_slider_thumbs
                         .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
+                    // The demand the gates wrote goes away once it is met.
+                    character_create::clear_satisfied_gate_line
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
                     // `Section = Rotate`: yaw + zoom are applied whenever the
                     // view state changes (and once on enter, via the added
                     // resource), so the preview keeps them across re-spawns.

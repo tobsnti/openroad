@@ -40,7 +40,7 @@ use crate::util::mesh::needs_winding_reversal;
 
 use super::assets::IntroV2Assets;
 use super::character_select;
-use super::chrome::InfoTextV2Update;
+use super::chrome::{InfoTextV2, InfoTextV2Update};
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{intro_font_px, play_error_sound, unescape_newlines, IntroV2State, IntroV2Ui};
@@ -2867,12 +2867,49 @@ fn validate_name(name: &str, ui_strings: &ClientUiStrings) -> Result<(), String>
 /// request may leave.
 fn gate_selection(selection: &CharCreateSelection) -> Result<(), (&'static str, &'static str)> {
     if selection.race == Race::EUROPEAN && !selection.garment_chosen {
-        return Err(("UIO_MSG_ERROR_CHARACTER_SELECTARMOR", "Select a Protector."));
+        return Err(GATE_PROTECTOR);
     }
     if !selection.weapon_chosen {
-        return Err(("UIO_MSG_ERROR_CHARACTER_SELECTWEAPON", "Select a Weapon."));
+        return Err(GATE_WEAPON);
     }
     Ok(())
+}
+
+/// The two gate lines as one pair each, so [`gate_selection`] and
+/// [`clear_satisfied_gate_line`] cannot drift apart: one of them writes the
+/// line, the other one has to recognise it again.
+const GATE_PROTECTOR: (&str, &str) = ("UIO_MSG_ERROR_CHARACTER_SELECTARMOR", "Select a Protector.");
+const GATE_WEAPON: (&str, &str) = ("UIO_MSG_ERROR_CHARACTER_SELECTWEAPON", "Select a Weapon.");
+
+/// Takes the gate line down once the player has done what it asked.
+///
+/// The defect: "Select a Weapon." is written by [`gate_selection`] and by
+/// nothing else, and the notice line only ever changes when somebody writes a
+/// new one — so after picking a weapon the demand stood on the screen while the
+/// screen was ready to send. A line that outlives its reason reads as a second,
+/// unexplained refusal.
+///
+/// Only the two lines this screen's gates authored are cleared, and only once
+/// the gates pass: a server refusal or a name error keeps standing, because
+/// picking a weapon has not answered those.
+pub fn clear_satisfied_gate_line(
+    selection: Res<CharCreateSelection>,
+    ui_strings: Res<ClientUiStrings>,
+    notice: Query<&Text, With<InfoTextV2>>,
+    mut info_text_writer: MessageWriter<InfoTextV2Update>,
+) {
+    if gate_selection(&selection).is_err() {
+        return;
+    }
+    let Ok(shown) = notice.single() else {
+        return;
+    };
+    if [GATE_PROTECTOR, GATE_WEAPON]
+        .iter()
+        .any(|(key, fallback)| ui_strings.get_plain_or(key, fallback) == shown.0)
+    {
+        info_text_writer.write(InfoTextV2Update(String::new()));
+    }
 }
 
 /// Sends a lobby action frame; returns whether it was queued.
@@ -3820,6 +3857,63 @@ mod tests {
         );
         eu.garment_chosen = true;
         assert_eq!(gate_selection(&eu), Ok(()));
+    }
+
+    /// The stale demand: "Select a Weapon." is written once, and the notice line
+    /// only changes when somebody writes a new one — so after the weapon was
+    /// picked the demand stood on a screen that was ready to send. Asserted in
+    /// both directions, plus the line that must **not** be cleared.
+    #[test]
+    fn the_gate_line_goes_when_the_gate_is_satisfied() {
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2;
+
+        fn app_showing(line: &str, selection: CharCreateSelection) -> App {
+            let mut app = App::new();
+            app.add_message::<InfoTextV2Update>()
+                .init_resource::<ClientUiStrings>()
+                .insert_resource(selection)
+                .add_systems(Update, super::clear_satisfied_gate_line);
+            app.world_mut().spawn((InfoTextV2, Text(line.to_string())));
+            app
+        }
+
+        fn cleared(app: &App) -> bool {
+            let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+            let mut cursor = messages.get_cursor();
+            cursor.read(messages).any(|line| line.0.is_empty())
+        }
+
+        // The demand still stands: a fresh screen has chosen no weapon.
+        let mut app = app_showing("Select a Weapon.", CharCreateSelection::default());
+        app.update();
+        assert!(
+            !cleared(&app),
+            "the demand may not be taken down while it is unmet"
+        );
+
+        // The weapon is picked: the line goes.
+        let mut app = app_showing(
+            "Select a Weapon.",
+            CharCreateSelection {
+                weapon_chosen: true,
+                ..Default::default()
+            },
+        );
+        app.update();
+        assert!(cleared(&app), "the met demand stayed on the screen");
+
+        // Not our line: a server refusal survives a weapon pick, because
+        // picking a weapon has not answered it.
+        let mut app = app_showing(
+            "This ID already exists.",
+            CharCreateSelection {
+                weapon_chosen: true,
+                ..Default::default()
+            },
+        );
+        app.update();
+        assert!(!cleared(&app), "an unrelated line was wiped");
     }
 
     /// The overlay pass has to bring its own light.
