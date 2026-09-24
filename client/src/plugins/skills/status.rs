@@ -224,7 +224,7 @@ pub fn apply_self_buffs(
         }
         let duration = row
             .and_then(|r| r.param_after("dura"))
-            .map(|ms| ms as f32 / 1000.0)
+            .map(|ms| buff_secs_from_dura(ms, &swing.codename))
             .unwrap_or(BUFF_FALLBACK_SECS);
 
         // re-cast of an active buff just refreshes its timer (only the
@@ -297,6 +297,39 @@ pub(crate) fn push_buff_instance(
     }
 }
 
+/// Seconds for a skilldata `'dura'` parameter, in milliseconds.
+///
+/// The idea: `dura` is **not** guaranteed to be a positive millisecond count.
+/// Shipped data can carry `SKILL_CH_LIGHTNING_GWANTONG_A` as
+/// `-1875767200 ms`, which killed the client — `Timer::from_seconds` forwards to
+/// `Duration::from_secs_f32`, which *panics* on a negative value
+/// (`core/src/time.rs:999`, "cannot convert float seconds to Duration"). A
+/// hostile or simply misread number in shipped data must never be able to end
+/// the session, so the conversion is total: anything that is not a sane,
+/// positive duration is treated as permanent-until-removed, exactly like a
+/// buff with no `dura` at all ([`PERMANENT_BUFF_SECS`]).
+///
+/// It logs the raw value once per occurrence rather than swallowing it: the
+/// *meaning* of a non-positive `dura` is still open — it may be the original's
+/// "until cancelled" sentinel, or our parameter scan landing on the wrong slot
+/// (`param_after` searches the stream for the tag, so a row whose stream shape
+/// we misread returns whatever follows a coincidental match). Both are
+/// answerable from the data, and the log line is what makes that measurable.
+fn buff_secs_from_dura(ms: i64, codename: &str) -> f32 {
+    if ms <= 0 {
+        warn!("skills: buff {codename} has a non-positive 'dura' ({ms} ms) — treated as permanent");
+        return PERMANENT_BUFF_SECS;
+    }
+    let secs = ms as f32 / 1000.0;
+    if !secs.is_finite() || secs > PERMANENT_BUFF_SECS {
+        warn!(
+            "skills: buff {codename} has an out-of-range 'dura' ({ms} ms) — treated as permanent"
+        );
+        return PERMANENT_BUFF_SECS;
+    }
+    secs
+}
+
 /// Buffs with no wire duration and no skilldata `'dura'` are treated as
 /// permanent-until-removed: a day-long Timer keeps the gauge/expiry
 /// machinery untouched (infinite `Duration`s panic, and an `Option<Timer>`
@@ -339,11 +372,16 @@ pub fn apply_network_buffs(
         // no duration on the wire: skilldata 'dura' when authored, else
         // permanent-until-0xB072. NOT the 10s BUFF_FALLBACK — that would
         // silently expire real permanent buffs.
+        let codename = row.basic_group().unwrap_or(row.code_name()).to_string();
+        // Same total conversion as the self-cast path: a non-positive or
+        // out-of-range `dura` is permanent, never a negative `Duration`. This
+        // second call site is why the first fix did not hold — the live crash
+        // moved from `apply_self_buffs` to here the moment the server echoed
+        // the same buff back (0xB0BD, `-1875767296 ms`).
         let duration = row
             .param_after("dura")
-            .map(|ms| ms as f32 / 1000.0)
+            .map(|ms| buff_secs_from_dura(ms, &codename))
             .unwrap_or(PERMANENT_BUFF_SECS);
-        let codename = row.basic_group().unwrap_or(row.code_name()).to_string();
         info!(
             "skills: server buff {codename} on uid {} ({duration:.0}s, instance {})",
             add.unique_id, add.buff_instance_id
@@ -565,5 +603,45 @@ pub fn sync_ailment_effects(
             entry.effects.push((bit, effect));
         }
         entry.shown = mask;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::prelude::{Timer, TimerMode};
+
+    /// The panic this guard exists for: a buff row reads `-1875767200 ms` and
+    /// `Duration::from_secs_f32` aborts on a negative value, which took the
+    /// whole client down in play.
+    #[test]
+    fn a_negative_dura_becomes_a_permanent_buff_instead_of_a_panic() {
+        assert_eq!(
+            super::buff_secs_from_dura(-1_875_767_200, "SKILL_CH_LIGHTNING_GWANTONG_A"),
+            super::PERMANENT_BUFF_SECS
+        );
+        // The value the panic message came from must survive a real Timer.
+        let secs = super::buff_secs_from_dura(-1, "SKILL_TEST");
+        assert!(
+            Timer::from_seconds(secs, TimerMode::Once)
+                .duration()
+                .as_secs()
+                > 0
+        );
+    }
+
+    /// A sane row stays untouched — the guard must not swallow real durations.
+    #[test]
+    fn a_positive_dura_is_milliseconds() {
+        assert!((super::buff_secs_from_dura(5_000, "SKILL_TEST") - 5.0).abs() < f32::EPSILON);
+    }
+
+    /// An absurd positive value is capped rather than trusted: a day is already
+    /// "permanent" for the gauge, and beyond that the number is not a duration.
+    #[test]
+    fn an_out_of_range_dura_is_capped_at_permanent() {
+        assert_eq!(
+            super::buff_secs_from_dura(i64::MAX, "SKILL_TEST"),
+            super::PERMANENT_BUFF_SECS
+        );
     }
 }
