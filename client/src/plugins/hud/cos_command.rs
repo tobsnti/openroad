@@ -25,6 +25,7 @@
 //! one summon at a time — [`CosBarSubject`], switched by clicking a slot in
 //! the status stack.
 
+use bevy::ecs::system::SystemParam;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
@@ -34,9 +35,10 @@ use crate::assets::FontAssets;
 use crate::plugins::cos::pet::PetCommand;
 use crate::plugins::cos::{ActiveCosList, CosCommand, CosStatus, RiderState};
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
-use crate::plugins::hud::chat::model::ChatState;
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
 use crate::plugins::hud::cos::model::{CosPage, CosWindowState};
 use crate::plugins::hud::cos::state::CosState;
+use crate::plugins::hud::cos::unsummon_confirm::CosUnsummonConfirm;
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::net::entities::NetworkId;
 use crate::plugins::player::Player;
@@ -44,7 +46,7 @@ use crate::plugins::settings::keymap::{
     KEY_COS_AI_TYPE, KEY_COS_ATTACK, KEY_COS_FOLLOW, KEY_COS_RELEASE, KEY_COS_RIDE,
 };
 use crate::plugins::settings::options::GameOptions;
-use crate::plugins::textdata::ClientUiStrings;
+use crate::plugins::textdata::{ClientCharacterData, ClientUiStrings};
 use packets::agent::pet::{AttackPetSettings, CosKind};
 
 // --- Layout -------------------------------------------------------------------
@@ -240,8 +242,14 @@ const TRANSPORT_SLOTS: [CommandSlot; 5] = [BOARD, FOLLOW, INVENTORY, INFO, UNSUM
 const ATTACK_PET_SLOTS: [CommandSlot; 5] = [ATTACK, FOLLOW, AI_MODE, INFO, UNSUMMON];
 /// A pick pet has a bag and a grab filter, but does not fight.
 const PICK_PET_SLOTS: [CommandSlot; 4] = [FOLLOW, INVENTORY, INFO, UNSUMMON];
-/// A mercenary/guild guard: we model nothing of its own behaviour yet.
-const FELLOW_SLOTS: [CommandSlot; 2] = [FOLLOW, UNSUMMON];
+const GUILD_GUARD_SLOTS: [CommandSlot; 0] = [];
+/// An `Unmapped` COS (tid4 6/7/8, the quest objects) has no known kind byte and
+/// no body grammar, so no cell that depends on one may be offered. But
+/// `NPC_CH_QT_FLAMEMASTER_COS` carries `CanControl = 1`, so `commandable` says
+/// yes and an empty list would leave the player with a summon that answers to
+/// nothing — no bar, no keys, no way to dismiss it. These two orders carry
+/// only the uid and need no body: dismiss it, and tell it to follow.
+const UNMAPPED_SLOTS: [CommandSlot; 2] = [FOLLOW, UNSUMMON];
 
 /// The cells for a COS of `kind`.
 fn slots_for(kind: CosKind) -> &'static [CommandSlot] {
@@ -249,7 +257,8 @@ fn slots_for(kind: CosKind) -> &'static [CommandSlot] {
         CosKind::Vehicle | CosKind::Transport => &TRANSPORT_SLOTS,
         CosKind::GrowthPet => &ATTACK_PET_SLOTS,
         CosKind::GrabPet => &PICK_PET_SLOTS,
-        CosKind::Fellow => &FELLOW_SLOTS,
+        CosKind::GuildGuard => &GUILD_GUARD_SLOTS,
+        CosKind::Unmapped(_) => &UNMAPPED_SLOTS,
     }
 }
 
@@ -296,6 +305,26 @@ const DIMMED: Color = Color::srgba(0.45, 0.45, 0.45, 0.7);
 /// `SelectedEntity` because clicking a slot also selects the creature.
 #[derive(Resource, Default)]
 pub struct CosBarSubject(pub Option<u32>);
+
+/// `UIIT_MSG_COSERR_YOU_CANT_CONTROL_THIS_OBJ` — the original's own refusal for
+/// a summon whose characterdata `CanControl` (col 67) is 0. The text comes
+/// from `textdata/textuisystem.txt` (the `enable=1` row).
+const CANT_CONTROL_KEY: &str = "UIIT_MSG_COSERR_YOU_CANT_CONTROL_THIS_OBJ";
+const CANT_CONTROL_FALLBACK: &str = "The selected transport is not user controlled.";
+
+/// Whether the player may command this summon at all — characterdata
+/// `CanControl` (col 67), read through
+/// [`CharacterDataRow::can_control`](crate::assets::textdata::characterdata::CharacterDataRow::can_control).
+///
+/// A row we cannot look up (no table loaded in headless HUD tests, an unknown
+/// ref id) counts as commandable: what forbids the orders is the data, and
+/// absent data forbids nothing — the same direction as the rest of the HUD's
+/// `Option<Res<_>>` degradation.
+pub fn commandable(status: &CosStatus, char_data: Option<&ClientCharacterData>) -> bool {
+    char_data
+        .and_then(|data| data.get(&(status.ref_id as i32)))
+        .is_none_or(|row| row.can_control())
+}
 
 /// The COS the bar acts on: the explicit pick, else the ridden mount, else the
 /// newest summon. A stale pick (the COS was unsummoned) falls through.
@@ -379,6 +408,9 @@ pub fn sync_cos_command_bar(
     list: Res<ActiveCosList>,
     rider: Res<RiderState>,
     subject: Res<CosBarSubject>,
+    // `Option`: the HUD runs in scenes and harnesses with no characterdata
+    // loaded, and absent data forbids nothing (see `commandable`).
+    char_data: Option<Res<ClientCharacterData>>,
     bars: Query<(Entity, &CosBarKind), With<CosCommandBar>>,
     cam_query: Query<Entity, With<Camera2d>>,
     asset_server: Res<AssetServer>,
@@ -386,7 +418,13 @@ pub fn sync_cos_command_bar(
     mut commands: Commands,
 ) {
     let bar = bars.single();
-    let Some(status) = bar_subject(&subject, &list, &rider) else {
+    // A subject the player cannot command, or one whose kind has no cells, is
+    // no bar at all — a plate of clicks that resolve to nothing is worse than
+    // nothing (see `commandable` and `GUILD_GUARD_SLOTS`).
+    let Some(status) = bar_subject(&subject, &list, &rider)
+        .filter(|status| commandable(status, char_data.as_deref()))
+        .filter(|status| !slots_for(status.kind).is_empty())
+    else {
         if let Ok((bar, _)) = bar {
             commands.entity(bar).despawn();
         }
@@ -684,20 +722,24 @@ fn dispatch_ctx<'a>(
     ids: &Query<&NetworkId>,
     players: &Query<Entity, With<Player>>,
     window: Option<&'a mut CosWindowState>,
+    confirm: Option<&'a mut CosUnsummonConfirm>,
 ) -> DispatchCtx<'a> {
     let subject = bar_subject(subject, list, rider);
-    let offensive = subject
+    let cos = subject
         .as_ref()
-        .and_then(|status| state.and_then(|state| state.get(status.unique_id)))
-        .is_some_and(|cos| AttackPetSettings(cos.settings()).is_offensive());
+        .and_then(|status| state.and_then(|state| state.get(status.unique_id)));
+    let offensive = cos.is_some_and(|cos| AttackPetSettings(cos.settings()).is_offensive());
+    let carries_cargo = cos.is_some_and(|cos| !cos.body.items.is_empty());
     DispatchCtx {
         mounted: subject
             .as_ref()
             .is_some_and(|status| rider.0 == Some(status.unique_id)),
         victim: attack_victim(selected, ids, players, list),
         offensive,
+        carries_cargo,
         subject,
         window,
+        confirm,
     }
 }
 
@@ -716,11 +758,13 @@ fn on_bar_button(
     mut commands_out: MessageWriter<CosCommand>,
     mut pet_out: MessageWriter<PetCommand>,
     window: Option<ResMut<CosWindowState>>,
+    confirm: Option<ResMut<CosUnsummonConfirm>>,
 ) {
     let Ok(action) = buttons.get(activate.entity) else {
         return;
     };
     let mut window = window.map(ResMut::into_inner);
+    let mut confirm = confirm.map(ResMut::into_inner);
     let mut ctx = dispatch_ctx(
         &subject,
         &list,
@@ -730,6 +774,7 @@ fn on_bar_button(
         &ids,
         &players,
         window.as_deref_mut(),
+        confirm.as_deref_mut(),
     );
     dispatch(*action, &mut ctx, &mut commands_out, &mut pet_out);
 }
@@ -740,6 +785,11 @@ fn on_bar_button(
 /// shape: `dispatch` used to resolve a single COS uid and act on it, but an
 /// attack carries *two* ids — the pet and its victim.
 pub struct DispatchCtx<'a> {
+    /// The unsummon confirm gate, when the window plugin is present: a loaded
+    /// transport gets the original's two-line question
+    /// (`UIIT_MSG_COS_CLEAN_CONFIRM1/2`) before the command goes out.
+    pub confirm: Option<&'a mut CosUnsummonConfirm>,
+    pub carries_cargo: bool,
     /// The COS the bar is showing — every cell acts on this one, since the
     /// cells themselves were chosen for its kind.
     pub subject: Option<CosStatus>,
@@ -800,6 +850,14 @@ fn dispatch(
             commands_out.write(CosCommand::Follow(uid));
         }
         CosBarButton::Unsummon => {
+            // A loaded transport gets the original's question first; the Yes
+            // button in `hud::cos::unsummon_confirm` writes the command.
+            if ctx.carries_cargo {
+                if let Some(confirm) = ctx.confirm.as_deref_mut() {
+                    confirm.pending = Some(uid);
+                    return;
+                }
+            }
             commands_out.write(CosCommand::Unsummon(uid));
         }
         CosBarButton::AiMode => {
@@ -843,6 +901,39 @@ fn dispatch(
     }
 }
 
+/// The three resources the "you cannot control this" answer needs, bundled.
+///
+/// A `SystemParam` and not three arguments because `cos_command_hotkeys` sits at
+/// Bevy's 16-parameter ceiling — a 17th does not fail with "too many
+/// parameters", it fails with `(..., ..., ...) cannot become an ObserverSystem`,
+/// which names nothing. All three are `Option`: the bar's systems also run in
+/// the offline UI scenes and in the headless harness, where absent textdata
+/// forbids nothing and a missing chat history degrades to a log line
+/// (AGENTS.md's rule for HUD resources).
+#[derive(SystemParam)]
+pub struct RefusalReport<'w> {
+    char_data: Option<Res<'w, ClientCharacterData>>,
+    ui_strings: Option<Res<'w, ClientUiStrings>>,
+    history: Option<ResMut<'w, ChatHistory>>,
+}
+
+impl RefusalReport<'_> {
+    /// Put the original's own sentence in the chat, or log it when there is no
+    /// chat to put it in.
+    fn say(&mut self, key: &str, fallback: &str) {
+        let text = self
+            .ui_strings
+            .as_deref()
+            .map(|strings| strings.get_or(key, fallback))
+            .unwrap_or(fallback)
+            .to_string();
+        match self.history.as_deref_mut() {
+            Some(history) => history.push(ChatLine::system(text)),
+            None => info!("cos: {text}"),
+        }
+    }
+}
+
 /// Vanilla's own captions name these keys ("Dismount (Home)", "Terminated
 /// (PgUp)"), so they are bound by default in the keymap; PgDn's AI toggle has
 /// no behavior yet and is deliberately not dispatched.
@@ -860,6 +951,8 @@ pub fn cos_command_hotkeys(
     mut commands_out: MessageWriter<CosCommand>,
     mut pet_out: MessageWriter<PetCommand>,
     window: Option<ResMut<CosWindowState>>,
+    confirm: Option<ResMut<CosUnsummonConfirm>>,
+    mut refusal: RefusalReport,
 ) {
     // Never fire while the player is typing (e.g. the "/board" chat command).
     if chat.is_some_and(|chat| chat.input_open) || list.0.is_empty() {
@@ -870,7 +963,24 @@ pub fn cos_command_hotkeys(
             .key_for(id)
             .is_some_and(|key| keys.just_pressed(key))
     };
+    // The keys stay live when the bar is gone, so this is where a summon the
+    // player cannot control gets the original's own answer instead of silence
+    // (see `commandable`; the bar is not built for such a subject at all).
+    if let Some(status) = bar_subject(&subject, &list, &rider) {
+        if !commandable(&status, refusal.char_data.as_deref()) {
+            if pressed(KEY_COS_RIDE)
+                || pressed(KEY_COS_RELEASE)
+                || pressed(KEY_COS_FOLLOW)
+                || pressed(KEY_COS_ATTACK)
+                || pressed(KEY_COS_AI_TYPE)
+            {
+                refusal.say(CANT_CONTROL_KEY, CANT_CONTROL_FALLBACK);
+            }
+            return;
+        }
+    }
     let mut window = window.map(ResMut::into_inner);
+    let mut confirm = confirm.map(ResMut::into_inner);
     let mut ctx = dispatch_ctx(
         &subject,
         &list,
@@ -880,6 +990,7 @@ pub fn cos_command_hotkeys(
         &ids,
         &players,
         window.as_deref_mut(),
+        confirm.as_deref_mut(),
     );
     // Only fire a key whose command the subject's own bar actually offers —
     // PgDn on a horse must not send a pet AI change.
@@ -1111,12 +1222,13 @@ mod tests {
         }
     }
 
-    const ALL_KINDS: [CosKind; 5] = [
+    const ALL_KINDS: [CosKind; 6] = [
         CosKind::Vehicle,
         CosKind::Transport,
         CosKind::GrowthPet,
         CosKind::GrabPet,
-        CosKind::Fellow,
+        CosKind::GuildGuard,
+        CosKind::Unmapped(8),
     ];
 
     /// The slot set is chosen per COS kind — Board is meaningless to a pet and
@@ -1136,7 +1248,7 @@ mod tests {
         // Only the attack pet is aimed, and only it has an AI mode.
         assert!(has(CosKind::GrowthPet, CosBarButton::Attack));
         assert!(has(CosKind::GrowthPet, CosBarButton::AiMode));
-        for kind in [CosKind::Vehicle, CosKind::GrabPet, CosKind::Fellow] {
+        for kind in [CosKind::Vehicle, CosKind::GrabPet, CosKind::GuildGuard] {
             assert!(!has(kind, CosBarButton::Attack), "{kind:?}");
             assert!(!has(kind, CosBarButton::AiMode), "{kind:?}");
         }
@@ -1146,8 +1258,36 @@ mod tests {
         assert!(has(CosKind::GrabPet, CosBarButton::Inventory));
         assert!(!has(CosKind::GrowthPet, CosBarButton::Inventory));
 
+        // A guild guard gets NO cells: all 2,100 `COS_GUILD_*` rows carry
+        // `CanControl = 0`, so there is no order it would accept — the bar is
+        // not built for it and the keys answer with the original's refusal
+        // (`commandable`).
+        assert!(slots_for(CosKind::GuildGuard).is_empty());
+
+        // An `Unmapped` COS is the opposite case: `NPC_CH_QT_FLAMEMASTER_COS`
+        // (tid4 8) carries `CanControl = 1`, so the player *can* command it and
+        // an empty cell list would be a silent dead end — no bar and no keys,
+        // not even an unsummon. It gets the two uid-only orders and nothing
+        // that would need the body grammar we do not have.
+        for tid4 in 6u8..=8 {
+            let kind = CosKind::Unmapped(tid4);
+            assert!(has(kind, CosBarButton::Unsummon), "{kind:?}");
+            assert!(has(kind, CosBarButton::Follow), "{kind:?}");
+            for (name, action) in [
+                ("board", CosBarButton::BoardToggle),
+                ("attack", CosBarButton::Attack),
+                ("ai mode", CosBarButton::AiMode),
+                ("inventory", CosBarButton::Inventory),
+            ] {
+                assert!(!has(kind, action), "{kind:?} must not offer {name}");
+            }
+        }
+
         for kind in ALL_KINDS {
-            // Every summon can be dismissed and told to follow.
+            if slots_for(kind).is_empty() {
+                continue;
+            }
+            // Every *commandable* summon can be dismissed and told to follow.
             assert!(has(kind, CosBarButton::Unsummon), "{kind:?}");
             assert!(has(kind, CosBarButton::Follow), "{kind:?}");
             assert!(
@@ -1176,8 +1316,10 @@ mod tests {
                     subject: subject.clone(),
                     victim,
                     offensive: false,
+                    carries_cargo: false,
                     mounted: false,
                     window: Some(&mut window),
+                    confirm: None,
                 };
                 dispatch(action, &mut ctx, &mut out, &mut pet_out);
             },
