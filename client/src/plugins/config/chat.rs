@@ -12,7 +12,7 @@ pub struct ChatSettings {
     /// Fade the chat chrome out after a few idle seconds.
     ///
     /// Non-original: the v1.188 client has no idle fade — it ships a manual
-    /// transparency slider instead (docs/re/ui/hud-chat.md §6-13). Off by
+    /// transparency slider instead. Off by
     /// default so the stock client matches the original; the locked rule keeps
     /// non-original behaviour behind a flag.
     #[serde(default)]
@@ -21,37 +21,51 @@ pub struct ChatSettings {
 
 /// AARRGGBB hex per chat channel.
 ///
-/// UNKNOWN (docs/re/ui/hud-chat.md §9-U3): these are **not** the original's
-/// values. No per-channel text-colour table exists anywhere in the PK2 — every
-/// `GDR_LIST_*` in `ifchatviewer.txt` carries white, and the real colours are
-/// compiled into the client — so the defaults below are our own choice, kept
-/// config-driven precisely because the data cannot settle them.
+/// Sourced from the original client (the local RE notes): the
+/// PK2 really has no colour table — `ifchatviewer.txt` carries white on every
+/// `GDR_LIST_*` — but the v1.188 client compiles one in, as a switch on the
+/// wire `chat_type` inside the chat-line formatter (jump table
+/// at, one `mov ebp, imm32` per case, `0xAARRGGBB`). The defaults
+/// below are those immediates verbatim, each with its address. They stay
+/// config-driven so a user can override them; a deliberate deviation from the
+/// original (contrast, accessibility) is fine but must say why.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct ChatColorSettings {
-    /// Normal/local chat (and NPC lines).
+    /// All/local chat, stall lines and the unnamed types — `or ebp,-1` @.
     pub normal: String,
+    /// Whisper (chat_type 2, shared with 10) — @.
     pub whisper: String,
+    /// Party (chat_type 4) — @.
     pub party: String,
+    /// Guild (chat_type 5) — @.
     pub guild: String,
-    /// GM chat, notices and client info lines.
+    /// GM chat + notices (chat_type 3 and 7 share one case) and our client info
+    /// lines — @.
     pub gm_notice: String,
+    /// Union/alliance (chat_type 11) — @.
     pub union: String,
+    /// Academy (chat_type 16) — @.
     pub academy: String,
+    /// Global (chat_type 6) — @.
     pub global: String,
+    /// NPC dialog lines (chat_type 13) — @. Its own case in the
+    /// original, not the `normal` white we used to fold it into.
+    pub npc: String,
 }
 
 impl Default for ChatColorSettings {
     fn default() -> Self {
         Self {
             normal: "FFFFFFFF".into(),
-            whisper: "FF00FFFF".into(),
-            party: "FF00FF00".into(),
+            whisper: "FF9FFFFE".into(),
+            party: "FF9AFFD0".into(),
             guild: "FFFFB541".into(),
-            gm_notice: "FFFF00FF".into(),
+            gm_notice: "FFFFAEC3".into(),
             union: "FFC2F573".into(),
             academy: "FF64C7FF".into(),
             global: "FFFFFF00".into(),
+            npc: "FFDBADF8".into(),
         }
     }
 }
@@ -68,6 +82,7 @@ pub struct ChatColors {
     pub union: Color,
     pub academy: Color,
     pub global: Color,
+    pub npc: Color,
 }
 
 impl ChatColorSettings {
@@ -88,6 +103,7 @@ impl ChatColorSettings {
             union: parse("union", &self.union, &defaults.union),
             academy: parse("academy", &self.academy, &defaults.academy),
             global: parse("global", &self.global, &defaults.global),
+            npc: parse("npc", &self.npc, &defaults.npc),
         }
     }
 }
@@ -124,6 +140,45 @@ impl Default for ChatColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guard the sourced table (the local RE notes): each
+    /// default is an instruction immediate out of the original client, so a
+    /// future edit that swaps one for an invented value fails here. Addresses
+    /// live on the fields; this asserts the resolved sRGB bytes.
+    #[test]
+    fn defaults_are_the_original_clients_compiled_colors() {
+        let colors = ChatColorSettings::default().resolved();
+        let expect = |argb: u32| {
+            Color::srgba_u8(
+                (argb >> 16) as u8,
+                (argb >> 8) as u8,
+                argb as u8,
+                (argb >> 24) as u8,
+            )
+        };
+        assert_eq!(colors.normal, expect(0xFFFF_FFFF), "ALL @");
+        assert_eq!(colors.whisper, expect(0xFF9F_FFFE), "PM @");
+        assert_eq!(colors.gm_notice, expect(0xFFFF_AEC3), "GM/notice @");
+        assert_eq!(colors.party, expect(0xFF9A_FFD0), "party @");
+        assert_eq!(colors.guild, expect(0xFFFF_B541), "guild @");
+        assert_eq!(colors.global, expect(0xFFFF_FF00), "global @");
+        assert_eq!(colors.union, expect(0xFFC2_F573), "union @");
+        assert_eq!(colors.npc, expect(0xFFDB_ADF8), "NPC @");
+        assert_eq!(colors.academy, expect(0xFF64_C7FF), "academy @");
+    }
+
+    /// A partial `chat.colors` block keeps the sourced defaults for the keys it
+    /// omits (`#[serde(default)]` per field), so an override cannot silently
+    /// blank the rest of the table.
+    #[test]
+    fn partial_config_block_keeps_sourced_defaults() {
+        let settings: ChatColorSettings =
+            serde_yaml::from_str("party: \"FF102030\"\n").expect("must parse");
+        let colors = settings.resolved();
+        assert_eq!(colors.party, Color::srgba_u8(0x10, 0x20, 0x30, 0xFF));
+        assert_eq!(colors.npc, Color::srgba_u8(0xDB, 0xAD, 0xF8, 0xFF));
+        assert_eq!(colors.whisper, Color::srgba_u8(0x9F, 0xFF, 0xFE, 0xFF));
+    }
 
     #[test]
     fn parses_aarrggbb() {

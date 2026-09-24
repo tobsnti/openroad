@@ -23,6 +23,8 @@ use crate::plugins::hud::stall::owner::OpenStallCommand;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{DisplayName, NetworkId, RemoteEntity};
 use crate::plugins::net::party::{PartyAction, PartyRoster};
+use crate::plugins::settings::keymap;
+use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 
 use super::model::{ChatHistory, ChatLine, ChatLineKind, ChatState, ChatTab};
@@ -129,8 +131,8 @@ const UNSUPPORTED_COMMANDS_TAIL: [&str; 3] = [
 /// (L671 `_PARTY_EXIT`).
 ///
 /// Invite resolves the name against the *visible* entities rather than sending
-/// it: the original's own builder writes a `u32 uniqueID`, never a name
-/// (`docs/re/systems/gameinvite-0x3080-assembly.md` §3), so it must resolve
+/// it: the original's own builder writes a `u32 uniqueID`, never a name,
+/// so it must resolve
 /// locally too. Expel resolves against the party roster, which carries member
 /// names. A name that resolves to nothing is reported, not sent as id 0.
 const PARTY_INVITE_COMMANDS: [&str; 2] = ["/InviteToParty", "/party"];
@@ -364,7 +366,7 @@ pub fn handle_chat_enter(
                 // command in the log so the gap stays findable.
                 warn!("chat: {} is not implemented yet", text.trim());
                 history.push(ChatLine::system(
-                    &ui_strings.get_plain_or(INVALID_COMMAND_KEY, INVALID_COMMAND_FALLBACK),
+                    ui_strings.get_plain_or(INVALID_COMMAND_KEY, INVALID_COMMAND_FALLBACK),
                 ));
                 editable.clear();
                 close(&mut state, &mut focus);
@@ -558,6 +560,55 @@ pub fn refresh_whisper_panel(
                 );
         }
     });
+}
+
+/// `KeyReplyWhisper` (`SROptionSet.dat` id 3023 = `0x52` = `R`, byte-identical
+/// in both of the user's installations, `settings/keymap.rs`): answer the
+/// newest whisper without typing the partner's name.
+///
+/// Idea: this is *not* a second reply mechanism. The key does exactly what a
+/// player would otherwise do by hand — it opens the chat input and prefills it
+/// through the one shared helper [`prefill_whisper_input`], so the line the key
+/// leaves behind is parsed by the same `parse_outgoing` as a typed `$name msg`.
+/// The reply partner is the same `ChatState::last_whisper_from` that `/r`
+/// (`REPLY_COMMANDS`, see [`route_slash`]) reads, recorded on the incoming path
+/// in `net.rs`. No partner yet means the key does nothing at all, which is what
+/// `/r` does today (`SlashRoute::Incomplete`).
+///
+/// The guard is the one the six other shortcut systems use (`!chat.input_open`,
+/// e.g. `hud/party/model.rs:51`), plus the focused-editable check: while any
+/// text field owns the focus the press is a literal `r` in that field, and
+/// stealing it into the chat row would eat the character.
+pub fn reply_to_last_whisper_shortcut(
+    keys: Res<ButtonInput<KeyCode>>,
+    options: Res<GameOptions>,
+    mut focus: ResMut<InputFocus>,
+    mut state: ResMut<ChatState>,
+    mut input: Query<(Entity, &mut EditableText), With<ChatInputBox>>,
+    // Disjoint from `input` (`Without<ChatInputBox>`) so the two queries do not
+    // conflict on `EditableText`; the chat row's own focus is covered by
+    // `input_open`/the entity comparison below.
+    other_text_fields: Query<Entity, (With<EditableText>, Without<ChatInputBox>)>,
+) {
+    let Some(key) = options.key_for(keymap::KEY_REPLY_WHISPER) else {
+        return;
+    };
+    if !keys.just_pressed(key) || state.input_open {
+        return;
+    }
+    let Ok((chat_input, _)) = input.single() else {
+        return;
+    };
+    if focus
+        .get()
+        .is_some_and(|focused| focused == chat_input || other_text_fields.contains(focused))
+    {
+        return;
+    }
+    let Some(name) = state.last_whisper_from.clone() else {
+        return;
+    };
+    prefill_whisper_input(&name, &mut focus, &mut state, &mut input);
 }
 
 /// Prefill the input with `$name ` (caret at the end) and focus it, starting
@@ -810,5 +861,146 @@ mod tests {
         assert_eq!(route_slash("/stall", None), SlashRoute::Gm);
         assert!(!UNSUPPORTED_COMMANDS.contains(&"/Stall"));
         assert!(!UNSUPPORTED_COMMANDS_TAIL.contains(&"/Stall"));
+    }
+
+    /// The R key (`KeyReplyWhisper`, id 3023) drives the same prefill as the
+    /// `/r` command: with a partner it writes `$partner ` into the chat row and
+    /// focuses it; without one it does nothing; and it stays out of the way
+    /// while the chat input is open (a press then belongs to the text).
+    ///
+    /// `pending_edits` is what is asserted, not `value()`: `prefill_whisper_input`
+    /// queues `SelectAll` + `Insert` for bevy's `apply_text_edits`, which needs
+    /// the font/layout resources a headless fixture has no business building.
+    fn shortcut_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<InputFocus>()
+            .init_resource::<ChatState>()
+            .init_resource::<GameOptions>()
+            .add_systems(Update, reply_to_last_whisper_shortcut);
+        let input = app
+            .world_mut()
+            .spawn((EditableText::default(), ChatInputBox))
+            .id();
+        // Explicit binding so the test asserts this system's behaviour rather
+        // than the contents of the action table it reads.
+        assert!(app
+            .world_mut()
+            .resource_mut::<GameOptions>()
+            .bind_key(keymap::KEY_REPLY_WHISPER, KeyCode::KeyR));
+        (app, input)
+    }
+
+    /// `reset` before `press`: `press()` only records a `just_pressed` when the
+    /// key was not already held, and there is no `InputPlugin` here to clear
+    /// the sets between frames (same reasoning as `autopotion/model.rs`).
+    fn press_r(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::KeyR);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+        app.update();
+    }
+
+    fn queued_inserts(app: &mut App, input: Entity) -> Vec<String> {
+        app.world()
+            .entity(input)
+            .get::<EditableText>()
+            .expect("the fixture spawned an EditableText")
+            .pending_edits
+            .iter()
+            .filter_map(|edit| match edit {
+                TextEdit::Insert(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reply_whisper_key_prefills_the_last_partner() {
+        let (mut app, input) = shortcut_app();
+        app.world_mut()
+            .resource_mut::<ChatState>()
+            .last_whisper_from = Some("Trader6".into());
+
+        press_r(&mut app);
+
+        assert_eq!(
+            queued_inserts(&mut app, input),
+            vec!["$Trader6 ".to_string()]
+        );
+        assert!(app.world().resource::<ChatState>().input_open);
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
+        // and what it wrote is a PM to that name for the real parser
+        let out = parse_outgoing("$Trader6 hi", ChatTab::All).expect("prefilled line parses");
+        assert_eq!(out.chat_type, chat_type::PM);
+        assert_eq!(out.receiver.as_deref(), Some("Trader6"));
+    }
+
+    #[test]
+    fn reply_whisper_key_does_nothing_without_a_partner() {
+        let (mut app, input) = shortcut_app();
+        assert!(app
+            .world()
+            .resource::<ChatState>()
+            .last_whisper_from
+            .is_none());
+
+        press_r(&mut app);
+
+        assert!(queued_inserts(&mut app, input).is_empty());
+        assert!(!app.world().resource::<ChatState>().input_open);
+        assert_eq!(app.world().resource::<InputFocus>().get(), None);
+    }
+
+    /// The guard, with its positive control in the same test: closed input ->
+    /// it fires, open input -> it must not, or the key would eat an `r` the
+    /// player was typing.
+    #[test]
+    fn reply_whisper_key_stays_out_of_an_open_chat_input() {
+        let (mut app, input) = shortcut_app();
+        app.world_mut()
+            .resource_mut::<ChatState>()
+            .last_whisper_from = Some("Trader6".into());
+        app.world_mut().resource_mut::<ChatState>().input_open = true;
+
+        press_r(&mut app);
+        assert!(queued_inserts(&mut app, input).is_empty());
+
+        // positive control: same app, same partner, input closed
+        app.world_mut().resource_mut::<ChatState>().input_open = false;
+        press_r(&mut app);
+        assert_eq!(
+            queued_inserts(&mut app, input),
+            vec!["$Trader6 ".to_string()]
+        );
+    }
+
+    /// A focused text field elsewhere (a store's search row, the exchange gold
+    /// entry) is the other way an `r` belongs to the text — `ChatState` knows
+    /// nothing about those, so the focus itself is checked.
+    #[test]
+    fn reply_whisper_key_stays_out_of_another_focused_text_field() {
+        let (mut app, input) = shortcut_app();
+        app.world_mut()
+            .resource_mut::<ChatState>()
+            .last_whisper_from = Some("Trader6".into());
+        let other = app.world_mut().spawn(EditableText::default()).id();
+        app.world_mut()
+            .resource_mut::<InputFocus>()
+            .set(other, FocusCause::Navigated);
+
+        press_r(&mut app);
+        assert!(queued_inserts(&mut app, input).is_empty());
+
+        // positive control: nothing focused -> the same press does prefill
+        app.world_mut().resource_mut::<InputFocus>().clear();
+        press_r(&mut app);
+        assert_eq!(
+            queued_inserts(&mut app, input),
+            vec!["$Trader6 ".to_string()]
+        );
     }
 }
