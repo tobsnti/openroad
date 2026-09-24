@@ -330,9 +330,10 @@ mod tests {
     /// `config.yaml`, so every colour written in it *replaces* the built-in
     /// default at runtime. Drift between the two therefore ships a palette
     /// the code's own docs do not describe — and it had drifted: four chat
-    /// colours still carried pre-#688 values and `chat.colors.npc` plus
-    /// `nameplates.colors.party` were missing, so a user who followed the
-    /// README saw neither the original's NPC purple nor the party green.
+    /// colours still carried the invented values that predate the sourced
+    /// table, and `chat.colors.npc` and `nameplates.colors.party` were missing
+    /// entirely, so a user who followed the README got neither the original's
+    /// NPC purple nor its party colour.
     #[test]
     fn the_example_files_colours_are_the_built_in_defaults() {
         let config = example_config();

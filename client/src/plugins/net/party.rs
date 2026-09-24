@@ -226,11 +226,17 @@ impl PartyRoster {
             }
             // 3 — member left or was kicked. When the departing jid is *ours*,
             // the party is over for us: the original branches on exactly that
-            // (see `PartyUpdate::leave_reason` in `packets/src/agent/party.rs`)
-            // and tears the window down instead of dropping one row. Dropping only the row
+            // (the handler reads the jid and the reason byte, then compares the
+            // jid with our own — see `PartyUpdate::leave_reason`) and tears the
+            // window down instead of dropping one row. Dropping only the row
             // would leave `is_active()` true, so the next invite would go out
             // as 0x7062 (invite into a party) instead of 0x7060, and a stale
             // `local_member_id` would decide the master test of the next party.
+            //
+            // `member_id != 0` is not a wire value: 0 is our "no jid yet"
+            // resting state (`dismiss()` sets it, and a fresh `PartyRoster` has
+            // it), so without the guard a type 3 for jid 0 would dismiss a
+            // party we never left.
             3 => {
                 if let Some(member_id) = update.member_id {
                     if member_id != 0 && member_id == self.local_member_id {

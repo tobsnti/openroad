@@ -1273,15 +1273,16 @@ pub fn update_guild_roster(
             None => node.display = Display::None,
         }
     }
-    // The selection plate: visible only where a member sits *and* is selected,
-    // so an out-of-range selection (a shorter record after a kick) draws
-    // nothing rather than a bar under an empty row.
+    // The selection plate sits under the row the selected *member* occupies
+    // now, which a shorter record (after a kick) can move or remove: a
+    // selection naming nobody in the current record draws no bar at all,
+    // rather than one under an empty row.
     let selected_row = selection
         .0
         .as_deref()
         .and_then(|name| members.iter().position(|m| m.name == name));
     for (piece, mut node) in bars.iter_mut() {
-        node.display = if selected_row == Some(piece.row) && piece.row < members.len() {
+        node.display = if selected_row == Some(piece.row) {
             Display::Flex
         } else {
             Display::None
@@ -1746,9 +1747,9 @@ mod test {
 
     /// The regression this selection model exists to prevent: `net::guild`
     /// replaces `roster.data` wholesale, so a member leaving shifts every later
-    /// row up. Selecting row 1 ("Master") and then losing row 0 must still
-    /// expel *that* member — a stored row index would now name the person who
-    /// moved into the line.
+    /// row up. Clicking row 1 ("Grunt") and then losing row 0 must still expel
+    /// *that* member — a stored row index would now name "Master", who moved
+    /// into the clicked line (and who is, in this run, ourselves).
     #[test]
     fn expel_follows_the_member_when_rows_shift() {
         let mut full = record();
@@ -1814,14 +1815,13 @@ mod test {
         selection: Option<String>,
         own_name: &str,
         own_permissions: u32,
-        data: GuildData,
+        mut data: GuildData,
     ) -> (App, Vec<GuildAction>) {
         let mut app = App::new();
         app.add_message::<GuildAction>()
             .init_resource::<ChatHistory>()
             .init_resource::<ClientUiStrings>()
             .insert_resource(GuildRosterSelection(selection));
-        let mut data = data;
         // Row 0 is "Grunt", row 1 is "Master": give the acting character the
         // permissions under test on whichever row carries their name.
         for member in data.members.iter_mut() {
