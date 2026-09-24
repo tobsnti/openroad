@@ -39,6 +39,13 @@ pub struct IntroV2Assets {
     // simply missing here.
     #[asset(path = "media://interface/outer/text-connect.ddj")]
     pub text_connect: Handle<Image>,
+    // `GDR_STA_TITLE:CIFStatic` id 3, `Rect="47,110,368,36"`,
+    // `interface\outer\text-characterselect.ddj` —
+    // `pscharacterselect_europe.txt:972/976/980/981`. The lobby's caption: the
+    // login, region and customize screens all painted theirs, this one bar was
+    // left empty.
+    #[asset(path = "media://interface/outer/text-characterselect.ddj")]
+    pub text_character_select: Handle<Image>,
 
     // Buttons — the `_europe` variants: `config/define.txt` defines
     // EUROPE_SYSTEM, and `resinfo/pscharacterselect.txt` names

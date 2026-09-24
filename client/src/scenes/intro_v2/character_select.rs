@@ -515,6 +515,40 @@ pub(crate) fn deleting_control_buttons(
     }
 }
 
+/// `GDR_STA_TITLE:CIFStatic` id 3, `Rect="47,110,368,36"`,
+/// `interface\outer\text-characterselect.ddj`
+/// (`pscharacterselect_europe.txt:972/976/980/981`).
+///
+/// The caption of this screen, and the one caption of the pre-game run that was
+/// missing: the login form paints `text-connect.ddj`, the region board
+/// `text-region.ddj`, the create screen `text-custom.ddj`, and the lobby left its
+/// bar empty. The art's own DDS header is 368x36, i.e. the rect is the native
+/// size: the **position** follows the 1600x1200 canvas, the **size** stays
+/// native pixels — the same split `region_select` already draws its title with.
+const TITLE_RECT: (f32, f32, f32, f32) = (47.0, 110.0, 368.0, 36.0);
+/// The canvas those rects are authored on — the shared
+/// [`crate::plugins::ui_v2::RESINFO_CANVAS`], not a local copy.
+const TITLE_DESIGN: (f32, f32) = crate::plugins::ui_v2::RESINFO_CANVAS;
+
+/// The screen's caption. It carries [`CharSelectControls`], so it fades in with
+/// the button row and the one despawn on exit takes it with it.
+fn screen_title(assets: &IntroV2Assets) -> impl Scene {
+    let title = assets.text_character_select.clone();
+    bsn! {
+        CharSelectControls
+        Name("Character Select Title")
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(100.0 * TITLE_RECT.0 / TITLE_DESIGN.0),
+            top: percent(100.0 * TITLE_RECT.1 / TITLE_DESIGN.1),
+            width: px(TITLE_RECT.2),
+            height: px(TITLE_RECT.3),
+        }
+        ImageNode { image: {title}, color: Color::NONE }
+        Pickable::IGNORE
+    }
+}
+
 fn spawn_default_controls(
     commands: &mut Commands,
     assets: &IntroV2Assets,
@@ -524,6 +558,9 @@ fn spawn_default_controls(
 ) {
     commands
         .spawn_scene(control_buttons(assets, fonts, ui_strings))
+        .insert((UiTargetCamera(camera), IntroV2Ui));
+    commands
+        .spawn_scene(screen_title(assets))
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
@@ -3018,6 +3055,39 @@ mod tests {
     /// [`upper_band_anchor`] expresses as `top: percent(BAND_H_PCT)`.
     fn band_bottom(h: f32) -> f32 {
         h * BAND_H_PCT / 100.0
+    }
+
+    /// The screen's caption, which was the one pre-game title that never got
+    /// drawn. Three things are pinned: the rect the data authors, that the
+    /// declared art is this screen's (not the login screen's), and that the
+    /// title carries the marker which fades it in and despawns it — without that
+    /// marker it would appear without a fade and survive the screen.
+    #[test]
+    fn the_screen_title_comes_from_the_data() {
+        // `GDR_STA_TITLE` id 3, `Rect="47,110,368,36"`
+        // (`pscharacterselect_europe.txt:981`), and the art's own DDS header is
+        // 368x36, so width/height are drawn native.
+        assert_eq!(TITLE_RECT, (47.0, 110.0, 368.0, 36.0));
+        assert_eq!(TITLE_DESIGN, (1600.0, 1200.0));
+        assert!(
+            TITLE_RECT.0 + TITLE_RECT.2 <= TITLE_DESIGN.0,
+            "the caption must fit the canvas it is placed on"
+        );
+
+        let assets = include_str!("assets.rs");
+        assert!(assets.contains("outer/text-characterselect.ddj"));
+
+        let source = include_str!("character_select.rs");
+        let title = &source[source.find("fn screen_title").expect("the title scene")..];
+        let body = &title[..title.find("\nfn ").unwrap_or(title.len())];
+        assert!(
+            body.contains("CharSelectControls"),
+            "the title must share the marker that fades and despawns the controls"
+        );
+        assert!(
+            body.contains("text_character_select"),
+            "the title must draw this screen's art"
+        );
     }
 
     /// Every `GDR_BTN_*` on this screen is `0,0,92,41` in
