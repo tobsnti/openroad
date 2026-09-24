@@ -29,8 +29,9 @@
 //! - the "opaque 9 bytes" of [`PartyData`] are resolved, and with them the
 //!   **party leader** (`master_join_id`), which the client-side roster used to
 //!   declare UNKNOWN;
-//! - `unk_byte07` (a byte xBot reads in the 0x3864 flavour of the record) **does
-//!   not exist** — the binary has no such read, so the two record flavours
+//! - the extra byte xBot's parser reads in the 0x3864 flavour of the record
+//!   (no licence; facts only) **does not exist** — the binary has no such read,
+//!   so the two record flavours
 //!   collapse into the single [`PartyMemberCore`];
 //! - [`PartyMemberUpdate`]'s `kind` is a **bitmask**, not an enum, so combined
 //!   masks like `0x24` (level *and* hp/mp) are ordinary traffic.
@@ -382,10 +383,10 @@ pub struct PartyUpdate {
     /// `ushort errCode`. What 11 *means* is open.
     #[sro_packet(when = "update_type == 1")]
     pub dismiss_code: Option<u16>,
-    /// The joining member, as the shared mask record. There is **no**
-    /// `unk_byte07` here: xBot reads an extra byte in this flavour, the binary
-    /// has no such read, and the 11 captured joins have none either — which is
-    /// what collapsed the two record flavours into one type.
+    /// The joining member, as the shared mask record. There is **no** extra
+    /// byte here: xBot reads one more byte in this flavour, the original has no
+    /// such read, and neither does the wire — which is what collapsed the two
+    /// record flavours into one type.
     #[sro_packet(when = "update_type == 2")]
     pub joined: Option<PartyMemberCore>,
     #[sro_packet(when = "update_type == 3 || update_type == 6")]
@@ -1072,8 +1073,8 @@ mod tests {
     }
 
     /// Type 3 carries the leaving member's id **and a reason byte**; type 6 adds
-    /// the *same* mask record every other party opcode uses — and no
-    /// `unk_byte07`, a byte the original's reader never reads.
+    /// the *same* mask record every other party opcode uses — and no extra
+    /// byte (the one xBot's parser reads), which the original's reader never reads.
     #[test]
     fn party_update_reads_the_payload_its_type_selects() {
         let mut body: Vec<u8> = vec![3];
@@ -1350,7 +1351,7 @@ mod tests {
         assert_eq!(joined.hp_mp, Some(0xAA));
         assert_eq!(joined.position_tail, Some(0x0001_0001));
         // and there is no extra byte between the flag and the masteries: the
-        // `unk_byte07` xBot reads does not exist in this record (the earlier measurement).
+        // extra byte xBot reads does not exist in this record.
         assert_eq!((joined.flag, joined.mastery_primary), (Some(4), Some(257)));
 
         let back: Bytes = decoded.into();

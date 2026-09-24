@@ -138,8 +138,7 @@ impl PartyRoster {
     /// One function for both acks on purpose: 0xB060 (party formed) and 0xB067
     /// (party joined) have the *same* two-armed body and their success `u32` is
     /// the same field in the original — `partyInfo+0x18`, the one its own master
-    /// test reads as our jid, the local RE notes
-/// §0xB060/§0xB067). Splitting that into two nearly identical handlers is
+    /// test reads as our jid. Splitting that into two nearly identical handlers is
     /// how the create side ended up authoritative and the join side a name
     /// guess; there is now one read and one place to reason about.
     fn learn_local_member_from_ack(&mut self, result: u8, join_id: Option<u32>) {
