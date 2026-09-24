@@ -16,6 +16,7 @@ use crate::plugins::ui_v2::widgets::{
 use crate::scenes::loading_screen::{design_pct, DesignFit};
 
 use super::assets::IntroV2Assets;
+use super::fade::FadingIn;
 use super::{intro_font_px, IntroV2State};
 
 /// Root marker of the login form screen.
@@ -236,6 +237,20 @@ pub fn close_tab_ring(
 /// scene itself is not running — absent counts as "not on screen".
 pub fn login_form_is_on_screen(state: Option<&State<IntroV2State>>) -> bool {
     matches!(state.map(State::get), Some(IntroV2State::LoginForm))
+}
+
+/// Whether this screen may act on a click *now*.
+///
+/// On top of [`login_form_is_on_screen`]: a root that still carries
+/// [`FadingIn`] is on its way in, and a click landing on it in that half second
+/// was aimed at the screen it replaces. The measured case is a double-click on
+/// the server window's Select button, whose area overlaps Connect — see
+/// [`super::fade::FadingIn`].
+pub fn login_form_accepts_clicks(
+    state: Option<&State<IntroV2State>>,
+    fading_root: &Query<(), (With<LoginFormRoot>, With<FadingIn>)>,
+) -> bool {
+    login_form_is_on_screen(state) && fading_root.is_empty()
 }
 
 pub fn login_form(
@@ -466,7 +481,18 @@ pub fn login_form(
 /// itself" was this button, activated from the keyboard, with nothing in the log
 /// to say who quit. One line makes the same accident self-diagnosing in the next
 /// log.
-pub fn quit_app(_activate: On<Activate>, mut exit: MessageWriter<AppExit>) {
+pub fn quit_app(
+    _activate: On<Activate>,
+    state: Option<Res<State<IntroV2State>>>,
+    fading_root: Query<(), (With<LoginFormRoot>, With<FadingIn>)>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    // Ending the process is the least recoverable thing this screen does, so it
+    // is the last button that may act on a click aimed somewhere else — see
+    // [`login_form_accepts_clicks`].
+    if !login_form_accepts_clicks(state.as_deref(), &fading_root) {
+        return;
+    }
     info!("login form: Exit activated — ending the session");
     exit.write(AppExit::Success);
 }
@@ -674,7 +700,8 @@ mod tests {
         use bevy::ui_widgets::Activate;
 
         let mut app = App::new();
-        app.add_message::<AppExit>();
+        app.add_message::<AppExit>()
+            .insert_resource(State::new(IntroV2State::LoginForm));
         app.world_mut().add_observer(quit_app);
         let exit = app.world_mut().spawn(ExitButton).id();
         app.world_mut().trigger(Activate { entity: exit });
@@ -682,6 +709,33 @@ mod tests {
         let messages = app.world().resource::<Messages<AppExit>>();
         let mut cursor = messages.get_cursor();
         assert_eq!(cursor.read(messages).next(), Some(&AppExit::Success));
+    }
+
+    /// A click on a screen that is still fading in belongs to the screen it
+    /// replaces, and Exit is the button where that matters most: the measured
+    /// path (a double-click on the server window's Select, whose area overlaps
+    /// the form's button row) put the second click on this row half a second
+    /// before it was visible.
+    ///
+    /// Both directions: with the root fading the session stays, and the test
+    /// above is the negative control — the same trigger without
+    /// [`FadingIn`] still quits.
+    #[test]
+    fn a_click_on_the_fading_form_does_not_quit() {
+        use bevy::ui_widgets::Activate;
+
+        let mut app = App::new();
+        app.add_message::<AppExit>()
+            .insert_resource(State::new(IntroV2State::LoginForm));
+        app.world_mut().add_observer(quit_app);
+        app.world_mut().spawn((LoginFormRoot, FadingIn::default()));
+        let exit = app.world_mut().spawn(ExitButton).id();
+        app.world_mut().trigger(Activate { entity: exit });
+
+        assert!(
+            app.world().resource::<Messages<AppExit>>().is_empty(),
+            "a click aimed at the previous screen ended the session"
+        );
     }
 
     /// **From another screen there must be no Tab target inside the login
@@ -776,9 +830,12 @@ mod tests {
             list_button_observer.contains("login_form_is_on_screen"),
             "the list button can still jump to ServerSelection from another screen"
         );
-        // Positive control for the scan: the same guard is findable in the
-        // Connect observer, which lives in the sibling file.
-        assert!(include_str!("net.rs").contains("login_form_is_on_screen("));
+        // Positive control for the scan: the Connect observer, which lives in
+        // the sibling file, asks the same guard — through
+        // [`login_form_accepts_clicks`], which is that state guard plus the
+        // fade one.
+        assert!(include_str!("net.rs").contains("login_form_accepts_clicks("));
+        assert!(authored_markup().contains("login_form_is_on_screen(state) && fading_root"));
     }
 
     /// The regression this pins: "the client closes itself a few seconds after

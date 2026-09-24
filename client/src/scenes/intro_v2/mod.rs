@@ -478,6 +478,9 @@ impl Plugin for IntroV2ScenePlugin {
                     // follows the state (#371: create declares RED bars)
                     chrome::update_chrome_art,
                     fade::on_fade_to_black,
+                    // A screen on its way in does not take clicks yet
+                    // (`fade::FadingIn`).
+                    fade::tick_fade_in,
                     net::on_gateway_login_response,
                     net::on_agent_login_response,
                     // The one arm a silent server does not have: without it the

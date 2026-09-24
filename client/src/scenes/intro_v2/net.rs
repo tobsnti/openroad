@@ -20,8 +20,10 @@ use crate::plugins::textdata::ClientUiStrings;
 
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
-use super::fade::{FadeToBlack, FadeToBlackTimer};
-use super::login_form::{login_form_is_on_screen, ConnectButton, ExitButton, IdInput, PwInput};
+use super::fade::{FadeToBlack, FadeToBlackTimer, FadingIn};
+use super::login_form::{
+    login_form_accepts_clicks, ConnectButton, ExitButton, IdInput, LoginFormRoot, PwInput,
+};
 use super::server_select::SelectedShardV2;
 use super::IntroV2State;
 
@@ -177,6 +179,7 @@ const AGENT_CONNECT_ERROR_KEY: &str = "UIO_MSG_ERROR_SEVER_CONNECT";
 pub fn on_connect_activate(
     activate: On<Activate>,
     state: Option<Res<State<IntroV2State>>>,
+    fading_root: Query<(), (With<LoginFormRoot>, With<FadingIn>)>,
     id_query: Query<&EditableText, With<IdInput>>,
     pw_query: Query<&EditableText, With<PwInput>>,
     mut info_text_writer: MessageWriter<InfoTextV2Update>,
@@ -192,7 +195,7 @@ pub fn on_connect_activate(
     // observer can be reached from a screen that has nothing to do with logging
     // in. `login_form::close_tab_ring` takes the Tab route away; this closes the
     // door on the entity itself. See `login_form::login_form_is_on_screen`.
-    if !login_form_is_on_screen(state.as_deref()) {
+    if !login_form_accepts_clicks(state.as_deref(), &fading_root) {
         return;
     }
     let Ok(id_input) = id_query.single() else {
@@ -961,6 +964,91 @@ mod tests {
             .clone();
         assert_eq!(line, "Failed to connect to server.");
         assert!(app.world().get_resource::<super::PendingLogin>().is_none());
+    }
+
+    /// The measured double-click: the server window's Select (y 475..515) and
+    /// the login form's Connect (y 460..501) overlap — as they do in the
+    /// original, which never shows both at once — so the first click committed
+    /// the shard and the second one pressed Connect on a form that was still
+    /// fading in. No request may leave in that half second.
+    #[test]
+    fn connect_on_a_fading_form_sends_nothing() {
+        use bevy::text::EditableText;
+        use bevy::ui_widgets::Activate;
+
+        use crate::plugins::config::division::DivisionInfo;
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::fade::FadingIn;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, IdInput, LoginFormRoot, PwInput};
+        use crate::scenes::intro_v2::server_select::SelectedShardV2;
+        use crate::scenes::intro_v2::IntroV2State;
+
+        let mut app = App::new();
+        app.add_message::<InfoTextV2Update>()
+            .init_resource::<ClientUiStrings>()
+            .insert_resource(DivisionInfo::default())
+            .insert_resource(State::new(IntroV2State::LoginForm))
+            .insert_resource(SelectedShardV2(Some(1)));
+        app.world_mut().add_observer(super::on_connect_activate);
+        app.world_mut().spawn((IdInput, EditableText::new("user")));
+        app.world_mut().spawn((PwInput, EditableText::new("1234")));
+        let root = app
+            .world_mut()
+            .spawn((LoginFormRoot, FadingIn::default()))
+            .id();
+        let connect = app.world_mut().spawn(ConnectButton).id();
+
+        app.world_mut().trigger(Activate { entity: connect });
+        assert!(
+            app.world()
+                .resource::<Messages<InfoTextV2Update>>()
+                .is_empty(),
+            "a click on the fading form was acted on"
+        );
+
+        // Negative control: the very same click, once the screen has settled.
+        app.world_mut().entity_mut(root).remove::<FadingIn>();
+        app.world_mut().trigger(Activate { entity: connect });
+        assert!(
+            !app.world()
+                .resource::<Messages<InfoTextV2Update>>()
+                .is_empty(),
+            "the settled screen must take the click"
+        );
+    }
+
+    /// The marker cannot be permanent: it is dropped after the fade it stands
+    /// for ([`crate::scenes::intro_v2::fade::FADE_IN_SECS`]).
+    #[test]
+    fn a_fading_screen_settles_after_its_own_fade() {
+        use std::time::Duration;
+
+        use crate::scenes::intro_v2::fade::{tick_fade_in, FadingIn, FADE_IN_SECS};
+        use crate::scenes::intro_v2::login_form::LoginFormRoot;
+
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, tick_fade_in);
+        let root = app
+            .world_mut()
+            .spawn((LoginFormRoot, FadingIn::default()))
+            .id();
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(FADE_IN_SECS / 2.0));
+        app.update();
+        assert!(app.world().get::<FadingIn>(root).is_some(), "settled early");
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(FADE_IN_SECS));
+        app.update();
+        assert!(
+            app.world().get::<FadingIn>(root).is_none(),
+            "the screen never became clickable"
+        );
     }
 
     /// The captcha half of the same budget: while the image-code window is up
