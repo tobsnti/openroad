@@ -1097,6 +1097,17 @@ fn zoom_out_camera(
 // element carries a Rect=RECT,"x,y,w,h" entry in window space — those
 // coordinates are used verbatim below, uniformly scaled by `pregame_scale`.
 
+/// Ink of the three stat-box captions. resinfo `FontColor` is **ARGB**, and the
+/// three statics do **not** agree: `GDR_STATIC1` (EXP) and `GDR_STATIC2` (SP)
+/// carry `255,255,208,81` (`pscharacterselect_europe.txt:190`, `:152`), while
+/// `GDR_STATIC3` (Level) carries `255,255,239,153` (`:114`) — a paler gold.
+///
+/// The original draws them that way too: `rgb(255,208,81)` in the EXP/SP row
+/// and the paler `rgb(255,239,153)` in the Level row below it, with no overlap
+/// between the two.
+const STAT_CAPTION_GOLD: Color = Color::srgb_u8(255, 208, 81);
+const LEVEL_CAPTION_GOLD: Color = Color::srgb_u8(255, 239, 153);
+
 /// Fill fraction of a `current / max` gauge pair, clamped to `[0, 1]`.
 ///
 /// `max == 0` means the maximum could not be derived (an unknown level/stat
@@ -1160,8 +1171,8 @@ pub(crate) fn info_box(
     let hp_fill = gauge_fill(info.hp, max_hp_or_mp(info.level, info.str));
     let mp_fill = gauge_fill(info.mp, max_hp_or_mp(info.level, info.int));
 
-    // gold of the vanilla caption texts (FontColor "255,255,208,81", ARGB)
-    let caption_color = Color::srgb_u8(255, 208, 81);
+    let stat_caption_color = STAT_CAPTION_GOLD;
+    let level_caption_color = LEVEL_CAPTION_GOLD;
 
     let s = pregame_scale();
     // Every text-bearing control in this box is `FontIndex=2` -> 16 px:
@@ -1338,7 +1349,7 @@ pub(crate) fn info_box(
                     // EXP and SP share one row, gold caption + white value each
                     (
                         label(&exp_caption, exp_cap_font, font_size)
-                        TextColor({caption_color})
+                        TextColor({stat_caption_color})
                         Node { position_type: PositionType::Absolute, left: px(exp_cap_l), top: px(stats_t), width: px(exp_cap_w), height: px(row_h) }
                     ),
                     (
@@ -1348,7 +1359,7 @@ pub(crate) fn info_box(
                     ),
                     (
                         label(&sp_caption, sp_cap_font, font_size)
-                        TextColor({caption_color})
+                        TextColor({stat_caption_color})
                         Node { position_type: PositionType::Absolute, left: px(sp_cap_l), top: px(stats_t), width: px(sp_cap_w), height: px(row_h) }
                     ),
                     (
@@ -1356,10 +1367,11 @@ pub(crate) fn info_box(
                         TextColor(Color::WHITE)
                         Node { position_type: PositionType::Absolute, left: px(sp_val_l), top: px(stats_t), width: px(sp_val_w), height: px(row_h) }
                     ),
-                    // LEVEL sits centered in the row below
+                    // LEVEL sits centered in the row below, in its own paler
+                    // gold (`GDR_STATIC3`, see above)
                     (
                         label(&level_caption, level_cap_font, font_size)
-                        TextColor({caption_color})
+                        TextColor({level_caption_color})
                         Node { position_type: PositionType::Absolute, left: px(level_cap_l), top: px(level_t), width: px(level_cap_w), height: px(row_h) }
                     ),
                     (
@@ -2997,6 +3009,20 @@ mod tests {
     #[test]
     fn main_buttons_match_the_resinfo_rect() {
         assert_eq!((MAIN_BUTTON_W, MAIN_BUTTON_H), (92.0, 41.0));
+    }
+
+    /// `GDR_STATIC3` (Level) is authored in a different gold from `GDR_STATIC1`
+    /// (EXP) and `GDR_STATIC2` (SP) — `255,255,239,153` against
+    /// `255,255,208,81`, ARGB (`pscharacterselect_europe.txt:114`, `:190`,
+    /// `:152`) — and the original draws both colours in the same box.
+    #[test]
+    fn the_level_caption_is_its_own_gold() {
+        assert_eq!(STAT_CAPTION_GOLD, Color::srgb_u8(255, 208, 81));
+        assert_eq!(LEVEL_CAPTION_GOLD, Color::srgb_u8(255, 239, 153));
+        assert_ne!(
+            LEVEL_CAPTION_GOLD, STAT_CAPTION_GOLD,
+            "the data gives Level its own colour"
+        );
     }
 
     /// The info box's gauges used to be pinned at 100%. The fill is
