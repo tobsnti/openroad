@@ -1,21 +1,20 @@
 //! Party wire opcodes: party data/update (0x3065, 0x3864), the create/leave/kick
 //! requests (0x7060/0x7061/0x7063) and the party-match family (0x706x / 0xB06x).
 //!
-//! **Spec-derived, not capture-verified.** No `packet_dump/` sample exists for
-//! any opcode in this family, so every layout here comes from statically reading
-//! the original client's parser/builder (xBot `PacketParser.cs`/`PacketBuilder.cs`)
-//! cross-checked against go-sro's handlers. Byte-level notes, per-field [V]/[S]/[U]
-//! tags and the resolving capture for each unknown live in
-//! `docs/net-party-0x3065.md`. Three opcodes (0x706A, 0xB069, 0xB06A) have **no**
-//! original-client code at all and are go-sro-shaped only — flagged per struct.
+//! **0x3065 and 0x3864 are confirmed on the wire; the rest is still spec-derived.**
+//! Rosters and deltas parse with zero leftover bytes, and the delta bodies below
+//! (types 1/2/3/6/9) are read off the original's own parser and handler.
+//! Everything else here (the match family, most acks) comes from statically
+//! reading the original client's parser/builder (xBot `PacketParser.cs`/
+//! `PacketBuilder.cs`), byte-level. Three
+//! opcodes (0x706A, 0xB069, 0xB06A) have **no** original-client code at all and
+//! are go-sro-shaped only — flagged per struct.
 //!
 //! # The presence-mask correction
 //!
 //! The one place that is **not** spec-derived is the record framing, and it is
-//! the load-bearing one. `docs/re/net/inbound/party.md` decompiled the original's
-//! own handlers — `FUN_00883cc0` (0x3065), `FUN_00886b10` (0x3864),
-//! `FUN_00884660` (0x706D) and the shared member reader `FUN_00883620` — and they
-//! agree on a shape neither xBot nor go-sro states outright: **both the roster
+//! the load-bearing one. The original's own handlers — 0x3065, 0x3864, 0x706D
+//! and the shared member reader — agree on a shape neither xBot nor go-sro states outright: **both the roster
 //! header and every member record begin with a presence bitmask, and only the
 //! fields whose bit is set are on the wire.**
 //!
@@ -100,17 +99,92 @@ impl PartySetup {
     }
 }
 
-/// One byte packing both bars in 10% steps (`SRPartyMember.cs:14-15`).
+/// A bar's fill as the exact fraction the wire carries, so the rounding happens
+/// once, at the pixel/text that shows it — the roster gauges are a crop of fixed
+/// art, and quantising twice is how a full bar ends up one texel short.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PartyBarFill {
+    pub numerator: u8,
+    pub denominator: u8,
+}
+
+impl PartyBarFill {
+    /// `0.0 ..= 1.0`. Clamped at the top because the HP scale can exceed full:
+    /// nibble 11 is `10/9`, and the original's gauge clamps it the same way
+    /// (whether 11 is *exactly* 100 % or the top of a saturating scale is open —
+    /// every vitals frame seen so far had a full-HP subject).
+    pub fn as_f32(&self) -> f32 {
+        if self.denominator == 0 {
+            return 0.0;
+        }
+        (f32::from(self.numerator) / f32::from(self.denominator)).clamp(0.0, 1.0)
+    }
+
+    /// For text only. Rounds the fraction, never a pre-rounded percent.
+    pub fn percent_rounded(&self) -> u8 {
+        (self.as_f32() * 100.0).round() as u8
+    }
+}
+
+/// One byte packing both bars — **asymmetrically**, which is the whole point of
+/// this type.
+///
+/// Origin: the original's vitals setter splits the byte
+/// (`movzx eax,[esp+0x96]`; `and eax,0xf` becomes arg2, `shr ecx,4` becomes
+/// arg4, both paired with the literal max `10`), so **low nibble = HP, high
+/// nibble = MP** from the argument order rather than by convention. Its setter
+/// then stores `hp == 0` as a *dead* flag at `node+0x60` and
+/// otherwise `hp-1` over `hp_max-1`, while MP is stored unchanged over 10:
+/// HP fills `(n-1)/9`, MP fills `m/10`.
+///
+/// The naive `nibble * 10` this type used to return is wrong on the real wire:
+/// a full-HP character carries a low nibble of `0x0B` = 11, which that reading
+/// turns into **110 %**.
+///
+/// **One reading for both paths — a deliberate simplification** (ADR-0009). The
+/// original is inconsistent with itself: the full-roster/join path
+/// stores the low nibble *raw*, without
+/// the `-1`, while the delta path applies it. The byte is the same server field
+/// in both, so its scale cannot differ; the two only agree at "full" (raw `10/10`
+/// vs `(11-1)/(10-1)`), which is why the asymmetry survived — the roster byte
+/// is `0xAA`, i.e. full, in ordinary traffic. We use the 1-based reading everywhere,
+/// because it is the one that can express "dead" and the one the original's own
+/// setter derives from the wire's own range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PartyHpMp(pub u8);
 
 impl PartyHpMp {
-    pub fn hp_percent(&self) -> u8 {
-        (self.0 & 0x0F) * 10
+    /// Raw low nibble, `0 ..= 11` on the wire.
+    pub fn hp_nibble(&self) -> u8 {
+        self.0 & 0x0F
     }
 
-    pub fn mp_percent(&self) -> u8 {
-        (self.0 >> 4) * 10
+    /// Raw high nibble, `0 ..= 10` on the wire.
+    pub fn mp_nibble(&self) -> u8 {
+        self.0 >> 4
+    }
+
+    /// `hp` nibble 0 is not "0 % HP", it is the original's dead flag
+    ///: `if (hp == 0) node+0x60 = 1`).
+    pub fn is_dead(&self) -> bool {
+        self.hp_nibble() == 0
+    }
+
+    /// `(n-1)/9`; empty (and [`Self::is_dead`]) at `n == 0`.
+    pub fn hp_fill(&self) -> PartyBarFill {
+        PartyBarFill {
+            numerator: self.hp_nibble().saturating_sub(1),
+            denominator: 9,
+        }
+    }
+
+    /// `m/10` — 0-based, no `-1`. Type-6 frames paired against the `0x3057` MP
+    /// values solve to `floor(mp*10/max)` and rule out every `+1`/ceil variant.
+    pub fn mp_fill(&self) -> PartyBarFill {
+        PartyBarFill {
+            numerator: self.mp_nibble(),
+            denominator: 10,
+        }
     }
 }
 
@@ -123,18 +197,38 @@ pub struct PartyPositionDungeon {
 }
 
 /// Member position in an overworld region: 16-bit region-local coordinates.
+///
+/// `y` is the height and is **signed here on purpose — a deliberate deviation**
+/// (ADR-0009). Live 0x3864 updates for members standing in the Jangan field
+/// carry `y = 0xFFF5`/`0xFFF1`, i.e. `-11`/`-15` read as `i16`. The original reads all three
+/// as **u16 into pre-zeroed u32 slots**, so it turns every sub-zero height into a ~65 000
+/// spike; nothing in its party window displays `y`, so that never surfaced
+/// there. We read it signed because our consumers (world-map markers, a future
+/// party window) would have to undo the spike anyway. Wire-compatible either
+/// way: the two readings are the same two bytes.
+/// `x`/`z` stay unsigned — they are region-local and never leave `0..=1920`.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyPositionWorld {
     pub x: u16,
-    pub y: u16,
+    pub y: i16,
     pub z: u16,
 }
 
-/// The presence bits of a member record (`FUN_00883620`), and of the field
+/// The presence bits of a member record, and of the field
 /// groups a 0x3864 type-6 update selects with the *same* numbering.
 ///
 /// Modelled as a newtype rather than a derived enum for the same reason
 /// [`PartySetup`] is: bits combine, and an unknown bit must not fail the packet.
+///
+/// Two independent readings agree here: the record reader
+/// tests the bits in exactly this order — `0x10` u32 jid · `0x01`
+/// name + u32 model · `0x02` u8 level · `0x04` u8 hp/mp · `0x20` u16 region +
+/// position + u32 at `+0x54` · `0x40` guild name · `0x80` u8 at `+0x41` · `0x08`
+/// two u32 masteries — and the type-6 handler dispatches
+/// `test bl,1 / 2 / 4 / 0x20 / 0x40 / 8` to six separate setters
+/// — i.e. it tests each bit **independently**.
+/// The wire confirms it: frames carry `0x04` alone and frames carry `0x20`
+/// alone, which no equality model can read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PartyMemberMask(pub u8);
 
@@ -142,17 +236,21 @@ impl PartyMemberMask {
     /// `name` *and* `model_id` — one bit gates both reads.
     pub const NAME: u8 = 0x01;
     pub const LEVEL: u8 = 0x02;
+    /// The [`PartyHpMp`] byte.
     pub const HP_MP: u8 = 0x04;
     /// Both mastery ids.
     pub const MASTERIES: u8 = 0x08;
+    /// The member jid *inside* the record. A type-6 delta carries its own jid
+    /// ahead of the record, which is why this bit is clear in a delta.
     pub const MEMBER_ID: u8 = 0x10;
     /// `region`, the coordinates *and* the trailing `u32` — one bit gates all of
     /// it, which is why `position_tail` is not its own concept.
     pub const POSITION: u8 = 0x20;
     pub const GUILD: u8 = 0x40;
+    /// The byte the original stores at `node+0x41`.
     pub const FLAG: u8 = 0x80;
-    /// Every field present — the shape a full roster push uses, and the one the
-    /// pre-mask fixed-layout model happened to read correctly.
+    /// Every field present — the shape a full roster push and a join use, and
+    /// the one the pre-mask fixed-layout model happened to read correctly.
     pub const ALL: u8 = 0xFF;
 
     pub fn has(&self, bit: u8) -> bool {
@@ -160,7 +258,7 @@ impl PartyMemberMask {
     }
 }
 
-/// One party-member record, as read by the original's shared `FUN_00883620` —
+/// One party-member record, as read by the original's shared —
 /// the parser behind 0x3065's roster, 0x3864's type-2/type-6 deltas *and*
 /// 0x706D's applicant block.
 ///
@@ -223,7 +321,7 @@ impl PartyMemberCore {
 /// The header used to be nine opaque bytes here, because xBot reads it
 /// `[u32][u32][u8 purpose]` while go-sro writes `[u8 0xFF][u32 party_number]
 /// [u32 master_jid]` and naming it either way would have encoded a guess. The
-/// original's own handler `FUN_00883cc0` settles it in go-sro's favour, with
+/// original's own handler settles it in go-sro's favour, with
 /// the twist that the leading byte is a **presence flag** rather than the
 /// constant `0xFF` go-sro happens to send: bit 0 gates the leader id and the
 /// setup byte, bit 1 gates the count and the roster. go-sro's `0xFF` sets both,
@@ -271,22 +369,44 @@ impl PartyData {
 ///
 /// Modelled with `when`-conditional fields rather than a derived enum so an
 /// unrecognised update type decodes to "no payload" instead of failing the
-/// packet — go-sro documents types 1/2/3/6/9 but xBot only handles four of them,
-/// and 9 (new master) has no known body at all.
+/// packet. The five types the original's handler branches on
+/// (`local_2b4[0] == 1/2/3/6/9`) are all realised below, each with the body the
+/// handler actually reads — so "type 9 has no known body" was wrong, not empty.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyUpdate {
     /// 1 dismissed · 2 joined · 3 left/kicked · 6 member update · 9 new master.
     pub update_type: u8,
+    /// Type 1's tail: one `u16` the handler reads before tearing the party down
+    /// (the `'\x01'` branch). A 3-byte body carries `0x000B`, which is why the
+    /// field exists at all — xBot has the same read commented out as
+    /// `ushort errCode`. What 11 *means* is open.
+    #[sro_packet(when = "update_type == 1")]
+    pub dismiss_code: Option<u16>,
+    /// The joining member, as the shared mask record. There is **no**
+    /// `unk_byte07` here: xBot reads an extra byte in this flavour, the binary
+    /// has no such read, and the 11 captured joins have none either — which is
+    /// what collapsed the two record flavours into one type.
     #[sro_packet(when = "update_type == 2")]
     pub joined: Option<PartyMemberCore>,
     #[sro_packet(when = "update_type == 3 || update_type == 6")]
     pub member_id: Option<u32>,
+    /// Type 3's tail: the handler does **two** reads in the `'\x03'` branch, the
+    /// jid and one more byte, before branching on whether the departing jid is
+    /// our own. A 6-byte frame carries `1` or `2` — leave versus kick is the
+    /// obvious pairing but is not confirmed.
+    #[sro_packet(when = "update_type == 3")]
+    pub leave_reason: Option<u8>,
     /// Type 6's payload is the **same** mask record as everything else in this
-    /// family — the original calls `FUN_00883620` here too. It used to be its
+    /// family — the original calls here too. It used to be its
     /// own `PartyMemberUpdate` type testing `kind` for equality, which read
     /// nothing at all for a combined mask such as `0x24` (level *and* hp/mp).
     #[sro_packet(when = "update_type == 6")]
     pub member_update: Option<PartyMemberCore>,
+    /// Type 9's body: the jid of the new master. The handler reads one `u32`
+    /// and `_swprintf_s`es it into a notice line. The shape is the handler's,
+    /// the *width* is what the single read gives.
+    #[sro_packet(when = "update_type == 9")]
+    pub new_master_id: Option<u32>,
 }
 
 /// 0x306E — client → server answer to an incoming 0x706D join request. Sits in
@@ -300,7 +420,7 @@ pub struct PartyMatchJoinResponse {
 }
 
 /// 0x7060 — client → server: start a party. Whether `unique_id` is the invitee
-/// or the sender is [U] (go-sro's handler is an empty stub).
+/// or the sender is open (go-sro's handler is an empty stub).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyCreationRequest {
     pub unique_id: u32,
@@ -319,7 +439,7 @@ pub struct PartyKickRequest {
 }
 
 /// 0x7069 — client → server: advertise a party in the match list. The second
-/// u32 is written 0 by both the original client and go-sro; its purpose is [U].
+/// u32 is written 0 by both the original client and go-sro; its purpose is open.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchCreationRequest {
     /// 0 when creating.
@@ -336,7 +456,7 @@ pub struct PartyMatchCreationRequest {
 ///
 /// **SPEC, unverified**: the original client has an enum entry but no builder,
 /// so this shape comes from go-sro's `matching_update_handler` alone. It is the
-/// 0x7069 body with a real party number. Resolve with `packet_dump/0x706A.log`.
+/// 0x7069 body with a real party number.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchEditedRequest {
     pub party_number: u32,
@@ -358,48 +478,131 @@ pub struct PartyMatchDeleteRequest {
 ///
 /// The original client reuses this number for `CLIENT_PET_DESTROY`; both are
 /// C→S and only the match-list sender is realised in its builder, so we take the
-/// party-match meaning. [U] if a pet-destroy capture ever contradicts it.
+/// party-match meaning. Open if a pet-destroy body ever contradicts it.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchListRequest {
     pub page_index: u8,
 }
 
-/// 0x706D — server → client: somebody asks to join our advertised party.
+/// 0x706D S→C — somebody asks to join our advertised party.
 ///
-/// Named `…Notify` because the *request* in the same opcode is the C→S half,
-/// which is not registered (see below).
+/// **Corrected** twice and independently: from the original client itself and
+/// by upstream's `5520e3f7 fix(party): decode party records by their presence
+/// mask` — one finding, which is why the mask model below is not a preference.
 ///
-/// This opcode is **bidirectional** with two different bodies: C→S is a bare
-/// `u32 number`, S→C is this record. `packets!` maps one type per opcode, so
-/// only the inbound direction is registered — an unparsed inbound packet is the
-/// failure that actually costs us something, whereas the outbound request is not
-/// sent by anything yet.
+/// The old shape ended in a flat `u8, u32, String` taken from go-sro's builder,
+/// and the original disagrees. The handler reads five `u32`s and one `u8`, and
+/// then hands the rest to the shared party-member record
+/// parser** — the very same function 0x3065 and 0x3864 use, which is why the
+/// tail here is [`PartyMemberCore`] rather than a private copy of three
+/// fields. The old flat decode was only correct for `mask == 0x11`, and even
+/// then it dropped the `u32` that follows the name (bit `0x01` reads `+0x3c`);
+/// any other mask mis-sliced the body from that point on.
 ///
-/// The trailing block used to be modelled flat as
-/// `unk_byte01, join_id_repeated, name`, which is right only when the applicant's
-/// mask happens to be `0x11` and drops everything after the name otherwise. The
-/// original's handler `FUN_00884660` reads five `u32`s, one `u8`, and then hands
-/// the rest to `FUN_00883620` — the same member-record parser 0x3065 and 0x3864
-/// use. So the applicant arrives as an ordinary [`PartyMemberCore`], which is
-/// also where the dialog's level / guild fields come from when the mask names
-/// them.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+/// The five leading `u32`s and the `u8` are **unnamed in the binary**. The first
+/// three keep go-sro's names because the 0x306E answer is built from the first
+/// two, so they are load-bearing; `D`/`E` do not keep the names
+/// `mastery_primary`/`_secondary` they used to have — the masteries are the pair
+/// under the record's `0x08` bit, not fixed offsets 12/16, so those names were
+/// pointing at the wrong bytes.
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchJoinNotify {
+    /// `A` — the id the 0x306E answer echoes back.
     pub request_id: u32,
+    /// `B` — the applicant's jid, as the answer echoes it.
     pub join_id: u32,
+    /// `C` — go-sro's match number.
     pub match_number: u32,
-    pub mastery_primary: u32,
-    pub mastery_secondary: u32,
+    /// `D` — unnamed in the binary (`+12`).
+    pub unk_dword03: u32,
+    /// `E` — unnamed in the binary (`+16`).
+    pub unk_dword04: u32,
+    /// `F` — unnamed in the binary (`+20`).
     pub unk_byte00: u8,
-    /// The applicant, as a presence-masked member record.
+    /// The applicant, as the shared masked member record.
     pub applicant: PartyMemberCore,
+}
+
+impl PartyMatchJoinNotify {
+    /// The applicant's name, when the record's `IDENTITY` bit carried one.
+    ///
+    /// An accessor rather than a field, because whether the name is on the wire
+    /// is a property of the mask: a record without bit `0x01` has no name, and
+    /// the dialog then has nothing to print but the jid.
+    pub fn name(&self) -> Option<&str> {
+        self.applicant.name.as_deref()
+    }
+
+    /// The jid *inside* the record (mask bit `0x10`), which is not the same
+    /// field as [`Self::join_id`] — the header's `B` is what 0x306E answers
+    /// with, this one is what the record describes. They agree in go-sro's
+    /// builder; a body that disagrees would be the interesting one.
+    pub fn record_join_id(&self) -> Option<u32> {
+        self.applicant.member_id
+    }
+}
+
+/// 0x706D — **both directions**, one codec.
+///
+/// The opcode is bidirectional with two unrelated bodies: S→C is
+/// [`PartyMatchJoinNotify`], C→S is a bare `u32` match number. `packets!` maps
+/// one type per opcode, so the two arms live in one enum that decodes the
+/// inbound form and encodes the outbound one — the same construction
+/// [`crate::agent::ingame::GameInvite`] uses for 0x3080.
+///
+/// **Why a second hand-written codec instead of a direction axis in `packets!`:**
+/// there are exactly *two* opcodes in this tree that genuinely travel both ways
+/// with different bodies. Of the ten numbers that appear in both the inbound and
+/// the outbound verdict table, four are not C→S at all (local self-injections
+/// that never reach the sender, `0x3019`/`0xB034`/`0xB04C`/`0xB082`), three are
+/// unregistered with an unnamed inbound half (`0x7302`/`0x747E`/`0x751A`), and
+/// `0x7110`'s registered type *is* the outbound one. That leaves `0x3080`,
+/// already solved this way, and this one. Teaching `packets!` a direction axis
+/// would touch all 274 registry lines, `scripts/check_opcode_ledger.py` and the
+/// ledger docs for a second user.
+/// **The threshold, so this does not become a habit: at the THIRD genuine
+/// two-way opcode, `packets!` gets the direction axis and both hand-written
+/// codecs move onto it.**
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum PartyMatchJoin {
+    /// S→C — the applicant knocking on our advertised party.
+    Notify(PartyMatchJoinNotify),
+    /// C→S — *we* apply to the advertised party with this match number.
+    Request { number: u32 },
+}
+
+impl TryFrom<Bytes> for PartyMatchJoin {
+    type Error = SerializationError;
+
+    /// Decoding is always the inbound arm: the client never receives its own
+    /// request. A 4-byte body is therefore *not* read as a `Request` — that
+    /// would silently accept a truncated notify.
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        Ok(PartyMatchJoin::Notify(PartyMatchJoinNotify::try_from(
+            value,
+        )?))
+    }
+}
+
+impl From<PartyMatchJoin> for Bytes {
+    fn from(packet: PartyMatchJoin) -> Self {
+        match packet {
+            PartyMatchJoin::Request { number } => {
+                let mut buf = BytesMut::new();
+                buf.put_u32_le(number);
+                buf.freeze()
+            }
+            // Round-trip only: the client never sends a notify. Kept so the
+            // codec is symmetric and the decode side is testable.
+            PartyMatchJoin::Notify(notify) => notify.into(),
+        }
+    }
 }
 
 /// The advertised entry echoed back by 0xB069 and 0xB06A on success.
 ///
 /// One type for both because the original delegates both handlers to the same
-/// reader, `FUN_00883780`, whose seven fields match go-sro's record exactly —
-/// which is what promoted these two structs from [S] to [V].
+/// reader, whose seven fields match go-sro's record exactly.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchForm {
     pub party_number: u32,
@@ -455,19 +658,16 @@ pub struct PartyMatchDeleteResponse {
 }
 
 /// One advertised party in the 0xB06C list. `race_type` is byte-exact against
-/// go-sro's `countryType` but its semantics (China/Europe?) are [U].
+/// go-sro's `countryType` but its semantics (China/Europe?) are open.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchEntry {
     pub number: u32,
-    /// When the entry was advertised — a **unix timestamp**, seconds, [V].
+    /// When the entry was advertised — a **unix timestamp**, seconds.
     ///
     /// go-sro calls this field `masterJID` and openroad inherited the name, but
-    /// a capture of a real vSRO 1.188 server refutes it. Two registrations in
-    /// one session: `packet_dump/c2s/0x7069.log` sent at 12:32:59Z and
-    /// 12:34:09Z, and the listings that came back
-    /// (`packet_dump/0xb06c.log`) carry `0x6A8C39FB` and `0x6A8C3A41` — which
-    /// decode as exactly those two instants, and differ by exactly the 70
-    /// seconds between them. A join id would not.
+    /// the wire refutes it: two registrations 70 seconds apart come back in the
+    /// listing as two values that decode as exactly those two instants, and
+    /// differ by exactly those 70 seconds. A join id would not.
     ///
     /// This matters beyond the name: it is the field one reaches for to decide
     /// which listing is your own party, and it can never answer that.
@@ -541,10 +741,31 @@ pub struct PartyCreateResponse {
     pub error_code: Option<u16>,
 }
 
+/// 0xB067 — ack for joining a party that already **exists**.
+///
+/// Same two-armed shape as `PartyCreateResponse`, and the same meaning for the
+/// success tail: it is **our own party jid**, not a member count. go-sro's
+/// opcode table labels this `PartyMemberCountResponse`
+/// (`network/opcode/party.go:20`) but no handler there builds or reads it, so
+/// the name is a label without a layout. The wire decides it: the `u32` always
+/// equals the jid our own name carries in the `0x3065` of the same instant,
+/// while the party *number* and the member *count* of those same frames are
+/// different values, so the `u32` is neither. The failure arm carries
+/// `02 102C`, i.e. 11280 "no response", the code `party_error_text` already
+/// maps.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PartyJoinResponse {
+    pub result: u8,
+    /// Our own member jid in the party we just joined.
+    #[sro_packet(when = "result == 1")]
+    pub local_join_id: Option<u32>,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
+}
+
 /// 0xB062 — ack for `0x7062` invite. Success carries nothing: the invitation
-/// itself travels as the separate `0x3080` popup
-/// (`docs/net-invite-0x3080.md`), so this ack only says whether the request was
-/// accepted for delivery.
+/// itself travels as the separate `0x3080` popup, so this ack only says whether
+/// the request was accepted for delivery.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyInviteResponse {
     pub result: u8,
@@ -650,7 +871,7 @@ mod tests {
     use bytes::Bytes;
 
     /// A member record with every presence bit set, written in the original's
-    /// read order (`FUN_00883620`). This is the shape the pre-mask fixed-layout
+    /// read order. This is the shape the pre-mask fixed-layout
     /// model used to read, so it doubles as the compatibility anchor.
     fn full_member_bytes() -> Vec<u8> {
         let mut b: Vec<u8> = vec![PartyMemberMask::ALL];
@@ -687,8 +908,10 @@ mod tests {
         assert_eq!(decoded.name.as_deref(), Some("Ax"));
         assert_eq!(decoded.model_id, Some(1907));
         assert_eq!(decoded.level, Some(40));
-        assert_eq!(decoded.hp_mp().unwrap().hp_percent(), 100);
-        assert_eq!(decoded.hp_mp().unwrap().mp_percent(), 30);
+        // 0x3A: HP nibble 10 -> (10-1)/9 = full, MP nibble 3 -> 3/10
+        assert_eq!(decoded.hp_mp().unwrap().hp_fill().as_f32(), 1.0);
+        assert_eq!(decoded.hp_mp().unwrap().mp_fill().percent_rounded(), 30);
+        assert!(!decoded.hp_mp().unwrap().is_dead());
         assert_eq!(
             decoded.position_world,
             Some(PartyPositionWorld {
@@ -832,29 +1055,37 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// An unrecognised 0x3864 update type must decode to "no payload" rather
-    /// than failing the packet — go-sro documents a type 9 the original client
-    /// does not handle at all.
+    /// An update type the original's handler does not branch on at all must
+    /// decode to "no payload" rather than failing the packet. `7` is such a
+    /// type; `9` is NOT one any more — it has a body (see
+    /// `a_new_master_update_carries_the_masters_jid`).
     #[test]
     fn an_unknown_party_update_type_is_not_fatal() {
-        let decoded = PartyUpdate::try_from(Bytes::from_static(&[9])).unwrap();
+        let decoded = PartyUpdate::try_from(Bytes::from_static(&[7])).unwrap();
 
-        assert_eq!(decoded.update_type, 9);
+        assert_eq!(decoded.update_type, 7);
         assert!(decoded.joined.is_none());
         assert!(decoded.member_id.is_none());
         assert!(decoded.member_update.is_none());
+        assert!(decoded.new_master_id.is_none());
+        assert!(decoded.dismiss_code.is_none());
     }
 
-    /// Type 3 carries only the leaving member's id; type 6 adds the *same* mask
-    /// record every other party opcode uses — and no `unk_byte07`, a byte the
-    /// original's reader never reads.
+    /// Type 3 carries the leaving member's id **and a reason byte**; type 6 adds
+    /// the *same* mask record every other party opcode uses — and no
+    /// `unk_byte07`, a byte the original's reader never reads.
     #[test]
     fn party_update_reads_the_payload_its_type_selects() {
         let mut body: Vec<u8> = vec![3];
         body.extend(0xABCDu32.to_le_bytes());
-        let decoded = PartyUpdate::try_from(Bytes::from(body)).unwrap();
+        body.push(2);
+        let wire = Bytes::from(body);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
         assert_eq!(decoded.member_id, Some(0xABCD));
+        assert_eq!(decoded.leave_reason, Some(2));
         assert!(decoded.member_update.is_none());
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire, "no byte of a type 3 may be left unread");
 
         let mut body: Vec<u8> = vec![6];
         body.extend(0xABCDu32.to_le_bytes());
@@ -877,6 +1108,334 @@ mod tests {
         assert_eq!(decoded.joined.clone().unwrap().name.as_deref(), Some("Ax"));
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+    }
+
+    // ---------------------------------------------------------------------
+    // Wire fixtures. Every `wire` below is a body a server really sent. The
+    // round-trip assert is the point: it fails if we leave a single byte unread.
+    // ---------------------------------------------------------------------
+
+    /// The byte a live server actually sends:
+    /// `06 02000000 04 8b` — jid 2, mask 0x04, vitals byte `0x8B`. The low
+    /// nibble is **11**, which the old `nibble * 10` turned into 110 %; the
+    /// original's `(n-1)/9` makes it a full bar, and the high nibble 8 is
+    /// `8/10` (that frame pairs with a 0x3057 MP of 1021/1153 = 88.6 %).
+    #[test]
+    fn the_vitals_byte_is_not_one_hundred_and_ten_percent() {
+        let wire = Bytes::from_static(&[0x06, 0x02, 0x00, 0x00, 0x00, 0x04, 0x8B]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.member_id, Some(2));
+        let delta = decoded.member_update.clone().unwrap();
+        assert_eq!(delta.presence, PartyMemberMask::HP_MP);
+        let vitals = delta.hp_mp().unwrap();
+        assert_eq!(vitals.hp_nibble(), 11);
+        assert!(!vitals.is_dead());
+        assert_eq!(
+            vitals.hp_fill(),
+            PartyBarFill {
+                numerator: 10,
+                denominator: 9
+            }
+        );
+        // the fraction overshoots; the *display* clamps, and never reports 110
+        assert_eq!(vitals.hp_fill().percent_rounded(), 100);
+        assert_eq!(
+            vitals.mp_fill(),
+            PartyBarFill {
+                numerator: 8,
+                denominator: 10
+            }
+        );
+        assert_eq!(vitals.mp_fill().percent_rounded(), 80);
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// Every DISTINCT vitals byte a live server sent in a type-6 mask-0x04
+    /// frame: `0x4B 0x5B 0x6B 0x7B 0x8B 0x9B 0xAB`. The low nibble is `0x0B` =
+    /// 11 in all of them, so `nibble * 10` would have reported 110 % for every
+    /// one of them — and the MP decile is whatever the high nibble says.
+    /// Nothing here may exceed 100 %.
+    #[test]
+    fn no_vitals_byte_can_report_more_than_a_full_bar() {
+        for byte in [0x4Bu8, 0x5B, 0x6B, 0x7B, 0x8B, 0x9B, 0xAB] {
+            let vitals = PartyHpMp(byte);
+            assert_eq!(vitals.hp_nibble(), 11, "{byte:#04x}");
+            assert!(!vitals.is_dead());
+            // the raw fraction overshoots (10/9) — that is the wire, not a bug
+            assert_eq!(
+                vitals.hp_fill(),
+                PartyBarFill {
+                    numerator: 10,
+                    denominator: 9
+                }
+            );
+            // ...and every consumer-facing form is clamped
+            assert_eq!(vitals.hp_fill().as_f32(), 1.0, "{byte:#04x}");
+            assert_eq!(vitals.hp_fill().percent_rounded(), 100, "{byte:#04x}");
+            let mp = vitals.mp_fill();
+            assert_eq!(mp.numerator, byte >> 4);
+            assert!(mp.percent_rounded() <= 100, "{byte:#04x}");
+        }
+        // the observed MP range is 4..=10 deciles, read as plain m/10
+        assert_eq!(PartyHpMp(0x4B).mp_fill().percent_rounded(), 40);
+        assert_eq!(PartyHpMp(0xAB).mp_fill().percent_rounded(), 100);
+    }
+
+    /// A dead member is nibble 0 — not "0 % HP" but the original's own dead
+    /// flag: `if (hp == 0) node+0x60 = 1`). Synthetic byte, real branch: a dead
+    /// member has not been seen on the wire.
+    #[test]
+    fn hp_nibble_zero_is_the_dead_flag_and_not_a_percentage() {
+        let dead = PartyHpMp(0x50);
+        assert!(dead.is_dead());
+        assert_eq!(dead.hp_fill().as_f32(), 0.0);
+        // ...while a *live* member at the bottom of the scale is nibble 1
+        let alive = PartyHpMp(0x51);
+        assert!(!alive.is_dead());
+        assert_eq!(alive.hp_fill().as_f32(), 0.0);
+        // MP is 0-based, so nibble 0 there really is empty and means nothing else
+        assert_eq!(PartyHpMp(0x01).mp_fill().numerator, 0);
+    }
+
+    /// `06 05000000 20 a861 c103 0000 8600 01000100` — 18 bytes. The trailing
+    /// `u32` after the position is the field we used to leave on the wire, so
+    /// this test is a byte-count test as much as a value test.
+    #[test]
+    fn the_position_delta_leaves_no_trailing_bytes() {
+        let wire = Bytes::from_static(&[
+            0x06, 0x05, 0x00, 0x00, 0x00, 0x20, 0xa8, 0x61, 0xc1, 0x03, 0x00, 0x00, 0x86, 0x00,
+            0x01, 0x00, 0x01, 0x00,
+        ]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.member_id, Some(5));
+        let delta = decoded.member_update.clone().unwrap();
+        assert_eq!(delta.presence, PartyMemberMask::POSITION);
+        assert_eq!(delta.region, Some(0x61a8));
+        assert_eq!(
+            delta.position_world,
+            Some(PartyPositionWorld {
+                x: 0x03c1,
+                y: 0,
+                z: 0x0086
+            })
+        );
+        assert_eq!(delta.position_tail, Some(0x0001_0001));
+        assert!(delta.hp_mp.is_none());
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire, "the u32 after the position must be consumed");
+    }
+
+    /// The same shape with `y = 0xFFE1` — the negative height that makes our
+    /// signed `y` a deliberate deviation from the original's u16 read.
+    #[test]
+    fn a_negative_height_reads_as_a_small_negative_number() {
+        let wire = Bytes::from_static(&[
+            0x06, 0x05, 0x00, 0x00, 0x00, 0x20, 0xa8, 0x61, 0x00, 0x05, 0xe1, 0xff, 0xc5, 0x01,
+            0x01, 0x00, 0x01, 0x00,
+        ]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+        let delta = decoded.member_update.clone().unwrap();
+
+        assert_eq!(
+            delta.position_world,
+            Some(PartyPositionWorld {
+                x: 0x0500,
+                y: -31,
+                z: 0x01c5
+            })
+        );
+        // the original would have read 65505 here; same two bytes on the wire
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// `mask` is tested bit by bit by the original
+    /// (`test bl,1 / 2 / 4 / 0x20 / 0x40 / 8`), so a combined delta must decode
+    /// **all** its parts. Under the old equality model this body decoded to
+    /// nothing at all. Composed from the two real deltas above rather than
+    /// invented: mask `0x26` = position + vitals + level, in the original's
+    /// read order.
+    #[test]
+    fn a_combined_mask_decodes_every_part_it_announces() {
+        let mut body: Vec<u8> = vec![6];
+        body.extend(5u32.to_le_bytes());
+        body.push(PartyMemberMask::LEVEL | PartyMemberMask::HP_MP | PartyMemberMask::POSITION);
+        body.push(68); // level
+        body.push(0x8B); // the vitals byte
+        body.extend(0x61a8u16.to_le_bytes()); // region
+        body.extend(0x03c1u16.to_le_bytes()); // x
+        body.extend((-31i16).to_le_bytes()); // y
+        body.extend(0x0086u16.to_le_bytes()); // z
+        body.extend(0x0001_0001u32.to_le_bytes());
+        let wire = Bytes::from(body);
+
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+        let delta = decoded.member_update.clone().unwrap();
+
+        assert!(delta.mask().has(PartyMemberMask::LEVEL));
+        assert_eq!(delta.level, Some(68));
+        assert_eq!(delta.hp_mp, Some(0x8B));
+        assert_eq!(delta.region, Some(0x61a8));
+        assert_eq!(delta.position_world.as_ref().map(|p| p.y), Some(-31));
+        assert_eq!(delta.position_tail, Some(0x0001_0001));
+        assert!(delta.name.is_none() && delta.guild_name.is_none());
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// `01 0b00` — three bytes, so the `u16` is really read; what `11` means is
+    /// open.
+    #[test]
+    fn the_dismiss_frame_carries_its_u16() {
+        let wire = Bytes::from_static(&[0x01, 0x0b, 0x00]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.update_type, 1);
+        assert_eq!(decoded.dismiss_code, Some(0x000B));
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// `03 04000000 02` — jid 4 left, reason 2. Both `01` and `02` occur.
+    #[test]
+    fn the_leave_frame_carries_its_reason_byte() {
+        let wire = Bytes::from_static(&[0x03, 0x04, 0x00, 0x00, 0x00, 0x02]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.member_id, Some(4));
+        assert_eq!(decoded.leave_reason, Some(2));
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// Type 9 is the new master, announced as text from one `u32`
+    /// (`_swprintf_s`). The shape is the handler's single read — which is
+    /// exactly why an empty type 9 must not silently pass any more.
+    #[test]
+    fn a_new_master_update_carries_the_masters_jid() {
+        let wire = Bytes::from_static(&[0x09, 0x06, 0x00, 0x00, 0x00]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.update_type, 9);
+        assert_eq!(decoded.new_master_id, Some(6));
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A full member record off the wire (`02ff05…`, 41 bytes, jid 5 level 68).
+    /// Pins that the full record and the masked delta agree about the `u32`
+    /// after the position: it is `unk_byte02..05` here and `position_extra`
+    /// there, in both.
+    #[test]
+    fn a_join_record_round_trips_with_the_same_trailing_u32() {
+        let wire = Bytes::from(hex_body(
+            "02ff0500000004004d6972618b07000044aaa861c40200000000010001000000040101000012010000",
+        ));
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.update_type, 2);
+        let joined = decoded.joined.clone().unwrap();
+        assert_eq!(joined.name.as_deref(), Some("Mira"));
+        assert_eq!(joined.level, Some(68));
+        assert_eq!(joined.member_id, Some(5));
+        // mask 0xFF: every field present
+        assert_eq!(joined.presence, PartyMemberMask::ALL);
+        // the roster path sends the nibbles RAW (both 10 = full), unlike a delta
+        assert_eq!(joined.hp_mp, Some(0xAA));
+        assert_eq!(joined.position_tail, Some(0x0001_0001));
+        // and there is no extra byte between the flag and the masteries: the
+        // `unk_byte07` xBot reads does not exist in this record (the earlier measurement).
+        assert_eq!((joined.flag, joined.mastery_primary), (Some(4), Some(257)));
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A whole roster off the wire (54 bytes): party number 2, master jid 6,
+    /// setup 0, one member. The round-trip is the zero-leftover-bytes proof for
+    /// the named header.
+    #[test]
+    fn a_roster_round_trips_with_its_named_header() {
+        let wire = Bytes::from(hex_body(
+            "ff02000000060000000001ff060000000700547261646572368b07000015aaa860870300003306010001000000040000000000000000",
+        ));
+        let decoded = PartyData::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.presence, 0xFF);
+        assert!(decoded.has_party_info() && decoded.has_roster());
+        assert_eq!(decoded.party_number, 2);
+        assert_eq!(decoded.master_join_id, Some(6));
+        assert_eq!(decoded.setup, Some(0));
+        assert!(!decoded.setup().is_exp_shared());
+        assert_eq!(decoded.members.len(), 1);
+        let member = &decoded.members[0];
+        assert_eq!(member.name.as_deref(), Some("Trader6"));
+        assert_eq!(member.member_id, Some(6));
+        assert_eq!(member.level, Some(21));
+        // the roster byte is 0xAA — both nibbles full, no `-1` on this path
+        assert_eq!(member.hp_mp, Some(0xAA));
+        assert_eq!(member.hp_mp().unwrap().hp_fill().as_f32(), 1.0);
+        assert_eq!(member.hp_mp().unwrap().mp_fill().percent_rounded(), 100);
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    fn hex_body(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// 0xB067's success tail is our own party jid (see [`PartyJoinResponse`]).
+    /// The failure arm carries the same `u16` code space the rest of the family
+    /// uses: `02 102C` = 11280 "no response".
+    #[test]
+    fn the_join_ack_carries_our_own_jid_on_success_and_a_code_on_failure() {
+        let wire = Bytes::from_static(&[1, 4, 0, 0, 0]);
+        let decoded = PartyJoinResponse::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded.local_join_id, Some(4));
+        assert_eq!(decoded.error_code, None);
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+
+        let wire = Bytes::from_static(&[2, 0x10, 0x2C]);
+        let decoded = PartyJoinResponse::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded.local_join_id, None);
+        assert_eq!(decoded.error_code, Some(11280));
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// 0x706D's two directions through one codec: the outbound arm is four
+    /// bytes, and a four-byte *inbound* body must not be mistaken for it — that
+    /// would silently accept a truncated notify.
+    #[test]
+    fn the_join_opcode_encodes_outbound_and_decodes_inbound() {
+        let out: Bytes = PartyMatchJoin::Request { number: 42 }.into();
+        assert_eq!(out, Bytes::from_static(&[0x2A, 0, 0, 0]));
+
+        assert!(PartyMatchJoin::try_from(Bytes::from_static(&[0x2A, 0, 0, 0])).is_err());
+
+        let mut body: Vec<u8> = Vec::new();
+        for value in [7u32, 8, 9, 100, 200] {
+            body.extend(value.to_le_bytes());
+        }
+        body.push(0);
+        body.extend(full_member_bytes());
+        let decoded = PartyMatchJoin::try_from(Bytes::from(body)).unwrap();
+        let PartyMatchJoin::Notify(notify) = decoded else {
+            panic!("an inbound 0x706D is always the notify arm");
+        };
+        assert_eq!(notify.name(), Some("Ax"));
+        assert_eq!(notify.record_join_id(), Some(0x1234));
     }
 
     /// The match list's whole body hangs off one flag.

@@ -380,15 +380,18 @@ packets! {
     0x706A => PartyMatchEditedRequest,
     0x706B => PartyMatchDeleteRequest,
     0x706C => PartyMatchListRequest,
-    0x706D => PartyMatchJoinNotify,
+    // 0x706D travels both ways with two unrelated bodies; `PartyMatchJoin` is
+    // the codec for both, the same construction 0x3080 uses.
+    0x706D => PartyMatchJoin,
     0xB069 => PartyMatchCreationResponse,
     0xB06A => PartyMatchEditedResponse,
     0xB06B => PartyMatchDeleteResponse,
     0xB06C => PartyMatchListResponse,
     // The remainder of the family.
-    // 0xB067 stays unwired — its body is recorded nowhere (docs/net-party.md).
     0x3068 => PartyDistribution,
     0xB060 => PartyCreateResponse,
+    // 0xB067 carries a body; see `PartyJoinResponse`.
+    0xB067 => PartyJoinResponse,
     0xB062 => PartyInviteResponse,
     0xB06D => PartyMatchJoinAck,
 
@@ -410,12 +413,12 @@ packets! {
     0xB084 => ExchangeExitResponse,
 
     // Guild data / log / notice (see agent/guild.rs, docs/net-guild-0x3101.md).
-    // Layouts are unconfirmed on the wire. 0x30FF and 0x38F5's per-type
-    // payload stay raw because the original has no parser for them.
+    // 0x38F5's per-type payload stays raw because the original has no parser
+    // for it; 0x30FF is parsed — it is the entity guild update, not a log.
     0x34B3 => GuildDataBegin,
     0x3101 => GuildDataBody,
     0x34B4 => GuildDataEnd,
-    0x30FF => GuildPlayerLog,
+    0x30FF => EntityGuildUpdate,
     0x38F5 => GuildUpdate,
     0xB0F0 => GuildCreatedData,
     0x70F9 => GuildNoticeEditRequest,
@@ -447,8 +450,9 @@ packets! {
     0x7104 => GuildPermissionUpdateRequest,
 
     // Guild union / alliance (see agent/guild_union.rs, docs/net-guild-union.md).
-    // The acks are the same body form as the guild cluster above. 0x3102
-    // (union roster push) stays unwired: its record was never decoded.
+    // The acks are the same body form as the guild cluster above. 0x3102 (the
+    // roster push) is decoded from the original's own handler.
+    0x3102 => UnionRoster,
     0x70FB => UnionInviteRequest,
     0x70FC => UnionLeaveRequest,
     0x70FD => UnionExpelRequest,
