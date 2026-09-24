@@ -150,6 +150,16 @@ pub fn time_out_pending_login(
 /// code -> key mapping exists once, next to the wire type it belongs to.
 const CONNECT_PROGRESS_KEY: &str = "UIO_MSG_ERROR_CITATION";
 const PASSWORD_ATTEMPTS_KEY: &str = "UIIT_STT_GLOBAL_PASSWORD_INPUT_ERROR";
+/// The two rows the empty-form refusal speaks, both shipped:
+/// `UIO_MSG_ERROR_INPUT` (`textuisystem.txt:164`, English column "Invalid ID")
+/// and `UIO_MSG_ERROR_PASSWORD` (`:165`, "Invalid ID or password.").
+///
+/// Which row the original picks for an *empty* field is unknown — it sends the
+/// empty login rather than refusing it — so the choice of these two rows for
+/// this refusal is ours: the ID row when the ID is missing, the password row
+/// when only the password is, because that is what each sentence says.
+const EMPTY_ID_KEY: &str = "UIO_MSG_ERROR_INPUT";
+const EMPTY_PASSWORD_KEY: &str = "UIO_MSG_ERROR_PASSWORD";
 /// `UIO_MSG_ERROR_SEVER_CONNECT` (`textuisystem.txt:166`, English column
 /// "Failed to connect to server." — the key's misspelling is the original's).
 /// The row the agent-connect failure path speaks; see that arm for why it goes
@@ -188,6 +198,21 @@ pub fn on_connect_activate(
 
     let username = id_input.value().to_string().trim().to_string();
     let password = pw_input.value().to_string().trim().to_string();
+
+    // An empty field is refused here, in front of the wire: `0x6102` with an empty
+    // name and an empty password draws no answer at all, which would leave the
+    // screen on "...Requesting user confirmation..." with Connect disabled. Local
+    // gates in front of the send are the idiom the create screen already uses
+    // (`gate_selection`).
+    if username.is_empty() || password.is_empty() {
+        let (key, fallback) = if username.is_empty() {
+            (EMPTY_ID_KEY, "Invalid ID")
+        } else {
+            (EMPTY_PASSWORD_KEY, "Invalid ID or password.")
+        };
+        info_text_writer.write(InfoTextV2Update(ui_strings.get_plain_or(key, fallback)));
+        return;
+    }
 
     // No shard committed = nothing to log into, because `LoginRequest` carries
     // the shard id. The screen looks ready in that state: the Server row shows
@@ -871,6 +896,80 @@ mod tests {
         assert!(
             app.world().get_resource::<super::PendingLogin>().is_some(),
             "the wait belongs to the user now, it is not over"
+        );
+    }
+
+    /// Connect on an **empty** form must not send `0x6102` with an empty name
+    /// and an empty password: the server answers nothing, and the screen would
+    /// be disabled for the rest of the session. Two halves, both asserted here:
+    /// nothing goes out, and nothing locks.
+    ///
+    /// Negative control is the second half: a filled form must still walk past
+    /// this gate (it then stops at the gateway lookup, which a test app has no
+    /// business owning).
+    #[test]
+    fn an_empty_form_is_refused_and_does_not_lock_the_screen() {
+        use bevy::text::EditableText;
+        use bevy::ui::InteractionDisabled;
+        use bevy::ui_widgets::Activate;
+
+        use crate::plugins::config::division::DivisionInfo;
+        use crate::plugins::textdata::ClientUiStrings;
+        use crate::scenes::intro_v2::chrome::InfoTextV2Update;
+        use crate::scenes::intro_v2::login_form::{ConnectButton, IdInput, PwInput};
+        use crate::scenes::intro_v2::server_select::SelectedShardV2;
+        use crate::scenes::intro_v2::IntroV2State;
+
+        fn app_with_form(id: &str, pw: &str) -> (App, Entity) {
+            let mut app = App::new();
+            app.add_message::<InfoTextV2Update>()
+                .init_resource::<ClientUiStrings>()
+                .insert_resource(DivisionInfo::default())
+                .insert_resource(State::new(IntroV2State::LoginForm))
+                // A shard *is* committed: the empty form was refused by nothing
+                // else, which is how the packet went out.
+                .insert_resource(SelectedShardV2(Some(1)));
+            app.world_mut().add_observer(super::on_connect_activate);
+            app.world_mut().spawn((IdInput, EditableText::new(id)));
+            app.world_mut().spawn((PwInput, EditableText::new(pw)));
+            let connect = app.world_mut().spawn(ConnectButton).id();
+            (app, connect)
+        }
+
+        fn first_line(app: &App) -> Option<String> {
+            let messages = app.world().resource::<Messages<InfoTextV2Update>>();
+            let mut cursor = messages.get_cursor();
+            cursor.read(messages).next().map(|line| line.0.clone())
+        }
+
+        // Both fields empty, and blanks count as empty (the value is trimmed).
+        let (mut app, connect) = app_with_form("", "   ");
+        app.world_mut().trigger(Activate { entity: connect });
+        // The shipped row for a missing ID, verbatim (`textuisystem.txt:164`).
+        assert_eq!(first_line(&app).as_deref(), Some("Invalid ID"));
+        assert!(
+            app.world().get::<InteractionDisabled>(connect).is_none(),
+            "a refused click must not grey the button it refused"
+        );
+        assert!(
+            app.world().get_resource::<super::PendingLogin>().is_none(),
+            "nothing was sent, so nothing is being waited for"
+        );
+
+        // Only the password missing: the other row, and still no lock.
+        let (mut app, connect) = app_with_form("player", "");
+        app.world_mut().trigger(Activate { entity: connect });
+        assert_eq!(first_line(&app).as_deref(), Some("Invalid ID or password."));
+        assert!(app.world().get::<InteractionDisabled>(connect).is_none());
+
+        // Negative control: a filled form passes this gate and reaches the
+        // gateway lookup, whose line is the *connection* one.
+        let (mut app, connect) = app_with_form("player", "secret");
+        app.world_mut().trigger(Activate { entity: connect });
+        let line = first_line(&app).expect("the filled form must not be refused here");
+        assert!(
+            line.to_lowercase().contains("reconnecting"),
+            "expected the gateway line, got {line:?}"
         );
     }
 
