@@ -258,6 +258,10 @@ NPC dialog, teleporter, storage, repair.
 | `0xB03E` | ItemRepairResponse | S→C | wired |  |
 | `0x7157` | AlchemyDismantleRequest | C→S | wired | alchemy dismantle, `{u8 SlotCount, u8[] Slots}` — the family's **only** published body |
 | `0xB157` | AlchemyDismantleResponse | S→C | wired | `{u8 result, if result == 2 u16 errorCode}`; the error-code table is a dead page, so the code stays unnamed |
+| `0x7150` | AlchemyReinforceRequest | C→S | experimental | elixir fuse / cancel; `{u8 2, u8 op=3, u8 count, count × u8 inventory slot}`, confirmed against a real server |
+| `0xB150` | AlchemyReinforceResponse | S→C | experimental | `{u8 result, …}`; the outcome is classified by two flag bytes, as the original's handler does |
+| `0x7151` | AlchemyStoneRequest | C→S | experimental | stone attach / cancel; leads with the `AlchemyType` byte (4 magic / 5 attribute), then the same count-prefixed slot list |
+| `0xB151` | AlchemyStoneResponse | S→C | experimental | as `0xB150` minus the breakdown flag — a stone attach always delivers a record |
 
 ## Guild (wire only — see EP-15)
 
@@ -396,14 +400,38 @@ on the wire, so all are `experimental`.
 
 ## Quest marks (wire only — the quest system itself is not built yet)
 
-The only two confirmed opcodes of the quest family. Everything else the family
-has is listed unwired, with its reason — including the correction that
-`0x30D0`, `0x30D2`, `0x30D3` and `0x30DF` are not quest opcodes at all.
+The three opcodes of the quest family whose bodies are known. Everything else
+the family has is listed unwired, with its reason, in `docs/net-quest.md` —
+including the correction that `0x30D0`, `0x30D2`, `0x30D3` and `0x30DF` are not
+quest opcodes at all.
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
 | `0x30D6` | QuestMarkAdd | S→C | wired | 24 bytes; `mark_id` is a server pool handle, the four trailing `u32`s are unknown |
 | `0x30D7` | QuestMarkRemove | S→C | wired | whole body is a `mark_id` an earlier `0x30D6` introduced |
+| `0x30D5` | QuestUpdate | S→C | wired | add / modify / delete of one active quest; the body after the `kind` byte is the CHARACTER_DATA quest record, read by the same parser |
+
+## Job (trader / hunter / thief — `packets::agent::job`)
+
+Read off the original's own handlers and, where noted, off a vSRO server that
+writes the same fields. Only the two rows marked `wired` below have been seen
+on the wire, so the section is `experimental` unless a row says otherwise.
+
+| opcode | type | dir | status | notes |
+|---|---|---|---|---|
+| `0x70E1` | JobJoinRequest | C→S | experimental | `{u32 npc_gid, u8 enroll_job_union_type}` |
+| `0x70E2` | JobLeaveRequest | C→S | wired | `{u32 npc_gid}` — matches the frame a server answers |
+| `0x70E3` | JobAliasRequest | C→S | experimental | `{u32 npc_gid, u8 job_type, u16 len + ASCII alias}` |
+| `0x70E4` | JobRankingRequest | C→S | experimental | `{u8 job_type, u8 rank_kind}` |
+| `0x70E5` | JobOutcomeRequest | C→S | experimental | `{u32 npc_gid, u8 job_type}` — the name of the second byte is unconfirmed |
+| `0x70E6` | JobPrevInfoRequest | C→S | experimental | `{u32 npc_gid}` |
+| `0xB0E4` | JobRankingResponse | S→C | experimental | `{u8 result, u8 job_type, u8 rank_kind, u8 count, count × row}`; the row is one byte wider on the activity ranking |
+| `0xB0E6` | JobPrevInfoResponse | S→C | experimental | `{u8 result, 3 × (u8 level, u32 exp)}` = 16 bytes; the pair order is unconfirmed |
+| `0x30E0` | JobPriceUpdate | S→C | experimental | `u8`-counted list of `(ref_id, price)` pairs; which of the two `u32`s the UI shows is unconfirmed |
+| `0x30E8` | JobTradeScaleUpdate | S→C | experimental | `{u8 trade_scale}` |
+| `0x34D5` | JobSafeTradeUpdate | S→C | experimental | `{u8 state, u8 code}` plus two counter bytes on exactly one arm; 15 of the codes are indistinguishable on the wire |
+| `0x74D4` | JobExportDetailRequest | C→S | experimental | `{u32 selected_ref_id}`; the one request of the family without an NPC pre-check |
+| `0xB4D4` | JobExportDetailResponse | S→C | experimental | `{u16 count, count × goods row}` |
 
 ## Player stall / private shop (wire only — no consumer yet, see EP-16 / Trading)
 
