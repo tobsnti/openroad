@@ -11,6 +11,7 @@ pub mod guild_union;
 pub mod guild_war;
 pub mod ingame;
 pub mod inventory;
+pub mod job;
 pub mod lobby;
 pub mod mail;
 pub mod party;
@@ -41,6 +42,7 @@ pub mod prelude {
     pub use crate::agent::guild_war::*;
     pub use crate::agent::ingame::*;
     pub use crate::agent::inventory::*;
+    pub use crate::agent::job::*;
     pub use crate::agent::lobby::*;
     pub use crate::agent::mail::*;
     pub use crate::agent::party::*;
