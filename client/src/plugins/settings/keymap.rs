@@ -323,6 +323,9 @@ pub const KEY_ALCHEMY: u16 = 3027;
 pub const KEY_VIEW_DROP_ITEM: u16 = 3012;
 /// Opens the auto-potion configuration window.
 pub const KEY_AUTO_POTION: u16 = 3024;
+/// Opens the academy member panel (`KeyAcademy`, `L` by default — the client's
+/// own `UIIT_CTL_TC_SHORTKEY_L` says "Academy ( L )").
+pub const KEY_ACADEMY: u16 = 3033;
 /// Board/dismount toggle (the COS command bar's first cell).
 pub const KEY_COS_RIDE: u16 = 3017;
 /// Dismiss the summon ("Terminated").

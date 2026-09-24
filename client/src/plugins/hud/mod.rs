@@ -20,6 +20,7 @@
 //! (the `.chain()` groups that *did* express order are intra-window and moved
 //! together).
 
+pub mod academy;
 pub mod academy_appraisal;
 pub mod action;
 pub mod alchemy;
@@ -180,6 +181,7 @@ impl Plugin for HudPlugin {
                 // five pages of the original's single frame behave as one.
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
+                academy::AcademyWindowPlugin,
             ),
         ));
     }
