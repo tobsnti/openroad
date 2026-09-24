@@ -40,9 +40,8 @@ const MAX_DECOMPRESSED_IMAGE_SIZE: usize = (200 * 64 / 8) * 64;
 /// sending a differently sized image renders instead of crashing the client.
 ///
 /// It is deliberately *not* taken from the packet's `unk_0x32c8` field: that
-/// field is a constant `0x32C8` (13000) in all five `packet_dump/0x2322.log`
-/// samples while the payloads inflate to exactly 1600 bytes at 200x64, so it does
-/// not carry the size despite its old name (`docs/net-login-gateway.md`).
+/// field is a constant `0x32C8` (13000) while the payloads inflate to exactly
+/// 1600 bytes at 200x64, so it does not carry the size despite its old name.
 ///
 /// Returns `None` for any payload whose dimensions or inflated length do not
 /// agree — the modal then simply does not appear.

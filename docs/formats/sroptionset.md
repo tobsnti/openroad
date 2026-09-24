@@ -165,13 +165,10 @@ Notes / UNKNOWNs:
 |3035|KeyMap   |Custom shortcut      |KeyHideEnemies                  |u32 (KeyCode) |
 |3101|KeyMap   |                     |isMouseShortcutSwapped          |bool          |
 
-## Size-exactness proof (openroad, 2026-08-12)
+## Size-exactness proof
 
-The header above (3 opaque fields, 9 bytes) and every id→width class are now
-**arithmetically proven** against a real 681-byte `SROptionSet.dat` reported in
-`silkroad-docs/docs/client_startup.md:223-252` — a **reference repository outside this
-workspace**, checked out at `<refs>/silkroad-docs/` on the maintainer's machine and
-not vendored here (see the source note below):
+The header above (3 opaque fields, 9 bytes) and every id→width class are
+**arithmetically proven** against a real 681-byte `SROptionSet.dat`:
 
 ```
 9 (header) + 15*6 + 15*6 + 2*5 + 2*8 + 2*5 + 2*8 + 3*8 + 3*5 + 28*5 + 32*8 + 1*5 = 681
@@ -186,14 +183,7 @@ identity confirms the 9-byte header, every width class, and that ids
 keymap block contributes exactly **32** records (3001-3009, 3011-3021, 3023-3027,
 3029-3035), which is what makes the arithmetic land on 681.
 
-**Source note (added 2026-08-15, after the citation was reported as unresolvable).** The
-path above is relative to the *reference* checkout, not to this repository, so a reader
-searching the openroad tree — or the whole `<projects>` workspace — finds nothing and can
-reasonably conclude the derivation rests on a missing file. It does not. The file is at
-`<refs>/silkroad-docs/docs/client_startup.md`, line 223 reads
-`#### SROptionSet.dat (681 bytes)` verbatim, and lines 223-252 are exactly its
-`SROptionSet.dat` section. Re-verified there on 2026-08-15, and the arithmetic re-added
-independently:
+**The identity, re-added independently:**
 
 ```
 9 + 15*6 + 15*6 + 2*5 + 2*8 + 2*5 + 2*8 + 3*8 + 3*5 + 28*5 + 32*8 + 1*5

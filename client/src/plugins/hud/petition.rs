@@ -3,26 +3,23 @@
 //! Idea: the original raises **one** confirm box for party, exchange, guild,
 //! academy and resurrection invites, keyed by a leading `type` byte, and the
 //! answer travels back on the same opcode carrying *neither* an id nor a type
-//! — the server correlates it by session
-//! (`docs/net-invite-0x3080.md` §1-§2). That protocol shape makes a **single**
+//! — the server correlates it by session. That protocol shape makes a **single**
 //! pending slot an invariant rather than a simplification: two boxes on screen
 //! could not be answered independently, because the wire has no way to say
 //! which one. Hence one [`PendingPetition`] resource, and never two dialogs.
 //!
 //! What ships here are the **party arms** (`type` 2 `PartyCreation` and 3
-//! `PartyInvitation`, the two the assembly doc sequences first —
-//! `docs/re/systems/gameinvite-0x3080-assembly.md` §8.3) and the **exchange
-//! arm** (`type` 1), whose continuation now exists: accepting it makes the
-//! server send 0x3085 and `hud::exchange` takes over from there (#99/#36).
-//! Its accept/decline encoding is the family default `01 01` / `01 00`, both
-//! `[V]` (§2), and its body is one sourced line rather than the party arm's
-//! three. The remaining arms are decoded, logged and named to the player as a
-//! system line, but do not open a box: resurrection belongs to the death flow,
-//! and guild/union/academy have [U] response encodings that xBot never builds
-//! — sending an unverified decline would be the guess this file is built to
-//! avoid (§9.1/9.2).
+//! `PartyInvitation`) and the **exchange arm** (`type` 1), whose continuation
+//! exists: accepting it makes the server send 0x3085 and `hud::exchange`
+//! takes over from there. Its accept/decline encoding is the family
+//! default `01 01` / `01 00`, and its body is one sourced line rather than the
+//! party arm's three. The remaining arms are decoded, logged and named to the
+//! player as a system line, but do not open a box: resurrection belongs to the
+//! death flow, and guild/union/academy have unknown response encodings —
+//! sending an unverified decline would be the guess this file is built to
+//! avoid.
 //!
-//! **Chrome and geometry** come from the user's own PK2, not from this file's
+//! **Chrome and geometry** come from the game's own data, not from this file's
 //! judgement: `resinfo/ifmessagebox.txt` `Section = MsgBoxSimple` authors Yes
 //! at `72,99,76,24` and No at `152,99,76,24` (both `com_button.ddj`, native
 //! 76x24) with the message textbox at `0,52,240,14`, over the family's
@@ -62,8 +59,8 @@ use crate::plugins::net::entities::{DisplayName, NetworkEntities};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// `Section = Create` authors the family's interior as `16,40,284,122`; the
-/// shared plate insets are 16/40/16, so the plate is 316x178. Derived rather
-/// than measured — the art has no single "plate" file to read a size off.
+/// shared plate insets are 16/40/16, so the plate is 316x178. Derived, because
+/// the art has no single "plate" file to read a size off.
 pub const PLATE: (f32, f32) = (316.0, 178.0);
 
 const PLATE_ART: &str = "media://interface/messagebox/msgbox2_window_";
@@ -119,7 +116,7 @@ enum PetitionAnswer {
     Decline,
 }
 
-/// The arms this file can answer correctly today (all `[V]` encodings).
+/// The arms this file can answer correctly today.
 fn opens_a_box(petition: u8) -> bool {
     matches!(
         petition,
@@ -405,7 +402,7 @@ fn message_rect(index: usize) -> (f32, f32, f32, f32) {
 /// Yes/No: answer on the same opcode and close.
 ///
 /// The decline encoding is arm-dependent — party declines with `02 0C 2C`, not
-/// the generic `01 00` (`docs/net-invite-0x3080.md` §2) — which is the only
+/// the generic `01 00` — which is the only
 /// reason the pending petition's `kind` is remembered at all: the response
 /// itself carries neither id nor type.
 fn on_petition_answer(
@@ -595,11 +592,11 @@ mod test {
     fn the_exchange_arm_is_one_sourced_line_naming_nobody() {
         assert!(!DEAL_ASK.1.contains("%s"));
         assert_eq!(DEAL_ASK.0, "UIIT_MSG_DEAL_ASK");
-        // and the arm carries no setup byte on the wire (0x3080 §1)
+        // and the arm carries no setup byte on the wire
         assert!(petition(PETITION_EXCHANGE, None).setup.is_none());
     }
 
-    /// The `setup` byte must reach the UI (§8 fidelity checklist): it is the
+    /// The `setup` byte must reach the UI: it is the
     /// difference between a 4-person free-for-all and an 8-person share party.
     #[test]
     fn the_setup_byte_reaches_the_body() {

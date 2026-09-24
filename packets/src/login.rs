@@ -59,7 +59,7 @@ pub struct LoginError {
 /// reasoning as `describe_agent_auth_error` in `agent/mod.rs`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoginFailure {
-    /// `1` — wrong password. The counter is `[U]` on the wire (see
+    /// `1` — wrong password. The counter is optional on the wire (see
     /// [`WrongAttempt`]), hence the `Option`: it is `None` if the server sent
     /// the code without one.
     WrongPassword(Option<WrongAttempt>),
@@ -212,11 +212,10 @@ pub struct LoginCaptchaChallenge {
     pub image_flag: u8,
     pub image_remain: u16,
     pub image_compressed: u16,
-    /// `[U]`. Named `image_uncompressed` until 2026-08-14, which asserted
-    /// something false: the field is a **constant `0x32C8` (13000)** in all five
-    /// `packet_dump/0x2322.log` samples, while every payload inflates to exactly
-    /// 1600 bytes = `image_width * image_height / 8`. Its real meaning is
-    /// unknown; nothing reads it (`docs/net-login-gateway.md`).
+    /// Unknown, and **not** an uncompressed-image size: the field is a
+    /// **constant `0x32C8` (13000)**, while
+    /// every payload inflates to exactly 1600 bytes =
+    /// `image_width * image_height / 8`. Nothing reads it.
     pub unk_0x32c8: u16,
     pub image_width: u16,
     pub image_height: u16,

@@ -35,11 +35,8 @@ The batch consumer is `on_group_spawn` / `on_single_spawn` in
   `packets/src/agent/character_data.rs` (`SpawnPosition`, `EntityMovement`,
   `EntityState`, `ActiveBuff`), `client/src/plugins/net/entities.rs`
   (`MonsterRarity` class map).
-- **Public cross-references**: skrillax
-  `silkroad-protocol` (kumpelblase2) — `GroupSpawn`, `ItemSpawnData`,
-  `EntityRarity` — and the SilkroadDoc wiki *Agent packets* page. These target
-  vSRO 1.188, our version. Non-repo layouts are reference only; the byte offsets
-  below are authoritative for the openroad parser.
+- **Version**: everything below targets vSRO 1.188. The byte offsets here are
+  authoritative for the openroad parser.
 
 All integers are little-endian. Strings are `u16` length + bytes.
 
@@ -55,8 +52,8 @@ entity (remote players, NPCs, monsters, item drops) as a batch:
 ```
 
 > **0x3018 is the empty End marker and 0x3019 carries the data** — the opposite
-> of what some server docs list, confirmed against a live capture (see the macro
-> comment in `packets/src/lib.rs`).
+> of what some server docs list (see the macro comment in
+> `packets/src/lib.rs`).
 
 | Opcode | Name | Body | Notes |
 |---|---|---|---|
@@ -91,23 +88,22 @@ Because records are variable-length and back-to-back, a mis-parse cannot recover
 the next record boundary. On an unknown ref id or a short read the parser stops
 the batch and returns the records decoded so far (fail-safe, mirroring
 `character_data.rs`), logging the offending ref id, its resolved type, the record
-start/stop offsets, and a hexdump of the remaining bytes so a live capture pins
-the divergence.
+start/stop offsets, and a hexdump of the remaining bytes so the divergence can be
+pinned down.
 
-**#426 — an unclassifiable ref no longer costs the whole batch.** A live server
+**An unclassifiable ref must not cost the whole batch.** A live server
 sends refs this client's tables do not have (9251, 9252, 36030 appear in
-`npcpos.txt` but in no `characterdata_*.txt` of either of the user's Media.pk2 —
-the ids jump 8984 -> 9264 and 34067 -> 36031), and every entity behind such a
-record was lost with it. The record's *layout* is still unknown, but its *width*
-is decidable from the payload: assume an `n`-byte body, parse the records that
-must follow, and keep `n` only if they all parse and land exactly on the payload's
-last byte — a group-spawn body holds whole records and nothing else (verified over
-all 265 payloads in `packet_dump/0x3019.log`: each is consumed to its last byte by
-its begin count). Accepted only when exactly one `n` does; otherwise the batch
-aborts as before. The skipped ref is reported in `GroupSpawnParse::unresolved`
-and warned about — it has no model in this client either way, so it is skipped,
-never guessed into an entity. Fixture: the 98-byte 2026-08-11 09:43:45.339Z
-payload (`01 02 00` begin), records `9252` (unknown, 49 B) + `3861`
+`npcpos.txt` but in no `characterdata_*.txt` — the ids jump 8984 -> 9264 and
+34067 -> 36031), and a record like that would otherwise take every entity
+behind it. The record's *layout* is still unknown, but its *width* is decidable
+from the payload: assume an `n`-byte body, parse the records that must follow,
+and keep `n` only if they all parse and land exactly on the payload's last byte
+— a group-spawn body holds whole records and nothing else, so each payload is
+consumed to its last byte by its begin count. Accepted only when exactly one `n`
+does; otherwise the batch aborts as before. The skipped ref is reported in
+`GroupSpawnParse::unresolved` and warned about — it has no model in this client
+either way, so it is skipped, never guessed into an entity. Fixture: a 98-byte
+payload (`01 02 00` begin) with records `9252` (unknown, 49 B) + `3861`
 NPC_CH_EVENT_KISAENG1 (49 B).
 
 ## Shared wire blocks
@@ -214,12 +210,12 @@ the whole payload is decoded client-side rather than in the `packets` crate.
 | — | [tag ≠ 0] option_count | u8 | number of option ids |
 | — | [tag ≠ 0] option_count × option_id | u8 each | talk/store/storage/teleport dialog entries |
 
-The interaction list (`tag byte, then u8 count + that many 1-byte option ids`) is
-capture-verified (tag = 2, count = 4, then 4 option bytes). Its length **must** be
-consumed exactly or the following record desyncs. The client stores the ids on
-`NpcTalkOptions` but treats them as advisory only — playtests showed they are not
-a reliable dialog-option list (city guards advertise trade-ish bits), so the
-dialog derives its real options from the shop/teleport/speech tables.
+The interaction list is `tag byte, then u8 count + that many 1-byte option ids`
+(e.g. tag = 2, count = 4, then 4 option bytes). Its length **must** be consumed
+exactly or the following record desyncs. The client stores the ids on
+`NpcTalkOptions` but treats them as advisory only — they are not a reliable
+dialog-option list (city guards advertise trade-ish bits), so the dialog derives
+its real options from the shop/teleport/speech tables.
 
 ### Monster (`parse_character`, `is_monster = true`)
 
@@ -281,8 +277,7 @@ the client despawns each (never the local player). A `SingleEntityDespawn`
 ## Rarity / champion classes
 
 The monster `spawn_rarity` byte (and characterdata's rarity column as fallback)
-maps to `MonsterRarity` in `client/src/plugins/net/entities.rs`, per skrillax's
-`EntityRarity`:
+maps to `MonsterRarity` in `client/src/plugins/net/entities.rs`:
 
 | Value | Class | Client effect |
 |---|---|---|
@@ -302,7 +297,7 @@ but keys the badge off characterdata.
 ## PvP / state flags
 
 - **Player `pk_flag`** — the trailing `0xFF` byte closing the player record;
-  observed constant.
+  constant so far.
 - **Player `pk_state` / `pvp_cape`** — inside the skipped blocks; names inferred,
   not decoded (see open questions).
 - **Item `owner_flag` / `owner_jid`** — pickup reservation (0 = free-for-all).
@@ -315,42 +310,34 @@ but keys the badge off characterdata.
   are consumed by width only; the field names are inferred and unverified.
 - **Player mount/transport.** `parse_player` now models the conditional: a set
   riding flag inserts `riding_uid:u32` before the scroll byte, mirroring
-  CHARACTER_DATA's (0x3013) `transport_flag`/`transport_id` pair. [S] from
-  xBot (`PacketParser.cs:744-747`, corroborating anapse over skrillax's plain
-  bool) — no mounted-remote-player capture yet; F7 promotes it to [V]. The old
-  flat 8-byte skip desynced the batch by 4 bytes for any mounted player.
+  CHARACTER_DATA's (0x3013) `transport_flag`/`transport_id` pair. Unconfirmed
+  on the wire. A flat 8-byte skip desyncs the batch by 4 bytes for any
+  mounted player.
 - **COS records.** COS refs (characterdata `1/2/3/tid4`) now parse with their
   own record: the shared NPC head plus a tid4-selected owner tail (horses none;
   pets `Name`; all non-horse `OwnerName, job, [pvp unless pick pet],
-  [owner_obj_id for guild guards], owner_uid`). [S] from xBot
-  (`PacketParser.cs:791-807`); promoted by a COS-spawn capture (F2/F8).
+  [owner_obj_id for guild guards], owner_uid`). Unconfirmed on the wire.
   Previously these fell through to the plain NPC parse, leaving the tail
   unconsumed and desyncing every later record in the batch.
 - **Structure tail.** The gate record's 12-byte tail
-  (`01 00 00 01 00 00 00 00 00 00 00 00` in every capture) has no known layout —
-  no movement/state block fits in 12 bytes — and is skipped whole. Non-Jangan
+  (always `01 00 00 01 00 00 00 00 00 00 00 00`) has no known layout — no
+  movement/state block fits in 12 bytes — and is skipped whole. Non-Jangan
   gates would surface any variant via the batch-abort diagnostics.
 - **Interaction tag values.** Only `tag = 0` (none) and `tag = 2` (talk) are
-  observed; other tag values, and the meaning of the individual option ids, are
+  known; other tag values, and the meaning of the individual option ids, are
   unverified. The client already treats the option ids as advisory.
-- **Monster rarity tail vs status note.** `parse_item`'s own comment records a
-  2026-07-24 capture verification of the drop tail, while the module-header
-  comment still lists the monster rarity tail and dropped-item branch as
-  "pending a capture" — the header note is likely stale relative to the function.
-  Worth reconciling on the next capture pass.
 
-## Sample hex (synthetic / redacted)
+## Sample hex (synthetic)
 
-Drawn from the in-repo unit-test fixtures and world constants only — no account
-or session data.
+Drawn from the in-repo unit-test fixtures and world constants only.
 
 ```text
 0x3017  01 03 00                              begin: kind=SPAWN(1), count=3
 0x3018  (empty)                               end marker
 0x3016  28 62 05 00                           single despawn: unique_id 352808
 
-0x3019  (one Structure record — Jangan dimensional gate, ref 2094, captured
-         40× as its own count-1 batch; a fixed world object, safe to quote)
+0x3019  (one Structure record — Jangan dimensional gate, ref 2094, always its
+         own count-1 batch; a fixed world object)
         2e 08 00 00                           ref_id 2094
         0c 00 00 00                           unique_id 12
         a8 61                                 region 25000

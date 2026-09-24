@@ -1,10 +1,8 @@
 //! Options -> Camera pane (`OptionsTab::Camera`): the three-way sight radio.
 //!
-//! Idea: `docs/re/ui/options-camera.md` §6 calls this pane "a pure three-way
-//! view-mode radio and nothing else" and files what the modes *do* as UNKNOWN,
-//! on the grounds that `ifoption_camera.txt` does not define it. Reading the
-//! tree and the string table together corrects both halves, and the correction
-//! is why this pane could finally be built:
+//! Idea: the pane looks like a pure three-way view-mode radio, and
+//! `ifoption_camera.txt` alone does not say what the modes do. Reading the tree
+//! and the string table together answers both halves:
 //!
 //! * The tree is **nine** blocks, not three: per mode a `CIFCheckBox` on
 //!   `com_radiobutton_off.ddj` (ids 10/11/12 at `25,45` / `25,98` / `25,152`,
@@ -25,12 +23,11 @@
 //!    own two description lines underneath, which is the same copy the original
 //!    ships for these three modes and says what the control actually does.
 //! 2. The whole row is the click target, not the 16x16 box (WCAG 2.2 AA target
-//!    size; `docs/re/ui/options-camera.md` §8.6). No vanilla geometry moves.
+//!    size). No vanilla geometry moves.
 //!
 //! The radio writes `GameOptions.camera.sight`, which `settings::persistence`
 //! already saves on change, and `camera::follow_player_camera` reads every
-//! frame — so it survives a restart *and* changes behaviour, which is the
-//! acceptance the RE doc states for closing #379.
+//! frame — so it survives a restart *and* changes behaviour.
 
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::picking::hover::Hovered;

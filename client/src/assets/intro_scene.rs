@@ -242,9 +242,9 @@ impl IntroScene {
 /// `Media/config/option.txt` as `key = "value"` lines, shipping *every*
 /// alternative and disabling all but one with a leading `//`. Reading that file
 /// rather than hardcoding a name means a user who edits their own option.txt
-/// gets the cutscene they asked for, and it is the reason openroad no longer
-/// needs a pre-converted `.intro` committed anywhere (ADR 0009: the user's own
-/// data is the default reference and the tie-breaker).
+/// gets the cutscene they asked for, and no pre-converted `.intro` has to be
+/// committed anywhere (ADR 0009: the player's own data is the default
+/// reference and the tie-breaker).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntroOption {
     /// Archive-relative camera script, e.g. `script/intro/china_wharf.txt`.
@@ -382,7 +382,7 @@ IntroBGM = \"chosen.ogg\"\r
     /// cutscene: which of the 12 tokens are carried (`frame`, `rx`, `rz`, the
     /// offset xyz and the rotation xyz) and which three are dropped (the
     /// leading `0.0`, the command token and the trailing `1`). Real camera data
-    /// belongs to the user's own `Media/` and is converted by
+    /// belongs to the player's own `Media/` and is converted by
     /// `tools/src/bin/intro_convert.rs`, never committed here.
     const SYNTHETIC_CAMERA_KEYS: &str = "\
 0.0 S_CameraInsert 0.0 188 95 100.500000 10.250000 -20.750000 -0.100000 -1.500000 0.000000 1

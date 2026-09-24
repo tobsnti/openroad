@@ -625,15 +625,13 @@ impl Plugin for RenderPhaseDiagnosticsPlugin {
 /// Where each frame's wall time actually goes, split across the two threads
 /// that produce it.
 ///
-/// Idea: a 2026-09-05 Tracy capture found that **nothing in the frame was
-/// saturated** — the main thread waited 12.53 ms, the render thread waited
-/// 10.80 ms inside the swapchain acquire, and the GPU was busy only ~13.9 ms of
-/// a 21.85 ms frame. That is the signature of a serialised pipeline rather than
-/// a busy one, and it is worth more than any per-pass number, because it says
-/// the ceiling is the *shape* of the frame and not the work in it.
+/// Idea: a frame can be slow because it is *serialised* rather than busy — the
+/// main thread waiting on the render thread, the render thread waiting inside
+/// the swapchain acquire, the GPU idle for part of the frame. That shape says
+/// more than any per-pass number, because it puts the ceiling in the shape of
+/// the frame rather than in the work it does.
 ///
-/// Finding it cost a 26 MB Tracy capture, a CSV export and a bespoke script.
-/// These four rows put the same picture on every `make perf` line, so a change
+/// These four rows put that picture on every `make perf` line, so a change
 /// can be judged against it without re-deriving it each time:
 ///
 /// - `acquire_ms`   — inside `prepare_windows`, i.e. waiting for a swapchain image

@@ -1,20 +1,18 @@
-//! Per-opcode dump of every packet payload for offline re-analysis:
+//! Per-opcode log of every packet payload for offline inspection:
 //! `packet_dump/<opcode>.log` gets one `<RFC3339-ms UTC> <hex payload> <E|P>`
 //! line per received packet, appended across runs.
 //!
 //! The third column is the frame's wire `0x8000` bit — `E` = the body arrived
 //! blowfish-encrypted, `P` = plaintext (#459). Without it a length read out of
 //! an old log is ambiguous: an encrypted frame's payload is padded to the
-//! block, so a later analyst cannot tell a real body length from a padded one
-//! (12 of 58 captured opcodes are undecidable from length alone). The flag is
-//! a *suffix*, so `cut -d' ' -f2` still yields the hex payload and lines
-//! written before 2026-08-14 — which simply lack a third column — stay
-//! parseable, with their encryption state unknown. Payloads are captured *before*
-//! deserialization so unknown/unhandled opcodes are recorded too, and file
-//! handles are cached per opcode so the hot receive path only pays for a
-//! buffered line write.
+//! block, so a real body length cannot be told from a padded one. The flag is
+//! a *suffix*, so `cut -d' ' -f2` still yields the hex payload and older lines
+//! — which simply lack a third column — stay parseable, with their encryption
+//! state unknown. Payloads are recorded *before* deserialization so
+//! unknown/unhandled opcodes are logged too, and file handles are cached per
+//! opcode so the hot receive path only pays for a buffered line write.
 //!
-//! Sent packets go to `packet_dump/c2s/<opcode>.log` instead, captured before
+//! Sent packets go to the `c2s/<opcode>.log` subdirectory instead, recorded before
 //! the frame is serialized so the body is plaintext even once the outbound
 //! encryption policy is on. The separate directory is what keeps the two
 //! directions apart: several opcodes (`0x2001`, `0x6100`, ...) are used in
@@ -118,8 +116,8 @@ mod tests {
 
     /// `0x2001` (and the login opcodes) travel in both directions, so a shared
     /// per-opcode file would interleave request and response bodies and make
-    /// the corpus useless for layout work. Sent packets must land under
-    /// `c2s/`, received ones stay at the root where the existing corpus lives.
+    /// the log useless. Sent packets must land under `c2s/`, received ones
+    /// stay at the root.
     #[test]
     fn the_two_directions_never_share_a_file() {
         let root = std::env::temp_dir().join(format!("openroad-dump-{}", std::process::id()));

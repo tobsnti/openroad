@@ -154,7 +154,7 @@ mod tests {
     }
 
     /// #202: Restore (action 5) carries the name in exactly the same shape as
-    /// Delete — go-sro reads one string for Delete/CheckName/Restore alike.
+    /// Delete — one string for Delete/CheckName/Restore alike.
     #[test]
     fn restore_request_carries_name_without_flag_byte() {
         let request = CharacterSelectionActionRequest {

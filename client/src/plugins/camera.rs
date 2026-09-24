@@ -328,15 +328,11 @@ pub fn spawn_player_camera(
     // DepthPrepass feeds the high-quality water's screen-space reflection raymarch (see
     // water_hq.wgsl). MSAA stays at the Bevy default (Sample4): forcing it off breaks
     // this project's main view render entirely (terrain/objects vanish, only the skybox
-    // draws — verified by bisecting DepthPrepass vs Msaa::Off independently), and a
-    // Sample2 experiment (2026-07-15, to remove the redundancy with the Fxaa post pass)
-    // coincided with broken rendering + egui artifacts — reverted pending isolation.
-    // The raymarcher's depth read compiles fine against a multisampled prepass texture
-    // in this material-shader context (see the comment on `DEPTH_PREPASS` in
+    // draws). The raymarcher's depth read compiles fine against a multisampled prepass
+    // texture in this material-shader context (see the comment on `DEPTH_PREPASS` in
     // water_hq.wgsl).
-    // Bloom (and the `Hdr` marker it requires) is layered on top of that Sample4 +
-    // DepthPrepass combination; it changes the main texture's *format*, not its
-    // sample count, so the caveat above is unaffected. See `attach_bloom`.
+    // Bloom (and the `Hdr` marker it requires) changes the main texture's *format*, not
+    // its sample count, so the caveat above is unaffected. See `attach_bloom`.
     let player_camera = commands
         .spawn((
             RenderLayers::layer(CameraLayers::Main.into()),
@@ -539,8 +535,8 @@ pub fn spawn_cinematic_camera<T>(
 ///   ray (`cursor`), nameplates, hit counts, world anchors — keeps working in
 ///   window coordinates with no conversion.
 /// - `screenshot` passes the window's own scale factor so the UI lays out at the
-///   same logical size it would on screen; without it a retina capture renders
-///   the HUD at half size.
+///   same logical size it would on screen; without it a retina screenshot
+///   renders the HUD at half size.
 pub(crate) fn retarget_window_cameras<'a>(
     targets: impl Iterator<Item = (Entity, Mut<'a, RenderTarget>)>,
     image: &Handle<Image>,

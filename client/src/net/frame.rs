@@ -300,30 +300,15 @@ impl Into<SilkroadFrame> for Packet {
 /// The **login/identity** opcodes the original Blowfish-encrypts on the way
 /// out, gated behind `network_settings.outbound_encryption`.
 ///
-/// The original decides per opcode: every gateway-phase message is allocated
-/// through the `CNetEngine` vtable slot `+0x48`, whose second boolean argument
-/// is the outbound-encrypt flag. A negotiated Blowfish key is therefore
-/// necessary but *not* sufficient — most gameplay traffic is deliberately
-/// cleartext, and encrypting everything would drift just as far the other way.
+/// The original decides per opcode: every gateway-phase message carries its own
+/// outbound-encrypt flag. A negotiated Blowfish key is therefore necessary but
+/// *not* sufficient — most gameplay traffic is deliberately cleartext, and
+/// encrypting everything would drift just as far the other way.
 ///
-/// Entry provenance (`[S]` = sourced from the decompile call site, `[U]` =
-/// unsourced), per `docs/re/net/login-gateway.md` §11 (#462):
-///
-/// | opcode | call site | flag |
-/// |---|---|---|
-/// | `0x2001` | `004ce8c0:16` | 1 `[S]` |
-/// | `0x6100` | arguments lost to Ghidra | 1 `[S]` |
-/// | `0x6101` | `004c9410:11` | 1 `[S]` |
-/// | `0x6102` | `004c9290:17` | 1 `[S]` |
-/// | `0x6103` | `004ce9d0:104` | 1 `[S]` |
-/// | `0x6106` | `004c9480:11` | 1 `[S]` |
-/// | `0x6107` | none in the corpus | `[U]` |
-///
-/// `0x6107` has no builder and no immediate anywhere in the decompile corpus;
-/// it comes from xBot `Security.cs:877-882` alone (`silkroad_security.cpp:214-218`
-/// omits it). It is kept because it is harmless — we never send `0x6107` — but
-/// it is *not* sourced. `0x2002`, `0x6323` and `0x5000`/`0x9000` are flagged `0`
-/// at their call sites and stay out.
+/// `0x2001`, `0x6100`, `0x6101`, `0x6102`, `0x6103` and `0x6106` are encrypted.
+/// `0x6107` is listed with them but unconfirmed; it is kept because it is
+/// harmless — we never send it. `0x2002`, `0x6323` and `0x5000`/`0x9000` are
+/// cleartext and stay out.
 ///
 /// Inbound needs no equivalent: the client decrypts on the wire `0x8000` bit,
 /// not an opcode set, which `parse` already does.
@@ -335,18 +320,15 @@ pub const ENCRYPTED_SEND_OPCODES: [u16; 7] =
 /// flag, which exists only because our plaintext *login* is what the reference
 /// server accepts today (#243).
 ///
-/// Evidence: xBot's `PacketBuilder` constructs exactly two packets with
-/// `new Packet(opcode, /* encrypted */ true)` — `CLIENT_CHARACTER_SELECTION_
-/// ACTION_REQUEST` (0x7007) and `CLIENT_INVENTORY_ITEM_USE` (0x704C,
-/// `PacketBuilder.cs:168,349`). Every other builder in that file, movement and
-/// combat included, is plaintext. This is a *separate* mechanism from
-/// `Security.cs`'s login list, and it went unnoticed here until a live vSRO
-/// session refused a plaintext `0x704C` with `0xB04C 02 89 18` and then reset
-/// the connection on the retry (`docs/net-item-use-0x704c.md`).
+/// The original encrypts exactly two gameplay packets: character-selection
+/// action (`0x7007`) and inventory item use (`0x704C`). Every other one,
+/// movement and combat included, is plaintext. This is a *separate* mechanism
+/// from the login list above: a plaintext `0x704C` is answered with
+/// `0xB04C 02 89 18`, and the connection resets on the retry.
 ///
-/// Only `0x704C` is listed: our plaintext `0x7007` demonstrably works against
-/// the reference server today, so flipping it would risk the login flow to fix
-/// nothing. Revisit if character selection ever starts failing.
+/// Only `0x704C` is listed: our plaintext `0x7007` works against the reference
+/// server today, so flipping it would risk the login flow to fix nothing.
+/// Revisit if character selection ever starts failing.
 pub const ENCRYPTED_GAMEPLAY_OPCODES: [u16; 1] = [0x704C];
 
 impl SilkroadFrame {
@@ -433,10 +415,9 @@ mod tests {
         assert_eq!(encrypted_flag(&frame), 0);
     }
 
-    /// Item use is encrypted per packet by the original (xBot
-    /// `PacketBuilder.cs:168,349`), independently of the login opt-in — a live
-    /// vSRO server refused our plaintext `0x704C` and reset the connection on
-    /// the retry.
+    /// Item use is encrypted per packet by the original, independently of the
+    /// login opt-in — a vSRO server refuses a plaintext `0x704C` and resets the
+    /// connection on the retry.
     #[test]
     fn item_use_is_encrypted_without_the_login_opt_in() {
         let security = security(true);
@@ -504,11 +485,11 @@ mod tests {
         assert_eq!(encrypted_flag(&frame), 0);
     }
 
-    /// #449: `parse` computed `content_len` and then sliced to the end of the
-    /// decrypted blowfish block, so every encrypted dump carried up to 7 bytes
-    /// of padding that were never on the wire. Fixture is the real 23-byte
-    /// `0xA102` redirect body from `packet_dump/0xa102.log`, whose dumped line
-    /// is 28 bytes with five trailing zeros.
+    /// `parse` computes `content_len`; slicing instead to the end of the
+    /// decrypted blowfish block adds up to 7 bytes of padding that were never
+    /// on the wire. The fixture is a real 23-byte
+    /// `0xA102` redirect body, which pads to 28 bytes with five trailing
+    /// zeros.
     #[test]
     fn encrypted_body_is_sliced_to_the_wire_length() {
         let security = security(true);
