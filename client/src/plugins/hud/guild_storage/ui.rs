@@ -1028,6 +1028,9 @@ mod test {
             nickname: String::new(),
             model_id: 0,
             is_master: false,
+            // Extra byte of the 0xB0F5 layout; neutral here, the fixture
+            // only drives permissions.
+            unk_u8_02: 0,
             is_offline: false,
         }
     }

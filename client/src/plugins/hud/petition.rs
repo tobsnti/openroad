@@ -694,7 +694,9 @@ mod test {
         );
         assert_eq!(
             auto_refusal(PETITION_PARTY_INVITATION, &off(2002)).map(bytes),
-            Some(vec![0x02, 0x0C, 0x2C])
+            // Per-arm decline: the invitation builder writes 0x2C17,
+            // creation 0x2C0C.
+            Some(vec![0x02, 0x17, 0x2C])
         );
         assert_eq!(
             auto_refusal(PETITION_EXCHANGE, &off(2003)).map(bytes),
