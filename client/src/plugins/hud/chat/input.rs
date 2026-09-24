@@ -918,6 +918,19 @@ mod tests {
             .collect()
     }
 
+    /// The fixture above registers the system itself, so it cannot notice
+    /// when the real plugin does not: R was dead in a running client because
+    /// `chat/mod.rs` never listed it. Pinned as text, like the scene
+    /// gate checks in `hud/inventory/split.rs`.
+    #[test]
+    fn the_reply_key_is_registered_by_the_chat_plugin() {
+        let registration = include_str!("mod.rs");
+        assert!(
+            registration.contains("input::reply_to_last_whisper_shortcut"),
+            "reply_to_last_whisper_shortcut is not registered in chat/mod.rs"
+        );
+    }
+
     #[test]
     fn reply_whisper_key_prefills_the_last_partner() {
         let (mut app, input) = shortcut_app();
