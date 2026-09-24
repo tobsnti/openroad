@@ -362,9 +362,10 @@ packets! {
     0x3026 => ChatUpdate,
     0x302D => ChatRestriction,
 
-    // Quest marks (see agent/quest.rs, docs/net-quest.md). The only two
-    // confirmed opcodes of the quest family; the other 15 are listed unwired
-    // with their reasons in that doc.
+    // Quest (see agent/quest.rs, docs/net-quest.md). The two marks and the
+    // update are confirmed; the family's remaining opcodes stay unwired with
+    // their reasons in that doc.
+    0x30D5 => QuestUpdate,
     0x30D6 => QuestMarkAdd,
     0x30D7 => QuestMarkRemove,
 
@@ -527,13 +528,20 @@ packets! {
     0x3255 => GuildStorageDataChunk,
     0x3254 => GuildStorageDataEnd,
 
-    // Alchemy — dismantle only (agent/alchemy.rs, docs/net-alchemy.md).
-    // Twenty opcodes in this block, ONE published body: `0x7157 {u8 count,
-    // u8[] slots}` -> `0xB157 {u8 result, if result == 2 u16 code}`
-    // Elixir 0x7150/0xB150, stone 0x7151/0xB151,
-    // manufacture+disjoin 0x7155/0xB155, socket 0x716A/0xB16A, the abort
-    // 0x3156 and the six unnamed neighbours have no known layout, so they stay
-    // unwired rather than guessed at.
+    // Alchemy — the two classic-box fuse verbs plus dismantle (agent/alchemy.rs,
+    // docs/net-alchemy.md). Twenty opcodes in this block; ONE has a published
+    // body (`0x7157 {u8 count, u8[] slots}` -> `0xB157 {u8 result, if result ==
+    // 2 u16 code}`), and two more are taken from the original's own builders:
+    // `0x7150`/`0xB150` reinforce and `0x7151`/`0xB151` stone attach.
+    // Manufacture+disjoin 0x7155/0xB155 stays unwired ON PURPOSE: two builders
+    // for that one opcode differ by four bytes, so a decoder cannot assume a
+    // fixed size. Socket 0x716A/0xB16A, the abort 0x3156 and the six unnamed
+    // neighbours have no known layout and are listed in docs/net-alchemy.md
+    // rather than guessed at.
+    0x7150 => AlchemyReinforceRequest,
+    0xB150 => AlchemyReinforceResponse,
+    0x7151 => AlchemyStoneRequest,
+    0xB151 => AlchemyStoneResponse,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 
@@ -607,7 +615,32 @@ packets! {
     // 0xB0B3 stall-talk snapshot. Its C→S partner 0x70B3 stays unwired:
     // its request body is unknown.
     0xB0B3 => StallTalkResponse,
-    0x30BB => EntityStallTitleUpdate
+    0x30BB => EntityStallTitleUpdate,
+
+    // Job / trade (see agent/job.rs). Read off the original's own code on both
+    // sides; 0x34D5 and 0xB4D4 also sit on real frames, and the refusal shape
+    // `02 <u16>` is confirmed twice. Four siblings stay unwired with the reason
+    // written down rather than a guessed layout: 0xB0E3 ALIAS (field order not
+    // readable), 0xB0E5 OUTCOME (its error arm carries an extra byte no other
+    // member has, on a single unconfirmed reading), and the 0xB0E1/0xB0E2 acks
+    // (success tail unknown).
+    0x70E1 => JobJoinRequest,
+    0x70E2 => JobLeaveRequest,
+    0x70E3 => JobAliasRequest,
+    0x70E4 => JobRankingRequest,
+    0x70E5 => JobOutcomeRequest,
+    0x70E6 => JobPrevInfoRequest,
+    0x74D4 => JobExportDetailRequest,
+    0x30E0 => JobPriceUpdate,
+    // 0x30E7 is registered once, in the pet/COS block above, as
+    // `StuckDistanceWarning`: the same one-byte packet is not job-only —
+    // reason 1 is the trade cart, reason 2 a quest monster. One opcode, one
+    // type; `JobCosDistance` in agent/job.rs is its typed reading.
+    0x30E8 => JobTradeScaleUpdate,
+    0x34D5 => JobSafeTradeUpdate,
+    0xB0E4 => JobRankingResponse,
+    0xB0E6 => JobPrevInfoResponse,
+    0xB4D4 => JobExportDetailResponse
 }
 
 /// A compact hex preview of a packet body (used by the client's network

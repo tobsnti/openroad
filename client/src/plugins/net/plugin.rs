@@ -74,6 +74,7 @@ impl Plugin for NetworkCorePlugin {
             .add_plugins(crate::plugins::net::friend::FriendPlugin)
             .add_plugins(crate::plugins::net::stall::StallEntitiesPlugin)
             .add_plugins(crate::plugins::net::siege::SiegePlugin)
+            .add_plugins(crate::plugins::net::academy::AcademyPlugin)
             .init_resource::<NetworkState>()
             .init_resource::<crate::plugins::net::gateway::GatewayConnectionStatus>()
             .add_message::<GatewayServiceDisconnected>()

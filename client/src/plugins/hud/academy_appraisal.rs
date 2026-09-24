@@ -9,16 +9,35 @@
 //! footer buttons. Everything here is one of the tree's six authored rects;
 //! nothing is derived and nothing is invented.
 //!
-//! What the dialog is *for* is the guardian's appraisal of an apprentice, and
-//! the radio group is where the verdict is picked. The data does not say what
-//! the options are: the tree carries **one** block for the whole group and no
-//! per-option data (doc §9 U4, consistent with `shared-input-widgets.md:87`,
-//! which reads `CIFRadioButton` as a group container whose N options are
-//! runtime-supplied). So the options are **state**, not layout — they arrive
-//! in [`AcademyAppraisalState::options`] and the group renders however many it
-//! is given. An empty list draws an empty group rather than a guessed one; the
-//! wire that fills it is `docs/re/systems/academy.md`'s (doc §9 U6), not this
-//! module's.
+//! What the dialog is *for* is the graduating **apprentice's evaluation of
+//! the guardian** (`UIIT_STT_TC_APPRAISAL_GUARDIAN` = "Guardian Evaluation",
+//! which is also the window's own `Text=` in the layout file). The radio group
+//! is where the verdict is picked.
+//!
+//! **The options are layout, not state.** The layout file carries **one**
+//! `CIFRadioButton` group block and no per-option data, which makes it look as
+//! if the verdicts could only come from a server. The shipped text says
+//! otherwise: `Media/server_dep/silkroad/textdata/textuisystem.txt` contains
+//! exactly **seven** `_TC_APPRAISAL_` keys, and two of them are already spent
+//! as layout text — `_GUARDIAN` is the window title and
+//! `UIIT_CTL_TC_APPRAISAL_BUTTON` = "Evaluate" is the confirm button. The
+//! remaining five are the verdict scale (best to worst, in file order): Very
+//! satisfied / Satisfied / Average / Disappointed / Very disappointed. So the
+//! option list is client data, it is exhaustive, and the grouping is not a
+//! guess. The dialog draws [`APPRAISAL_OPTIONS`] rather than an empty group,
+//! and `AcademyAppraisalState` carries no `options` vector for a server to
+//! fill.
+//!
+//! **Reachability — this module is a geometry and text placeholder with no
+//! entry point, and that is stated rather than hidden.** Nothing opens it: no
+//! code outside this file sets `AcademyAppraisalState::open`, because what
+//! opens the window in the original is unknown; it belongs to the graduation
+//! flow. Wiring a guessed opener (a hotkey, a menu row) would be inventing
+//! behaviour, so it is deliberately absent. What is known is that the verdict
+//! fits the one candidate carrier: `0x7475` writes exactly **one** byte, the
+//! right shape for one of five — but which byte stands for which verdict is
+//! unknown, so [`on_confirm`] sends nothing and logs the picked index
+//! instead.
 //!
 //! Deviation (stated, per §3.5 of the work-loop runbook): the authored radio
 //! rect is `34,59,406,40`, which overruns the 420-wide hull by 20 px
@@ -64,6 +83,35 @@ const CANCEL_RECT: (f32, f32, f32, f32) = (216.0, 132.0, 76.0, 24.0);
 /// The radio glyph is 16x16 and sits centred in the group's 40 px band.
 const RADIO_GLYPH: f32 = 16.0;
 
+/// The five verdicts of the guardian evaluation, `(textuisystem key, English
+/// fallback)`, in the order the keys appear in
+/// `Media/server_dep/silkroad/textdata/textuisystem.txt` — which is also the
+/// scale's own order, best to worst. The fallbacks are that file's own English
+/// column, so an unloaded table shows the original's wording rather than
+/// invented labels. See the module header for why these five and only these
+/// five.
+const APPRAISAL_OPTIONS: [(&str, &str); 5] = [
+    // UIIT_STT_TC_APPRAISAL_VERY_SATISFACTION
+    ("UIIT_STT_TC_APPRAISAL_VERY_SATISFACTION", "Very satisfied"),
+    // UIIT_STT_TC_APPRAISAL_SATISFACTION
+    ("UIIT_STT_TC_APPRAISAL_SATISFACTION", "Satisfied"),
+    // UIIT_STT_TC_APPRAISAL_NORMAL
+    ("UIIT_STT_TC_APPRAISAL_NORMAL", "Average"),
+    // UIIT_STT_TC_APPRAISAL_DESPAIR
+    ("UIIT_STT_TC_APPRAISAL_DESPAIR", "Disappointed"),
+    // UIIT_STT_TC_APPRAISAL_VERY_DESPAIR
+    ("UIIT_STT_TC_APPRAISAL_VERY_DESPAIR", "Very disappointed"),
+];
+
+/// The verdict labels as the player sees them: the localized string for each
+/// [`APPRAISAL_OPTIONS`] key, falling back to the shipped English.
+fn appraisal_options(ui_strings: &ClientUiStrings) -> Vec<&str> {
+    APPRAISAL_OPTIONS
+        .iter()
+        .map(|(key, fallback)| ui_strings.get_or(key, fallback))
+        .collect()
+}
+
 /// The group's drawn width: the authored 406 clamped to the plate's right
 /// inset (see the module deviation).
 fn radio_group_width() -> f32 {
@@ -84,17 +132,16 @@ fn plate_node((x, y, w, h): (f32, f32, f32, f32)) -> Node {
     }
 }
 
-/// Whether the appraisal dialog is up, and what it is appraising.
+/// Whether the appraisal dialog is up, and which verdict is picked.
 ///
-/// `options` is server state (doc §9 U6): the tree carries no per-option data,
-/// so the client cannot know the verdicts until something tells it. Empty is
-/// the honest default.
+/// There is no `options` field: the verdict list is client data
+/// ([`APPRAISAL_OPTIONS`], module header) and not something a server has to
+/// hand us. Nothing outside this module sets `open` yet — see the module
+/// header's reachability note.
 #[derive(Resource, Default)]
 pub struct AcademyAppraisalState {
     pub open: bool,
-    /// The verdict options, in the order the server sent them.
-    pub options: Vec<String>,
-    /// Index into [`Self::options`], or `None` while nothing is picked.
+    /// Index into [`APPRAISAL_OPTIONS`], or `None` while nothing is picked.
     pub selected: Option<usize>,
 }
 
@@ -215,13 +262,16 @@ pub fn sync_academy_appraisal(
                         format!("{ART}ifcommon/bg_tile/com_bg_tile_e.ddj"),
                     ));
 
-                    // The radio group. One authored block, N runtime options
-                    // (doc §9 U4) — so the rows are laid out from the option
-                    // list, evenly across the group's band.
+                    // The radio group. The layout authors one block for the
+                    // whole group, so the five options are laid out evenly
+                    // across its band: 406/5 = 81.2 px per option in one row.
+                    // A 3+2 grid in two 20 px rows is the alternative, and
+                    // which one the original draws is unknown.
                     let (gx, gy, _, gh) = RADIO_GROUP_RECT;
                     let group_w = radio_group_width();
-                    let count = state.options.len();
-                    for (index, option) in state.options.iter().enumerate() {
+                    let options = appraisal_options(&ui_strings);
+                    let count = options.len();
+                    for (index, option) in options.iter().enumerate() {
                         let cell_w = group_w / count as f32;
                         let x = gx + cell_w * index as f32;
                         let glyph = if state.selected == Some(index) {
@@ -242,7 +292,7 @@ pub fn sync_academy_appraisal(
                                 glyph.to_string(),
                             ));
                             row.spawn((
-                                Text::new(option.clone()),
+                                Text::new((*option).to_string()),
                                 text_font.clone(),
                                 TextColor(Color::WHITE),
                                 Node {
@@ -259,8 +309,10 @@ pub fn sync_academy_appraisal(
                     for (rect, key, fallback, is_confirm) in [
                         (
                             CONFIRM_RECT,
+                            // The shipped English is "Evaluate", not
+                            // "Appraise".
                             "UIIT_CTL_TC_APPRAISAL_BUTTON",
-                            "Appraise",
+                            "Evaluate",
                             true,
                         ),
                         (CANCEL_RECT, "UIIT_CTL_CANCEL", "Cancel", false),
@@ -317,14 +369,15 @@ fn on_option_pick(
     }
 }
 
-/// Confirm. **No packet**: which opcode carries a guardian's appraisal is
-/// UNKNOWN (doc §9 U6, owned by `docs/re/systems/academy.md`), and inventing
-/// one would be worse than logging the decision and closing.
+/// Confirm. **No packet**: `0x7475` is only the candidate carrier (one
+/// outbound byte, see the module header) and which byte stands for which
+/// verdict is unknown. Inventing a value would be worse than logging the raw
+/// index and closing, so the log prints the index as a number.
 fn on_confirm(_activate: On<Activate>, mut state: ResMut<AcademyAppraisalState>) {
     match state.selected {
         Some(index) => info!(
             "academy appraisal confirmed: option {index} ({:?}) — no opcode wired yet",
-            state.options.get(index)
+            APPRAISAL_OPTIONS.get(index).map(|(key, _)| *key)
         ),
         // Vanilla's own assertion strings show the client validates before it
         // sends; with nothing picked there is nothing to send.
@@ -410,14 +463,57 @@ mod test {
         assert_eq!(x + drawn, PLATE.0 - MODAL_SIDE);
     }
 
-    /// #548-4. The verdict options are runtime state, never layout: the tree
-    /// has one group block and no per-option data (doc §9 U4). A default
-    /// state therefore draws an *empty* group instead of guessed options.
+    /// The verdict list itself: five options, the `_APPRAISAL_` keys, in
+    /// best-to-worst file order, with the two non-option keys of that prefix
+    /// (`_GUARDIAN` title, `_BUTTON` confirm) deliberately excluded.
     #[test]
-    fn the_options_are_state_and_default_to_empty() {
+    fn the_five_verdicts_come_from_the_shipped_text_keys() {
+        assert_eq!(APPRAISAL_OPTIONS.len(), 5);
+        let keys: Vec<&str> = APPRAISAL_OPTIONS.iter().map(|(key, _)| *key).collect();
+        assert_eq!(
+            keys,
+            [
+                "UIIT_STT_TC_APPRAISAL_VERY_SATISFACTION",
+                "UIIT_STT_TC_APPRAISAL_SATISFACTION",
+                "UIIT_STT_TC_APPRAISAL_NORMAL",
+                "UIIT_STT_TC_APPRAISAL_DESPAIR",
+                "UIIT_STT_TC_APPRAISAL_VERY_DESPAIR",
+            ]
+        );
+        for (key, fallback) in APPRAISAL_OPTIONS {
+            assert!(key.starts_with("UIIT_STT_TC_APPRAISAL_"), "{key}");
+            assert!(!fallback.is_empty(), "{key} has no shipped wording");
+        }
+        // the layout keys of the same prefix are not options
+        assert!(!keys.contains(&"UIIT_STT_TC_APPRAISAL_GUARDIAN"));
+        assert!(!keys.contains(&"UIIT_CTL_TC_APPRAISAL_BUTTON"));
+    }
+
+    /// #548-5. With no textdata loaded the dialog still shows the original's
+    /// five verdicts (the transcribed fallbacks), so "unreachable" is the only
+    /// thing wrong with this dialog — never "empty".
+    #[test]
+    fn the_options_resolve_without_a_loaded_table() {
+        let strings = ClientUiStrings::default();
+        let options = appraisal_options(&strings);
+        assert_eq!(
+            options,
+            [
+                "Very satisfied",
+                "Satisfied",
+                "Average",
+                "Disappointed",
+                "Very disappointed"
+            ]
+        );
+    }
+
+    /// #548-6. The dialog is closed by default and has no opener in the tree
+    /// (module header): the default state is closed with nothing picked.
+    #[test]
+    fn the_dialog_defaults_to_closed_and_unpicked() {
         let state = AcademyAppraisalState::default();
         assert!(!state.open);
-        assert!(state.options.is_empty());
         assert_eq!(state.selected, None);
     }
 }

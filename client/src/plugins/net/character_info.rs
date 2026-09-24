@@ -10,6 +10,7 @@ use packets::agent::character_data::{
     CharacterStats, EntityState, InventoryItem, JobInfo, KnownSkill, Mastery, ParsedCharacterInfo,
     PlayerExtras,
 };
+use packets::agent::quest::ActiveQuest;
 
 /// The character record the server sent for this entity. Sections the parser
 /// could not extract stay `None`/empty (see `packets::agent::character_data`).
@@ -24,6 +25,16 @@ pub struct CharacterInfo {
     pub masteries: Vec<Mastery>,
     pub skills: Vec<KnownSkill>,
     pub completed_quests: Vec<u32>,
+    /// The active-quest records of the quest section, mirrored here like every
+    /// other section of the record. The layout is
+    /// [`packets::agent::quest::ActiveQuest`] and it fits every real login
+    /// seen.
+    ///
+    /// **No consumer yet** — there is no quest journal in this tree, so this is
+    /// the landing point one can be built on, not a wired feature. An empty vec
+    /// means "the server sent none **or** the section did not parse": a journal
+    /// must log that difference rather than infer it.
+    pub active_quests: Vec<ActiveQuest>,
     pub job: Option<JobInfo>,
     pub extras: Option<PlayerExtras>,
     /// The character's body state at login (invisibility/stealth/berserk), from
@@ -42,6 +53,7 @@ impl From<&ParsedCharacterInfo> for CharacterInfo {
             masteries: info.masteries.clone().unwrap_or_default(),
             skills: info.skills.clone().unwrap_or_default(),
             completed_quests: info.completed_quests.clone().unwrap_or_default(),
+            active_quests: info.active_quests.clone().unwrap_or_default(),
             job: info.job.clone(),
             extras: info.extras.clone(),
             body_state: info.state.as_ref().map(|s| s.body_state),

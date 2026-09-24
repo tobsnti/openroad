@@ -38,6 +38,8 @@ use sro_macro::SerializationError;
 use sro_macro::Serialize;
 use sro_macro_derive::*;
 
+use super::quest::ActiveQuest;
+
 /// Wire class of an inventory item, selecting its sub-record shape (mirrors
 /// go-sro's `WriteInventoryItem` branches over the itemdata `TypeID2..4`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -359,15 +361,20 @@ pub struct MasterySkillSection {
     pub skills: Vec<KnownSkill>,
 }
 
-/// The quest section head: completed quest ids plus the active-quest count.
-/// Active quest records have an unverified shape, so the parser only proceeds
-/// when the count is zero (go-sro sends none).
+/// The quest section: completed quest ids, then the active-quest records.
+///
+/// The active records are decoded now: real `0x3013` bodies carry them and
+/// they consume exactly the bytes up to the collection-book head. The record
+/// itself lives in [`super::quest::ActiveQuest`] because it is quest wire, not
+/// character-data wire — `0x30D5` needs the same shape.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, Default, PartialEq)]
 pub struct QuestSection {
     pub completed_count: u16,
     #[sro_packet(list_type = "by-size-field", size_field = "completed_count")]
     pub completed: Vec<u32>,
     pub active_count: u8,
+    #[sro_packet(list_type = "by-size-field", size_field = "active_count")]
+    pub active: Vec<ActiveQuest>,
 }
 
 /// The collection-book head; entry shape unverified, so the parser only
@@ -538,6 +545,10 @@ pub struct ParsedCharacterInfo {
     pub masteries: Option<Vec<Mastery>>,
     pub skills: Option<Vec<KnownSkill>>,
     pub completed_quests: Option<Vec<u32>>,
+    /// The character's active quests, in wire order. Nothing consumes them
+    /// yet — the journal is a later stage and must key wire-first, see
+    /// [`super::quest::ActiveQuest`].
+    pub active_quests: Option<Vec<ActiveQuest>>,
     pub spawn: Option<ParsedCharacterData>,
     pub movement: Option<EntityMovement>,
     pub state: Option<EntityState>,
@@ -622,12 +633,23 @@ fn plausible(region: u16, x: f32, y: f32, z: f32) -> bool {
     region != 0 && sane_coord(x) && sane_coord(z) && y.is_finite() && y.abs() <= 5000.0
 }
 
-/// A region-local horizontal coordinate lies in `[0, 1920]`. Reject sub-unit
-/// magnitudes (subnormals and other near-zero floats): real spawn coordinates
-/// are whole-ish values in the hundreds, and admitting tiny floats lets random
-/// blob bytes pass as a position when scanning without a known unique id.
+/// A region-local horizontal coordinate lies in `[0, 1920]`.
+///
+/// **The band starts at 0, not at 1.** An earlier version rejected everything
+/// below 1.0 on the reasoning that "real spawn coordinates are whole-ish
+/// values in the hundreds". A real server falsifies that: a character can log
+/// in at region 25000 with z = **0.163**, a sixth of a unit from the region
+/// border, and the whole CHARACTER_DATA position was then thrown away. The
+/// client kept its Jangan fallback position
+/// (`scenes/game_scene.rs`, `apply_pending_character_data`), i.e. the player
+/// stood somewhere else entirely, and a headless session silently skipped its
+/// action phase.
+///
+/// Subnormals stay out (they are bit noise, never a coordinate), so a scan
+/// without a known unique id keeps its guard: `is_normal()` still rejects
+/// denormals, infinities and NaN.
 fn sane_coord(v: f32) -> bool {
-    v == 0.0 || (v.is_normal() && (1.0..=1920.0).contains(&v))
+    v == 0.0 || (v.is_normal() && (0.0..=1920.0).contains(&v))
 }
 
 fn read_u32_at(raw: &[u8], off: usize) -> Option<u32> {
@@ -969,8 +991,11 @@ fn forward_parse(
 
     let quests = stage!("quests", QuestSection::read_from(cursor));
     info.completed_quests = Some(quests.completed);
-    // Active quest records have an unverified shape; go-sro sends none.
-    stage!("active quests", nonzero_guard(quests.active_count as u32));
+    // The active records used to be guarded by `nonzero_guard` because their
+    // shape was unknown. It is known now, so they are parsed and the guard
+    // stays only where it still buys something — the collection-book entries
+    // below.
+    info.active_quests = Some(quests.active);
     let collection = stage!("collection book", CollectionBook::read_from(cursor));
     stage!(
         "collection book",
@@ -991,6 +1016,9 @@ fn forward_parse(
 }
 
 /// A guard stage for counts whose record shape is unknown: fine while zero.
+/// One user is left — the collection book's `started_theme_count`, whose entry
+/// shape no frame has ever shown, because every body seen says 0. The
+/// active-quest count no longer needs it: that layout is known.
 fn nonzero_guard(count: u32) -> Result<(), SerializationError> {
     if count == 0 {
         Ok(())
@@ -1256,6 +1284,28 @@ mod test {
         let parsed = parse_character_data(&b, Some(222)).expect("id B resolves");
         assert_eq!(parsed.unique_id, 222);
         assert_eq!(parsed.x, 900.0);
+    }
+
+    /// A spawn right at a region border is a real position, not noise. Pinned
+    /// against a body a server really sent: region 25000, x 514.365, y 0.0,
+    /// z **0.163**. The old `1.0` floor rejected it, the client fell back to
+    /// its Jangan default, and a headless session skipped its whole action
+    /// phase without a single error line.
+    #[test]
+    fn a_coordinate_a_fraction_of_a_unit_from_the_border_is_a_position() {
+        let b = body(124950, 0x61A8, 514.3653, 0.0, 0.162_723, 0);
+
+        let parsed = parse_character_data(&b, Some(124950)).expect("a border spawn parses");
+        assert_eq!(parsed.region, 0x61A8);
+        assert_eq!(parsed.z, 0.162_723);
+
+        // Positive control on the same read path: bit noise must still be
+        // rejected, so the floor was widened rather than removed.
+        let noise = body(124950, 0x61A8, f32::from_bits(1), 0.0, 900.0, 0);
+        assert!(
+            parse_character_data(&noise, Some(124950)).is_none(),
+            "a subnormal is not a coordinate"
+        );
     }
 
     #[test]
@@ -1617,7 +1667,10 @@ mod test {
          0000c84200050050656e697300000001000000000000000000000000000000ff5700a004000000000200000001000000\
          000000000000000100010000";
 
-    /// Live capture (packet_dump/0x3013.log), see the test using it.
+    /// A real body in the older format, kept as a reference next to the
+    /// current one. No test reads it today; it is kept rather than deleted
+    /// because a real body is hard to come by.
+    #[allow(dead_code)]
     const OLD_CHAR_0X3013_HEX: &str = "1a2e2117730700002211117f520100000000006f0100009804000000000000bea4010000000200000000c50000002503\
          0000010000000000000000006d1b00000000001f01000000000000000000000030000000000100020001000000008b01\
          00000000000000000000002f000000000100020002000000006701000000000000000000000030000000000100020003\
@@ -2162,5 +2215,198 @@ mod test {
         assert_eq!(extras.auto_mp, 45);
         assert_eq!(extras.auto_universal, 30);
         assert_eq!(extras.auto_potion_delay, 4);
+    }
+
+    /// The quest section of a real login, byte for byte, plus what follows it:
+    /// nine active records, the collection-book head, and the tail's unique id
+    /// and position. So the fixture proves not only that the records decode
+    /// but that they end exactly where the next section begins.
+    const QUEST_SECTION_HEX: &str = "0100010000000903000000100058010101011500534e5f434f4e5f514e4f5f43485f534d4954485f31010000000001f5\
+         07000006000000100018010101011600534e5f434f4e5f514e4f5f43485f504f54494f4e5f3101000000000b00000010\
+         0018010101011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f53505f310100000000300000001000180101\
+         01011700534e5f434f4e5f514e4f5f43485f5350454349414c5f31010000000035000000100018010101011600534e5f\
+         434f4e5f514e4f5f43485f504f54494f4e5f33010000000039000000100018010301011a00534e5f434f4e5f514e4f5f\
+         43485f47454e4152414c5f315f3031010000000002011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f315f\
+         3032010000000003011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f315f303301000000003a0000001000\
+         18010101011500534e5f434f4e5f514e4f5f43485f534d4954485f320100000000dc000000100018070101011b00534e\
+         5f434f4e5f5153505f43485f4558494e56454e544f52595f3101000000008f010000100058080101001600534e5f434f\
+         4e5f515455544f5249414c325f43485f31010100000001f507000000000000008cd40100a86100608144dcd7e1be0000\
+         8e4228c6";
+
+    /// The same nine records from a second, independent login: different
+    /// session, different position, same section. A second sample is what
+    /// keeps the offsets from being one lucky frame. The 459 section bytes are
+    /// byte-identical to the first one — the character accepted and finished
+    /// nothing in between — and only the tail's unique id and position differ,
+    /// which is what makes this fixture a check on the *offsets* rather than
+    /// on the content.
+    const QUEST_SECTION_SECOND_HEX: &str = "0100010000000903000000100058010101011500534e5f434f4e5f514e4f5f43485f534d4954485f31010000000001f5\
+         07000006000000100018010101011600534e5f434f4e5f514e4f5f43485f504f54494f4e5f3101000000000b00000010\
+         0018010101011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f53505f310100000000300000001000180101\
+         01011700534e5f434f4e5f514e4f5f43485f5350454349414c5f31010000000035000000100018010101011600534e5f\
+         434f4e5f514e4f5f43485f504f54494f4e5f33010000000039000000100018010301011a00534e5f434f4e5f514e4f5f\
+         43485f47454e4152414c5f315f3031010000000002011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f315f\
+         3032010000000003011a00534e5f434f4e5f514e4f5f43485f47454e4152414c5f315f303301000000003a0000001000\
+         18010101011500534e5f434f4e5f514e4f5f43485f534d4954485f320100000000dc000000100018070101011b00534e\
+         5f434f4e5f5153505f43485f4558494e56454e544f52595f3101000000008f010000100058080101001600534e5f434f\
+         4e5f515455544f5249414c325f43485f31010100000001f507000000000000001b9b0200a86100406c44badcc8be0000\
+         ec420266";
+
+    /// Decode one of the two real quest sections and check *everything* the
+    /// layout claims: the nine ids, one quest's three objectives, and that the
+    /// reader stops on the collection-book head with **no bytes left over** —
+    /// a test that only asserted "parses without panicking" would pass on any
+    /// wrong-but-longer layout.
+    fn assert_quest_section(hex: &str, unique_id: u32, x: f32, z: f32) {
+        let raw = hex_bytes(hex);
+        let mut cursor = Cursor::new(raw.as_slice());
+        let quests = QuestSection::read_from(&mut cursor).expect("the quest section parses");
+
+        assert_eq!(quests.completed_count, 1);
+        assert_eq!(quests.completed, vec![1]);
+        assert_eq!(quests.active_count, 9);
+        assert_eq!(
+            quests.active.iter().map(|q| q.id).collect::<Vec<_>>(),
+            vec![3, 6, 11, 48, 53, 57, 58, 220, 399]
+        );
+
+        // Every record's type is explained by the bit reading; a fifth value
+        // with a bit outside it would show up here instead of being silently
+        // dropped. That is the falsifier.
+        for quest in &quests.active {
+            assert_eq!(
+                quest.unknown_type_bits(),
+                0,
+                "quest {} type {:#04x} has bits the reading does not cover",
+                quest.id,
+                quest.quest_type
+            );
+            assert_eq!(quest.achievements, 16);
+            assert_eq!(quest.autoshare, 0);
+            assert!(quest.has_objective_list());
+            assert_eq!(quest.remaining_time, None, "none of these quests is timed");
+        }
+
+        // The NPC list is present exactly where the 0x40 bit is set.
+        let with_npcs: Vec<(u32, &[u32])> = quests
+            .active
+            .iter()
+            .filter(|q| !q.npcs.is_empty())
+            .map(|q| (q.id, q.npcs.as_slice()))
+            .collect();
+        assert_eq!(with_npcs, vec![(3, &[2037][..]), (399, &[2037][..])]);
+        for quest in &quests.active {
+            assert_eq!(quest.has_npc_list(), !quest.npcs.is_empty());
+        }
+
+        // `QNO_CH_GENARAL_1` is the one multi-objective quest in the sample,
+        // and its three keys are exactly the three `questcontentsdata.txt`
+        // lists for that codename, which is what makes the offsets more than a
+        // coincidence.
+        let generals = quests
+            .active
+            .iter()
+            .find(|q| q.id == 57)
+            .expect("quest 57 is in the sample");
+        assert_eq!(
+            generals
+                .objectives
+                .iter()
+                .map(|o| (o.id, o.enabled, o.name_key.as_str(), o.tasks.as_slice()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, 1, "SN_CON_QNO_CH_GENARAL_1_01", &[0u32][..]),
+                (2, 1, "SN_CON_QNO_CH_GENARAL_1_02", &[0u32][..]),
+                (3, 1, "SN_CON_QNO_CH_GENARAL_1_03", &[0u32][..]),
+            ]
+        );
+
+        // The one record whose objective is disabled carries `tasks = [1]`,
+        // and it is a tutorial quest in state 8 — kept as the sample's only
+        // deviation so a layout drift cannot hide behind "all zeros".
+        let tutorial = quests
+            .active
+            .iter()
+            .find(|q| q.id == 399)
+            .expect("quest 399 is in the sample");
+        assert_eq!(tutorial.state, 8);
+        assert_eq!(tutorial.objectives.len(), 1);
+        assert_eq!(tutorial.objectives[0].enabled, 0);
+        assert_eq!(tutorial.objectives[0].name_key, "SN_CON_QTUTORIAL2_CH_1");
+        assert_eq!(tutorial.objectives[0].tasks, vec![1]);
+
+        // Zero bytes left over: the section ends on the collection-book head,
+        // whose two fields read as zeros on every body seen, and the tail
+        // behind it still lines up with the character's real spawn.
+        assert_eq!(
+            cursor.position() as usize,
+            459,
+            "the nine records must consume exactly the bytes up to the collection-book head"
+        );
+        let book = CollectionBook::read_from(&mut cursor).expect("collection-book head");
+        assert_eq!((book.unk, book.started_theme_count), (0, 0));
+        let spawn = read_tail_spawn(&mut cursor, 0).expect("the tail behind the section");
+        assert_eq!(spawn.unique_id, unique_id);
+        assert_eq!(spawn.region, 25000);
+        assert_eq!((spawn.x, spawn.z), (x, z));
+        assert_eq!(cursor.position() as usize, raw.len());
+
+        // Re-encoding the section reproduces the original bytes exactly:
+        // proof that the reader attributed every byte, not just the right
+        // count.
+        let mut buf = bytes::BytesMut::new();
+        quests.serialize_to(&mut buf);
+        assert_eq!(buf.as_ref(), &raw[..459]);
+    }
+
+    #[test]
+    fn a_login_with_nine_active_quests_parses_to_the_collection_book() {
+        assert_quest_section(QUEST_SECTION_HEX, 119_948, 1035.0, 71.0);
+    }
+
+    #[test]
+    fn the_same_nine_records_decode_in_a_second_login() {
+        assert_quest_section(QUEST_SECTION_SECOND_HEX, 170_779, 945.0, 118.0);
+    }
+
+    #[test]
+    fn a_body_with_active_quests_forward_parses_to_the_name() {
+        // The regression this guards: before the records were parsed,
+        // `nonzero_guard` aborted the forward pass at the quest section, so
+        // name, job and extras came from the anchor rebuild instead. Splicing
+        // a real section into the synthetic body proves the forward pass now
+        // walks straight through it.
+        let section = hex_bytes(QUEST_SECTION_HEX);
+        let plain = full_body();
+        // `full_body()` writes `u16 1, u32 1, u8 0` for the quest section;
+        // swap those 7 bytes for the real section's 459.
+        // Anchored on the skill list's last entry + terminator so the needle
+        // cannot match somewhere in the item blob by accident.
+        const NEEDLE: [u8; 13] = [
+            0x46, 0x00, 0x00, 0x00, 0x01, 0x02, // skill 70, enabled, list end
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // 1 completed quest, 0 active
+        ];
+        let matches = plain.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count();
+        assert_eq!(matches, 1, "the needle must be unambiguous");
+        let quest_offset = plain
+            .windows(NEEDLE.len())
+            .position(|w| w == NEEDLE)
+            .expect("the synthetic body's quest section is findable")
+            + 6;
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&plain[..quest_offset]);
+        raw.extend_from_slice(&section[..459]);
+        raw.extend_from_slice(&plain[quest_offset + 7..]);
+
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+        assert_eq!(info.failed_stage, None, "the guard must not fire any more");
+        assert!(info.fully_parsed);
+        assert_eq!(info.completed_quests, Some(vec![1]));
+        let active = info.active_quests.expect("active quests reach the caller");
+        assert_eq!(active.len(), 9);
+        assert_eq!(active[5].objectives.len(), 3);
+        // The sections behind the quests are the point: they used to be lost.
+        assert_eq!(info.name.as_deref(), Some("Hero"));
+        assert_eq!(info.extras.expect("extras").jid, 77);
     }
 }
