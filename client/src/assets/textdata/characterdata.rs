@@ -364,6 +364,30 @@ impl CharacterDataRow {
             .get(ChardataFields::CanBeVehicle as usize)
             .is_some_and(|v| v.trim() == "1")
     }
+
+    /// RefObjChar `CanControl` — whether the player may give this COS orders.
+    ///
+    /// The one column that separates the guild guard from every other summon:
+    /// a census over the shipped `characterdata*.txt` (all 10 files, 13,685
+    /// rows, 3,483 of them `TypeID1/2/3 = 1/2/3`) gives `CanControl = 1` on all
+    /// 63 rides (tid4 1), 39 transports (2), 1,260 growth pets (3), 13 grab
+    /// pets (4) and the single `NPC_CH_QT_FLAMEMASTER_COS` (8), and
+    /// `CanControl = 0` on all 2,100 `COS_GUILD_{CH,EU}_SOLDIER*` rows (5) plus
+    /// the seven quest rows of tid4 6/7.
+    ///
+    /// The original has its own refusal for the 0 case —
+    /// `UIIT_MSG_COSERR_YOU_CANT_CONTROL_THIS_OBJ`, "The selected transport is
+    /// not user controlled." (`textdata/textuisystem.txt`) — which is what the
+    /// COS command bar shows (`hud/cos_command.rs`).
+    ///
+    /// A row too short to have column 67 (test fixtures, a truncated shard)
+    /// reads as *not* controllable, the same fail-safe direction as
+    /// [`Self::can_be_vehicle`].
+    pub fn can_control(&self) -> bool {
+        self.0
+            .get(ChardataFields::CanControl as usize)
+            .is_some_and(|v| v.trim() == "1")
+    }
 }
 
 #[cfg(test)]
@@ -466,14 +490,22 @@ mod test {
         assert_eq!(typed_row((1, 2, 3, 2)).cos_kind(), Some(CosKind::Transport));
         assert_eq!(typed_row((1, 2, 3, 3)).cos_kind(), Some(CosKind::GrowthPet));
         assert_eq!(typed_row((1, 2, 3, 4)).cos_kind(), Some(CosKind::GrabPet));
-        assert_eq!(typed_row((1, 2, 3, 5)).cos_kind(), Some(CosKind::Fellow));
+        assert_eq!(
+            typed_row((1, 2, 3, 5)).cos_kind(),
+            Some(CosKind::GuildGuard)
+        );
 
         // 1/2/4/* is COS_GUARD_*/STRUCTURE_* territory — tid4 alone would
         // misclassify these as Vehicle/PickPet.
         assert_eq!(typed_row((1, 2, 4, 1)).cos_kind(), None);
         assert_eq!(typed_row((1, 2, 4, 4)).cos_kind(), None);
-        // Unknown tid4 and non-character families classify as nothing.
-        assert_eq!(typed_row((1, 2, 3, 6)).cos_kind(), None);
+        // tid4 6/7/8 have shipped rows and keep their raw nibble, see
+        // `CosKind::Unmapped`; tid4 9+ has no row in any shard.
+        assert_eq!(
+            typed_row((1, 2, 3, 6)).cos_kind(),
+            Some(CosKind::Unmapped(6))
+        );
+        assert_eq!(typed_row((1, 2, 3, 9)).cos_kind(), None);
         assert_eq!(typed_row((3, 3, 3, 2)).cos_kind(), None);
         // COS rows are neither player nor monster.
         let cos = typed_row((1, 2, 3, 2));
@@ -500,6 +532,78 @@ mod test {
         assert_eq!(short.run_speed(), None);
         assert_eq!(short.inventory_size(), None);
         assert!(!short.can_be_vehicle());
+    }
+
+    /// Three real rows from the shipped `characterdata*.txt`, copied column by
+    /// column (row width 105): a ride, a transport and a guild guard.
+    /// Only the columns the COS accessors read are filled — the values are the
+    /// shipped ones, not a plausible-looking combination.
+    fn shipped_cos_row(
+        code: &str,
+        tid4: u32,
+        speeds: (&str, &str),
+        max_hp: &str,
+        inventory: &str,
+        can_be_vehicle: &str,
+        can_control: &str,
+    ) -> CharacterDataRow {
+        let mut fields = vec![String::new(); 105];
+        fields[2] = code.to_string();
+        fields[9] = "1".to_string();
+        fields[10] = "2".to_string();
+        fields[11] = "3".to_string();
+        fields[12] = tid4.to_string();
+        fields[46] = speeds.0.to_string();
+        fields[47] = speeds.1.to_string();
+        fields[59] = max_hp.to_string();
+        fields[61] = inventory.to_string();
+        fields[66] = can_be_vehicle.to_string();
+        fields[67] = can_control.to_string();
+        CharacterDataRow(fields)
+    }
+
+    /// `CanControl` (col 67) is what tells a guild guard from a summon the
+    /// player may command — the only COS class with a 0 there (all 2,100
+    /// `COS_GUILD_*` rows in the shipped data). The
+    /// original answers the 0 case with
+    /// `UIIT_MSG_COSERR_YOU_CANT_CONTROL_THIS_OBJ`.
+    #[test]
+    fn can_control_separates_the_guild_guard_from_commandable_cos() {
+        // COS_GUILD_CH_SOLDIER1_001, id 9524: tid4 5, walk 20 / run 50,
+        // MaxHP 1000, no cargo, CanBeVehicle 0, CanControl 0.
+        let guard = shipped_cos_row(
+            "COS_GUILD_CH_SOLDIER1_001",
+            5,
+            ("20", "50"),
+            "1000",
+            "0",
+            "0",
+            "0",
+        );
+        // COS_C_HORSE1, id 2191: tid4 1, walk 45 / run 90, MaxHP 983, no cargo,
+        // CanBeVehicle 1, CanControl 1.
+        let horse = shipped_cos_row("COS_C_HORSE1", 1, ("45", "90"), "983", "0", "1", "1");
+        // COS_T_LIZARD, id 22691: tid4 2, walk 24 / run 48, MaxHP 70648,
+        // 88 cargo cells, CanBeVehicle 1, CanControl 1.
+        let transport = shipped_cos_row("COS_T_LIZARD", 2, ("24", "48"), "70648", "88", "1", "1");
+
+        assert!(!guard.can_control(), "the guild guard takes no orders");
+        assert!(horse.can_control() && transport.can_control());
+
+        // Same read path, same rows: the neighbouring column disagrees with
+        // `CanControl` exactly where the data says it should (the guard is
+        // neither controllable nor rideable, the horse is both, and cargo is
+        // the transport's alone).
+        assert!(!guard.can_be_vehicle());
+        assert!(horse.can_be_vehicle() && transport.can_be_vehicle());
+        assert_eq!(horse.cos_kind(), Some(CosKind::Vehicle));
+        assert_eq!(guard.inventory_size(), None);
+        assert_eq!(horse.inventory_size(), None);
+        assert_eq!(transport.inventory_size(), Some(88));
+
+        // A row too short to hold column 67 is not "controllable by default".
+        let short = CharacterDataRow(vec![String::new(); 53]);
+        assert!(!short.can_control());
     }
 
     #[test]
