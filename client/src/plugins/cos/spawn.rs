@@ -59,6 +59,21 @@ pub struct CosSpawnParams {
     pub speed: MovementSpeed,
 }
 
+/// An entity the client invented, with no counterpart on the server.
+///
+/// Dev tools spawn COS locally with synthetic ids (`dev::cos_spawner`), and
+/// because a COS is a `RemoteEntity::Npc` every interaction rule treats it
+/// like a real one — clicking the locally spawned donkey sent a real
+/// `0x7046 TalkRequest` for uid `0x8000_0000`, which a server rejects.
+/// Anything that would put such an id on the wire has
+/// to check this marker.
+///
+/// Deliberately *not* a test on the id's high bit: that would assert
+/// something about the server's id space that nothing in the data supports.
+/// The client knows which entities it made up; it should say so.
+#[derive(Component)]
+pub struct LocallySpawned;
+
 /// Spawn a COS as a remote entity (`RemoteEntity::Npc` + [`CosEntity`]).
 /// Returns `None` when the ref has no characterdata row.
 pub fn spawn_cos_entity(

@@ -315,7 +315,12 @@ fn spawn_local_cos(
             speed,
         },
     );
-    if spawned.is_some() {
+    if let Some(entity) = spawned {
+        // No server knows this entity — mark it so nothing puts its synthetic
+        // uid on the wire (see `cos::spawn::LocallySpawned`).
+        commands
+            .entity(entity)
+            .insert(crate::plugins::cos::spawn::LocallySpawned);
         info!(
             "cos spawner: spawned {} locally as uid {}",
             row.code_name(),
@@ -412,7 +417,9 @@ fn find_summon_scroll(
 /// Asks for one scroll and lets [`make_item_command`] apply the original's
 /// clamp — scrolls are stackable, so the count must be at least 1. This used
 /// to send `opt: 0` under sub-command 0x06, which is `LoadMonster`: a monster
-/// spawn one byte short of its own layout, never a scroll.
+/// spawn one byte short of its own layout, never a scroll. On the wire a
+/// `06 00 …` request is answered `02 06 00` (refused), a `07 00 …` request
+/// `01 07 00`.
 fn send_gm_makeitem(
     conn: &Query<&SilkroadConnection, With<AgentConnection>>,
     item_data: Option<&ClientItemData>,
