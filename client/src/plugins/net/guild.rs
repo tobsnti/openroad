@@ -612,8 +612,6 @@ mod tests {
             nickname: String::new(),
             model_id: 1907,
             is_master: permissions == GuildPermissions::MASTER,
-            // Present in a live guild record; its meaning is open.
-            unk_u8_02: 0,
             is_offline: false,
         }
     }
@@ -724,6 +722,8 @@ mod tests {
             unk_u8_00: 0,
             member_count: members.len() as u8,
             members,
+            election_count: 0,
+            elections: Vec::new(),
         }
     }
 
