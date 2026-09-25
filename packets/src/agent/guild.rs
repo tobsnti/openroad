@@ -473,8 +473,8 @@ macro_rules! guild_op_ack {
         }
 
         impl $name {
-            /// `result == 1`. The original tests for exactly this value and
-            /// treats every other value as the error arm.
+            /// `result == 1`. Every other value reads as the error arm, so an
+            /// unexpected result surfaces as a failure and not as a success.
             pub fn is_success(&self) -> bool {
                 self.result == 1
             }

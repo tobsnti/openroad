@@ -779,8 +779,8 @@ pub struct PartyInviteResponse {
 /// Note the two tails are **both** `u16` and mean different things: on success
 /// it is a `PartyMatchingJoinResult` (the same enum `PartyMatchJoinResponse`
 /// answers), on failure an error code (11292 = no such party). The failure test
-/// is `!= 1`, not `== 2` — that is how the source branches it, and the two
-/// differ for every other result value.
+/// is `!= 1`, not `== 2`: an unexpected result must read as an error rather than
+/// as a join result.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchJoinAck {
     pub result: u8,
@@ -1574,9 +1574,9 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// 0xB06D branches on `result == 1`, not `== 2`: both tails are u16 and
-    /// they mean different things, so a result of 3 must read as an ERROR and
-    /// not as a join result.
+    /// The ack branches on `result == 1`, not `== 2`: both tails are u16 and mean
+    /// different things, so a result of 3 must read as an error and not as a join
+    /// result.
     #[test]
     fn the_match_join_ack_branches_on_result_one_not_two() {
         let wire = Bytes::from_static(&[1, 2, 0]);
