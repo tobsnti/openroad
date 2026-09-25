@@ -99,8 +99,8 @@ pub enum BuyOutcome {
     Malformed,
 }
 
-/// The `result == 1` / `result != 1` split is the original's own branching
-/// (`docs/net-stall-0x30B7.md` §0xB0B4), not `== 2` like the other three acks.
+/// Split on `result == 1` / `result != 1`, not on `== 2` like the other acks: an
+/// unexpected result must read as a failure rather than as a successful slot.
 pub fn buy_outcome(response: &StallBuyResponse) -> BuyOutcome {
     match (response.result, response.stall_slot, response.error_code) {
         (1, Some(slot), _) => BuyOutcome::Bought(slot),
@@ -112,11 +112,8 @@ pub fn buy_outcome(response: &StallBuyResponse) -> BuyOutcome {
 
 /// What a `0x30B7` means *for us*, given our own spawn id.
 ///
-/// The action-2/1 uid tail comes from the SilkroadDoc wiki — the original
-/// comments it out (`docs/net-stall-0x30B7.md` §0x30B7): the broadcast reaches
-/// every viewer, so the uid is the only thing that distinguishes "I entered"
-/// from "somebody else entered". Without it we would open the window for a
-/// stranger's footstep.
+/// The enter/exit tail is read as the viewer's id. The broadcast reaches every
+/// viewer, so without that id we would open the window for a stranger's footstep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewerTransition {
     /// We entered the stall — open the window.
@@ -539,8 +536,8 @@ mod test {
         assert!(slots.iter().all(Option::is_none));
     }
 
-    /// 0xB0B4 branches on `result == 1`, not `== 2` — the two differ for every
-    /// other result value, which is exactly where a copy-paste from the
+    /// `buy_outcome` branches on `result == 1`, not `== 2`: the two differ for
+    /// every other result value, which is exactly where a copy-paste from the
     /// create/destroy acks would go wrong.
     #[test]
     fn buy_outcome_branches_on_result_one() {
