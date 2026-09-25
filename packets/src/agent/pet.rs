@@ -190,19 +190,24 @@ pub const PET_UPDATE_MODEL_CHANGED: u8 = 7;
 
 /// The COS command codes carried by 0x70C5's action byte.
 ///
-/// 9 and 11 appear in no binary we have; they are Hyperbot's `CosCommandType`
-/// (`packetEnums.hpp:459-465`) and are therefore [S]. Sending one is a probe —
-/// 0xB0C5 echoes the action byte back, so the server's verdict is legible.
+/// The original builds all six of them. `PET_ACTION_CHARM` keeps the name
+/// Hyperbot's `CosCommandType` gives it, but the name is [S]: the original
+/// sends the code with no tail and nothing in it names the command.
 pub const PET_ACTION_MOVEMENT: u8 = 1;
 pub const PET_ACTION_ATTACK: u8 = 2;
+/// A turn with the same tail as [`PET_ACTION_TURN`] and a different code. What
+/// separates the two is [U].
+pub const PET_ACTION_TURN_ALT: u8 = 3;
 pub const PET_ACTION_TURN: u8 = 4;
 pub const PET_ACTION_ITEM_PICKUP: u8 = 8;
 pub const PET_ACTION_FOLLOW: u8 = 9;
 pub const PET_ACTION_CHARM: u8 = 11;
 
-/// The only movement sub-type the original builds: move to a position
-/// (`PacketBuilder.cs:194`).
+/// Movement sub-type: move to a position.
 const MOVEMENT_TO_POSITION: u8 = 1;
+/// Movement sub-type: turn in place. The tail is a byte and a heading, and the
+/// writer is shared with the player's own movement packet.
+const MOVEMENT_TURN_IN_PLACE: u8 = 0;
 
 /// `SRAttackPet.Settings : uint [Flags]` (`SRAttackPet.cs:34-39`). A newtype, not
 /// an enum, so an unknown bit combination cannot fail the packet.
@@ -863,9 +868,8 @@ pub struct PetMountRequest {
 /// prior field (the region), which the derive cannot express — the same reason
 /// `MovementRequest` is hand-written (`ingame.rs:137-140`).
 ///
-/// The original's builder emits only the two known actions
-/// (`PacketBuilder.cs:181-208`, `:381-399`); anything else keeps its raw tail so
-/// an unknown command is never mis-sliced.
+/// Anything this enum does not name keeps its raw tail, so an unknown command
+/// is never mis-sliced.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum PetActionRequest {
     /// `action = 1`. `x`/`y`/`z` are raw region-local units in **wire order**,
@@ -884,19 +888,32 @@ pub enum PetActionRequest {
         pet_unique_id: u32,
         target_unique_id: u32,
     },
-    /// `action = 4` — turn in place. `b4 b1 b2` (builders `009eb470`,
-    /// `009eb6e0`); the `u16` is a heading. [V]
+    /// `action = 1` with the turn sub-type: a byte and a heading. This is the
+    /// second way the COS is told to turn and it is not [`Self::Turn`] — that
+    /// one is its own action code with the heading straight after it.
+    MovementTurn {
+        pet_unique_id: u32,
+        /// [U] — written before the heading.
+        unk_u8_00: u8,
+        angle: u16,
+    },
+    /// `action = 4` — turn in place; the `u16` is a heading.
     Turn { pet_unique_id: u32, heading: u16 },
+    /// `action = 3` — the same tail as [`Self::Turn`] under a different action
+    /// code. The name is deliberately flat: what distinguishes the two is [U].
+    TurnAlt { pet_unique_id: u32, unk_u16_00: u16 },
     /// `action = 8`.
     ItemPickUp {
         pet_unique_id: u32,
         item_unique_id: u32,
     },
-    /// `action = 9` — resume following the owner. **[S]**: no builder in any
-    /// binary we have, only Hyperbot's `CosCommandType`. Modelled as a bare
-    /// `{uid, action}` because a follow order has nothing else to carry; the
-    /// 0xB0C5 echo is what will confirm or refute it.
+    /// `action = 9` — resume following the owner. The original builds exactly
+    /// this: the uid, the action byte, no tail. The *name* is still Hyperbot's;
+    /// the shape is not.
     Follow { pet_unique_id: u32 },
+    /// `action = 0x0B`, no tail — the code [`PET_ACTION_CHARM`] names. The
+    /// shape is the original's; the meaning is [U], hence the flat name.
+    Unknown0B { pet_unique_id: u32 },
     /// Any other action code, or a movement sub-type the original never builds.
     Unknown {
         pet_unique_id: u32,
@@ -934,19 +951,24 @@ impl TryFrom<Bytes> for PetActionRequest {
             tail: value.slice(5..),
         };
         match action {
-            PET_ACTION_MOVEMENT => {
-                if u8::read_from(&mut cursor)? != MOVEMENT_TO_POSITION {
-                    return Ok(unknown(action));
+            PET_ACTION_MOVEMENT => match u8::read_from(&mut cursor)? {
+                MOVEMENT_TO_POSITION => {
+                    let region = u16::read_from(&mut cursor)?;
+                    Ok(PetActionRequest::Movement {
+                        pet_unique_id,
+                        region,
+                        x: read_coord(&mut cursor, region)?,
+                        y: read_coord(&mut cursor, region)?,
+                        z: read_coord(&mut cursor, region)?,
+                    })
                 }
-                let region = u16::read_from(&mut cursor)?;
-                Ok(PetActionRequest::Movement {
+                MOVEMENT_TURN_IN_PLACE => Ok(PetActionRequest::MovementTurn {
                     pet_unique_id,
-                    region,
-                    x: read_coord(&mut cursor, region)?,
-                    y: read_coord(&mut cursor, region)?,
-                    z: read_coord(&mut cursor, region)?,
-                })
-            }
+                    unk_u8_00: u8::read_from(&mut cursor)?,
+                    angle: u16::read_from(&mut cursor)?,
+                }),
+                _ => Ok(unknown(action)),
+            },
             PET_ACTION_ATTACK => Ok(PetActionRequest::Attack {
                 pet_unique_id,
                 target_unique_id: u32::read_from(&mut cursor)?,
@@ -955,11 +977,16 @@ impl TryFrom<Bytes> for PetActionRequest {
                 pet_unique_id,
                 heading: u16::read_from(&mut cursor)?,
             }),
+            PET_ACTION_TURN_ALT => Ok(PetActionRequest::TurnAlt {
+                pet_unique_id,
+                unk_u16_00: u16::read_from(&mut cursor)?,
+            }),
             PET_ACTION_ITEM_PICKUP => Ok(PetActionRequest::ItemPickUp {
                 pet_unique_id,
                 item_unique_id: u32::read_from(&mut cursor)?,
             }),
             PET_ACTION_FOLLOW => Ok(PetActionRequest::Follow { pet_unique_id }),
+            PET_ACTION_CHARM => Ok(PetActionRequest::Unknown0B { pet_unique_id }),
             _ => Ok(unknown(action)),
         }
     }
@@ -992,6 +1019,17 @@ impl From<PetActionRequest> for Bytes {
                 buf.put_u8(PET_ACTION_ATTACK);
                 buf.put_u32_le(target_unique_id);
             }
+            PetActionRequest::MovementTurn {
+                pet_unique_id,
+                unk_u8_00,
+                angle,
+            } => {
+                buf.put_u32_le(pet_unique_id);
+                buf.put_u8(PET_ACTION_MOVEMENT);
+                buf.put_u8(MOVEMENT_TURN_IN_PLACE);
+                buf.put_u8(unk_u8_00);
+                buf.put_u16_le(angle);
+            }
             PetActionRequest::Turn {
                 pet_unique_id,
                 heading,
@@ -999,6 +1037,14 @@ impl From<PetActionRequest> for Bytes {
                 buf.put_u32_le(pet_unique_id);
                 buf.put_u8(PET_ACTION_TURN);
                 buf.put_u16_le(heading);
+            }
+            PetActionRequest::TurnAlt {
+                pet_unique_id,
+                unk_u16_00,
+            } => {
+                buf.put_u32_le(pet_unique_id);
+                buf.put_u8(PET_ACTION_TURN_ALT);
+                buf.put_u16_le(unk_u16_00);
             }
             PetActionRequest::ItemPickUp {
                 pet_unique_id,
@@ -1011,6 +1057,10 @@ impl From<PetActionRequest> for Bytes {
             PetActionRequest::Follow { pet_unique_id } => {
                 buf.put_u32_le(pet_unique_id);
                 buf.put_u8(PET_ACTION_FOLLOW);
+            }
+            PetActionRequest::Unknown0B { pet_unique_id } => {
+                buf.put_u32_le(pet_unique_id);
+                buf.put_u8(PET_ACTION_CHARM);
             }
             PetActionRequest::Unknown {
                 pet_unique_id,
@@ -1088,12 +1138,66 @@ mod tests {
         );
         assert_eq!(PetActionRequest::try_from(bytes).unwrap(), pick);
 
-        // an action we do NOT build (3 = heading) still round-trips raw
-        let raw = Bytes::from_static(&[0x6B, 0xF3, 0x01, 0x00, 3, 0x34, 0x12]);
+        // an action we do not build stays raw
+        let raw = Bytes::from_static(&[0x6B, 0xF3, 0x01, 0x00, 7, 0x34, 0x12]);
         assert!(matches!(
             PetActionRequest::try_from(raw).unwrap(),
-            PetActionRequest::Unknown { action: 3, .. }
+            PetActionRequest::Unknown { action: 7, .. }
         ));
+    }
+
+    /// Action 3 carries a heading just like action 4 does, so it is a form of
+    /// its own rather than a raw tail.
+    #[test]
+    fn action_three_is_a_heading_of_its_own() {
+        let turn = PetActionRequest::TurnAlt {
+            pet_unique_id: 127_851,
+            unk_u16_00: 0x1234,
+        };
+        let bytes: Bytes = turn.clone().into();
+
+        assert_eq!(bytes.as_ref(), &[0x6B, 0xF3, 0x01, 0x00, 3, 0x34, 0x12]);
+        assert_eq!(PetActionRequest::try_from(bytes).unwrap(), turn);
+
+        // positive control: action 4 keeps its own variant
+        let four = Bytes::from_static(&[0x6B, 0xF3, 0x01, 0x00, 4, 0x34, 0x12]);
+        assert!(matches!(
+            PetActionRequest::try_from(four).unwrap(),
+            PetActionRequest::Turn {
+                heading: 0x1234,
+                ..
+            }
+        ));
+    }
+
+    /// Action 0x0B has no tail.
+    #[test]
+    fn action_eleven_is_the_bare_envelope() {
+        let bare = PetActionRequest::Unknown0B {
+            pet_unique_id: 127_851,
+        };
+        let bytes: Bytes = bare.clone().into();
+
+        assert_eq!(bytes.as_ref(), &[0x6B, 0xF3, 0x01, 0x00, 0x0B]);
+        assert_eq!(PetActionRequest::try_from(bytes).unwrap(), bare);
+    }
+
+    /// The movement action has a second sub-type: sub-type 0 turns in place
+    /// and carries a byte plus a heading instead of a region and coordinates.
+    #[test]
+    fn movement_sub_type_zero_turns_in_place() {
+        let turn = PetActionRequest::MovementTurn {
+            pet_unique_id: 127_851,
+            unk_u8_00: 5,
+            angle: 0x0123,
+        };
+        let bytes: Bytes = turn.clone().into();
+
+        assert_eq!(
+            bytes.as_ref(),
+            &[0x6B, 0xF3, 0x01, 0x00, 1, 0, 5, 0x23, 0x01]
+        );
+        assert_eq!(PetActionRequest::try_from(bytes).unwrap(), turn);
     }
 
     #[test]

@@ -506,7 +506,7 @@ settings word and `0xB0C5` follow the binaries alone and are unconfirmed.
 | `0xB116` | PetUnsummonResponse | S→C | experimental | success body empty; COS error category `0x0C` |
 | `0xB117` | PetRenameResponse | S→C | experimental | success body empty — the new name arrives as `0x30C9` arm 5, so nothing is applied optimistically |
 | `0xB420` | PetSettingsChangeResponse | S→C | experimental | `settings` is present on **both** `settings_type` arms (1 = gold pet, 2 = cash pet), not just type 1 |
-| `0x70C5` | PetActionRequest | C→S | experimental | three builder shapes: `Movement`, `Turn` (`u16` heading), and the 9-byte `Attack`/`ItemPickUp`. Actions 2 and 8 are confirmed by the server's own writer; `Follow` (9) is unconfirmed — 0xB0C5 echoes the action byte, which is what will settle it. Unknown codes keep a raw tail |
+| `0x70C5` | PetActionRequest | C→S | experimental | the action byte picks the tail: `Movement` (sub-type 1) and its turn sub-type 0, `Turn` (4) and the same tail under action 3, the 9-byte `Attack`/`ItemPickUp`, and the tail-less actions 9 and 0x0B. Actions 2 and 8 are confirmed by the server's own writer; the names of 3, 9 and 0x0B are not. Unknown codes keep a raw tail |
 | `0x70C6` | PetTerminateRequest | C→S | experimental | `{u32}`. Distinct from unsummon |
 | `0x70CB` | PetMountRequest | C→S | experimental | `{u8 mount_state, u32 cos_unique_id}` — **byte first** |
 | `0x7116` | PetUnsummonRequest | C→S | experimental | `{u32}` |
