@@ -180,9 +180,8 @@ pub struct StallDestroyResponse {
 
 /// 0xB0B5 — leave ack. See [`StallCreateResponse`] for the `result` shape.
 ///
-/// The leading byte is unconfirmed: the original's parser reads nothing at all and
-/// just fires its callback, while go-sro emits it. It is wired because a byte the
-/// server sends must be consumed.
+/// The leading byte is unconfirmed. It is modelled anyway, because consuming what
+/// the server sends is safer than leaving a tail unread.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct StallLeaveResponse {
     pub result: u8,
@@ -192,12 +191,10 @@ pub struct StallLeaveResponse {
 
 /// 0xB0B4 — buy ack.
 ///
-/// `docs/net-stall-0x30B7.md` leaves this open, because the original comments the
-/// whole body out. It is documented after all: SilkroadDoc-wiki and the silkroad-docs corpus agree
-/// independently on `result`, then the bought slot on success or a `u16` error code
-/// otherwise (e.g. `15406` stall is not open). Note the failure test is `!= 1`
-/// here, not `== 2` — that is how the source branches it, and the two differ for
-/// any other result value.
+/// The body is unconfirmed: `result`, then the bought slot on success or a `u16`
+/// error code otherwise (e.g. `15406`, the stall is not open). Branch on `!= 1`,
+/// not `== 2`: an unexpected result must read as an error rather than as a
+/// truncated record.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct StallBuyResponse {
     pub result: u8,
@@ -220,8 +217,8 @@ pub struct EntityStallCreate {
 
 /// 0x30B9 — the stall on `unique_id` is gone.
 ///
-/// `error_code` is unconfirmed: the original comments the trailing `u16` out,
-/// go-sro emits it (as `0`).
+/// `error_code` is unconfirmed and normally `0`. It is read rather than ignored so
+/// that the whole body is consumed.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EntityStallDestroy {
     pub unique_id: u32,
@@ -311,9 +308,8 @@ fn decode_rows(raw: &Bytes, resolver: &impl ItemClassResolver) -> Option<Vec<Sta
 /// Hand-written: the buy arm ends in a sentinel-terminated item list, which no
 /// derive list mode can express.
 ///
-/// The enter/exit bodies are unconfirmed, because the original comments the
-/// trailing id out. SilkroadDoc-wiki documents both as carrying `u32 UniqueID`, so
-/// they are wired rather than left blind.
+/// The enter/exit bodies are unconfirmed. Both are read as a `u32` id, because that
+/// id is the only thing that tells our own transition apart from another viewer's.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum StallEntityAction {
     /// A viewer left the stall.
@@ -532,8 +528,8 @@ impl From<StallTalkResponse> for Bytes {
 /// The per-type body of a 0xB0BA.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StallUpdateAck {
-    /// Type 1. The trailing `error_code` is unconfirmed — commented out in the
-    /// original, emitted by go-sro.
+    /// Type 1. The trailing `error_code` is unconfirmed; it is read so that the
+    /// body is consumed in full.
     ItemUpdate {
         stall_slot: u8,
         quantity: u16,
@@ -843,7 +839,8 @@ mod tests {
         );
     }
 
-    /// 0xB0B4 branches on `!= 1`, not `== 2`.
+    /// The buy ack branches on `!= 1`, not `== 2`, so any unexpected result reads
+    /// as an error.
     #[test]
     fn buy_response_carries_the_slot_on_success_and_an_error_otherwise() {
         let ok = StallBuyResponse::try_from(Bytes::from_static(&[1, 6])).unwrap();
@@ -876,8 +873,8 @@ mod tests {
         assert_eq!(&back[..], &wire[..]);
     }
 
-    /// The trailing u16 is unconfirmed — go-sro emits it, xBot comments it out.
-    /// Dropping it would leave two bytes unconsumed.
+    /// The trailing `u16` is unconfirmed. Dropping it would leave two bytes
+    /// unconsumed, so it is decoded and written back.
     #[test]
     fn entity_stall_destroy_consumes_the_trailing_error_code() {
         let mut wire = 777u32.to_le_bytes().to_vec();
