@@ -179,7 +179,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB0A2` | MasteryLearnResponse | S→C | wired |  |
 | `0x7202` | SkillLevelDownRequest | C→S | experimental | level-down mirror of 0x70A1; body is `u32 ref_skill_id, u32, u8` — the two trailing fields have no established meaning |
 | `0xB202` | MasterySkillLevelDownResponse | S→C | experimental | success returns the new (lower) skill id; failure shape unknown |
-| `0x7203` | MasteryLevelDownRequest | C→S | experimental | mirror of 0x70A2 minus its `amount` byte, which stays unknown |
+| `0x7203` | MasteryLevelDownRequest | C→S | experimental | twin of 0x7202: `u32 mastery_id, u32, u8` |
 | `0xB203` | MasteryLevelDownResponse | S→C | experimental | exact mirror of 0xB0A2; failure shape unknown |
 | `0xB0BD` | BuffAdd | S→C | wired |  |
 | `0xB072` | BuffRemove | S→C | wired |  |

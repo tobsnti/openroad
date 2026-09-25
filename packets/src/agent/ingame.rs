@@ -2345,13 +2345,17 @@ impl From<MasterySkillLevelDownResponse> for Bytes {
 
 /// 0x7203 — client → server "lower this mastery by one level".
 ///
-/// **Unknown body.** No builder in the original. The level-UP sibling
-/// [`MasteryLearnRequest`] carries a trailing `amount: u8`; whether the DOWN
-/// request does too is unresolved, so it is **not** included here rather than
-/// assumed.
+/// `{u32 mastery_id, u32, u8}` — the twin of [`SkillLevelDownRequest`], built
+/// by the original from the same three arguments. It too used to carry the
+/// first field alone.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MasteryLevelDownRequest {
     pub mastery_id: u32,
+    /// [U] — the second word of the body.
+    pub unk_u32_00: u32,
+    /// [U] — a byte the original computes as the difference of two values of
+    /// the mastery window, i.e. a count by shape.
+    pub unk_u8_00: u8,
 }
 
 /// 0xB203 — server → client ack for [`MasteryLevelDownRequest`].
@@ -5605,17 +5609,6 @@ mod test {
 
     // --- Mastery/skill level-down + teleport recall --------------------------
 
-    /// The trailing `amount` byte the level-UP sibling carries is deliberately NOT
-    /// mirrored onto the DOWN request — it is unresolved, so the body is 4 bytes.
-    #[test]
-    fn mastery_level_down_request_omits_the_unresolved_amount_byte() {
-        let req = MasteryLevelDownRequest { mastery_id: 257 };
-        let wire: Bytes = req.clone().into();
-
-        assert_eq!(wire.len(), 4);
-        assert_eq!(MasteryLevelDownRequest::try_from(wire).unwrap(), req);
-    }
-
     #[test]
     fn skill_level_down_response_reads_the_new_skill_id() {
         let mut wire = vec![1u8];
@@ -5830,6 +5823,23 @@ mod test {
         assert_eq!(decoded.ref_skill_id, 1234);
         assert_eq!(decoded.unk_u32_00, 7);
         assert_eq!(decoded.unk_u8_00, 3);
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back.len(), 9);
+        assert_eq!(&back[..], &wire[..]);
+    }
+
+    /// The mastery twin, same widths and same order.
+    #[test]
+    fn mastery_level_down_request_is_nine_bytes() {
+        let mut wire = 4321u32.to_le_bytes().to_vec();
+        wire.extend_from_slice(&9u32.to_le_bytes());
+        wire.push(1);
+
+        let decoded = MasteryLevelDownRequest::try_from(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(decoded.mastery_id, 4321);
+        assert_eq!(decoded.unk_u32_00, 9);
+        assert_eq!(decoded.unk_u8_00, 1);
 
         let back: Bytes = decoded.into();
         assert_eq!(back.len(), 9);
