@@ -1,3 +1,4 @@
+pub mod gold_modal;
 pub mod model;
 pub mod ui;
 
@@ -13,11 +14,14 @@ impl Plugin for StoragePlugin {
 
         app.init_resource::<model::StorageState>()
             .init_resource::<model::StorageDataBuffer>()
-            .init_resource::<model::StorageHoveredItem>()
+            .init_resource::<crate::plugins::hud::item_cell::HoveredItem>()
             .init_resource::<model::PendingStorageOp>()
             .init_resource::<ui::StorageCarry>()
-            .init_resource::<ui::GoldModal>()
-            .init_resource::<ui::GoldAmount>()
+            // The gold popup is shared with the guild warehouse
+            // (`gold_modal.rs`); it is registered here, with the window that
+            // owned it first, so it exists exactly once.
+            .init_resource::<gold_modal::GoldModal>()
+            .init_resource::<gold_modal::GoldAmount>()
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_storage)
             .add_systems(PostUpdate, ui::despawn_closing_storage)
             .add_systems(
@@ -41,9 +45,10 @@ impl Plugin for StoragePlugin {
                     ui::deposit_drop_on_storage,
                     ui::finish_storage_carry,
                     ui::update_storage_ghost,
-                    ui::sync_gold_modal,
-                    ui::sync_gold_amount,
-                    ui::clear_modal_with_storage,
+                    gold_modal::sync_gold_modal,
+                    gold_modal::sync_gold_amount,
+                    gold_modal::close_modal_with_session,
+                    ui::clear_carry_with_storage,
                     ui::track_storage_hover,
                 )
                     .run_if(super::hud_scenes),

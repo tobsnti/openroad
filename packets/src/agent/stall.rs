@@ -2,24 +2,25 @@
 //! edit requests, the viewer's enter/buy/leave path, and the entity pushes that
 //! show a stall in the world.
 //!
-//! **Spec-derived, not capture-verified.** No `packet_dump/` sample exists for any
-//! opcode in this family. Byte-level notes, per-field [V]/[S]/[U] tags and the
-//! resolving capture for each unknown live in `docs/net-stall-0x30B7.md`.
+//! **Spec-derived.** No sample body is available for any opcode in this family.
+//! Byte-level notes, the per-field confidence and the open questions live in
+//! `docs/net-stall-0x30B7.md`.
 //!
-//! Sourcing note: the doc reads the original through xBot, which is **not** on this
-//! machine, so those citations cannot be re-checked here. Two sources that are on
-//! disk carried this instead — the go-sro agent server
+//! Sourcing note: the doc reads the original through xBot, which is **not**
+//! available here, so those citations cannot be re-checked. Two sources that are
+//! available carried this instead — the go-sro agent server
 //! (`sro-refs/go-sro-agent-server/handler/stall/`), which the doc does cite, and
 //! `sro-refs/SilkroadDoc-wiki` (`AGENT_STALL_*.md`, `StallAction.md`,
 //! `StallUpdateType.md`, `StallErrorCode.md`), which it does not. Several fields
-//! here are `[S]` in the doc — go-sro emits them while xBot has them commented out;
-//! those are wired, because dropping a field the server sends desyncs everything
-//! after it. The wiki additionally supplies four bodies the doc marks `[U]`; each
-//! is noted at its type.
+//! here are only assumed in the doc — go-sro emits them while xBot has them
+//! commented out; those are wired, because dropping a field the server sends
+//! desyncs everything after it. The wiki additionally supplies four bodies the
+//! doc leaves unconfirmed; each is noted at its type.
 //!
-//! All 14 opcodes in scope are wired. The `0x70B3`/`0xB0B3` stall-talk pair is out
-//! of scope (it belongs to a separate doc — note that the cross-reference in
-//! `docs/net-stall-0x30B7.md` currently points at a section carrying no body).
+//! All 14 opcodes in scope are wired, plus the `0x70B3`/`0xB0B3` stall-talk
+//! pair: the response since #759, and the request, whose body follows what the
+//! original's request builder writes rather than a documented source
+//! (see [`StallTalkRequest`]).
 //!
 //! ## Why the item-bearing pushes keep a raw tail
 //!
@@ -77,6 +78,27 @@ pub struct StallCreateRequest {
 /// 0x70B2 — close the stall. Empty body.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct StallDestroyRequest;
+
+/// 0x70B3 — ask to enter (talk to) the stall on `unique_id`; the answer is
+/// [`StallTalkResponse`].
+///
+/// The original's stall-talk builder writes exactly one field: four bytes
+/// between the `0x70b3` header and the flush. The sibling builders agree with
+/// that reading of the body sizes — `0x70B4` writes 1 (the stall-buy slot, our
+/// [`StallBuyRequest`]), `0x70B5` writes nothing ([`StallLeaveRequest`] is
+/// empty) and `0x7063` writes 4 (the party kick jid).
+///
+/// The u32 is an entity id. The world-click handler picks the entity under the
+/// cursor, gates on its entity type byte and passes that entity's id — the same
+/// field the `0x7074` builder in the same handler writes as its target id. A
+/// second caller, a small `kind == 2` dispatcher, pushes a dword as well. When
+/// the argument is 0 the builder fetches the id from the current target
+/// instead, which is a convenience, not a second field.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct StallTalkRequest {
+    /// The stall owner's entity id (the same id `0xB0B3` answers with).
+    pub unique_id: u32,
+}
 
 /// 0x70B4 — buy the item in `stall_slot` from the stall being viewed.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -158,9 +180,9 @@ pub struct StallDestroyResponse {
 
 /// 0xB0B5 — leave ack. See [`StallCreateResponse`] for the `result` shape.
 ///
-/// That leading byte is [S] in the RE doc — the original's parser reads nothing at
-/// all and just fires its callback, while go-sro emits it. Wired because a byte the
-/// server sends must be consumed; `packet_dump/0xB0B5.log` settles it.
+/// The leading byte is unconfirmed: the original's parser reads nothing at all and
+/// just fires its callback, while go-sro emits it. It is wired because a byte the
+/// server sends must be consumed.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct StallLeaveResponse {
     pub result: u8,
@@ -170,8 +192,8 @@ pub struct StallLeaveResponse {
 
 /// 0xB0B4 — buy ack.
 ///
-/// The RE doc calls this a fully commented-out stub and defers it as [U]. It is
-/// documented after all: SilkroadDoc-wiki and the silkroad-docs corpus agree
+/// `docs/net-stall-0x30B7.md` leaves this open, because the original comments the
+/// whole body out. It is documented after all: SilkroadDoc-wiki and the silkroad-docs corpus agree
 /// independently on `result`, then the bought slot on success or a `u16` error code
 /// otherwise (e.g. `15406` stall is not open). Note the failure test is `!= 1`
 /// here, not `== 2` — that is how the source branches it, and the two differ for
@@ -198,8 +220,8 @@ pub struct EntityStallCreate {
 
 /// 0x30B9 — the stall on `unique_id` is gone.
 ///
-/// `error_code` is [S]: the original comments the trailing `u16` out, go-sro emits
-/// it (as `0`). `packet_dump/0x30B9.log` settles the width and values.
+/// `error_code` is unconfirmed: the original comments the trailing `u16` out,
+/// go-sro emits it (as `0`).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EntityStallDestroy {
     pub unique_id: u32,
@@ -289,7 +311,7 @@ fn decode_rows(raw: &Bytes, resolver: &impl ItemClassResolver) -> Option<Vec<Sta
 /// Hand-written: the buy arm ends in a sentinel-terminated item list, which no
 /// derive list mode can express.
 ///
-/// The RE doc marks the enter/exit bodies [U] because the original comments the
+/// The enter/exit bodies are unconfirmed, because the original comments the
 /// trailing id out. SilkroadDoc-wiki documents both as carrying `u32 UniqueID`, so
 /// they are wired rather than left blind.
 #[derive(Message, Clone, Debug, PartialEq)]
@@ -393,7 +415,7 @@ const STALL_RESULT_OK: u8 = 1;
 /// existing but never inlines: *"result, uid u32, message, isOpen,
 /// fleaMarketMode, the 0xFF-terminated rows, then `peopleCount u8` + uid
 /// array"* (wiki `AGENT_STALL_TALK.md`). Field **order** is that record; the
-/// two flag widths are `[S]` — a one-byte flag is what `fleaMarketMode`
+/// two flag widths are assumed — a one-byte flag is what `fleaMarketMode`
 /// already is on 0x70BA/0xB0BA (§2), and no source states otherwise. The
 /// failure arm follows the family's own shape (`u16` error code, as on
 /// 0xB0B1/0xB0B2/0xB0B5).
@@ -409,9 +431,9 @@ pub enum StallTalkResponse {
         unique_id: u32,
         /// The owner's greeting ("note").
         message: String,
-        /// Whether the stall is open for business (`[S]` u8).
+        /// Whether the stall is open for business (assumed u8).
         is_open: bool,
-        /// The `FleaMarketMode` byte of §2 (`[S]` u8 here).
+        /// The `FleaMarketMode` byte of §2 (assumed u8 here).
         flea_market_mode: u8,
         /// The 0xFF-terminated rows **plus** the trailing viewer list,
         /// undecoded — read with [`Self::snapshot`].
@@ -510,8 +532,8 @@ impl From<StallTalkResponse> for Bytes {
 /// The per-type body of a 0xB0BA.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StallUpdateAck {
-    /// Type 1. The trailing `error_code` is [S] — commented out in the original,
-    /// emitted by go-sro.
+    /// Type 1. The trailing `error_code` is unconfirmed — commented out in the
+    /// original, emitted by go-sro.
     ItemUpdate {
         stall_slot: u8,
         quantity: u16,
@@ -706,6 +728,21 @@ mod tests {
         assert!(leave.is_empty());
     }
 
+    /// The body of `0x70B3`: one `u32` and nothing else, matching the four bytes
+    /// the original's builder writes. The 1-byte `0x70B4` and the empty `0x70B5`
+    /// in this same file show the same pattern.
+    #[test]
+    fn talk_request_is_a_single_unique_id() {
+        let wire: Bytes = StallTalkRequest { unique_id: 7777 }.into();
+
+        assert_eq!(wire.len(), 4);
+        assert_eq!(&wire[..], &7777u32.to_le_bytes()[..]);
+        assert_eq!(
+            StallTalkRequest::try_from(wire).unwrap(),
+            StallTalkRequest { unique_id: 7777 }
+        );
+    }
+
     #[test]
     fn buy_request_is_a_single_slot_byte() {
         let wire: Bytes = StallBuyRequest { stall_slot: 4 }.into();
@@ -839,8 +876,8 @@ mod tests {
         assert_eq!(&back[..], &wire[..]);
     }
 
-    /// The trailing u16 is [S] — go-sro emits it, xBot comments it out. Dropping it
-    /// would leave two bytes unconsumed.
+    /// The trailing u16 is unconfirmed — go-sro emits it, xBot comments it out.
+    /// Dropping it would leave two bytes unconsumed.
     #[test]
     fn entity_stall_destroy_consumes_the_trailing_error_code() {
         let mut wire = 777u32.to_le_bytes().to_vec();
@@ -868,7 +905,7 @@ mod tests {
 
     // --- 0x30B7 ------------------------------------------------------------
 
-    /// Enter/exit carry a viewer id, which the RE doc marks [U].
+    /// Enter/exit carry a viewer id, which no source confirms.
     #[test]
     fn entity_action_enter_and_exit_carry_the_viewer_id() {
         let mut enter = vec![STALL_ACTION_ENTER];
@@ -1088,8 +1125,8 @@ mod tests {
     // --- 0xB0B3 stall talk (#759) ------------------------------------------
 
     /// The snapshot a viewer gets on entering a stall: header, two rows, the
-    /// sentinel, then the viewer list. The header widths are `[S]`; the row
-    /// shape and the sentinel are `[V]` and shared with 0x30B7/0xB0BA.
+    /// sentinel, then the viewer list. The header widths are assumed; the row
+    /// shape and the sentinel are known and shared with 0x30B7/0xB0BA.
     #[test]
     fn stall_talk_success_decodes_its_rows_and_viewer_list() {
         let mut wire = vec![1u8]; // result = ok

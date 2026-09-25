@@ -13,11 +13,15 @@
 //! it on the inventory withdraws, dropping it on another storage cell moves
 //! within storage. All of it is sent as 0x7034 storage ops and applied
 //! server-confirmed only (model.rs).
+//!
+//! The gold popup behind the money button is **not** here any more: it is
+//! `gold_modal.rs`, parameterised over its target warehouse, because the
+//! guild warehouse is the same `CIFStorageRoom` window and needs the same
+//! popup (ops 32/33 instead of 12/11). This file only says which side its own
+//! button means.
 
-use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle};
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -31,8 +35,9 @@ use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::{DragGhost, InventoryRoot};
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::storage::gold_modal::{GoldModal, GoldModalRoot, GoldTarget};
 use crate::plugins::hud::storage::model::{
-    PendingStorageOp, StorageHoveredItem, StorageOp, StorageState, STORAGE_SLOTS_PER_PAGE,
+    PendingStorageOp, StorageOp, StorageState, STORAGE_SLOTS_PER_PAGE,
 };
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
@@ -146,27 +151,15 @@ pub struct StorageCarryData {
 #[derive(Component)]
 pub struct StorageGhost;
 
-/// The gold deposit/withdraw popup behind the money button.
-#[derive(Resource, Default)]
-pub struct GoldModal {
-    pub open: bool,
-}
-
-/// The typed amount, parsed from the input every frame (empty = 0).
-#[derive(Resource, Default)]
-pub struct GoldAmount(pub u64);
-
-#[derive(Component)]
-pub struct GoldModalRoot;
-
-#[derive(Component)]
-pub struct GoldAmountInput;
-
-#[derive(Component, Clone, Copy)]
-enum GoldModalButton {
-    Deposit,
-    Withdraw,
-    Cancel,
+/// The stack size a whole-stack move reports. The original reads the source
+/// item's own count and feeds it into the op-1/29 request, so a non-stackable
+/// moves as one piece rather than as zero — a 0 would ask the server to move
+/// nothing.
+pub fn stack_at(items: &Inventory, slot: u8) -> u16 {
+    match items.get(slot).map(|item| &item.data) {
+        Some(ItemTypeData::Expendable { stack_count, .. }) => (*stack_count).max(1),
+        _ => 1,
+    }
 }
 
 /// The storage wire slot a page-grid cell shows.
@@ -517,8 +510,10 @@ fn on_storage_page_press(
     }
 }
 
+/// The money button only names its own warehouse; the popup itself is the
+/// shared `gold_modal` unit (ops 12/11 for this side).
 fn on_money_button(_: On<Activate>, mut modal: ResMut<GoldModal>) {
-    modal.open = true;
+    modal.open_for(GoldTarget::PersonalStorage);
 }
 
 /// Publish the hovered storage item for the shared item tooltip
@@ -532,7 +527,7 @@ pub fn track_storage_hover(
     cells: Query<(&StorageSlotCell, &Hovered)>,
     carry: Res<StorageCarry>,
     inv_state: Res<InventoryState>,
-    mut hovered: ResMut<StorageHoveredItem>,
+    mut hovered: ResMut<crate::plugins::hud::item_cell::HoveredItem>,
 ) {
     let carrying = carry.0.is_some() || inv_state.drag.is_some();
     let item = (!carrying)
@@ -543,8 +538,13 @@ pub fn track_storage_hover(
                 .and_then(|(cell, _)| state.items.get(wire_slot(&state, cell.cell)))
         })
         .flatten();
-    if hovered.0.as_ref() != item {
-        hovered.0 = item.cloned();
+    let wanted = item
+        .cloned()
+        .map(crate::plugins::hud::item_cell::HoveredItemKind::Owned);
+    match (&hovered.0, &wanted) {
+        (None, None) => {}
+        _ if hovered.owned() != item => hovered.0 = wanted,
+        _ => {}
     }
 }
 
@@ -691,6 +691,7 @@ pub fn finish_storage_carry(
             Some(InventoryOperationRequest::StorageToStorage {
                 source,
                 target,
+                amount: stack_at(&state.items, source),
                 npc_unique_id: npc_id,
             })
         }
@@ -808,276 +809,16 @@ pub fn deposit_drop_on_storage(
     }
 }
 
-/// Rebuild the gold deposit/withdraw popup when it opens/closes.
-#[allow(clippy::too_many_arguments)]
-pub fn sync_gold_modal(
-    modal: Res<GoldModal>,
+/// The carry is bound to the storage session. Closing the popup with the
+/// session moved to `gold_modal::close_modal_with_session` when the popup
+/// became shared — it now has to close on *whichever* warehouse it pays into,
+/// which this system cannot see.
+pub fn clear_carry_with_storage(
     state: Res<StorageState>,
-    existing: Query<Entity, With<GoldModalRoot>>,
-    inventories: Query<&Inventory, With<Player>>,
-    ui_strings: Res<ClientUiStrings>,
-    fonts: Res<FontAssets>,
-    asset_server: Res<AssetServer>,
-    cam_query: Query<Entity, With<Camera2d>>,
-    mut focus: ResMut<InputFocus>,
-    mut amount: ResMut<GoldAmount>,
-    mut commands: Commands,
-) {
-    if !modal.is_changed() {
-        return;
-    }
-    for entity in existing.iter() {
-        commands.entity(entity).insert(StorageClosing);
-    }
-    if !modal.open {
-        if !existing.is_empty() {
-            focus.clear();
-        }
-        return;
-    }
-    let Ok(camera) = cam_query.single() else {
-        return;
-    };
-    amount.0 = 0;
-    let player_gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
-    let s = hud_scale();
-    let text_font = |size: f32| TextFont {
-        font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
-        ..default()
-    };
-    let button_style = ImageButtonStyle {
-        normal: asset_server.load("media://interface/ifcommon/com_button.ddj"),
-        hover: asset_server.load("media://interface/ifcommon/com_button_focus.ddj"),
-        press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
-        ..Default::default()
-    };
-
-    let mut input_entity = None;
-    commands
-        .spawn((
-            GoldModalRoot,
-            Name::from("Storage Gold Modal"),
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
-            GlobalZIndex(65),
-            UiTargetCamera(camera),
-        ))
-        .with_children(|scrim| {
-            scrim
-                .spawn((
-                    Node {
-                        width: Val::Px(240.0 * s),
-                        height: Val::Px(120.0 * s),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.09, 0.08, 0.06)),
-                    Outline {
-                        width: Val::Px(1.0),
-                        color: Color::srgb(0.55, 0.45, 0.25),
-                        ..default()
-                    },
-                ))
-                .with_children(|panel| {
-                    panel.spawn((
-                        Text::new(
-                            ui_strings
-                                .get_or("UIIT_STT_DEPOSITMONEY", "Deposit Amount")
-                                .to_string(),
-                        ),
-                        text_font(8.5),
-                        TextColor(NAME_COLOR),
-                        TextLayout::justify(Justify::Center),
-                        abs_node((0.0, 10.0, 240.0, 14.0), s),
-                        Pickable::IGNORE,
-                    ));
-                    panel.spawn((
-                        Text::new(format!(
-                            "Inventory: {player_gold}   Storage: {}",
-                            state.items.gold
-                        )),
-                        text_font(7.5),
-                        TextColor(PRICE_COLOR),
-                        TextLayout::justify(Justify::Center),
-                        abs_node((0.0, 28.0, 240.0, 12.0), s),
-                        Pickable::IGNORE,
-                    ));
-                    let mut input_box = abs_node((60.0, 44.0, 120.0, 18.0), s);
-                    input_box.padding = UiRect::top(Val::Px(2.0 * s));
-                    input_entity = Some(
-                        panel
-                            .spawn((
-                                GoldAmountInput,
-                                EditableText {
-                                    visible_lines: Some(1.0),
-                                    allow_newlines: false,
-                                    max_characters: Some(12),
-                                    ..default()
-                                },
-                                EditableTextFilter::new(|c: char| c.is_ascii_digit()),
-                                input_box,
-                                text_font(9.0),
-                                TextColor(Color::WHITE),
-                                TextLayout::justify(Justify::Center),
-                                TextCursorStyle {
-                                    color: Color::WHITE,
-                                    ..default()
-                                },
-                                BackgroundColor(Color::srgb(0.16, 0.14, 0.1)),
-                            ))
-                            .id(),
-                    );
-                    for (button, key, fallback, x) in [
-                        (GoldModalButton::Deposit, "UIIT_STT_DEPOSIT", "Store", 10.0),
-                        (GoldModalButton::Withdraw, "UIIT_STT_WITHDRAW", "Take", 85.0),
-                        (GoldModalButton::Cancel, "UIIT_CTL_CANCEL", "Cancel", 160.0),
-                    ] {
-                        panel
-                            .spawn((
-                                button,
-                                Button,
-                                Hovered::default(),
-                                abs_node((x, 76.0, 70.0, 24.0), s),
-                                ImageNode {
-                                    image: button_style.normal.clone(),
-                                    image_mode: NodeImageMode::Stretch,
-                                    ..default()
-                                },
-                                button_style.clone(),
-                            ))
-                            .observe(on_gold_modal_button)
-                            .with_children(|b| {
-                                b.spawn((
-                                    Text::new(ui_strings.get_or(key, fallback).to_string()),
-                                    text_font(8.0),
-                                    TextColor(Color::WHITE),
-                                    TextLayout::justify(Justify::Center),
-                                    Node {
-                                        position_type: PositionType::Absolute,
-                                        top: Val::Px(6.0 * s),
-                                        width: Val::Percent(100.0),
-                                        ..default()
-                                    },
-                                    Pickable::IGNORE,
-                                ));
-                            });
-                    }
-                });
-        });
-    if let Some(input) = input_entity {
-        focus.set(input, FocusCause::Navigated);
-    }
-}
-
-/// Parse the typed gold amount into [`GoldAmount`] (empty = 0).
-pub fn sync_gold_amount(
-    modal: Res<GoldModal>,
-    inputs: Query<&EditableText, With<GoldAmountInput>>,
-    mut amount: ResMut<GoldAmount>,
-) {
-    if !modal.open {
-        return;
-    }
-    let Ok(editable) = inputs.single() else {
-        return;
-    };
-    let parsed = editable
-        .value()
-        .to_string()
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(0);
-    if amount.0 != parsed {
-        amount.0 = parsed;
-    }
-}
-
-/// Store/Take send the 0x7034 gold ops (clamped to what the
-/// respective side actually holds); Cancel just closes.
-#[allow(clippy::too_many_arguments)]
-fn on_gold_modal_button(
-    activate: On<Activate>,
-    buttons: Query<&GoldModalButton>,
-    state: Res<StorageState>,
-    inventories: Query<&Inventory, With<Player>>,
-    conn: Query<&SilkroadConnection, With<AgentConnection>>,
-    amount: Res<GoldAmount>,
-    mut modal: ResMut<GoldModal>,
-    mut pending: ResMut<PendingStorageOp>,
-) {
-    let Ok(button) = buttons.get(activate.entity) else {
-        return;
-    };
-    if matches!(button, GoldModalButton::Cancel) {
-        modal.open = false;
-        return;
-    }
-    let Some(session) = &state.session else {
-        modal.open = false;
-        return;
-    };
-    let player_gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
-    let (amount, request) = match button {
-        GoldModalButton::Deposit => {
-            let amount = amount.0.min(player_gold);
-            (
-                amount,
-                InventoryOperationRequest::InventoryGoldToStorage {
-                    amount,
-                    npc_unique_id: session.npc_id,
-                },
-            )
-        }
-        GoldModalButton::Withdraw => {
-            let amount = amount.0.min(state.items.gold);
-            (
-                amount,
-                InventoryOperationRequest::StorageGoldToInventory {
-                    amount,
-                    npc_unique_id: session.npc_id,
-                },
-            )
-        }
-        GoldModalButton::Cancel => unreachable!(),
-    };
-    if amount == 0 {
-        info!("storage: gold amount is 0, nothing to send");
-        return;
-    }
-    modal.open = false;
-    let Ok(conn) = conn.single() else {
-        warn!("storage: no agent connection, dropping gold request");
-        return;
-    };
-    pending.0 = Some(match button {
-        GoldModalButton::Deposit => StorageOp::GoldDeposit,
-        GoldModalButton::Withdraw => StorageOp::GoldWithdraw,
-        GoldModalButton::Cancel => unreachable!(),
-    });
-    info!("storage: sending {:?}", request);
-    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
-        error!("network: failed to send storage gold request: {}", e.0);
-    }
-}
-
-/// The gold popup and carry are bound to the storage session.
-pub fn clear_modal_with_storage(
-    state: Res<StorageState>,
-    mut modal: ResMut<GoldModal>,
     mut carry: ResMut<StorageCarry>,
     mut commands: Commands,
 ) {
     if state.session.is_none() {
-        if modal.open {
-            modal.open = false;
-        }
         if let Some(data) = carry.0.take() {
             commands.entity(data.ghost).despawn();
         }
@@ -1161,6 +902,93 @@ mod test {
                 vanilla_y - game_window::CONTENT_TOP,
                 "y of vanilla {vanilla_y}"
             );
+        }
+    }
+
+    /// Boots the real window as an open storage session does, so the test sees
+    /// the entities `sync_storage_window` actually spawns.
+    fn storage_app() -> App {
+        let mut app = App::new();
+        // AssetPlugin needs the IO task pool and `App::new()` does not create
+        // it (see the same note in `inventory/ui.rs`).
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .init_resource::<ClientItemData>()
+        .init_resource::<ClientUiStrings>()
+        .insert_resource(FontAssets {
+            one: Handle::default(),
+            two: Handle::default(),
+            three: Handle::default(),
+            nine: Handle::default(),
+        })
+        .insert_resource(StorageState {
+            session: Some(crate::plugins::hud::storage::model::StorageSession {
+                npc: Entity::PLACEHOLDER,
+                npc_id: 0,
+                title: "Storage".into(),
+            }),
+            ..default()
+        });
+        app.world_mut().spawn(Camera2d);
+        app.world_mut()
+            .run_system_cached(sync_storage_window)
+            .expect("sync_storage_window failed");
+        app
+    }
+
+    /// Twin of `inventory/ui.rs`'s `every_child_of_a_slot_cell_is_unpickable`:
+    /// the cell must stay the entity the picking backend reports. Storage does
+    /// not read `Pointer<Over>.entity` today — it polls `Hovered`, which
+    /// bevy_picking defines as "hovering the entity **or any of its
+    /// descendants**" (`bevy_picking/src/hover.rs:319-326`), so a pickable
+    /// child would not break `track_storage_hover` the way it breaks the
+    /// inventory's `on_slot_over`. What it does break is everything that keys
+    /// off the hit entity itself: `on_storage_slot_press` is observed on the
+    /// cell, and `item_cell.rs` explicitly plans the next window as "one
+    /// observer" on the inventory's model. So pin the invariant here rather
+    /// than after a window has silently stopped reacting.
+    #[test]
+    fn every_child_of_a_storage_cell_is_unpickable() {
+        let mut app = storage_app();
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<StorageSlotCell>>();
+        let cells: Vec<Entity> = query.iter(app.world()).collect();
+        assert_eq!(
+            cells.len(),
+            GRID_COLS * GRID_ROWS,
+            "sync_storage_window did not build the 6x5 grid"
+        );
+
+        let mut stack: Vec<Entity> = cells
+            .iter()
+            .filter_map(|e| app.world().get::<Children>(*e))
+            .flat_map(|c| c.iter())
+            .collect();
+        // Vacuity guard, and the honest reason for it: a cell only gets
+        // children (icon, stack count, `+opt`) once itemdata resolves an icon
+        // path, and `ClientItemData`'s payload is private to
+        // `plugins::textdata` — a test can only build the empty table, so the
+        // grid here is legitimately childless. If that ever changes, this
+        // assert fires and the walk below becomes the real check instead of a
+        // test that passes on zero nodes.
+        assert!(
+            stack.is_empty(),
+            "storage cells gained children under an empty itemdata — extend \
+             this test's fixture so the Pickable walk is not vacuous"
+        );
+        while let Some(entity) = stack.pop() {
+            assert_eq!(
+                app.world().get::<Pickable>(entity).copied(),
+                Some(Pickable::IGNORE),
+                "{entity} under a storage cell steals the hover hit"
+            );
+            if let Some(children) = app.world().get::<Children>(entity) {
+                stack.extend(children.iter());
+            }
         }
     }
 

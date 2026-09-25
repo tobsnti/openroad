@@ -49,6 +49,7 @@ pub mod gauge;
 pub mod guild_storage;
 pub mod hitcount;
 pub mod inventory;
+pub mod item_cell;
 pub mod magic_state_board;
 pub mod main_popup;
 pub mod minimap;
@@ -509,7 +510,9 @@ mod test {
         // because the low-vitals overlays are authored TWICE at different sheet
         // sizes (the mini-info's 512x64 pair and the quick-party board's
         // 256x64 pair), so the tile arithmetic cannot be a constant in either.
-        const HELPERS: [&str; 9] = [
+        const HELPERS: [&str; 10] = [
+            // shared state, registered by the windows that publish it
+            "item_cell",
             "game_window",
             "modal_dialog",
             "world_anchor",

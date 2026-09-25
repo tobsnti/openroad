@@ -9,22 +9,27 @@
 //! (`0x30B7` action 3), a buy is a `0x70B4` whose effect is only ever applied
 //! from the `0xB0B4` ack, and the window closes on the `0xB0B5` leave ack.
 //!
+//! The enter **snapshot is wired**: `0xB0B3` is modelled since #759
+//! (`StallTalkResponse`), so entering a stall fills the grid, the greeting and
+//! the trading badge from the server instead of showing ten empty plates.
+//!
 //! Two honest gaps, both deliberate and neither invented around:
 //!
-//! * **The enter *snapshot* is not modelled.** The original fills the listing
-//!   from `0xB0B3` (`docs/re/systems/stall.md` §3 "Visit"), the response half
-//!   of the stall-talk pair that `packets/src/agent/stall.rs:20-22` puts out
-//!   of scope for this family. So a freshly entered stall renders its ten
-//!   empty vanilla plates until the first `0x30B7` action-3 refresh, and the
-//!   snapshot opcode is tracked in the wire remainder **#759**. Filling the
-//!   grid from a guessed layout is precisely what that ticket exists to stop.
+//! * **Asking to enter a stall** is `0x70B3`, a single `u32` unique id read out
+//!   of the original's stall-talk builder
+//!   (`packets/.../stall.rs::StallTalkRequest`).
+//!   The visitor path therefore has its first step: clicking a player who is
+//!   running a stall walks up and sends it
+//!   (`cursor/interactions/npcs.rs::approach_talk_target`, which is where the
+//!   original's own world-click branch lands), and this module's `0xB0B3`
+//!   handler opens the window on the answer.
 //! * **Buy carries no quantity.** `StallBuyRequest` is `{stall_slot: u8}` and
 //!   nothing else (`docs/net-stall-0x30B7.md` §0x70B4) — the row's own
-//!   quantity is what is bought. The price/quantity message box of
-//!   `docs/re/ui/hud-stall-window.md` §3h is therefore **not** wired here:
-//!   its binding is `[S]` (§9-U6/U7) and it has no field to fill on the wire.
+//!   quantity is what is bought. The original's price/quantity message box is
+//!   therefore **not** wired here: its binding to this window is unconfirmed
+//!   and it has no field to fill on the wire.
 //!
-//! Error feedback: `docs/re/systems/stall.md` carries go-sro's complete
+//! Error feedback: go-sro carries a complete
 //! 17-entry `StallErrorCode` table, which is the *enum names* — not localized
 //! sentences. We show the name and the code, and a code we do not have a name
 //! for shows the code alone. Writing an English sentence for an unnamed code
@@ -35,23 +40,23 @@ use bevy::ui_widgets::Activate;
 
 use packets::agent::stall::{
     StallBuyRequest, StallBuyResponse, StallEntityAction, StallItemRow, StallLeaveRequest,
-    StallLeaveResponse,
+    StallLeaveResponse, StallTalkResponse,
 };
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
-use crate::plugins::hud::stall::model::{StallRow, StallState};
+use crate::plugins::hud::stall::model::{StallRow, StallState, StallTradingState};
 use crate::plugins::hud::stall::ui::{StallSlot, STALL_SLOTS};
 use crate::plugins::hud::toast::{ShowToast, ToastKind};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::NetworkId;
+use crate::plugins::net::stall::StallOwner;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientTextNames};
 
 /// go-sro's `StallErrorCode` table, complete
-/// (`handler/stall/stall_handler.go:19-37`, transcribed in
-/// `docs/re/systems/stall.md` §3 "go-sro error table"). These are enum
-/// identifiers, not UI strings — see the module note.
+/// (`handler/stall/stall_handler.go:19-37`). These are enum identifiers, not UI
+/// strings — see the module note.
 const STALL_ERRORS: [(u16, &str); 17] = [
     (0x0005, "InvalidOperation"),
     (0x3C08, "InvalidPrice"),
@@ -107,8 +112,8 @@ pub fn buy_outcome(response: &StallBuyResponse) -> BuyOutcome {
 
 /// What a `0x30B7` means *for us*, given our own spawn id.
 ///
-/// The action-2/1 uid tail is `[S]` from SilkroadDoc-wiki (the original
-/// comments it out, `docs/net-stall-0x30B7.md` §0x30B7): the broadcast reaches
+/// The action-2/1 uid tail comes from the SilkroadDoc wiki — the original
+/// comments it out (`docs/net-stall-0x30B7.md` §0x30B7): the broadcast reaches
 /// every viewer, so the uid is the only thing that distinguishes "I entered"
 /// from "somebody else entered". Without it we would open the window for a
 /// stranger's footstep.
@@ -143,7 +148,7 @@ pub fn viewer_transition(
 /// Place wire rows into the ten grid slots by their own stall slot.
 ///
 /// Replaced wholesale, never diffed: type-2/3 and action-3 both re-send the
-/// **whole** list (`docs/re/systems/stall.md` §3), so a diff would keep a row
+/// **whole** list, so a diff would keep a row
 /// the server just dropped. A row outside the ten-slot capacity is reported
 /// rather than dropped silently — it would mean the capacity fact is wrong.
 pub fn rows_to_slots(
@@ -155,14 +160,14 @@ pub fn rows_to_slots(
         let index = row.item.slot as usize;
         let Some(cell) = slots.get_mut(index) else {
             warn!(
-                "stall: row in slot {} but the window holds {} — capacity fact refuted, \
-                 capture packet_dump/0x30B7.log",
+                "stall: row in slot {} but the window holds {} — capacity refuted",
                 row.item.slot, STALL_SLOTS
             );
             continue;
         };
         *cell = Some(StallRow {
             name: name_of(row.item.ref_id),
+            ref_id: row.item.ref_id,
             quantity: row.quantity,
             price: row.price,
         });
@@ -183,6 +188,86 @@ pub(crate) fn item_name(
         .and_then(|key| names.name(key))
         .map(str::to_string)
         .unwrap_or_else(|| format!("#{ref_id}"))
+}
+
+/// What a `0xB0B3` snapshot does to the window, decoded once so the branching
+/// is testable headless. `slots` is the caller's already-placed grid (the row
+/// decode needs an item resolver, which a pure function must not carry) and
+/// `title` is what the world already knows about this stall from `0x30B8` /
+/// the spawn embed — the snapshot itself carries no title, only the owner's
+/// uid, note and rows.
+///
+/// Returns the error code of a refused talk.
+pub fn apply_talk_response(
+    state: &mut StallState,
+    response: &StallTalkResponse,
+    slots: Option<Vec<Option<StallRow>>>,
+    title: String,
+) -> Option<u16> {
+    match response {
+        StallTalkResponse::Failure { error_code, .. } => Some(*error_code),
+        StallTalkResponse::Success {
+            message, is_open, ..
+        } => {
+            state.open = true;
+            // Never ours: `0xB0B3` is the answer to entering somebody else's
+            // stall. Our own opens on `0xB0B1` (`owner.rs`).
+            state.owner = false;
+            state.title = title;
+            state.greeting = message.clone();
+            state.trading = if *is_open {
+                StallTradingState::Open
+            } else {
+                StallTradingState::Modifying
+            };
+            // A tail that did not decode leaves the grid honestly empty rather
+            // than showing the previous stall's rows.
+            state.slots = slots.unwrap_or_else(|| vec![None; STALL_SLOTS]);
+            None
+        }
+    }
+}
+
+/// `0xB0B3` — the snapshot that opens a visitor's stall window.
+pub fn on_stall_talk_response(
+    mut reader: MessageReader<StallTalkResponse>,
+    item_data: Res<ClientItemData>,
+    names: Res<ClientTextNames>,
+    stalls: Query<(&NetworkId, &StallOwner)>,
+    mut state: ResMut<StallState>,
+    mut toasts: MessageWriter<ShowToast>,
+) {
+    for response in reader.read() {
+        let (slots, title) = match response {
+            StallTalkResponse::Success { unique_id, .. } => {
+                let slots = response.snapshot(&*item_data).map(|snapshot| {
+                    rows_to_slots(&snapshot.rows, |ref_id| {
+                        item_name(&item_data, &names, ref_id)
+                    })
+                });
+                if slots.is_none() {
+                    warn!("stall: 0xB0B3 tail did not decode — grid left empty");
+                }
+                let title = stalls
+                    .iter()
+                    .find(|(id, _)| id.0 == *unique_id)
+                    .map(|(_, owner)| owner.title.clone())
+                    .unwrap_or_default();
+                (slots, title)
+            }
+            StallTalkResponse::Failure { .. } => (None, String::new()),
+        };
+        if let Some(code) = apply_talk_response(&mut state, response, slots, title) {
+            let text = stall_error_text(code);
+            warn!("stall: could not enter the stall — {text}");
+            toasts.write(ShowToast::new(ToastKind::Warning, text));
+            continue;
+        }
+        info!(
+            "stall: entered a stall, {} row(s) listed (0xB0B3)",
+            state.slots.iter().filter(|s| s.is_some()).count()
+        );
+    }
 }
 
 /// `0x30B7` — a viewer entered or left, or a purchase went through.
@@ -221,9 +306,12 @@ pub fn on_stall_entity_action(
             Some(ViewerTransition::WeEntered) => {
                 info!("stall: entered a stall (0x30B7 action 2)");
                 state.open = true;
-                // The listing arrives with the unmodelled 0xB0B3 snapshot
-                // (#759); until then the grid is honestly empty.
-                state.slots = vec![None; STALL_SLOTS];
+                // The listing belongs to the 0xB0B3 snapshot, which is the
+                // other half of the same entry and may arrive either side of
+                // this broadcast. Clearing the grid here would blank a
+                // snapshot that already landed, so the broadcast only opens
+                // the window; an entry whose snapshot never came shows the
+                // empty plates it honestly has.
             }
             Some(ViewerTransition::WeLeft) => {
                 info!("stall: left the stall (0x30B7 action 1)");
@@ -243,7 +331,7 @@ pub fn on_stall_entity_action(
 
 /// `0xB0B4` — the buy ack. Success is *not* applied to the grid here: the
 /// server re-sends the whole listing on `0x30B7` action 3, and the item itself
-/// arrives over the normal inventory paths (`docs/re/systems/stall.md` §3).
+/// arrives over the normal inventory paths.
 pub fn on_stall_buy_response(
     mut reader: MessageReader<StallBuyResponse>,
     mut toasts: MessageWriter<ShowToast>,
@@ -290,8 +378,10 @@ pub fn on_stall_leave_response(
     }
 }
 
-/// A click on a listed row buys it. There is no confirm dialog: the price /
-/// quantity message box of `docs/re/ui/hud-stall-window.md` §3h is `[S]` and
+/// A click on a listed row buys it — or, in our own stall, edits it: left
+/// takes the row off sale (type 3), right re-prices it (type 1), see below.
+/// There is no confirm dialog for the BUY: the original's price/quantity
+/// message box has no confirmed binding to this window and
 /// `0x70B4` has no field it could fill (see the module note), so inventing one
 /// would put a guessed dialog between the player and a modelled request.
 ///
@@ -304,24 +394,49 @@ pub fn on_stall_slot_press(
     cells: Query<&StallSlot>,
     state: Res<StallState>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    item_data: Res<ClientItemData>,
+    names: Res<ClientTextNames>,
+    mut modal: ResMut<super::stock::StockModal>,
 ) {
-    if press.event.button != PointerButton::Primary {
-        return;
-    }
     let Ok(cell) = cells.get(press.entity) else {
         return;
     };
     if state.slots.get(cell.0).and_then(Option::as_ref).is_none() {
         return;
     }
-    // You cannot buy from your own stall: for the owner the same click belongs
-    // to the stocking path (#781), which is not wired yet.
-    if state.owner {
-        return;
-    }
     let Ok(slot) = u8::try_from(cell.0) else {
         return;
     };
+    // Owner, right button: re-price the row (`0x70BA` type 1). It reopens the
+    // SAME price box the drop path uses, on the row's current numbers
+    // (`stock::reprice_prompt`).
+    //
+    // Stated deviation (ADR-0009): the original's gesture for this is unknown,
+    // which is also why the box's binding to this window is unconfirmed.
+    // Left-click on our own row is already the take-off-sale path (type 3) and
+    // is not moved; the second action therefore takes the tree's existing
+    // secondary gesture (`hud/magic_state_board.rs:239`,
+    // `skill_window/ui.rs:1786`).
+    if state.owner && press.event.button == PointerButton::Secondary {
+        if let Some(prompt) = super::stock::reprice_prompt(&state, slot, |ref_id| {
+            item_name(&item_data, &names, ref_id)
+        }) {
+            info!("stall: re-pricing slot {slot} (0x70BA type 1)");
+            modal.prompt = Some(prompt);
+        }
+        return;
+    }
+    if press.event.button != PointerButton::Primary {
+        return;
+    }
+    // You cannot buy from your own stall: for the owner the same click is the
+    // stocking path's other half — it takes the row back off sale (`0x70BA`
+    // type 3, `stall/stock.rs`).
+    if state.owner {
+        info!("stall: taking slot {slot} off sale (0x70BA type 3)");
+        super::stock::send_remove(&conn, slot);
+        return;
+    }
     info!("stall: buying slot {slot} (0x70B4)");
     send_buy(&conn, slot);
 }

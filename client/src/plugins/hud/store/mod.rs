@@ -16,7 +16,7 @@ impl Plugin for StorePlugin {
             .init_resource::<model::RepairMode>()
             .init_resource::<model::PendingRepair>()
             .init_resource::<model::RepairConfirm>()
-            .init_resource::<model::StoreHoveredGood>()
+            .init_resource::<model::StoreMsgBox>()
             .init_resource::<ui::QuantityModal>()
             .init_resource::<ui::ModalAmount>()
             .init_resource::<ui::StoreCarry>()
@@ -32,7 +32,6 @@ impl Plugin for StorePlugin {
                     model::clear_repair_mode_with_store,
                     ui::sync_store_window,
                     ui::update_store_detail,
-                    ui::track_store_hover,
                     ui::refresh_store_gold,
                     ui::sell_drop_on_store,
                     ui::update_store_ghost,
@@ -40,7 +39,8 @@ impl Plugin for StorePlugin {
                     ui::sync_quantity_modal,
                     ui::sync_modal_amount,
                     ui::clear_modal_with_store,
-                    ui::sync_repair_confirm,
+                    ui::translate_repair_confirm,
+                    ui::sync_store_msgbox,
                 )
                     .run_if(super::hud_scenes),
             );

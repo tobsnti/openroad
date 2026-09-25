@@ -2234,6 +2234,8 @@ mod tests {
             y: 0,
             z: 100,
             angle: 0,
+            // Only the destination half is exercised here.
+            source: None,
         });
         app.update();
         assert!(

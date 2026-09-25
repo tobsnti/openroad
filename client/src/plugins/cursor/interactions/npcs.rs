@@ -14,12 +14,14 @@ use bevy::picking::mesh_picking::ray_cast::RayCastBackfaces;
 use bevy::prelude::*;
 
 use packets::agent::prelude::{CloseTalkRequest, SelectEntityRequest, TalkRequest};
+use packets::agent::stall::StallTalkRequest;
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::entity_select::{HitProxyVolume, SelectedEntity};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{GateVolumeNeeded, NetworkId};
+use crate::plugins::net::stall::StallOwner;
 use crate::plugins::player::{Player, PlayerCommands, PlayerMoveOrder};
 use crate::scenes::SceneState;
 
@@ -162,6 +164,7 @@ fn approach_talk_target(
     mut player_commands: ResMut<PlayerCommands>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     mut started: MessageWriter<TalkStarted>,
+    stall_owners: Query<(), With<StallOwner>>,
 ) {
     let Some(npc) = pending.0 else {
         return;
@@ -197,6 +200,26 @@ fn approach_talk_target(
         warn!("npc talk: no agent connection, dropping talk request");
         return;
     };
+    // A stall owner is not an NPC: the approach ends in ONE packet, `0x70B3`
+    // stall-talk, and the window opens on the `0xB0B3` snapshot
+    // (`hud/stall/net.rs::on_stall_talk_response`). The original's world-click
+    // handler does the same in one function: walk up first, then send the
+    // stall-talk builder once in range. Deliberate deviation (ADR-0009): the
+    // standoff stays [`TALK_GAP_STOP`] rather than the original's `100.0`,
+    // whose unit is not established.
+    if stall_owners.contains(npc) {
+        info!(
+            "stall: requesting to enter the stall of uid {} (0x70B3)",
+            network_id.0
+        );
+        let packet = Packet::from(StallTalkRequest {
+            unique_id: network_id.0,
+        });
+        if let Err(e) = conn.get_sender().send(packet.into()) {
+            error!("network: failed to send stall talk request: {}", e.0);
+        }
+        return;
+    }
     // Three packets back-to-back on the ordered stream (capture-informed):
     // a close first — the server answers `02 0b1c` ("session already open")
     // when a previous talk was never properly closed — then a re-select so

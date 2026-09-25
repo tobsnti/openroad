@@ -9,8 +9,8 @@
 //! parked in [`RequestedStallTitle`] until the create ack accepts it, because
 //! `0xB0B1` does not echo it back.
 //!
-//! **Entry point: the `/Stall` chat command.** `docs/re/systems/stall.md` §3
-//! "Open (seller)" gives create as `0x70B1{title}` and nothing else, and the
+//! **Entry point: the `/Stall` chat command.** The seller's open is
+//! `0x70B1{title}` and nothing else, and the
 //! original's own vocabulary already has the command
 //! (`UIIT_STT_CHAT_COMMAND_STREETSTORE` = `/Stall`, textuisystem L669), which
 //! `chat/input.rs` listed as unsupported purely because no request path
@@ -21,9 +21,8 @@
 //! **Not here, and named rather than guessed:** stocking (add / re-price /
 //! remove, `0x70BA` types 2/1/3) and the note/title *edit* buttons. All four
 //! need a text-or-price entry box, and the only candidate in the data is
-//! `MsgBoxStoreMoney` (`docs/re/ui/hud-stall-window.md` §3h), whose binding to
-//! this window is explicitly `[S]` and refuted as a uniqueness argument in
-//! §9-U6/U7. Wiring an invented dialog into the *money* path is the one place
+//! `MsgBoxStoreMoney`, whose binding to this window is unconfirmed.
+//! Wiring an invented dialog into the *money* path is the one place
 //! in this window where a guess would cost the player gold. The acks for all
 //! of them are implemented, so a stall stocked from anywhere else still
 //! renders correctly here.
@@ -66,7 +65,7 @@ pub struct OpenStallCommand {
 pub struct RequestedStallTitle(pub Option<String>);
 
 /// `UIIT_STT_STALL_DEFAULT_TITLE` is `[%s]'s stall.`
-/// (`docs/re/ui/hud-stall-window.md` §3c) — the `%s` is the owner's name.
+/// — the `%s` is the owner's name.
 const DEFAULT_TITLE_KEY: &str = "UIIT_STT_STALL_DEFAULT_TITLE";
 const DEFAULT_TITLE_FALLBACK: &str = "[%s]'s stall.";
 
@@ -126,8 +125,7 @@ pub fn on_stall_create_response(
         state.open = true;
         state.owner = true;
         // A fresh stall starts in the owner's edit state: the original follows
-        // create with the note packet and the type-5 "go on sale" only later
-        // (`docs/re/systems/stall.md` §3 "Open (seller)").
+        // create with the note packet and the type-5 "go on sale" only later.
         state.trading = StallTradingState::Modifying;
         state.title = title;
         state.slots = vec![None; STALL_SLOTS];
@@ -187,8 +185,7 @@ pub fn apply_update_ack(
             if response.result != 1 {
                 return Some(*error_code);
             }
-            // Types 2 and 3 re-send the WHOLE list, so it replaces the grid
-            // (`docs/re/systems/stall.md` §3).
+            // Types 2 and 3 re-send the WHOLE list, so it replaces the grid.
             if let Some(rows) = rows {
                 state.slots = rows;
             } else {
@@ -460,12 +457,14 @@ mod test {
         let mut state = owned_stall();
         state.slots[0] = Some(StallRow {
             name: "old".into(),
+            ref_id: 3800,
             quantity: 1,
             price: 10,
         });
         let mut replacement = vec![None; STALL_SLOTS];
         replacement[4] = Some(StallRow {
             name: "new".into(),
+            ref_id: 3800,
             quantity: 3,
             price: 99,
         });
@@ -493,6 +492,7 @@ mod test {
         let mut state = owned_stall();
         state.slots[2] = Some(StallRow {
             name: "sword".into(),
+            ref_id: 3800,
             quantity: 1,
             price: 10,
         });

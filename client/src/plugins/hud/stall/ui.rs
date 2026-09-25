@@ -8,7 +8,7 @@
 //! `GDR_STALL_INTERNAL_FRAME` is `11,39,447,440`, so its right edge is
 //! `11+447 = 458 = 467-9` and its bottom `39+440 = 479 = 490-11`, i.e. the
 //! numbers are measured from the *window's* top-left, not from a content
-//! origin (`docs/re/ui/hud-stall-window.md` §3d). Applying this lane's usual
+//! origin. Applying this lane's usual
 //! `CONTENT_TOP` convention would shift the whole window down by 36 px, which
 //! the unit doc names as the single most likely silent error here. So the
 //! shell is spawned with `content_at: (0, 0)` and every constant below is the
@@ -22,8 +22,7 @@
 //!   manager as `204 + 15 + 204`; the unreferenced row plates
 //!   `stl_slot_02/05.ddj` are `205x41` opaque, i.e. `204+1` by `40+1` in the
 //!   shared-border idiom; and the row template `ifstallslot.txt` fits inside
-//!   204x40 (max extents 200 and 38). Ten slots is also the wire capacity
-//!   (`docs/re/systems/stall.md:78-80`).
+//!   204x40 (max extents 200 and 38). Ten slots is also the wire capacity.
 //! * **The row plate is drawn code-side.** `ifstallslot.txt` declares no row
 //!   background, which is exactly why `stl_slot_02/05.ddj` are referenced by
 //!   no resinfo file at all. Drawing them is a sourced-from-art decision, not
@@ -49,6 +48,7 @@
 //! `UIIT_STT_STALL_MODIFYING`. Both strings ship, so the state reaches a
 //! screen reader as text rather than only as an icon swap.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 
@@ -202,12 +202,14 @@ pub fn spawn_stall_window(
         game_window::GameWindowStyle::default(),
     );
     // No `PersistedWindow`: `wndpos.dat` has exactly ten slots and none of
-    // them is the stall (`docs/re/ui/wndpos-persistence.md` §2 — the registry
-    // row it *does* carry is `GDR_STALL`'s ginterface id, not a file slot), so
-    // opting in would invent an eleventh slot.
+    // them is the stall (the registry row it *does* carry is `GDR_STALL`'s
+    // ginterface id, not a file slot), so opting in would invent an eleventh
+    // slot.
     commands
+        // `Hovered` so a stocking drop can test "is the pointer over the
+        // stall" (`stock.rs`), the storage window's precedent (`storage/ui.rs`).
         .entity(window.root)
-        .insert((StallWindowRoot, GlobalZIndex(25)));
+        .insert((StallWindowRoot, GlobalZIndex(25), Hovered::default()));
     commands
         .entity(window.expect_close_button())
         .observe(super::net::on_stall_close_button);
@@ -346,12 +348,15 @@ pub fn refresh_stall_window(
                 ));
                 // Only a listed row is a target: an empty plate that swallows
                 // clicks would send buys for slots the stall does not sell
-                // (#780).
+                // (#780). An OWNER's empty plate stays pickable without an
+                // observer — it answers no click, but it is the drop target a
+                // stocking drag aims at (`stock.rs`), which needs `Hovered`.
                 if occupied {
                     cell.observe(super::net::on_stall_slot_press);
-                } else {
+                } else if !state.owner {
                     cell.insert(Pickable::IGNORE);
                 }
+                cell.insert(Hovered::default());
                 if let Some(row) = state.slots.get(index).and_then(Option::as_ref) {
                     window.spawn(label(
                         row.name.clone(),

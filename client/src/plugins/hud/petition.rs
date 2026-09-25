@@ -42,9 +42,9 @@ use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::ingame::{
-    GameInvite, InvitePetition, InviteResponse, PETITION_ACADEMY, PETITION_EXCHANGE,
-    PETITION_GUILD, PETITION_PARTY_CREATION, PETITION_PARTY_INVITATION, PETITION_RESURRECTION,
-    PETITION_UNION,
+    GameInvite, InvitePetition, InviteResponse, PARTY_DECLINE_CREATION, PARTY_DECLINE_INVITATION,
+    PETITION_ACADEMY, PETITION_EXCHANGE, PETITION_GUILD, PETITION_PARTY_CREATION,
+    PETITION_PARTY_INVITATION, PETITION_RESURRECTION, PETITION_UNION,
 };
 use packets::Packet;
 
@@ -499,8 +499,9 @@ fn on_petition_answer(
 pub fn petition_response(petition: u8, accept: bool) -> GameInvite {
     GameInvite::Response(match (accept, petition) {
         (true, _) => InviteResponse::Accept,
-        (false, PETITION_PARTY_CREATION | PETITION_PARTY_INVITATION) => {
-            InviteResponse::DeclineParty
+        (false, PETITION_PARTY_CREATION) => InviteResponse::DeclineParty(PARTY_DECLINE_CREATION),
+        (false, PETITION_PARTY_INVITATION) => {
+            InviteResponse::DeclineParty(PARTY_DECLINE_INVITATION)
         }
         (false, _) => InviteResponse::Decline,
     })
@@ -599,9 +600,11 @@ mod test {
             let (opcode, body) = Packet::from(invite).into_serialize();
             (opcode, body.to_vec())
         };
+        // The two party arms differ from each other: the original's two
+        // decline builders write 0x2C17 (invitation) and 0x2C0C (creation).
         assert_eq!(
             bytes(petition_response(PETITION_PARTY_INVITATION, false)),
-            (0x3080, vec![0x02, 0x0C, 0x2C])
+            (0x3080, vec![0x02, 0x17, 0x2C])
         );
         assert_eq!(
             bytes(petition_response(PETITION_PARTY_CREATION, false)),
@@ -691,7 +694,9 @@ mod test {
         );
         assert_eq!(
             auto_refusal(PETITION_PARTY_INVITATION, &off(2002)).map(bytes),
-            Some(vec![0x02, 0x0C, 0x2C])
+            // Per-arm decline: the invitation builder writes 0x2C17,
+            // creation 0x2C0C.
+            Some(vec![0x02, 0x17, 0x2C])
         );
         assert_eq!(
             auto_refusal(PETITION_EXCHANGE, &off(2003)).map(bytes),

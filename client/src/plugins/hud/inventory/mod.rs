@@ -3,9 +3,11 @@
 //! drag-and-drop moves confirmed by the server (0x7034/0xB034). Layout
 //! hand-transcribed from resinfo/ifinventory.txt and resinfo/ifequipment.txt.
 
+pub mod avatar;
 pub mod drop_item;
 pub mod model;
 pub mod paperdoll;
+pub mod split;
 pub mod tooltip;
 pub mod ui;
 pub mod use_on_item;
@@ -21,6 +23,11 @@ impl Plugin for InventoryPlugin {
         use crate::scenes::SceneState;
 
         app.init_resource::<model::InventoryState>()
+            .init_resource::<split::SplitPrompt>()
+            .init_resource::<split::SplitAmount>()
+            // the tooltip renders it, so the tooltip's plugin guarantees it
+            // exists — every publishing window only writes to it
+            .init_resource::<crate::plugins::hud::item_cell::HoveredItem>()
             .init_resource::<paperdoll::PaperDollYaw>()
             .init_resource::<use_on_item::PendingItemUse>()
             .init_resource::<use_on_item::UseOnItemConfirm>()
@@ -39,6 +46,10 @@ impl Plugin for InventoryPlugin {
                 OnExit(SceneState::WorldSandbox),
                 ui::cleanup_inventory_window,
             )
+            // reaps only entities that already carry the marker, so it needs
+            // no scene gate of its own (same pattern as the store/storage
+            // modals)
+            .add_systems(PostUpdate, split::despawn_closing_split)
             .add_systems(
                 Update,
                 // Grouped only because Bevy implements the system-tuple traits
@@ -82,15 +93,23 @@ impl Plugin for InventoryPlugin {
                             .after(crate::plugins::hud::storage::ui::deposit_drop_on_storage)
                             .after(crate::plugins::hud::store::ui::sell_drop_on_store)
                             .after(crate::plugins::hud::alchemy::ui::place_drop_on_alchemy)
-                            .after(crate::plugins::hud::alchemy::grant::place_drop_on_grant),
+                            .after(crate::plugins::hud::alchemy::grant::place_drop_on_grant)
+                            .after(crate::plugins::hud::exchange::ui::stage_drop_on_exchange)
+                            .after(crate::plugins::hud::stall::stock::stock_drop_on_stall),
                         drop_item::on_ground_drop_release.after(drop_item::detect_drop_on_nothing),
                         drop_item::sync_drop_confirm,
                         drop_item::cancel_drop_confirm,
                     ),
-                    // Its own group: the first is at Bevy's 20-system tuple
-                    // limit and the second is the drop-to-ground flow, which
-                    // this has nothing to do with.
-                    (model::predict_ammo_consumption,),
+                    // Its own group: the outer tuple is at Bevy's 20-entry
+                    // limit, and the drop-to-ground flow above is unrelated to
+                    // either of these.
+                    (
+                        model::predict_ammo_consumption,
+                        // the MsgBoxDivideCount stack-split prompt (#139b)
+                        split::sync_split_modal,
+                        split::sync_split_amount,
+                        split::close_split_with_window,
+                    ),
                 )
                     .run_if(super::hud_scenes.or_else(in_state(SceneState::WorldSandbox))),
             );

@@ -300,6 +300,77 @@ impl From<MovementRequest> for Bytes {
     }
 }
 
+/// 0x7158 kind 1 — persist one quickslot of the under-bar.
+///
+/// `0x7158` is kind-discriminated: a leading `u8` picks between the quickslot
+/// save (kind 1, built by the original's under-bar code) and the auto-potion
+/// settings (kind 2). The kind-1 body is `u8 slot_index, u8 content_kind,
+/// u32 value`.
+///
+/// Without this packet a quickslot assignment stays in client memory only, so
+/// every relog hands the player a stale bar. `content_kind` is the one field
+/// the original names but does not decode; the client sends what it knows the
+/// slot holds — see `QuickSlotContent`.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct QuickSlotSaveRequest {
+    pub slot_index: u8,
+    pub content: QuickSlotContent,
+    /// Skill or item ref id; `0` clears the slot.
+    pub value: u32,
+}
+
+/// What a quickslot holds. The numeric values are the *client's* reading of
+/// `content_kind` and are unconfirmed: they are what this client sends, and a
+/// server's answer is what would confirm or correct them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickSlotContent {
+    Empty = 0,
+    Skill = 1,
+    Item = 2,
+}
+
+impl From<QuickSlotSaveRequest> for Bytes {
+    fn from(p: QuickSlotSaveRequest) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(1); // kind 1 = quickslot-bar save
+        buf.put_u8(p.slot_index);
+        buf.put_u8(p.content as u8);
+        buf.put_u32_le(p.value);
+        buf.freeze()
+    }
+}
+
+impl TryFrom<Bytes> for QuickSlotSaveRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        let mut r = Reader::new(&value);
+        let kind = r.u8()?;
+        if kind != 1 {
+            return Err(SerializationError::UnknownVariation(
+                kind as usize,
+                "0x7158 kind (1 = quickslot save)",
+            ));
+        }
+        let slot_index = r.u8()?;
+        let content = match r.u8()? {
+            0 => QuickSlotContent::Empty,
+            1 => QuickSlotContent::Skill,
+            2 => QuickSlotContent::Item,
+            other => {
+                return Err(SerializationError::UnknownVariation(
+                    other as usize,
+                    "0x7158 content_kind",
+                ));
+            }
+        };
+        Ok(QuickSlotSaveRequest {
+            slot_index,
+            content,
+            value: r.u32()?,
+        })
+    }
+}
+
 impl TryFrom<Bytes> for MovementRequest {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
@@ -315,9 +386,25 @@ impl TryFrom<Bytes> for MovementRequest {
     }
 }
 
-/// 0xB021 — server → client movement update. We surface `unique_id` + the
-/// destination (or `angle` when it's a turn-in-place); the trailing source
-/// position is parsed to stay in sync but not exposed.
+/// Where an entity *is* when a movement starts — the optional tail of 0xB021.
+///
+/// This is the only packet that states an entity's current position between
+/// spawns: the destination says where it is going, and everything in between is
+/// interpolation. A consumer that tracks positions (the headless bot walks by
+/// them, and the GUI interpolates from them) needs the start point, so it is
+/// surfaced rather than parsed and dropped.
+#[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, PartialEq)]
+pub struct MovementSource {
+    pub region: u16,
+    pub x: i32,
+    /// Height is a plain `f32` here, not a region-scaled coordinate.
+    pub y: f32,
+    pub z: i32,
+}
+
+/// 0xB021 — server → client movement update. We surface `unique_id`, the
+/// destination (or `angle` when it's a turn-in-place) and the optional source
+/// position the update started from.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct MovementResponse {
     pub unique_id: u32,
@@ -329,6 +416,9 @@ pub struct MovementResponse {
     pub z: i32,
     /// Valid when `!has_destination`: heading.
     pub angle: u16,
+    /// Where the entity stood when this update was issued, when the server
+    /// included it.
+    pub source: Option<MovementSource>,
 }
 
 impl TryFrom<Bytes> for MovementResponse {
@@ -345,6 +435,7 @@ impl TryFrom<Bytes> for MovementResponse {
             y: 0,
             z: 0,
             angle: 0,
+            source: None,
         };
         if has_destination {
             out.region = r.u16()?;
@@ -357,10 +448,11 @@ impl TryFrom<Bytes> for MovementResponse {
         }
         // Optional source position: region, X (short/int), Y (always f32), Z.
         if matches!(r.opt_u8(), Some(1)) {
-            let src_region = r.u16()?;
-            let _ = r.coord(src_region)?;
-            let _ = r.f32()?;
-            let _ = r.coord(src_region)?;
+            let region = r.u16()?;
+            let x = r.coord(region)?;
+            let y = r.f32()?;
+            let z = r.coord(region)?;
+            out.source = Some(MovementSource { region, x, y, z });
         }
         Ok(out)
     }
@@ -378,7 +470,24 @@ impl From<MovementResponse> for Bytes {
             buf.put_u8(1); // moving
             buf.put_u16_le(p.angle);
         }
-        buf.put_u8(0); // has_source = 0
+        match p.source {
+            Some(src) => {
+                buf.put_u8(1);
+                buf.put_u16_le(src.region);
+                // X and Z follow the region's coordinate rule; Y is always f32
+                // here, which is why this cannot go through `put_coords`.
+                if is_dungeon(src.region) {
+                    buf.put_i32_le(src.x);
+                    buf.put_f32_le(src.y);
+                    buf.put_i32_le(src.z);
+                } else {
+                    buf.put_i16_le(src.x as i16);
+                    buf.put_f32_le(src.y);
+                    buf.put_i16_le(src.z as i16);
+                }
+            }
+            None => buf.put_u8(0),
+        }
         buf.freeze()
     }
 }
@@ -971,6 +1080,12 @@ pub enum ActionCommand {
     Attack(ActionTarget),
     #[sro_packet(value = 2)]
     Pickup(ActionTarget),
+    /// Follow the target ("auto trace"). The action window's `CommandID` 1003
+    /// arm opens 0x7074 and writes `01 03 01 <u32 uid>` — the execute flag,
+    /// this discriminant, the entity-target flag and the current target's
+    /// unique id. It is the only 0x7074 arm in that dispatcher.
+    #[sro_packet(value = 3)]
+    Trace(ActionTarget),
     #[sro_packet(value = 4)]
     CastSkill {
         ref_skill_id: u32,
@@ -987,18 +1102,86 @@ pub enum ActionTarget {
     Entity { unique_id: u32 },
 }
 
-/// Action error codes for [`ObjectActionResponse`] / [`ObjectActionUpdate`]
-/// failures, as vSRO 1.188 defines them.
+// Action error codes seen in [`ObjectActionResponse`] / [`ObjectActionUpdate`]
+// failures — the original's **family-4 notice ids**, not small ordinals.
+//
+// The failure field is a `u16` that the original hands to its notice
+// dispatcher as `(family = 4, code)`, and that dispatcher's code→text-id table
+// covers exactly `0x3003 ..= 0x3048`, so every legal code is `0x30xx`. The two
+// constants that used to stand here — skrillax's `PerformActionError` values
+// `0x06`/`0x07` — were these same two errors with the family nibble sheared
+// off and could therefore never match a live code.
+//
+// The text ids are the original's own `UIIT_SKILL_USE_FAIL_*` keys
+// (textuisystem.txt L1598-1610, L1722-1726). Codes such as `0x3006`, `0x300F`
+// and `0x3010` occur in normal play.
+//
+// Only the codes whose meaning is established are named here; anything else is
+// passed through as a number by [`action_error_text_key`] rather than guessed
+// at.
+/// skill-id lookup failed (`UIIT_SKILL_USE_FAIL_NOTLEARN`).
+pub const ACTION_ERROR_NOT_LEARNED: u16 = 0x3003;
+/// MP cost above current MP (`..._NOTENOUGHMP`).
+pub const ACTION_ERROR_NOT_ENOUGH_MP: u16 = 0x3004;
+/// reuse delay still running (`..._TIMEDELAY_COOL_TIME`).
+pub const ACTION_ERROR_COOLDOWN: u16 = 0x3005;
+/// target legality / line-of-sight test (`..._WRONGTARGET`).
+pub const ACTION_ERROR_INVALID_TARGET: u16 = 0x3006;
+/// The original's range check — out of range (`..._WRONGDISTANCE`).
+pub const ACTION_ERROR_INVALID_DISTANCE: u16 = 0x3007;
+/// character level below the skill's requirement
+/// (`..._NOTENOUGHLEVEL`).
+pub const ACTION_ERROR_NOT_ENOUGH_LEVEL: u16 = 0x3008;
+/// buff overlap (`..._OVERLAP`).
+pub const ACTION_ERROR_OVERLAP: u16 = 0x300C;
+/// equipped weapon class ≠ required (`..._WRONGWEAPON`).
+pub const ACTION_ERROR_WRONG_WEAPON: u16 = 0x300D;
+/// ammo missing or of the wrong kind (`..._RUNOUT_AMMO`).
+pub const ACTION_ERROR_NO_AMMO: u16 = 0x300E;
+/// weapon durability 0 / broken (`..._BROKEN_WEAPON`).
 ///
-/// ⚠️ These are **not** the codes this server sends. The original reads the
-/// failure field as a `u16` and hands it straight to its message-box helper,
-/// and the values on this wire are `0x3006`, `0x3010` (0xB070) and `0x4004`
-/// (0xB074) — string/notice ids, not small ordinals. The low byte of `0x3006`
-/// coinciding with `0x06` here is suggestive but **UNVERIFIED**; nothing maps
-/// the two encodings yet, so these two constants are reference only and no
-/// code compares against them.
-pub const ACTION_ERROR_INVALID_TARGET: u16 = 0x06;
-pub const ACTION_ERROR_INVALID_DISTANCE: u16 = 0x07;
+/// This is the code (12303) a 0x7074 attack comes back with against a living,
+/// selectable target when the attacker carries no usable weapon. It is the
+/// broken- or missing-weapon gate, which fits an unequipped clientless bot and
+/// does *not* mean "the target expired".
+pub const ACTION_ERROR_BROKEN_WEAPON: u16 = 0x300F;
+/// navmesh ray caster→target fails (`..._PATH_INTERRUPTED`).
+pub const ACTION_ERROR_PATH_INTERRUPTED: u16 = 0x3010;
+/// The original's resurrection check — resurrection skill level below the target's level
+/// (`..._RESURRECT`).
+pub const ACTION_ERROR_RESURRECT: u16 = 0x3012;
+/// HP cost above current HP (`..._NOTENOUGHHP`).
+pub const ACTION_ERROR_NOT_ENOUGH_HP: u16 = 0x3013;
+
+/// The original's `UIIT_SKILL_USE_FAIL_*` textuisystem key for a family-4
+/// action error, or `None` for a code whose meaning is not established — the
+/// caller then shows the raw number instead of inventing a meaning.
+pub fn action_error_text_key(code: u16) -> Option<&'static str> {
+    Some(match code {
+        ACTION_ERROR_NOT_LEARNED => "UIIT_SKILL_USE_FAIL_NOTLEARN",
+        ACTION_ERROR_NOT_ENOUGH_MP => "UIIT_SKILL_USE_FAIL_NOTENOUGHMP",
+        ACTION_ERROR_COOLDOWN => "UIIT_SKILL_USE_FAIL_TIMEDELAY_COOL_TIME",
+        ACTION_ERROR_INVALID_TARGET => "UIIT_SKILL_USE_FAIL_WRONGTARGET",
+        ACTION_ERROR_INVALID_DISTANCE => "UIIT_SKILL_USE_FAIL_WRONGDISTANCE",
+        ACTION_ERROR_NOT_ENOUGH_LEVEL => "UIIT_SKILL_USE_FAIL_NOTENOUGHLEVEL",
+        ACTION_ERROR_OVERLAP => "UIIT_SKILL_USE_FAIL_OVERLAP",
+        ACTION_ERROR_WRONG_WEAPON => "UIIT_SKILL_USE_FAIL_WRONGWEAPON",
+        ACTION_ERROR_NO_AMMO => "UIIT_SKILL_USE_FAIL_RUNOUT_AMMO",
+        ACTION_ERROR_BROKEN_WEAPON => "UIIT_SKILL_USE_FAIL_BROKEN_WEAPON",
+        ACTION_ERROR_PATH_INTERRUPTED => "UIIT_SKILL_USE_FAIL_PATH_INTERRUPTED",
+        ACTION_ERROR_RESURRECT => "UIIT_SKILL_USE_FAIL_RESURRECT",
+        ACTION_ERROR_NOT_ENOUGH_HP => "UIIT_SKILL_USE_FAIL_NOTENOUGHHP",
+        _ => return None,
+    })
+}
+
+/// `wResult` of a successful [`ObjectActionUpdate`]: a skill/self action.
+/// Only `0x3000` and `0x3002` are legal — anything else trips the original's
+/// own assert. Both occur in normal play: `0x3000` on a join-time self-buff,
+/// `0x3002` on a physical hit.
+pub const ACTION_RESULT_SKILL: u16 = 0x3000;
+/// `wResult` of a successful [`ObjectActionUpdate`]: a physical weapon hit.
+pub const ACTION_RESULT_ATTACK: u16 = 0x3002;
 
 // --- GM commands (0x7010 / 0xB010) -----------------------------------------
 
@@ -1056,6 +1239,11 @@ pub enum GmCommand {
     Invisible,
     /// `/invincible` (0x0F) — toggle GM invincibility. 2-byte body.
     Invincible,
+    /// Any other sub-command, kept verbatim so an unmodelled code survives a
+    /// decode instead of failing the packet. This arm is needed: the body
+    /// `0b 00 <u8> <u16>` occurs and is refused with `02 05 00`, and a hard
+    /// error there would lose the frame that documents it.
+    Other { code: u16, args: Bytes },
 }
 
 impl GmCommand {
@@ -1068,6 +1256,7 @@ impl GmCommand {
             GmCommand::Zoe { .. } => 0x0C,
             GmCommand::Invisible => 0x0E,
             GmCommand::Invincible => 0x0F,
+            GmCommand::Other { code, .. } => *code,
         }
     }
 }
@@ -1076,7 +1265,8 @@ impl TryFrom<Bytes> for GmCommand {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
         let mut r = Reader::new(&value);
-        match r.u16()? {
+        let code = r.u16()?;
+        match code {
             0x06 => Ok(GmCommand::LoadMonster {
                 ref_id: r.u32()?,
                 count: r.u8()?,
@@ -1092,10 +1282,10 @@ impl TryFrom<Bytes> for GmCommand {
             }),
             0x0E => Ok(GmCommand::Invisible),
             0x0F => Ok(GmCommand::Invincible),
-            other => Err(SerializationError::UnknownVariation(
-                other as usize,
-                "GmCommand",
-            )),
+            _ => Ok(GmCommand::Other {
+                code,
+                args: value.slice(2..),
+            }),
         }
     }
 }
@@ -1122,6 +1312,7 @@ impl From<GmCommand> for Bytes {
                 buf.put_u32_le(ref_id);
                 buf.put_u8(count);
             }
+            GmCommand::Other { args, .. } => buf.put_slice(&args),
             GmCommand::Invisible | GmCommand::Invincible => {}
         }
         buf.freeze()
@@ -2644,6 +2835,91 @@ impl From<BuffRemove> for Bytes {
     }
 }
 
+/// 0x704F — client → server: the character's own motion/posture command, the
+/// verb behind three of the action window's character-control slots.
+///
+/// One byte, and its value space comes from the original itself: the action
+/// window's command dispatcher over `CommandID` 1000..=1017 routes `1000`
+/// (sit/stand) and `1001` (walk/run) into the same builder, which opens
+/// `0x704F` and writes a single byte. The callers supply the value:
+///
+/// * walk/run: `2` when the character is walking and `3` otherwise — the
+///   *other* gait, i.e. a toggle,
+/// * sit/stand: `4`, guarded by two state checks.
+///
+/// The 2/3 pair is the same encoding [`MOTION_STATE_WALK`]/[`MOTION_STATE_RUN`]
+/// carry inbound on 0x30BF, which is an independent confirmation of both.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct CharacterActionRequest {
+    pub action: u8,
+}
+
+/// Switch to walking — the same value 0x30BF reports as [`MOTION_STATE_WALK`].
+pub const CHARACTER_ACTION_WALK: u8 = MOTION_STATE_WALK;
+/// Switch to running — [`MOTION_STATE_RUN`].
+pub const CHARACTER_ACTION_RUN: u8 = MOTION_STATE_RUN;
+/// Sit down / stand up. The original sends one value for both directions: it
+/// is a toggle the server resolves, not a state we assert.
+pub const CHARACTER_ACTION_SIT_STAND: u8 = 4;
+
+impl CharacterActionRequest {
+    pub fn sit_stand() -> Self {
+        Self {
+            action: CHARACTER_ACTION_SIT_STAND,
+        }
+    }
+
+    /// The gait we want *next*: `walking = true` sends 2, else 3.
+    pub fn gait(walking: bool) -> Self {
+        Self {
+            action: if walking {
+                CHARACTER_ACTION_WALK
+            } else {
+                CHARACTER_ACTION_RUN
+            },
+        }
+    }
+}
+
+/// 0x3091 — client → server: play an emote. **One byte, the emote code.**
+///
+/// Direction caveat, the same one [`GetUpRequest`] carries: 0x3091 sits in the
+/// 0x3xxx range this repo otherwise treats as S→C, and the opcode is aliased in
+/// both directions (the original has no *parser* for it, only a builder).
+///
+/// Both the opcode and the code table come from the action window's
+/// dispatcher: `CommandID` 4000 lands in a builder that opens `0x3091` and
+/// writes exactly one byte, the constant that arm holds. `CommandID`
+/// 4001..=4006 run through a second table with one arm each, built
+/// identically. That is where the mapping in [`EMOTE_CODES`] comes from, and
+/// why it is *not* the `4000 + n` order the icons suggest.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct EmoteRequest {
+    pub emote: u8,
+}
+
+/// `actionwnddata.txt` command id → 0x3091 emote code, one arm at a time. The
+/// wire order is not the slot order: laugh is 6, pokun is 1, joy is 3.
+pub const EMOTE_CODES: [(u32, u8); 7] = [
+    (4000, 0), // 인사 greeting
+    (4001, 6), // 웃음 laugh
+    (4002, 1), // 포권 pokun
+    (4003, 5), // 네 yes
+    (4004, 2), // 돌진 rush
+    (4005, 3), // 아자 joy
+    (4006, 4), // 아니오 no
+];
+
+impl EmoteRequest {
+    /// The emote a `actionwnddata.txt` command id plays, if it is an emote.
+    pub fn for_command(command_id: u32) -> Option<Self> {
+        EMOTE_CODES
+            .iter()
+            .find(|(id, _)| *id == command_id)
+            .map(|(_, emote)| Self { emote: *emote })
+    }
+}
+
 /// 0x70A7 — client → server: the hwan (jahwan / berserk) activation request.
 ///
 /// One byte. The original's builder writes exactly one, handed to it by its
@@ -2798,7 +3074,7 @@ impl GetUpRequest {
         }
     }
 
-    /// The evidence-confirmed free resurrect (present resurrection point).
+    /// The free resurrect at the present resurrection point.
     pub fn present_point() -> Self {
         Self {
             option: Self::PRESENT_POINT,
@@ -2830,13 +3106,11 @@ pub struct CharacterDied {
 /// 0x304D — server → client: a dropped item's owner-lock has expired, so
 /// anyone may pick it up now. Body is the drop entity's unique id.
 ///
-/// Layout is **supported, not confirmed**: the original has no parser for this
-/// opcode (an enum entry only), so the only witness is a real body like
-/// `aa600100` → `0x000160AA`, which reads cleanly as the `u32` unique id that
-/// drop spawns and their owner field both use. Trailing fields cannot be ruled
-/// out; the generated
-/// decode ignores a tail, so a longer real body degrades to "unique id only"
-/// rather than failing.
+/// Layout is supported but not confirmed: the original has no parser for this
+/// opcode, only an enum entry. A real body such as `aa600100` → `0x000160AA`
+/// reads cleanly as the `u32` unique id that drop spawns and their owner field
+/// both use. Trailing fields cannot be ruled out; the generated decode ignores
+/// a tail, so a longer body degrades to "unique id only" rather than failing.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct DropUnlocked {
     pub unique_id: u32,
@@ -2951,12 +3225,22 @@ pub enum InviteResponse {
     Accept,
     /// `01 00`
     Decline,
-    /// `02 0C 2C` — the party-specific decline.
+    /// `02 <reason:u16le>` — the party-specific decline.
     ///
-    /// UNKNOWN whether `0x2C0C` is a constant or a reason parameter
-    /// (docs/net-invite-0x3080.md §7).
-    DeclineParty,
+    /// **The reason is per-arm, not a constant.** The two senders the original
+    /// uses for a party refusal write different words: `0x2C0C` for a creation
+    /// petition (type 2, `PartyCreation`) against `0x2C17` for an invitation
+    /// into an existing party (type 3, `PartyInvitation`). Both then emit `02`
+    /// plus that word. Use [`PARTY_DECLINE_CREATION`] /
+    /// [`PARTY_DECLINE_INVITATION`].
+    DeclineParty(u16),
 }
+
+/// Reason word for declining a **party creation** (petition type 2): `0x2C0C`.
+pub const PARTY_DECLINE_CREATION: u16 = 0x2C0C;
+/// Reason word for declining an **invitation into an existing party**
+/// (petition type 3): `0x2C17`.
+pub const PARTY_DECLINE_INVITATION: u16 = 0x2C17;
 
 /// 0x3080 — the shared invite/petition popup.
 ///
@@ -3002,8 +3286,9 @@ impl From<GameInvite> for Bytes {
         match p {
             GameInvite::Response(InviteResponse::Accept) => buf.extend_from_slice(&[0x01, 0x01]),
             GameInvite::Response(InviteResponse::Decline) => buf.extend_from_slice(&[0x01, 0x00]),
-            GameInvite::Response(InviteResponse::DeclineParty) => {
-                buf.extend_from_slice(&[0x02, 0x0C, 0x2C])
+            GameInvite::Response(InviteResponse::DeclineParty(reason)) => {
+                buf.put_u8(0x02);
+                buf.put_u16_le(reason);
             }
             // Round-trip only: the client never sends a petition.
             GameInvite::Petition(invite) => {
@@ -3245,6 +3530,32 @@ empty_packet!(GroupEntitySpawnEnd);
 
 #[cfg(test)]
 mod test {
+
+    /// The quickslot save is `0x7158` *kind 1* — the leading discriminator is
+    /// what separates it from the auto-potion settings on the same opcode, and
+    /// dropping it would silently write an auto-potion packet.
+    #[test]
+    fn quickslot_save_writes_its_kind_discriminator_first() {
+        let bytes: Bytes = QuickSlotSaveRequest {
+            slot_index: 3,
+            content: QuickSlotContent::Item,
+            value: 24457,
+        }
+        .into();
+
+        assert_eq!(bytes[0], 1, "kind 1 = quickslot-bar save");
+        assert_eq!(bytes[1], 3, "slot index");
+        assert_eq!(bytes[2], QuickSlotContent::Item as u8);
+        assert_eq!(&bytes[3..7], &24457u32.to_le_bytes());
+        assert_eq!(bytes.len(), 7, "u8 kind + u8 slot + u8 content + u32");
+
+        // round-trips, and a kind-2 body is rejected rather than misread
+        let parsed = QuickSlotSaveRequest::try_from(bytes).expect("round-trips");
+        assert_eq!(parsed.value, 24457);
+        assert!(
+            QuickSlotSaveRequest::try_from(Bytes::from_static(&[2, 0, 0, 0, 0, 0, 0])).is_err()
+        );
+    }
     use super::*;
 
     #[test]
@@ -3269,7 +3580,9 @@ mod test {
     /// decoded minute/second land ten minutes apart, across an hour rollover.
     #[test]
     fn server_time_decodes_the_captured_clock_pushes() {
-        let captured: [(&[u8; 4], (u16, u8, u8, u8, u8, u8)); 6] = [
+        /// bytes -> (year, month, day, hour, minute, second)
+        type ClockCase = (&'static [u8; 4], (u16, u8, u8, u8, u8, u8));
+        let cases: [ClockCase; 6] = [
             (b"\x1a\xaa\xd5\x59", (2026, 8, 10, 11, 29, 22)),
             (b"\x1a\xaa\x75\x5a", (2026, 8, 10, 11, 39, 22)),
             (b"\x1a\xaa\x15\x5b", (2026, 8, 10, 11, 49, 22)),
@@ -3278,7 +3591,7 @@ mod test {
             (b"\x1a\x2a\x36\x59", (2026, 8, 10, 12, 19, 22)),
         ];
 
-        for (wire, (year, month, day, hour, minute, second)) in captured {
+        for (wire, (year, month, day, hour, minute, second)) in cases {
             let bytes = Bytes::copy_from_slice(wire);
             let decoded: ServerTime = bytes.clone().try_into().unwrap();
             assert_eq!(
@@ -3452,6 +3765,57 @@ mod test {
         assert!(complete.is_empty());
     }
 
+    /// 0x704F is one byte, and the two gait values are the *same* encoding
+    /// 0x30BF uses inbound, so 2/3 rests on both directions agreeing.
+    #[test]
+    fn character_action_request_is_one_byte_and_shares_the_motion_encoding() {
+        let wire: Bytes = CharacterActionRequest::sit_stand().into();
+        assert_eq!(&wire[..], &[4u8]);
+
+        let walk: Bytes = CharacterActionRequest::gait(true).into();
+        let run: Bytes = CharacterActionRequest::gait(false).into();
+        assert_eq!(&walk[..], &[MOTION_STATE_WALK]);
+        assert_eq!(&run[..], &[MOTION_STATE_RUN]);
+
+        assert_eq!(
+            CharacterActionRequest::try_from(wire).unwrap(),
+            CharacterActionRequest { action: 4 }
+        );
+    }
+
+    /// The emote codes are NOT the slot order: the dispatcher's arms give
+    /// 4001 -> 6 and 4002 -> 1, so a `command_id - 4000` shortcut would send
+    /// the wrong emote for five of the seven.
+    #[test]
+    fn emote_request_maps_command_ids_to_their_codes() {
+        let greeting = EmoteRequest::for_command(4000).expect("4000 is an emote");
+        let wire: Bytes = greeting.into();
+        assert_eq!(&wire[..], &[0u8]);
+
+        assert_eq!(EmoteRequest::for_command(4001).unwrap().emote, 6);
+        assert_eq!(EmoteRequest::for_command(4002).unwrap().emote, 1);
+        assert_eq!(EmoteRequest::for_command(4005).unwrap().emote, 3);
+        // the COS charm is not an emote — it is a 0x70C5 pet command
+        assert!(EmoteRequest::for_command(5000).is_none());
+
+        // every code is distinct, and 0..=6 is covered exactly once
+        let mut codes: Vec<u8> = EMOTE_CODES.iter().map(|(_, code)| *code).collect();
+        codes.sort_unstable();
+        assert_eq!(codes, (0..=6).collect::<Vec<u8>>());
+    }
+
+    /// `Trace` is discriminant 3 of the same 0x7074 envelope Attack and Pickup
+    /// use, and its wire form is the dispatcher's `01 03 01 <uid>`.
+    #[test]
+    fn object_action_request_carries_the_trace_arm() {
+        let trace = ObjectActionRequest::Execute(ActionCommand::Trace(ActionTarget::Entity {
+            unique_id: 0x0002_98df,
+        }));
+        let wire: Bytes = trace.clone().into();
+        assert_eq!(&wire[..], &[0x01, 0x03, 0x01, 0xdf, 0x98, 0x02, 0x00]);
+        assert_eq!(ObjectActionRequest::try_from(wire).unwrap(), trace);
+    }
+
     #[test]
     fn get_up_request_carries_the_option_byte() {
         // 0x3053: one option byte. Present-point (free resurrect) = 2, the
@@ -3498,6 +3862,45 @@ mod test {
         assert_eq!(back, wire);
         // A count that outruns the body is a decode error, not a silent short read.
         assert!(BuffRemove::try_from(Bytes::from_static(&[0x02, 0x8c, 0x03, 0x00, 0x00])).is_err());
+    }
+
+    /// A refused attack is the three bytes `02 0f 30`. Pinned here because the
+    /// whole failure arm used to be a single `u8` (#232).
+    #[test]
+    fn object_action_update_decodes_the_live_refusal_frame() {
+        let wire = Bytes::from_static(&[0x02, 0x0f, 0x30]);
+        let decoded: ObjectActionUpdate = wire.clone().try_into().unwrap();
+        assert_eq!(decoded, ObjectActionUpdate::Failure { error: 0x300F });
+        assert_eq!(
+            decoded,
+            ObjectActionUpdate::Failure {
+                error: ACTION_ERROR_BROKEN_WEAPON
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// The named codes are the family-4 notice ids, not skrillax's small
+    /// ordinals: `0x06`/`0x07` would decode as `Unknown`, and every named code
+    /// resolves to one of the original's own text keys while an unnamed one
+    /// stays a number.
+    #[test]
+    fn action_error_codes_are_family_four_notice_ids() {
+        assert_eq!(ACTION_ERROR_INVALID_TARGET, 0x3006);
+        assert_eq!(ACTION_ERROR_INVALID_DISTANCE, 0x3007);
+        assert_eq!(
+            action_error_text_key(ACTION_ERROR_BROKEN_WEAPON),
+            Some("UIIT_SKILL_USE_FAIL_BROKEN_WEAPON")
+        );
+        assert_eq!(
+            action_error_text_key(ACTION_ERROR_INVALID_DISTANCE),
+            Some("UIIT_SKILL_USE_FAIL_WRONGDISTANCE")
+        );
+        // positive control on the same lookup: a code inside the family range
+        // that the static read did not decode has no key and must stay a number
+        assert_eq!(action_error_text_key(0x3048), None);
+        assert_eq!(action_error_text_key(0x06), None);
     }
 
     #[test]
@@ -4004,8 +4407,50 @@ mod test {
         let bytes: Bytes = GmCommand::Invincible.into();
         assert_eq!(&bytes[..], &[0x0F, 0x00]);
 
-        // unknown sub-command fails to decode (not silently mismatched)
-        assert!(GmCommand::try_from(Bytes::from_static(&[0x99, 0x00])).is_err());
+        // an unmodelled sub-command survives as raw args and round-trips, so
+        // nothing is lost — `0b 00 04 9c 02 00` is the frame that made this arm
+        // necessary.
+        let wire = Bytes::from_static(&[0x0B, 0x00, 0x04, 0x9C, 0x02, 0x00]);
+        let decoded = GmCommand::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            GmCommand::Other {
+                code: 0x0B,
+                args: Bytes::from_static(&[0x04, 0x9C, 0x02, 0x00]),
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// `0x7010` splits by sub-command: 6 is the monster spawner and carries
+    /// *two* trailing bytes, 7 is the item maker and carries one. The bodies
+    /// and their acks below are real frames.
+    #[test]
+    fn gm_spawn_and_make_item_match_their_bodies() {
+        // 06 00 8d 07 00 00 01 01 -> ack 01 06 00 (success)
+        let wire = Bytes::from_static(&[0x06, 0x00, 0x8D, 0x07, 0x00, 0x00, 0x01, 0x01]);
+        let decoded = GmCommand::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            GmCommand::LoadMonster {
+                ref_id: 1933,
+                count: 1,
+                rarity: 1,
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
+
+        // 07 00 06 00 00 00 01 -> ack 01 07 00 (success)
+        let wire = Bytes::from_static(&[0x07, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01]);
+        let decoded = GmCommand::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            GmCommand::MakeItem {
+                ref_id: 6,
+                value: 1,
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
     }
 
     /// Pins the sub-id: `MakeItem` is 0x07, and 0x06 is **`LoadMonster`**. The
@@ -4409,8 +4854,26 @@ mod test {
         assert_eq!(&accept[..], &[0x01, 0x01]);
         let decline: Bytes = GameInvite::Response(InviteResponse::Decline).into();
         assert_eq!(&decline[..], &[0x01, 0x00]);
-        let party: Bytes = GameInvite::Response(InviteResponse::DeclineParty).into();
+        let party: Bytes =
+            GameInvite::Response(InviteResponse::DeclineParty(PARTY_DECLINE_CREATION)).into();
         assert_eq!(&party[..], &[0x02, 0x0C, 0x2C]);
+    }
+
+    /// The two party arms decline with **different** reason words — the whole
+    /// point of parameterising `DeclineParty`. Nail both down so a future
+    /// "simplification" back to one constant fails here instead of on a live
+    /// server: `0x2C0C` is what the original writes for a party *creation*
+    /// (type 2), `0x2C17` what it writes for an *invitation* into an existing
+    /// party (type 3).
+    #[test]
+    fn the_two_party_arms_decline_with_different_reasons() {
+        assert_ne!(PARTY_DECLINE_CREATION, PARTY_DECLINE_INVITATION);
+        let creation: Bytes =
+            GameInvite::Response(InviteResponse::DeclineParty(PARTY_DECLINE_CREATION)).into();
+        assert_eq!(&creation[..], &[0x02, 0x0C, 0x2C]);
+        let invitation: Bytes =
+            GameInvite::Response(InviteResponse::DeclineParty(PARTY_DECLINE_INVITATION)).into();
+        assert_eq!(&invitation[..], &[0x02, 0x17, 0x2C]);
     }
 
     /// The four funnel requests are a bare target uid.
@@ -4606,6 +5069,33 @@ mod test {
             y: -77,
             z: 14260,
             angle: 0,
+            source: None,
+        };
+        let bytes: Bytes = resp.clone().into();
+        let decoded: MovementResponse = bytes.try_into().unwrap();
+        assert_eq!(decoded, resp);
+    }
+
+    /// The source tail is where the entity *is*; a live 0xB021 carries it, and
+    /// dropping it left every consumer with only the destination — which is why
+    /// a bot that walked by the echoed destination believed it had arrived
+    /// while the character was still walking.
+    #[test]
+    fn movement_response_keeps_the_source_position() {
+        let resp = MovementResponse {
+            unique_id: 352808,
+            has_destination: true,
+            region: 0x60A8,
+            x: 10580,
+            y: -77,
+            z: 14260,
+            angle: 0,
+            source: Some(MovementSource {
+                region: 0x60A8,
+                x: 10000,
+                y: -77.0,
+                z: 14000,
+            }),
         };
         let bytes: Bytes = resp.clone().into();
         let decoded: MovementResponse = bytes.try_into().unwrap();
@@ -4766,7 +5256,33 @@ mod test {
         assert_eq!(decoded, p);
     }
 
-    /// The `0x08` block is read BEFORE the `0x04` one — the binary's order,
+    /// The `0x08` block is read BEFORE the `0x04` one — the original's order,
+    /// not bit order. A body carrying both pins that, since swapping them
+    /// would still consume the same byte count and silently mis-slice.
+    #[test]
+    fn entity_bars_update_reads_the_burn_body() {
+        // A real body, verbatim: `e8 63 02 00 01 01 04 08 00 00 00`. Burn is
+        // bit 3, which BAD_STATUS_LEVELED does not carry, so the body ends
+        // after the mask — 11 bytes, no level tail.
+        let body = Bytes::from_static(&[
+            0xE8, 0x63, 0x02, 0x00, // unique_id 156136
+            0x01, 0x01, // source
+            0x04, // flag: bad status only
+            0x08, 0x00, 0x00, 0x00, // mask: Burn
+        ]);
+        let decoded: EntityBarsUpdate = body.clone().try_into().unwrap();
+        assert_eq!(decoded.hp, None);
+        assert_eq!(decoded.mp, None);
+        assert_eq!(decoded.unknown16, None);
+        assert_eq!(decoded.bad_status(), Some(BadStatus(Ailment::Burn.bit())));
+        assert!(decoded.bad_status_levels.is_empty());
+        // and it goes back out byte-identically — the property
+        // tools/src/bin/protocol_verify.rs replays
+        let back: Bytes = decoded.into();
+        assert_eq!(back, body);
+    }
+
+    /// The `0x08` block is read BEFORE the `0x04` one — the original's order,
     /// not bit order. A body carrying both pins that, since swapping them
     /// would still consume the same byte count and silently mis-slice.
     #[test]
