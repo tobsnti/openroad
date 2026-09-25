@@ -88,14 +88,11 @@ pub struct GuildMember {
     pub nickname: String,
     pub model_id: u32,
     pub is_master: bool,
-    /// Not present in the spec-derived layout this struct came from. A live
-    /// record with the founder as the only member ends `01 01 00`: with the old two-flag tail that read
-    /// `is_master = 1, is_offline = 1`, which contradicts the fact that the
-    /// character was standing in the world at that moment. Reading it as
-    /// `is_master = 1`, this byte `= 1`, `is_offline = 0` fits both facts, so the
-    /// byte is real and sits here. Its meaning stays open: a record with an
-    /// offline member decides whether it is a second flag, a rank, or padding.
-    pub unk_u8_02: u8,
+    /// The last byte of the member record. A live record with the founder as
+    /// the only member ends `01 01 00`, which reads as `is_master = 1`,
+    /// `is_offline = 1`, and the `00` is the head of the list behind the
+    /// roster — not a third member field. Why an online character arrives with
+    /// this flag set is an open question; it is the same one byte either way.
     pub is_offline: bool,
 }
 
@@ -125,11 +122,30 @@ pub struct GuildData {
     pub member_count: u8,
     #[sro_packet(list_type = "by-size-field", size_field = "member_count")]
     pub members: Vec<GuildMember>,
+    /// How many [`GuildVoteEntry`] close the record.
+    pub election_count: u8,
+    #[sro_packet(list_type = "by-size-field", size_field = "election_count")]
+    pub elections: Vec<GuildVoteEntry>,
+}
+
+/// One entry of the counted list that closes the guild record. The three
+/// fields are read verbatim; their names are [U]. The first two have the same
+/// widths as [`super::guild_leadership::GuildElectionEntry`]; whether the two
+/// lists carry the same thing is [U].
+#[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, PartialEq)]
+pub struct GuildVoteEntry {
+    /// [U] — read verbatim, semantics unknown.
+    pub unk_u32_00: u32,
+    /// [U] — read verbatim, semantics unknown.
+    pub unk_u8_00: u8,
+    /// [U] — read verbatim, semantics unknown.
+    pub unk_u32_01: u32,
 }
 
 impl GuildData {
-    /// Parse an assembled record. The original reads exactly to the end of the
-    /// last member, so a well-formed buffer leaves no tail.
+    /// Parse an assembled record. The roster is followed by one more counted
+    /// list, and only after that list does the record end — so a well-formed
+    /// buffer leaves no tail.
     pub fn parse(assembled: Bytes) -> Result<Self, SerializationError> {
         Self::try_from(assembled)
     }
@@ -293,11 +309,10 @@ impl From<GuildUpdate> for Bytes {
 /// `permissions = 0xFFFFFFFF` (the master sentinel [`GuildPermissions`] already
 /// knew), `model_id = 1931` (her character ref id), `is_master = 1`.
 ///
-/// The member tail turned out to be **three** bytes, not two: read as two it
-/// made `is_offline = 1` for a character that was demonstrably standing in the
-/// world. The extra byte is [`GuildMember::unk_u8_02`], and with it the record
-/// leaves [`Self::tail`] empty — which is what shows the whole record is
-/// aligned rather than merely plausible.
+/// The captured record ends `01 01 00`, and the last of those bytes is the
+/// count of the list that closes the record rather than a member field — with
+/// it the record leaves [`Self::tail`] empty, which is what shows the whole
+/// record is aligned rather than merely plausible.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct GuildCreatedData {
     pub result: u8,
@@ -306,10 +321,9 @@ pub struct GuildCreatedData {
     /// Present when `result != 1`. The refusal code; `0x0003` = no NPC dialogue
     /// open.
     pub error: Option<u16>,
-    /// Anything after the record. On the wire this is **empty**
-    /// once the member tail is read correctly — the byte that looked like a
-    /// trailing one belongs to [`GuildMember::unk_u8_02`]. Kept so a future
-    /// server that appends something does not lose it silently.
+    /// Anything after the record. On the wire this is **empty** once the
+    /// record's own closing list is read. Kept so a future server that appends
+    /// something does not lose it silently.
     pub tail: Bytes,
 }
 
@@ -346,6 +360,75 @@ impl TryFrom<Bytes> for GuildCreatedData {
 
 impl From<GuildCreatedData> for Bytes {
     fn from(p: GuildCreatedData) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(p.result);
+        if let Some(data) = p.data {
+            buf.extend_from_slice(&Bytes::from(data));
+        }
+        if let Some(error) = p.error {
+            buf.put_u16_le(error);
+        }
+        buf.extend_from_slice(&p.tail);
+        buf.freeze()
+    }
+}
+
+/// 0xB0F8 — server → client: an ack whose success arm carries the whole guild
+/// record, the same one the chunked transfer assembles.
+///
+/// The request it answers is [U]. On `result == 2` it reads a `u16` code from
+/// the guild error family and special-cases exactly one value (`0x4C10`), which
+/// is what puts this opcode in the guild family rather than anywhere else.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct GuildRecordResponse {
+    pub result: u8,
+    /// Present when `result == 1`.
+    pub data: Option<GuildData>,
+    /// Present when `result == 2`.
+    pub error: Option<u16>,
+    /// Anything after the record. Empty on the wire; kept so a future server
+    /// that appends something does not lose it silently.
+    pub tail: Bytes,
+}
+
+impl TryFrom<Bytes> for GuildRecordResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        let result = *value.first().ok_or_else(|| {
+            SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "empty 0xB0F8 body",
+            ))
+        })?;
+        match result {
+            1 => {
+                let (data, consumed) = GuildData::parse_prefix(value.slice(1..))?;
+                Ok(GuildRecordResponse {
+                    result,
+                    data: Some(data),
+                    error: None,
+                    tail: value.slice(1 + consumed..),
+                })
+            }
+            2 => Ok(GuildRecordResponse {
+                result,
+                data: None,
+                error: (value.len() >= 3).then(|| u16::from_le_bytes([value[1], value[2]])),
+                tail: value.slice(value.len().min(3)..),
+            }),
+            // Any other result reads nothing at all.
+            _ => Ok(GuildRecordResponse {
+                result,
+                data: None,
+                error: None,
+                tail: value.slice(1..),
+            }),
+        }
+    }
+}
+
+impl From<GuildRecordResponse> for Bytes {
+    fn from(p: GuildRecordResponse) -> Self {
         let mut buf = BytesMut::new();
         buf.put_u8(p.result);
         if let Some(data) = p.data {
@@ -636,12 +719,61 @@ mod tests {
             out.extend(ascii("nick"));
             out.extend(1907u32.to_le_bytes()); // model_id
             out.push(u8::from(*perms == GuildPermissions::MASTER));
-            // The tail is THREE bytes, not two: a live record ends `01 01 00`
-            // for an online master. See `GuildMember::unk_u8_02`.
-            out.push(1); // unk_u8_02 — unnamed, 1 on the wire
-            out.push(0); // is_offline
+            out.push(1); // is_offline
         }
+        out.push(0); // election_count
         out
+    }
+
+    /// 0xB0F8 carries the whole record on success and a code on refusal.
+    #[test]
+    fn the_record_ack_is_wired_and_decodes_both_arms() {
+        let mut body = vec![1u8];
+        body.extend(guild_record(&[("Founder", GuildPermissions::MASTER)]));
+        let wire = Bytes::from(body);
+
+        let packet = crate::Packet::deserialize(0xB0F8, wire.clone()).unwrap();
+        let (opcode, back) = packet.into_serialize();
+        assert_eq!(opcode, 0xB0F8);
+        assert_eq!(back, wire);
+
+        let decoded = GuildRecordResponse::try_from(wire).unwrap();
+        assert_eq!(decoded.data.as_ref().unwrap().name, "Wanderers");
+        assert!(decoded.tail.is_empty(), "the record ends the body");
+
+        let refused = Bytes::from_static(&[0x02, 0x10, 0x4C]);
+        let decoded = GuildRecordResponse::try_from(refused.clone()).unwrap();
+        assert_eq!(decoded.error, Some(0x4C10));
+        assert!(decoded.data.is_none());
+        assert_eq!(Bytes::from(decoded), refused);
+    }
+
+    /// The record does not end with the last member: a second counted list
+    /// follows it.
+    #[test]
+    fn the_record_ends_in_the_second_list_not_in_the_last_member() {
+        let mut wire = guild_record(&[("Solo", GuildPermissions::ALL)]);
+        // one entry in the second list
+        let last = wire.len() - 1;
+        wire[last] = 1;
+        wire.extend(0xAABB_CCDDu32.to_le_bytes());
+        wire.push(7);
+        wire.extend(0x1122_3344u32.to_le_bytes());
+        let wire = Bytes::from(wire);
+
+        let decoded = GuildData::parse(wire.clone()).expect("record with a second list");
+        assert_eq!(decoded.members.len(), 1);
+        assert_eq!(decoded.election_count, 1);
+        assert_eq!(
+            decoded.elections,
+            vec![GuildVoteEntry {
+                unk_u32_00: 0xAABB_CCDD,
+                unk_u8_00: 7,
+                unk_u32_01: 0x1122_3344,
+            }]
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
     }
 
     /// The assembled record round-trips, and the roster is sized by the header

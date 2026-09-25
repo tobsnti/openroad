@@ -434,6 +434,7 @@ mod test {
             rent: RentInfo::default(),
             ref_id: SWORD_REF,
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: 1,
                 assimilation_prob: None,
                 mag_params: vec![],

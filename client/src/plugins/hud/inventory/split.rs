@@ -642,6 +642,7 @@ mod tests {
             rent: RentInfo::default(),
             ref_id: 4,
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: count,
                 assimilation_prob: None,
                 mag_params: vec![],

@@ -387,6 +387,7 @@ mod tests {
             records[0].item.data,
             ItemTypeData::Expendable {
                 stack_count: 40,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: vec![],
             }

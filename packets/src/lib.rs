@@ -435,6 +435,7 @@ packets! {
     0x30FF => EntityGuildUpdate,
     0x38F5 => GuildUpdate,
     0xB0F0 => GuildCreatedData,
+    0xB0F8 => GuildRecordResponse,
     0x70F9 => GuildNoticeEditRequest,
 
     // Guild lifecycle & membership acks (see agent/guild.rs,

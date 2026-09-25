@@ -543,6 +543,7 @@ mod test {
             ref_id,
             data: match stack {
                 Some(stack_count) => ItemTypeData::Expendable {
+                    inscription: None,
                     stack_count,
                     assimilation_prob: None,
                     mag_params: vec![],

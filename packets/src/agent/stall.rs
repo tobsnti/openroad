@@ -943,6 +943,7 @@ mod tests {
             rows[0].item.data,
             ItemTypeData::Expendable {
                 stack_count: 1,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: vec![],
             }

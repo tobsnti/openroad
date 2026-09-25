@@ -59,6 +59,15 @@ pub enum ItemClass {
 /// the client, so the parser takes the lookup as a trait instead of the data.
 pub trait ItemClassResolver {
     fn item_class(&self, ref_id: u32) -> ItemClass;
+
+    /// `TypeID1..4` of a *character* record — the pet a summon scroll points
+    /// at. The scroll's body is cut by the referenced record, not by the
+    /// scroll, so this is the one place a second lookup decides a width.
+    /// Returning `None` means "no character table here"; the reader then falls
+    /// back to the scroll's own sub-type.
+    fn cos_type_ids(&self, _ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+        None
+    }
 }
 
 /// The fixed stat block at the head of the record (go-sro
@@ -87,23 +96,26 @@ pub struct CharacterStats {
     pub free_pvp: u8,
 }
 
-/// Item rent info: a type selector and its type-dependent fields (go-sro
-/// `WriteRentInfo`).
+/// Item rent info: a type selector and two independent halves.
+///
+/// `rent_type` is a bit set, not an enum: bit 0 adds the period half, bit 1 the
+/// metered half, and type 3 is simply both — in that order, periods first. The
+/// two halves share their fields, so type 2 and type 3 read the same recharge
+/// flag and the same rate.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct RentInfo {
     pub rent_type: u32,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 2 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 3 != 0")]
     pub can_delete: Option<u16>,
-    #[sro_packet(when = "rent_type == 2 || rent_type == 3")]
-    pub can_recharge: Option<u16>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_begin: Option<u32>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_end: Option<u32>,
-    #[sro_packet(when = "rent_type == 2")]
+    #[sro_packet(when = "rent_type & 2 != 0")]
+    pub can_recharge: Option<u16>,
+    /// Seconds; the original scales it to milliseconds on the way in.
+    #[sro_packet(when = "rent_type & 2 != 0")]
     pub meter_rate: Option<u32>,
-    #[sro_packet(when = "rent_type == 3")]
-    pub packing_time: Option<u32>,
 }
 
 /// A magic ("blue") parameter on an item.
@@ -152,6 +164,18 @@ pub const COS_STATE_UNSUMMONED: u8 = 3;
 /// (observed live 2026-08-18).
 pub const COS_STATE_DEAD: u8 = 4;
 
+/// One parameter of a summoned pet. `kind` 5 carries two extra fields; any
+/// other non-zero kind ends the record, so the reader refuses it rather than
+/// guessing a width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CosParam {
+    pub kind: u8,
+    pub a: u32,
+    pub b: u32,
+    pub c: Option<u32>,
+    pub d: Option<u8>,
+}
+
 /// The class-dependent part of an inventory item. Selected via
 /// [`ItemClassResolver`], which is why [`InventoryItem`] is not a plain derive.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,7 +189,10 @@ pub enum ItemTypeData {
         name: Option<String>,
         /// Present for rentable pets (`TID4 == 2`) that carry a pet.
         rent_seconds: Option<u32>,
-        unk: Option<u8>,
+        /// How many [`CosParam`] follow; absent while the scroll has never
+        /// been summoned.
+        param_count: Option<u8>,
+        params: Vec<CosParam>,
     },
     /// Transformation-monster scroll (`TID3 == 2`): the mask's ref id.
     TransformScroll {
@@ -177,10 +204,19 @@ pub enum ItemTypeData {
     },
     Expendable {
         stack_count: u16,
+        /// Sub-type `TID3 == 8` writes a text line behind the count and
+        /// nothing else.
+        inscription: Option<String>,
         /// Magic/attribute stones (`TID3 == 11`, `TID4 ∈ {1, 2}`).
         assimilation_prob: Option<u8>,
         /// Gacha cards carry their own magic-param list.
         mag_params: Vec<MagicParam>,
+    },
+    /// Sub-type `TID3 == 5` with `TID4 != 1` — the family whose party
+    /// distribution carries a money amount. Its body is a single amount and
+    /// carries no stack count at all.
+    ExpendableAmount {
+        amount: u32,
     },
     /// A *known-class* item whose sub-type falls outside go-sro's
     /// `WriteContainerItem` switch — the server writes NO body for those, so
@@ -215,7 +251,7 @@ impl InventoryItem {
         let slot = u8::read_from(reader)?;
         let rent = RentInfo::read_from(reader)?;
         let ref_id = u32::read_from(reader)?;
-        let data = ItemTypeData::read_body(reader, resolver.item_class(ref_id), ref_id)?;
+        let data = ItemTypeData::read_body(reader, resolver.item_class(ref_id), ref_id, resolver)?;
         Ok(InventoryItem {
             slot,
             rent,
@@ -248,6 +284,7 @@ impl ItemTypeData {
         reader: &mut T,
         class: ItemClass,
         ref_id: u32,
+        resolver: &impl ItemClassResolver,
     ) -> Result<Self, SerializationError> {
         let data = match class {
             ItemClass::Equipment => ItemTypeData::Equipment(EquipmentData::read_from(reader)?),
@@ -259,28 +296,67 @@ impl ItemTypeData {
                     // unconditionally desynced the rest of the item list.
                     let state = u8::read_from(reader)?;
                     let summoned = state != COS_STATE_NEVER_SUMMONED;
+                    let cos_ref_id = if summoned {
+                        Some(u32::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    // Which of the two fields exist is a property of the pet
+                    // the scroll points at, not of the scroll. Without a
+                    // character table the scroll's own sub-type has to do.
+                    let (reads_name, reads_rent) =
+                        match cos_ref_id.and_then(|id| resolver.cos_type_ids(id)) {
+                            Some((1, 2, 3, referenced_tid4)) => (
+                                referenced_tid4 == 3 || referenced_tid4 == 4,
+                                referenced_tid4 == 4,
+                            ),
+                            Some(_) => (false, false),
+                            None => (true, tid4 == 2),
+                        };
+                    let name = if summoned && reads_name {
+                        Some(read_string(reader)?)
+                    } else {
+                        None
+                    };
+                    let rent_seconds = if summoned && reads_rent {
+                        Some(u32::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    // The byte behind the name counts the parameters that
+                    // follow; reading it as a flag left the whole list in the
+                    // stream.
+                    let param_count = if summoned {
+                        Some(u8::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    let mut params = Vec::with_capacity(param_count.unwrap_or(0) as usize);
+                    for _ in 0..param_count.unwrap_or(0) {
+                        let kind = u8::read_from(reader)?;
+                        let a = u32::read_from(reader)?;
+                        let b = u32::read_from(reader)?;
+                        let (c, d) = match kind {
+                            0 => (None, None),
+                            5 => (Some(u32::read_from(reader)?), Some(u8::read_from(reader)?)),
+                            // Any other kind ends the record — its width is
+                            // unknown, and assuming one would shift the rest.
+                            _ => {
+                                return Err(SerializationError::UnknownVariation(
+                                    kind as usize,
+                                    "pet parameter kind has no known width",
+                                ))
+                            }
+                        };
+                        params.push(CosParam { kind, a, b, c, d });
+                    }
                     ItemTypeData::CosPet {
                         state,
-                        cos_ref_id: if summoned {
-                            Some(u32::read_from(reader)?)
-                        } else {
-                            None
-                        },
-                        name: if summoned {
-                            Some(read_string(reader)?)
-                        } else {
-                            None
-                        },
-                        rent_seconds: if summoned && tid4 == 2 {
-                            Some(u32::read_from(reader)?)
-                        } else {
-                            None
-                        },
-                        unk: if summoned {
-                            Some(u8::read_from(reader)?)
-                        } else {
-                            None
-                        },
+                        cos_ref_id,
+                        name,
+                        rent_seconds,
+                        param_count,
+                        params,
                     }
                 }
                 2 => ItemTypeData::TransformScroll {
@@ -293,6 +369,20 @@ impl ItemTypeData {
                 // TID3 values — a zero-byte body (see ItemTypeData::Unknown)
                 _ => ItemTypeData::Unknown,
             },
+            // TID3 5 (TID4 != 1) and TID3 8 are read before the ordinary
+            // stack: the first has no count at all, the second a text line
+            // behind it.
+            ItemClass::Expendable { tid3: 5, tid4 } if tid4 != 1 => {
+                ItemTypeData::ExpendableAmount {
+                    amount: u32::read_from(reader)?,
+                }
+            }
+            ItemClass::Expendable { tid3: 8, .. } => ItemTypeData::Expendable {
+                stack_count: u16::read_from(reader)?,
+                inscription: Some(read_string(reader)?),
+                assimilation_prob: None,
+                mag_params: Vec::new(),
+            },
             ItemClass::Expendable { tid3, tid4 } => {
                 let stack_count = u16::read_from(reader)?;
                 let assimilation_prob = if tid3 == 11 && (tid4 == 1 || tid4 == 2) {
@@ -300,13 +390,12 @@ impl ItemTypeData {
                 } else {
                     None
                 };
-                // Gacha cards only (`TID3 == 14`, WIN/LOSE via TID4). go-sro's
-                // source has `TypeID3 == 14 || TypeID4 == 2`, but a live
-                // capture proved its server data never hits the `TID4 == 2`
-                // arm for ordinary expendables: an MP potion (TID3 1, TID4 2)
-                // arrived stack-only, and taking that arm swallowed 120
-                // phantom mag-param bytes and derailed the whole section.
-                let mag_params = if tid3 == 14 {
+                // Gacha cards only, and both sub-type ids decide it: TID3 14
+                // *and* TID4 2. Either id alone is wrong in a way that costs
+                // the rest of the section — an MP potion (TID3 1, TID4 2)
+                // arrived stack-only, and taking a TID4-only arm swallowed 120
+                // phantom mag-param bytes.
+                let mag_params = if tid3 == 14 && tid4 == 2 {
                     let count = u8::read_from(reader)?;
                     let mut params = Vec::with_capacity(count as usize);
                     for _ in 0..count {
@@ -318,6 +407,7 @@ impl ItemTypeData {
                 };
                 ItemTypeData::Expendable {
                     stack_count,
+                    inscription: None,
                     assimilation_prob,
                     mag_params,
                 }
@@ -1078,7 +1168,7 @@ fn read_item_section(
                 cursor.read_exact(&mut skipped)?;
                 Ok(ItemTypeData::Unknown)
             }
-            None => ItemTypeData::read_body(cursor, class, ref_id),
+            None => ItemTypeData::read_body(cursor, class, ref_id, resolver),
         };
         let data = match data {
             Ok(data) => data,
@@ -1396,6 +1486,9 @@ mod test {
                                    // ITEM_COS_P_FLUTE is 3/2/1/1 (growth pet, no rent field).
     const PET_SCROLL_RENTABLE: u32 = 10365;
     const PET_SCROLL_GROWTH: u32 = 7488;
+    const CARD_OTHER: u32 = 30001; // expendable, TID3 = 14 but TID4 != 2
+    const INSCRIBED: u32 = 31000; // expendable, TID3 = 8: count plus a text line
+    const AMOUNT_ITEM: u32 = 31001; // expendable, TID3 = 5, TID4 != 1: one amount
 
     fn resolver() -> MockResolver {
         MockResolver {
@@ -1404,6 +1497,9 @@ mod test {
                 (PILLS, ItemClass::Expendable { tid3: 1, tid4: 1 }),
                 (MP_POTION, ItemClass::Expendable { tid3: 1, tid4: 2 }),
                 (GACHA_CARD, ItemClass::Expendable { tid3: 14, tid4: 2 }),
+                (CARD_OTHER, ItemClass::Expendable { tid3: 14, tid4: 1 }),
+                (INSCRIBED, ItemClass::Expendable { tid3: 8, tid4: 1 }),
+                (AMOUNT_ITEM, ItemClass::Expendable { tid3: 5, tid4: 0 }),
                 (
                     PET_SCROLL_RENTABLE,
                     ItemClass::Container { tid3: 1, tid4: 2 },
@@ -1597,6 +1693,7 @@ mod test {
             inv[1].data,
             ItemTypeData::Expendable {
                 stack_count: 50,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: vec![],
             }
@@ -1868,6 +1965,130 @@ mod test {
     }
 
     #[test]
+    fn a_card_needs_both_sub_type_ids_for_its_magic_params() {
+        // The param list belongs to TID3 14 *and* TID4 2. A card with TID3 14
+        // and any other TID4 is stack-only; reading a count byte there eats the
+        // next record's slot.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(17)
+            .u32(0)
+            .u32(CARD_OTHER)
+            .u16(1)
+            .u8(18)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0].data,
+            ItemTypeData::Expendable { stack_count: 1, mag_params, .. } if mag_params.is_empty()
+        ));
+        assert_eq!(items[1].slot, 18);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn an_inscribed_expendable_carries_a_string_after_its_count() {
+        // TID3 8 writes a count and a free-text line. Reading the count alone
+        // leaves the text in the stream and shifts every later record.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(10)
+            .u32(0)
+            .u32(INSCRIBED)
+            .u16(7)
+            .string("Mint")
+            // a plain stack behind it proves the alignment held
+            .u8(11)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].data,
+            ItemTypeData::Expendable {
+                stack_count: 7,
+                inscription: Some("Mint".to_string()),
+                assimilation_prob: None,
+                mag_params: Vec::new(),
+            }
+        );
+        assert_eq!(items[1].slot, 11);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn a_five_sub_type_expendable_is_one_amount_and_no_count() {
+        // TID3 5 with TID4 != 1 is the one expendable whose body is a four-byte
+        // amount instead of a two-byte count.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(12)
+            .u32(0)
+            .u32(AMOUNT_ITEM)
+            .u32(0x0001_0000)
+            .u8(13)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].data,
+            ItemTypeData::ExpendableAmount {
+                amount: 0x0001_0000
+            }
+        );
+        assert_eq!(items[1].slot, 13);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn a_type_three_rent_block_reads_its_two_periods_before_the_recharge() {
+        // Type 3 carries both halves of the block: the delete flag, the two
+        // period stamps, then the recharge flag and its rate. All 20 bytes are
+        // consumed either way, so a wrong order shows up as wrong values, not
+        // as a desync — which is why the values here are all distinguishable.
+        let b = Body::default()
+            .u32(3)
+            .u16(0x2222)
+            .u32(0x1111_1111)
+            .u32(0x3333_3333)
+            .u16(0x4444)
+            .u32(0x5555_5555);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let rent = RentInfo::read_from(&mut cursor).expect("rent block");
+
+        assert_eq!(rent.can_delete, Some(0x2222));
+        assert_eq!(rent.period_begin, Some(0x1111_1111));
+        assert_eq!(rent.period_end, Some(0x3333_3333));
+        assert_eq!(rent.can_recharge, Some(0x4444));
+        assert_eq!(rent.meter_rate, Some(0x5555_5555));
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
     fn a_truncated_item_body_still_fails_the_section() {
         // The tolerance is for a *short* read (we consumed less than the body
         // because a width was unknown). A *long* read — the parser wanting
@@ -1969,7 +2190,8 @@ mod test {
                     cos_ref_id: None,
                     name: None,
                     rent_seconds: None,
-                    unk: None,
+                    param_count: None,
+                    params: Vec::new(),
                 },
                 "slot {} over-read past the state byte",
                 unused.slot
@@ -2026,7 +2248,8 @@ mod test {
                 cos_ref_id: Some(1_907),
                 name: Some("Bunny".to_string()),
                 rent_seconds: Some(1_700_000_000),
-                unk: Some(0),
+                param_count: Some(0),
+                params: Vec::new(),
             }
         );
         assert_eq!(
@@ -2036,10 +2259,152 @@ mod test {
                 cos_ref_id: Some(2_120),
                 name: Some("Piggy".to_string()),
                 rent_seconds: None,
-                unk: Some(0),
+                param_count: Some(0),
+                params: Vec::new(),
             }
         );
         assert_eq!(items[2].slot, 22);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn a_summoned_scroll_reads_the_parameter_list_behind_its_count() {
+        // The byte behind the name is a count, not a flag: each parameter is
+        // five more fields wide, and kind 5 carries two of them on top.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_RENTABLE)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u32(1_700_000_000)
+            .u8(2)
+            // parameter 1: kind 0 stops after the two values
+            .u8(0)
+            .u32(11)
+            .u32(22)
+            // parameter 2: kind 5 carries two more
+            .u8(5)
+            .u32(33)
+            .u32(44)
+            .u32(55)
+            .u8(6)
+            // a plain stack behind it proves the alignment held
+            .u8(21)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        match &items[0].data {
+            ItemTypeData::CosPet {
+                param_count,
+                params,
+                ..
+            } => {
+                assert_eq!(*param_count, Some(2));
+                assert_eq!(
+                    params[0],
+                    CosParam {
+                        kind: 0,
+                        a: 11,
+                        b: 22,
+                        c: None,
+                        d: None
+                    }
+                );
+                assert_eq!(
+                    params[1],
+                    CosParam {
+                        kind: 5,
+                        a: 33,
+                        b: 44,
+                        c: Some(55),
+                        d: Some(6)
+                    }
+                );
+            }
+            other => panic!("pet mis-parsed: {other:?}"),
+        }
+        assert_eq!(items[1].slot, 21);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    /// A kind the original does not know ends its read, so ours must fail
+    /// instead of inventing a width.
+    #[test]
+    fn an_unknown_pet_parameter_kind_fails_the_record() {
+        let b = Body::default()
+            .u8(45)
+            .u8(1)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_GROWTH)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u8(1)
+            .u8(3)
+            .u32(11)
+            .u32(22);
+        // The item record itself, past the section's size and count bytes.
+        let mut cursor = Cursor::new(&b.0[2..]);
+        assert!(InventoryItem::read_with(&mut cursor, &resolver()).is_err());
+    }
+
+    /// A rentable scroll (TID4 2) pointing at a growth pet (referenced TID4 3)
+    /// carries no rent stamp: the referenced record decides, not the scroll.
+    #[test]
+    fn the_referenced_pet_decides_the_name_and_the_rent_stamp() {
+        struct Referenced;
+        impl ItemClassResolver for Referenced {
+            fn item_class(&self, ref_id: u32) -> ItemClass {
+                resolver().item_class(ref_id)
+            }
+            fn cos_type_ids(&self, _ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+                Some((1, 2, 3, 3))
+            }
+        }
+
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_RENTABLE)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u8(0)
+            .u8(21)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &Referenced, &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        match &items[0].data {
+            ItemTypeData::CosPet {
+                name, rent_seconds, ..
+            } => {
+                assert_eq!(name.as_deref(), Some("Bunny"));
+                assert_eq!(*rent_seconds, None);
+            }
+            other => panic!("pet mis-parsed: {other:?}"),
+        }
+        assert_eq!(items[1].slot, 21);
         assert_eq!(cursor.position() as usize, b.0.len());
     }
 

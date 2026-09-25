@@ -1347,8 +1347,6 @@ mod test {
             nickname: String::new(),
             model_id: 0,
             is_master,
-            // Present in a live guild record; its meaning is open.
-            unk_u8_02: 0,
             is_offline: false,
         }
     }
@@ -1365,6 +1363,8 @@ mod test {
             unk_u8_00: 0,
             member_count: 2,
             members: vec![member("Grunt", false), member("Master", true)],
+            election_count: 0,
+            elections: Vec::new(),
         }
     }
 

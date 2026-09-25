@@ -535,6 +535,9 @@ fn tooltip_lines(
             let max = row.max_stack().unwrap_or(*stack_count as u32);
             lines.push((format!("Stack: {stack_count} / {max}"), TEXT_COLOR));
         }
+        // Carries an amount rather than a stack, so there is no "x / max" to
+        // show.
+        ItemTypeData::ExpendableAmount { .. } => {}
         ItemTypeData::MagicCube { elixir_count } => {
             lines.push((format!("Contains {elixir_count} elixirs"), TEXT_COLOR));
         }
@@ -1146,6 +1149,7 @@ mod test {
             rent: RentInfo::default(),
             ref_id: 4, // ITEM_ETC_HP_POTION_01
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: 50,
                 assimilation_prob: None,
                 mag_params: vec![],
@@ -1294,6 +1298,7 @@ mod test {
                 rent: RentInfo::default(),
                 ref_id: 4,
                 data: ItemTypeData::Expendable {
+                    inscription: None,
                     stack_count: 1,
                     assimilation_prob: None,
                     mag_params: vec![],

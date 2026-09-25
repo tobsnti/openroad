@@ -442,6 +442,7 @@ pub fn on_store_response(
                     let data = if stackable {
                         ItemTypeData::Expendable {
                             stack_count: echoed_quantity,
+                            inscription: None,
                             assimilation_prob: None,
                             mag_params: Vec::new(),
                         }

@@ -1593,7 +1593,8 @@ mod tests {
             cos_ref_id: None,
             name: None,
             rent_seconds: None,
-            unk: None,
+            param_count: None,
+            params: Vec::new(),
         };
 
         assert!(pet(COS_STATE_DEAD).cos_is_dead());
@@ -1608,6 +1609,7 @@ mod tests {
         // A non-COS item has no state at all, and is never "dead".
         let potion = ItemTypeData::Expendable {
             stack_count: 1,
+            inscription: None,
             assimilation_prob: None,
             mag_params: Vec::new(),
         };
@@ -2122,6 +2124,7 @@ mod tests {
             item.data,
             ItemTypeData::Expendable {
                 stack_count: 2,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: Vec::new()
             }
