@@ -478,7 +478,7 @@ None of these is confirmed on the wire, so all are `experimental`.
 | `0x750E` | ConsignmentListRequest | C→S | experimental | empty body |
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
-| `0x7309` | MailSendRequest | C→S | experimental | confirmed head (title + message) only; everything after it is unknown and kept as a raw tail |
+| `0x7309` | MailSendRequest | C→S | experimental | title + message and nothing else; no recipient travels in this body |
 
 Deliberately **not** wired — all three bodies are entirely unverified, so a layout
 would have to be invented: `0xB309 SERVER_MAIL_SEND_RESPONSE` (declared in the
