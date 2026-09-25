@@ -326,13 +326,12 @@ impl ItemTypeData {
                 } else {
                     None
                 };
-                // Gacha cards only (`TID3 == 14`, WIN/LOSE via TID4). go-sro's
-                // source has `TypeID3 == 14 || TypeID4 == 2`, but a live
-                // capture proved its server data never hits the `TID4 == 2`
-                // arm for ordinary expendables: an MP potion (TID3 1, TID4 2)
-                // arrived stack-only, and taking that arm swallowed 120
-                // phantom mag-param bytes and derailed the whole section.
-                let mag_params = if tid3 == 14 {
+                // Gacha cards only, and both sub-type ids decide it: TID3 14
+                // *and* TID4 2. Either id alone is wrong in a way that costs
+                // the rest of the section — an MP potion (TID3 1, TID4 2)
+                // arrived stack-only, and taking a TID4-only arm swallowed 120
+                // phantom mag-param bytes.
+                let mag_params = if tid3 == 14 && tid4 == 2 {
                     let count = u8::read_from(reader)?;
                     let mut params = Vec::with_capacity(count as usize);
                     for _ in 0..count {
@@ -1423,6 +1422,7 @@ mod test {
                                    // ITEM_COS_P_FLUTE is 3/2/1/1 (growth pet, no rent field).
     const PET_SCROLL_RENTABLE: u32 = 10365;
     const PET_SCROLL_GROWTH: u32 = 7488;
+    const CARD_OTHER: u32 = 30001; // expendable, TID3 = 14 but TID4 != 2
     const INSCRIBED: u32 = 31000; // expendable, TID3 = 8: count plus a text line
     const AMOUNT_ITEM: u32 = 31001; // expendable, TID3 = 5, TID4 != 1: one amount
 
@@ -1433,6 +1433,7 @@ mod test {
                 (PILLS, ItemClass::Expendable { tid3: 1, tid4: 1 }),
                 (MP_POTION, ItemClass::Expendable { tid3: 1, tid4: 2 }),
                 (GACHA_CARD, ItemClass::Expendable { tid3: 14, tid4: 2 }),
+                (CARD_OTHER, ItemClass::Expendable { tid3: 14, tid4: 1 }),
                 (INSCRIBED, ItemClass::Expendable { tid3: 8, tid4: 1 }),
                 (AMOUNT_ITEM, ItemClass::Expendable { tid3: 5, tid4: 0 }),
                 (
@@ -1897,6 +1898,37 @@ mod test {
         let offender = trace.last().expect("trace keeps the offender");
         assert_eq!(offender.ref_id, 999_999);
         assert_eq!(offender.class, ItemClass::Unknown);
+    }
+
+    #[test]
+    fn a_card_needs_both_sub_type_ids_for_its_magic_params() {
+        // The param list belongs to TID3 14 *and* TID4 2. A card with TID3 14
+        // and any other TID4 is stack-only; reading a count byte there eats the
+        // next record's slot.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(17)
+            .u32(0)
+            .u32(CARD_OTHER)
+            .u16(1)
+            .u8(18)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0].data,
+            ItemTypeData::Expendable { stack_count: 1, mag_params, .. } if mag_params.is_empty()
+        ));
+        assert_eq!(items[1].slot, 18);
+        assert_eq!(cursor.position() as usize, b.0.len());
     }
 
     #[test]
