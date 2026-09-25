@@ -364,7 +364,7 @@ impl ItemDataRow {
     /// predicate rather than a revive special-case, because the wire shape is
     /// what they have in common.
     ///
-    /// The tail itself is not fully understood — see
+    /// For the tail's shape, and for what about it is still open, see
     /// [`ItemUseRequest::WithSlot`](packets::agent::inventory::ItemUseRequest).
     pub fn needs_target_slot(&self) -> bool {
         matches!(

@@ -406,11 +406,20 @@ impl From<ItemRepairResponse> for Bytes {
 /// packed TypeInfo word, `docs/net-item-use-0x704c.md`) — and differs in the
 /// tail:
 ///
-/// | variant | tail | builder |
-/// |---|---|---|
-/// | [`Self::Simple`] | none | the generic item-use builder, no target or extra set |
-/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` | the generic item-use builder |
-/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes | the name builder (TypeID `0x2800`) |
+/// | variant | tail |
+/// |---|---|
+/// | [`Self::Simple`] | none |
+/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` |
+/// | [`Self::WithSlot`] | `target_slot u8`, and a `u32` in one case |
+/// | [`Self::WithPosition`] | `u32`, `region u16`, three `u32` coordinates |
+/// | [`Self::WithLink`] | two `u32` |
+/// | [`Self::WithBlob`] | 256 raw bytes, no length prefix |
+/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes |
+///
+/// The long builder picks its tail by the item class, `type_id >> 0xB`: classes
+/// 6, 7 and 9 take the position tail, class 8 the two-word one. **Which item
+/// makes the builder take the short form instead is not settled** — that switch
+/// is set elsewhere in the window.
 ///
 /// The name-carrying builder writes the string as a `std::string` length `u16`
 /// followed by that many bytes, and the `type_id` writer emits exactly two
@@ -429,10 +438,15 @@ impl From<ItemRepairResponse> for Bytes {
 /// ## Parsing (this packet is only ever sent, never received)
 ///
 /// The wire carries no discriminator: the class lives in the sender's item data.
-/// [`TryFrom`] therefore decides by length — 3 bytes `Simple`, 8 bytes
-/// `WithTarget`, otherwise a `WithName` whose `u16` length must account for
-/// exactly the rest of the body. An 8-byte body is genuinely ambiguous (it could
-/// be a 3-character name); `WithTarget` wins because that is the common class.
+/// [`TryFrom`] therefore decides by length — 3 bytes `Simple`, 4 bytes
+/// `WithSlot`, 8 bytes `WithTarget`, then a `WithName` whose `u16` length must
+/// account for exactly the rest of the body, and finally the class tails by
+/// their own lengths (11 `WithLink`, 21 `WithPosition`, 259 `WithBlob`).
+///
+/// Several lengths are genuinely ambiguous: an 8-byte body is a `WithTarget`, a
+/// `WithSlot` carrying its `u32`, or a 3-character name, and 11 and 21 bytes can
+/// be names too. The order above is a choice, not a deduction. Sending is
+/// unaffected — the caller picks the variant.
 /// Unconfirmed: no `0x704C`/`0xB04C` exchange has been observed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ItemUseRequest {
@@ -452,26 +466,51 @@ pub enum ItemUseRequest {
     /// (`3,3,13,{8,11,12,15,16}`). See
     /// [`ItemDataRow::needs_target_slot`](../../../client/src/assets/textdata/itemdata.rs).
     ///
-    /// ⚠️ **Unconfirmed — the tail is spec-derived.** `u8 targetSlot` comes
-    /// from Hyperbot's TID table, and it does not come from the original's own
-    /// builder. The precedent for trusting a table like this is bad: `0x70CB`
-    /// was wired the same way and the original's builder later showed it wrong
-    /// in both width and field order.
-    ///
-    /// A wrong body here does not fail quietly — the server reads past the end
-    /// and drops the connection, which is the behaviour that motivated this
-    /// variant in the first place (the client was sending a 3-byte
-    /// [`Self::Simple`] for a class that wants four). The tail switch in the
-    /// original's own builder is what would settle this.
+    /// The order and the widths are the original's own: `u8`, `u16`, `u8`.
     ///
     /// `target_slot` is in the **server's own slot numbering**, exactly like
     /// `slot` — the `+0x0D` equipment bias is already baked into our slot
-    /// numbers, so nothing may re-add it. Whether the *original* biases this
-    /// second byte too is still open.
+    /// numbers, so nothing may re-add it. The original biases this second byte
+    /// too, but only in one case (its third argument being `0x46`); the plain
+    /// number is the normal case and is what this variant carries.
+    ///
+    /// `unk_u32_00` is a word the original appends when `target_slot` is `7`
+    /// and three further checks of its own hold. Meaning: [U]. With it the body
+    /// is eight bytes, the same length as [`Self::WithTarget`], so a decoder
+    /// cannot tell the two apart — see the parsing note on the type.
     WithSlot {
         slot: u8,
         type_id: u16,
         target_slot: u8,
+        unk_u32_00: Option<u32>,
+    },
+    /// The class tail of `type_id >> 0xB` in `{6, 7, 9}`: a word, then a region
+    /// and three coordinates of the entity the item acts on.
+    ///
+    /// The coordinates are `u32` because that is the width the original writes;
+    /// nothing here claims they are integers rather than floats.
+    WithPosition {
+        slot: u8,
+        type_id: u16,
+        unk_u32_00: u32,
+        region: u16,
+        x: u32,
+        y: u32,
+        z: u32,
+    },
+    /// The class tail of `type_id >> 0xB == 8`: two words, both [U].
+    WithLink {
+        slot: u8,
+        type_id: u16,
+        unk_u32_00: u32,
+        unk_u32_01: u32,
+    },
+    /// A fixed block of 256 bytes, written without a length prefix. Boxed so a
+    /// small variant does not carry the block's size.
+    WithBlob {
+        slot: u8,
+        type_id: u16,
+        data: Box<[u8; 256]>,
     },
     /// The `0xf800 == 0x2800` class (return scroll with a destination name,
     /// megaphone, …): a length-prefixed ASCII string.
@@ -489,6 +528,9 @@ impl ItemUseRequest {
             ItemUseRequest::Simple { slot, .. }
             | ItemUseRequest::WithTarget { slot, .. }
             | ItemUseRequest::WithSlot { slot, .. }
+            | ItemUseRequest::WithPosition { slot, .. }
+            | ItemUseRequest::WithLink { slot, .. }
+            | ItemUseRequest::WithBlob { slot, .. }
             | ItemUseRequest::WithName { slot, .. } => *slot,
         }
     }
@@ -499,6 +541,9 @@ impl ItemUseRequest {
             ItemUseRequest::Simple { type_id, .. }
             | ItemUseRequest::WithTarget { type_id, .. }
             | ItemUseRequest::WithSlot { type_id, .. }
+            | ItemUseRequest::WithPosition { type_id, .. }
+            | ItemUseRequest::WithLink { type_id, .. }
+            | ItemUseRequest::WithBlob { type_id, .. }
             | ItemUseRequest::WithName { type_id, .. } => *type_id,
         }
     }
@@ -521,6 +566,7 @@ impl TryFrom<Bytes> for ItemUseRequest {
                 .try_into()
                 .unwrap(),
         );
+        let word = |at: usize| u32::from_le_bytes(value[at..at + 4].try_into().unwrap());
         match value.len() {
             3 => Ok(ItemUseRequest::Simple { slot, type_id }),
             // One trailing byte is the `targetSlot` class. Without this arm a
@@ -530,32 +576,51 @@ impl TryFrom<Bytes> for ItemUseRequest {
                 slot,
                 type_id,
                 target_slot: value[3],
+                unk_u32_00: None,
             }),
             8 => Ok(ItemUseRequest::WithTarget {
                 slot,
                 type_id,
-                target: u32::from_le_bytes(value[3..7].try_into().unwrap()),
+                target: word(3),
                 kind: value[7],
             }),
             _ => {
-                let len = u16::from_le_bytes(
-                    value
-                        .get(3..5)
-                        .ok_or_else(|| bad("0x704C body too short"))?
-                        .try_into()
-                        .unwrap(),
-                ) as usize;
-                let name = value
-                    .get(5..5 + len)
-                    .ok_or_else(|| bad("0x704C name runs past the body"))?;
-                if 5 + len != value.len() {
-                    return Err(bad("0x704C trailing bytes after the name"));
+                // The name form, when the length prefix accounts for exactly
+                // the rest of the body; otherwise the class tails.
+                let named = value.get(3..5).and_then(|prefix| {
+                    let len = u16::from_le_bytes(prefix.try_into().unwrap()) as usize;
+                    (5 + len == value.len()).then(|| value.slice(5..))
+                });
+                if let Some(name) = named {
+                    return Ok(ItemUseRequest::WithName {
+                        slot,
+                        type_id,
+                        name: String::from_utf8_lossy(&name).into_owned(),
+                    });
                 }
-                Ok(ItemUseRequest::WithName {
-                    slot,
-                    type_id,
-                    name: String::from_utf8_lossy(name).into_owned(),
-                })
+                match value.len() {
+                    11 => Ok(ItemUseRequest::WithLink {
+                        slot,
+                        type_id,
+                        unk_u32_00: word(3),
+                        unk_u32_01: word(7),
+                    }),
+                    21 => Ok(ItemUseRequest::WithPosition {
+                        slot,
+                        type_id,
+                        unk_u32_00: word(3),
+                        region: u16::from_le_bytes(value[7..9].try_into().unwrap()),
+                        x: word(9),
+                        y: word(13),
+                        z: word(17),
+                    }),
+                    259 => Ok(ItemUseRequest::WithBlob {
+                        slot,
+                        type_id,
+                        data: Box::new(value[3..].try_into().unwrap()),
+                    }),
+                    _ => Err(bad("0x704C body matches no known class")),
+                }
             }
         }
     }
@@ -572,7 +637,39 @@ impl From<ItemUseRequest> for Bytes {
                 buf.put_u32_le(target);
                 buf.put_u8(kind);
             }
-            ItemUseRequest::WithSlot { target_slot, .. } => buf.put_u8(target_slot),
+            ItemUseRequest::WithSlot {
+                target_slot,
+                unk_u32_00,
+                ..
+            } => {
+                buf.put_u8(target_slot);
+                if let Some(extra) = unk_u32_00 {
+                    buf.put_u32_le(extra);
+                }
+            }
+            ItemUseRequest::WithPosition {
+                unk_u32_00,
+                region,
+                x,
+                y,
+                z,
+                ..
+            } => {
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u16_le(region);
+                buf.put_u32_le(x);
+                buf.put_u32_le(y);
+                buf.put_u32_le(z);
+            }
+            ItemUseRequest::WithLink {
+                unk_u32_00,
+                unk_u32_01,
+                ..
+            } => {
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u32_le(unk_u32_01);
+            }
+            ItemUseRequest::WithBlob { data, .. } => buf.extend_from_slice(&data[..]),
             ItemUseRequest::WithName { name, .. } => {
                 buf.put_u16_le(name.len() as u16);
                 buf.extend_from_slice(name.as_bytes());
@@ -1509,6 +1606,7 @@ mod tests {
             slot: 13,
             type_id: 0x30CC,
             target_slot: 14,
+            unk_u32_00: None,
         };
         let wire: Bytes = req.clone().into();
 
@@ -1524,6 +1622,74 @@ mod tests {
             ItemUseRequest::try_from(Bytes::from_static(&[13, 0, 0, 1, 0, 0, 0, 2])).unwrap(),
             ItemUseRequest::WithTarget { .. }
         ));
+    }
+
+    /// `target_slot == 7` is the one case in which the original appends a word.
+    /// The body is then eight bytes, which is also `WithTarget`'s length — so
+    /// this is a send-side shape and the decoder keeps reading eight bytes as
+    /// `WithTarget`.
+    #[test]
+    fn with_slot_can_carry_the_trailing_word() {
+        let req = ItemUseRequest::WithSlot {
+            slot: 13,
+            type_id: 0x30CC,
+            target_slot: 7,
+            unk_u32_00: Some(0x1122_3344),
+        };
+        let wire: Bytes = req.into();
+
+        assert_eq!(&wire[..], &[13, 0xCC, 0x30, 7, 0x44, 0x33, 0x22, 0x11]);
+        assert!(matches!(
+            ItemUseRequest::try_from(wire).unwrap(),
+            ItemUseRequest::WithTarget { .. }
+        ));
+    }
+
+    /// The position tail: a word, a region and three coordinates.
+    #[test]
+    fn with_position_is_twentyone_bytes_and_round_trips() {
+        let req = ItemUseRequest::WithPosition {
+            slot: 13,
+            type_id: 0x3800,
+            unk_u32_00: 0x1122_3344,
+            region: 0x1234,
+            x: 11,
+            y: 22,
+            z: 33,
+        };
+        let wire: Bytes = req.clone().into();
+
+        assert_eq!(wire.len(), 21);
+        assert_eq!(ItemUseRequest::try_from(wire).unwrap(), req);
+    }
+
+    /// The two-word tail.
+    #[test]
+    fn with_link_is_eleven_bytes_and_round_trips() {
+        let req = ItemUseRequest::WithLink {
+            slot: 13,
+            type_id: 0x4000,
+            unk_u32_00: 0x1122_3344,
+            unk_u32_01: 0x5566_7788,
+        };
+        let wire: Bytes = req.clone().into();
+
+        assert_eq!(wire.len(), 11);
+        assert_eq!(ItemUseRequest::try_from(wire).unwrap(), req);
+    }
+
+    /// The fixed 256-byte block — no length prefix, so the body is 259 bytes.
+    #[test]
+    fn with_blob_is_a_fixed_block_of_256_bytes() {
+        let req = ItemUseRequest::WithBlob {
+            slot: 13,
+            type_id: 0x3800,
+            data: Box::new([0xAB; 256]),
+        };
+        let wire: Bytes = req.clone().into();
+
+        assert_eq!(wire.len(), 259);
+        assert_eq!(ItemUseRequest::try_from(wire).unwrap(), req);
     }
 
     /// The table maps only what is defensible. A plausible-looking sentence

@@ -13,9 +13,10 @@
 //! module is the same pattern with the cursor half added, and the two live
 //! side by side in `on_slot_press`.
 //!
-//! ⚠️ The wire tail is `[U]` — see [`ItemUseRequest::WithSlot`]. Everything
-//! here is arranged so that a mis-click cannot reach the wire: only a dead
-//! pet's scroll is an accepted target, and the confirm is a second gate.
+//! The wire shape is the original's own — see [`ItemUseRequest::WithSlot`].
+//! What is still open is which item class the server expects in which form, so
+//! everything here is arranged so that a mis-click cannot reach the wire: only
+//! a dead pet's scroll is an accepted target, and the confirm is a second gate.
 
 use bevy::prelude::*;
 

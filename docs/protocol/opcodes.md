@@ -222,7 +222,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0x3052` | InventoryItemDurabilityUpdate | S→C | wired | confirmed, 5 bytes |
 | `0x3040` | InventoryItemUpdate | S→C | wired | **byte 1 is a bitmask, not an updateType** — 8 bit-gated blocks, read off the original client; the shipped struct models 2 of 8 |
 | `0x3092` | InventoryCapacityUpdate | S→C | wired | fixed 2 bytes, read off the original client: byte 0 is a **target kind** (1 inventory / 2 storage), not a success flag — there is no failure tail |
-| `0x704C` | ItemUseRequest | C→S | experimental | CLIENT_ITEM_USE; unconfirmed on the wire |
+| `0x704C` | ItemUseRequest | C→S | experimental | CLIENT_ITEM_USE; the tail follows the item class (`type_id >> 0xB`) — none of the forms is confirmed on the wire, and which item takes which form is open |
 | `0xB04C` | ItemUseResponse | S→C | experimental | unconfirmed on the wire |
 | `0x7158` | QuickSlotSaveRequest | C→S | wired | under-bar quickslot persistence; kind 1 of a kind-discriminated opcode (kind 2 is the auto-potion settings, unwired) |
 
