@@ -161,14 +161,22 @@ pub const ALCHEMY_MIN_FUSE_SLOTS: usize = 2;
 /// one of five workers instead, and both `0xB150` arms (`op` 3 and 8) exist.
 /// Which of the two is the advanced elixir is unconfirmed.
 ///
-/// The original has a *second* builder for this opcode whose body is four
-/// fields of a different shape, belonging to the four-tab window rather than
-/// to the classic box. What settles the shape below is the server's reader: it
-/// takes this body, whichever window built it.
+/// The original builds **two** fuse bodies on this opcode. The four-tab window
+/// writes the tagged one above. The classic box writes a shorter one,
+/// `{u8 count; count × u8 inventory slot}`, with no tag and no `op` —
+/// [`Self::FuseUntagged`].
+///
+/// ⚠️ The two forms are **not distinguishable by their first byte**: a fuse of
+/// two slots starts with `02`, and so does the tag. Reading is therefore a
+/// choice, not a deduction — this reader tries the tagged form first and falls
+/// back to the short one, and only a server's answer can say which form it
+/// accepts. Writing is unaffected: a caller picks the variant.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum AlchemyReinforceRequest {
     /// Fuse these **inventory** slots (the wire numbering, bag from 13 up).
     Fuse { slots: Vec<u8> },
+    /// The same fuse without the two leading bytes — `{count, slots…}`.
+    FuseUntagged { slots: Vec<u8> },
     /// Abort a running fuse — the one-byte form.
     Cancel,
 }
@@ -179,6 +187,11 @@ impl AlchemyReinforceRequest {
     /// refusal and not a debug assertion.
     pub fn fuse(slots: Vec<u8>) -> Option<Self> {
         (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::Fuse { slots })
+    }
+
+    /// The short form, under the same minimum as [`Self::fuse`].
+    pub fn fuse_untagged(slots: Vec<u8>) -> Option<Self> {
+        (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::FuseUntagged { slots })
     }
 }
 
@@ -194,6 +207,12 @@ impl From<AlchemyReinforceRequest> for Bytes {
                 out.extend(slots.iter().copied());
                 Bytes::from(out)
             }
+            AlchemyReinforceRequest::FuseUntagged { slots } => {
+                let mut out = Vec::with_capacity(slots.len() + 1);
+                out.push(slots.len() as u8);
+                out.extend(slots.iter().copied());
+                Bytes::from(out)
+            }
         }
     }
 }
@@ -201,33 +220,33 @@ impl From<AlchemyReinforceRequest> for Bytes {
 impl TryFrom<Bytes> for AlchemyReinforceRequest {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
-        // Read in the server's order: tag, op, count, slots. Reading the tag
-        // as a count is what made the earlier three-field body unreadable —
-        // `02 03 00` then parses "successfully" as a two-slot fuse.
-        let (&tag, rest) = value.split_first().ok_or_else(short_packet)?;
-        if tag != ALCHEMY_REINFORCE_TAG {
-            // everything that is not the tag is a cancel to the server
-            // (`506e30`/`506e51`); we only ever build the original's bare `1`,
-            // so anything longer is a truncated or foreign frame
-            return if tag == ALCHEMY_ACTION_CANCEL && rest.is_empty() {
-                Ok(Self::Cancel)
-            } else {
-                Err(short_packet())
-            };
+        // Order of attempts, not a discriminator: the cancel byte first, then
+        // the tagged body (tag, op, count, slots), then the short body
+        // (count, slots). The first two bytes of the two fuse forms overlap,
+        // so a body that satisfies both is read as the tagged one.
+        let (&first, rest) = value.split_first().ok_or_else(short_packet)?;
+        if first == ALCHEMY_ACTION_CANCEL && rest.is_empty() {
+            return Ok(Self::Cancel);
         }
-        let (&op, rest) = rest.split_first().ok_or_else(short_packet)?;
-        if op != ALCHEMY_REINFORCE_OP_FUSE {
-            // ops 4/5/7/8 are other workers with other answers and are not
-            // modelled by this enum; refusing beats guessing a variant
-            return Err(short_packet());
+        if first == ALCHEMY_REINFORCE_TAG {
+            if let Some((&op, rest)) = rest.split_first() {
+                if op == ALCHEMY_REINFORCE_OP_FUSE {
+                    let (&count, slots) = rest.split_first().ok_or_else(short_packet)?;
+                    if count as usize != slots.len() {
+                        return Err(short_packet());
+                    }
+                    return Ok(Self::Fuse {
+                        slots: slots.to_vec(),
+                    });
+                }
+            }
         }
-        let (&count, rest) = rest.split_first().ok_or_else(short_packet)?;
-        if count as usize != rest.len() {
-            return Err(short_packet());
+        if first as usize == rest.len() && !rest.is_empty() {
+            return Ok(Self::FuseUntagged {
+                slots: rest.to_vec(),
+            });
         }
-        Ok(Self::Fuse {
-            slots: rest.to_vec(),
-        })
+        Err(short_packet())
     }
 }
 
@@ -515,10 +534,32 @@ mod tests {
         // slot 26, an item the player never selected
         assert!(!bytes.contains(&(13 + 13)));
 
-        // the three-field body this used to send had `0x0D` in the op byte,
-        // outside the server's `op ∈ 3..=8` window — dropped without an answer
-        assert!(
-            AlchemyReinforceRequest::try_from(Bytes::from_static(&[0x02, 0x0D, 0x14])).is_err()
+        // `02 0D 14` is not this form: `0x0D` is outside the server's
+        // `op ∈ 3..=8` window, so the body reads back as the short form
+        // instead — two slots, `0x0D` and `0x14`
+        assert_eq!(
+            AlchemyReinforceRequest::try_from(Bytes::from_static(&[0x02, 0x0D, 0x14])).unwrap(),
+            AlchemyReinforceRequest::FuseUntagged {
+                slots: vec![0x0D, 0x14]
+            }
+        );
+    }
+
+    /// The short form the classic box builds: a count and the slots, no tag and
+    /// no `op`. It shares its first byte with the tagged form, which is why the
+    /// reader has a fixed order and this test pins both directions.
+    #[test]
+    fn the_untagged_fuse_form_is_count_then_slots() {
+        let fuse = AlchemyReinforceRequest::fuse_untagged(vec![13, 20]).unwrap();
+        let bytes: Bytes = fuse.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x02, 0x0D, 0x14]);
+        assert_eq!(AlchemyReinforceRequest::try_from(bytes).unwrap(), fuse);
+
+        // a body that also satisfies the tagged form stays the tagged one
+        assert_eq!(
+            AlchemyReinforceRequest::try_from(Bytes::from_static(&[0x02, 0x03, 0x01, 0x46]))
+                .unwrap(),
+            AlchemyReinforceRequest::Fuse { slots: vec![0x46] }
         );
     }
 

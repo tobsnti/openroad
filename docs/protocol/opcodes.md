@@ -261,7 +261,7 @@ NPC dialog, teleporter, storage, repair.
 | `0xB03E` | ItemRepairResponse | S→C | wired |  |
 | `0x7157` | AlchemyDismantleRequest | C→S | wired | alchemy dismantle, `{u8 SlotCount, u8[] Slots}` — the family's **only** published body |
 | `0xB157` | AlchemyDismantleResponse | S→C | wired | `{u8 result, if result == 2 u16 errorCode}`; the error-code table is a dead page, so the code stays unnamed |
-| `0x7150` | AlchemyReinforceRequest | C→S | experimental | elixir fuse / cancel; `{u8 2, u8 op=3, u8 count, count × u8 inventory slot}`, confirmed against a real server |
+| `0x7150` | AlchemyReinforceRequest | C→S | experimental | elixir fuse / cancel; `{u8 2, u8 op=3, u8 count, count × u8 inventory slot}`, confirmed against a real server. A second form without the two leading bytes exists; the two are not distinguishable by their first byte |
 | `0xB150` | AlchemyReinforceResponse | S→C | experimental | `{u8 result, …}`; the outcome is classified by two flag bytes, as the original's handler does |
 | `0x7151` | AlchemyStoneRequest | C→S | experimental | stone attach / cancel; leads with the `AlchemyType` byte (4 magic / 5 attribute), then the same count-prefixed slot list |
 | `0xB151` | AlchemyStoneResponse | S→C | experimental | as `0xB150` minus the breakdown flag — a stone attach always delivers a record |
