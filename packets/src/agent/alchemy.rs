@@ -257,9 +257,25 @@ impl TryFrom<Bytes> for AlchemyReinforceRequest {
 /// written first and is [`ALCHEMY_TYPE_MAGIC_STONE`] or
 /// [`ALCHEMY_TYPE_ATTRIBUTE_STONE`]. The slots are the same inventory
 /// numbering `0x7150` uses.
+///
+/// This opcode is the mirror image of `0x7150`: the original builds the same
+/// body a second time with a leading `2` in front of it — [`Self::FuseTagged`],
+/// the four-tab window's form. As on `0x7150`, ⚠️ the two forms are **not
+/// distinguishable by their first byte** (a stone type of `2` and the tag look
+/// alike), so the reader tries the plain form first and falls back to the
+/// tagged one; what a server accepts is not settled here. What the leading `2`
+/// means on this opcode is not established either.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum AlchemyStoneRequest {
-    Fuse { stone_type: u8, slots: Vec<u8> },
+    Fuse {
+        stone_type: u8,
+        slots: Vec<u8>,
+    },
+    /// The same fields behind a leading `2`.
+    FuseTagged {
+        stone_type: u8,
+        slots: Vec<u8>,
+    },
     Cancel,
 }
 
@@ -269,6 +285,11 @@ impl AlchemyStoneRequest {
     pub fn fuse(stone_type: u8, slots: Vec<u8>) -> Option<Self> {
         (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::Fuse { stone_type, slots })
     }
+
+    /// The tagged form, under the same minimum as [`Self::fuse`].
+    pub fn fuse_tagged(stone_type: u8, slots: Vec<u8>) -> Option<Self> {
+        (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::FuseTagged { stone_type, slots })
+    }
 }
 
 impl From<AlchemyStoneRequest> for Bytes {
@@ -277,6 +298,14 @@ impl From<AlchemyStoneRequest> for Bytes {
             AlchemyStoneRequest::Cancel => Bytes::from_static(&[ALCHEMY_ACTION_CANCEL]),
             AlchemyStoneRequest::Fuse { stone_type, slots } => {
                 let mut out = Vec::with_capacity(slots.len() + 2);
+                out.push(stone_type);
+                out.push(slots.len() as u8);
+                out.extend(slots.iter().copied());
+                Bytes::from(out)
+            }
+            AlchemyStoneRequest::FuseTagged { stone_type, slots } => {
+                let mut out = Vec::with_capacity(slots.len() + 3);
+                out.push(ALCHEMY_REINFORCE_TAG);
                 out.push(stone_type);
                 out.push(slots.len() as u8);
                 out.extend(slots.iter().copied());
@@ -292,13 +321,23 @@ impl TryFrom<Bytes> for AlchemyStoneRequest {
         if value.len() == 1 && value[0] == ALCHEMY_ACTION_CANCEL {
             return Ok(Self::Cancel);
         }
-        if value.len() < 2 || value[1] as usize != value.len() - 2 {
-            return Err(short_packet());
+        // Order of attempts, not a discriminator — see the type docs.
+        if value.len() >= 2 && value[1] as usize == value.len() - 2 {
+            return Ok(Self::Fuse {
+                stone_type: value[0],
+                slots: value[2..].to_vec(),
+            });
         }
-        Ok(Self::Fuse {
-            stone_type: value[0],
-            slots: value[2..].to_vec(),
-        })
+        if value.len() >= 3
+            && value[0] == ALCHEMY_REINFORCE_TAG
+            && value[2] as usize == value.len() - 3
+        {
+            return Ok(Self::FuseTagged {
+                stone_type: value[1],
+                slots: value[3..].to_vec(),
+            });
+        }
+        Err(short_packet())
     }
 }
 
@@ -620,6 +659,34 @@ mod tests {
         let bytes: Bytes = fuse.clone().into();
         assert_eq!(bytes.as_ref(), &[0x04, 0x02, 0x0D, 0x14]);
         assert_eq!(AlchemyStoneRequest::try_from(bytes).unwrap(), fuse);
+    }
+
+    /// The second form of the same fuse: a leading `2`, then type, count and
+    /// slots. `02 04 01 0D` is the shortest body that only this form explains —
+    /// read as the plain form its count byte (`04`) does not match the rest.
+    #[test]
+    fn the_tagged_stone_form_puts_a_two_in_front() {
+        let fuse =
+            AlchemyStoneRequest::fuse_tagged(ALCHEMY_TYPE_MAGIC_STONE, vec![13, 20]).unwrap();
+        let bytes: Bytes = fuse.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x02, 0x04, 0x02, 0x0D, 0x14]);
+
+        assert_eq!(
+            AlchemyStoneRequest::try_from(Bytes::from_static(&[0x02, 0x04, 0x01, 0x0D])).unwrap(),
+            AlchemyStoneRequest::FuseTagged {
+                stone_type: ALCHEMY_TYPE_MAGIC_STONE,
+                slots: vec![0x0D]
+            }
+        );
+
+        // and a body both forms explain stays the plain one
+        assert_eq!(
+            AlchemyStoneRequest::try_from(Bytes::from_static(&[0x02, 0x02, 0x0D, 0x14])).unwrap(),
+            AlchemyStoneRequest::Fuse {
+                stone_type: 2,
+                slots: vec![0x0D, 0x14]
+            }
+        );
     }
 
     /// The three outcomes the handler distinguishes before it reads the item:
