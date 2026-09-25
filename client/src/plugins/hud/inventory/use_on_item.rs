@@ -361,7 +361,8 @@ mod test {
                 cos_ref_id: None,
                 name: None,
                 rent_seconds: None,
-                unk: None,
+                param_count: None,
+                params: Vec::new(),
             },
         }
     }

@@ -155,6 +155,18 @@ pub const COS_STATE_UNSUMMONED: u8 = 3;
 /// (observed live 2026-08-18).
 pub const COS_STATE_DEAD: u8 = 4;
 
+/// One parameter of a summoned pet. `kind` 5 carries two extra fields; any
+/// other non-zero kind ends the record, so the reader refuses it rather than
+/// guessing a width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CosParam {
+    pub kind: u8,
+    pub a: u32,
+    pub b: u32,
+    pub c: Option<u32>,
+    pub d: Option<u8>,
+}
+
 /// The class-dependent part of an inventory item. Selected via
 /// [`ItemClassResolver`], which is why [`InventoryItem`] is not a plain derive.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,7 +180,10 @@ pub enum ItemTypeData {
         name: Option<String>,
         /// Present for rentable pets (`TID4 == 2`) that carry a pet.
         rent_seconds: Option<u32>,
-        unk: Option<u8>,
+        /// How many [`CosParam`] follow; absent while the scroll has never
+        /// been summoned.
+        param_count: Option<u8>,
+        params: Vec<CosParam>,
     },
     /// Transformation-monster scroll (`TID3 == 2`): the mask's ref id.
     TransformScroll {
@@ -271,28 +286,55 @@ impl ItemTypeData {
                     // unconditionally desynced the rest of the item list.
                     let state = u8::read_from(reader)?;
                     let summoned = state != COS_STATE_NEVER_SUMMONED;
+                    let cos_ref_id = if summoned {
+                        Some(u32::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    let name = if summoned {
+                        Some(read_string(reader)?)
+                    } else {
+                        None
+                    };
+                    let rent_seconds = if summoned && tid4 == 2 {
+                        Some(u32::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    // The byte behind the name counts the parameters that
+                    // follow; reading it as a flag left the whole list in the
+                    // stream.
+                    let param_count = if summoned {
+                        Some(u8::read_from(reader)?)
+                    } else {
+                        None
+                    };
+                    let mut params = Vec::with_capacity(param_count.unwrap_or(0) as usize);
+                    for _ in 0..param_count.unwrap_or(0) {
+                        let kind = u8::read_from(reader)?;
+                        let a = u32::read_from(reader)?;
+                        let b = u32::read_from(reader)?;
+                        let (c, d) = match kind {
+                            0 => (None, None),
+                            5 => (Some(u32::read_from(reader)?), Some(u8::read_from(reader)?)),
+                            // Any other kind ends the record — its width is
+                            // unknown, and assuming one would shift the rest.
+                            _ => {
+                                return Err(SerializationError::UnknownVariation(
+                                    kind as usize,
+                                    "pet parameter kind has no known width",
+                                ))
+                            }
+                        };
+                        params.push(CosParam { kind, a, b, c, d });
+                    }
                     ItemTypeData::CosPet {
                         state,
-                        cos_ref_id: if summoned {
-                            Some(u32::read_from(reader)?)
-                        } else {
-                            None
-                        },
-                        name: if summoned {
-                            Some(read_string(reader)?)
-                        } else {
-                            None
-                        },
-                        rent_seconds: if summoned && tid4 == 2 {
-                            Some(u32::read_from(reader)?)
-                        } else {
-                            None
-                        },
-                        unk: if summoned {
-                            Some(u8::read_from(reader)?)
-                        } else {
-                            None
-                        },
+                        cos_ref_id,
+                        name,
+                        rent_seconds,
+                        param_count,
+                        params,
                     }
                 }
                 2 => ItemTypeData::TransformScroll {
@@ -2126,7 +2168,8 @@ mod test {
                     cos_ref_id: None,
                     name: None,
                     rent_seconds: None,
-                    unk: None,
+                    param_count: None,
+                    params: Vec::new(),
                 },
                 "slot {} over-read past the state byte",
                 unused.slot
@@ -2183,7 +2226,8 @@ mod test {
                 cos_ref_id: Some(1_907),
                 name: Some("Bunny".to_string()),
                 rent_seconds: Some(1_700_000_000),
-                unk: Some(0),
+                param_count: Some(0),
+                params: Vec::new(),
             }
         );
         assert_eq!(
@@ -2193,11 +2237,105 @@ mod test {
                 cos_ref_id: Some(2_120),
                 name: Some("Piggy".to_string()),
                 rent_seconds: None,
-                unk: Some(0),
+                param_count: Some(0),
+                params: Vec::new(),
             }
         );
         assert_eq!(items[2].slot, 22);
         assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn a_summoned_scroll_reads_the_parameter_list_behind_its_count() {
+        // The byte behind the name is a count, not a flag: each parameter is
+        // five more fields wide, and kind 5 carries two of them on top.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_RENTABLE)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u32(1_700_000_000)
+            .u8(2)
+            // parameter 1: kind 0 stops after the two values
+            .u8(0)
+            .u32(11)
+            .u32(22)
+            // parameter 2: kind 5 carries two more
+            .u8(5)
+            .u32(33)
+            .u32(44)
+            .u32(55)
+            .u8(6)
+            // a plain stack behind it proves the alignment held
+            .u8(21)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        match &items[0].data {
+            ItemTypeData::CosPet {
+                param_count,
+                params,
+                ..
+            } => {
+                assert_eq!(*param_count, Some(2));
+                assert_eq!(
+                    params[0],
+                    CosParam {
+                        kind: 0,
+                        a: 11,
+                        b: 22,
+                        c: None,
+                        d: None
+                    }
+                );
+                assert_eq!(
+                    params[1],
+                    CosParam {
+                        kind: 5,
+                        a: 33,
+                        b: 44,
+                        c: Some(55),
+                        d: Some(6)
+                    }
+                );
+            }
+            other => panic!("pet mis-parsed: {other:?}"),
+        }
+        assert_eq!(items[1].slot, 21);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    /// A kind the original does not know ends its read, so ours must fail
+    /// instead of inventing a width.
+    #[test]
+    fn an_unknown_pet_parameter_kind_fails_the_record() {
+        let b = Body::default()
+            .u8(45)
+            .u8(1)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_GROWTH)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u8(1)
+            .u8(3)
+            .u32(11)
+            .u32(22);
+        // The item record itself, past the section's size and count bytes.
+        let mut cursor = Cursor::new(&b.0[2..]);
+        assert!(InventoryItem::read_with(&mut cursor, &resolver()).is_err());
     }
 
     #[test]
