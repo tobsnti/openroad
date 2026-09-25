@@ -373,6 +373,75 @@ impl From<GuildCreatedData> for Bytes {
     }
 }
 
+/// 0xB0F8 — server → client: an ack whose success arm carries the whole guild
+/// record, the same one the chunked transfer assembles.
+///
+/// The request it answers is [U]. On `result == 2` it reads a `u16` code from
+/// the guild error family and special-cases exactly one value (`0x4C10`), which
+/// is what puts this opcode in the guild family rather than anywhere else.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct GuildRecordResponse {
+    pub result: u8,
+    /// Present when `result == 1`.
+    pub data: Option<GuildData>,
+    /// Present when `result == 2`.
+    pub error: Option<u16>,
+    /// Anything after the record. Empty on the wire; kept so a future server
+    /// that appends something does not lose it silently.
+    pub tail: Bytes,
+}
+
+impl TryFrom<Bytes> for GuildRecordResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        let result = *value.first().ok_or_else(|| {
+            SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "empty 0xB0F8 body",
+            ))
+        })?;
+        match result {
+            1 => {
+                let (data, consumed) = GuildData::parse_prefix(value.slice(1..))?;
+                Ok(GuildRecordResponse {
+                    result,
+                    data: Some(data),
+                    error: None,
+                    tail: value.slice(1 + consumed..),
+                })
+            }
+            2 => Ok(GuildRecordResponse {
+                result,
+                data: None,
+                error: (value.len() >= 3).then(|| u16::from_le_bytes([value[1], value[2]])),
+                tail: value.slice(value.len().min(3)..),
+            }),
+            // Any other result reads nothing at all.
+            _ => Ok(GuildRecordResponse {
+                result,
+                data: None,
+                error: None,
+                tail: value.slice(1..),
+            }),
+        }
+    }
+}
+
+impl From<GuildRecordResponse> for Bytes {
+    fn from(p: GuildRecordResponse) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(p.result);
+        if let Some(data) = p.data {
+            buf.extend_from_slice(&Bytes::from(data));
+        }
+        if let Some(error) = p.error {
+            buf.put_u16_le(error);
+        }
+        buf.extend_from_slice(&p.tail);
+        buf.freeze()
+    }
+}
+
 /// 0x70F9 — client → server: edit the guild notice.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildNoticeEditRequest {
@@ -654,6 +723,29 @@ mod tests {
         }
         out.push(0); // election_count
         out
+    }
+
+    /// 0xB0F8 carries the whole record on success and a code on refusal.
+    #[test]
+    fn the_record_ack_is_wired_and_decodes_both_arms() {
+        let mut body = vec![1u8];
+        body.extend(guild_record(&[("Founder", GuildPermissions::MASTER)]));
+        let wire = Bytes::from(body);
+
+        let packet = crate::Packet::deserialize(0xB0F8, wire.clone()).unwrap();
+        let (opcode, back) = packet.into_serialize();
+        assert_eq!(opcode, 0xB0F8);
+        assert_eq!(back, wire);
+
+        let decoded = GuildRecordResponse::try_from(wire).unwrap();
+        assert_eq!(decoded.data.as_ref().unwrap().name, "Wanderers");
+        assert!(decoded.tail.is_empty(), "the record ends the body");
+
+        let refused = Bytes::from_static(&[0x02, 0x10, 0x4C]);
+        let decoded = GuildRecordResponse::try_from(refused.clone()).unwrap();
+        assert_eq!(decoded.error, Some(0x4C10));
+        assert!(decoded.data.is_none());
+        assert_eq!(Bytes::from(decoded), refused);
     }
 
     /// The record does not end with the last member: a second counted list

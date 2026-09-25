@@ -280,6 +280,7 @@ The record arrives chunked (BEGIN → DATA… → END) and is parsed once assemb
 | `0x30FF` | EntityGuildUpdate | S→C | wired | **the original does have a parser**: `u32 gid`, `u32 guild_id`, `u16+N guild name`, then **only if the name length ≠ 0** `u16+M grant name`, `u32 crest rev`, `u32 union id`, `u32 union crest rev`, `u8 fortress position` (a **bit-valued** enum: 1 commander, 2 sub-commander, 4 battle-manager, 8 product-manager, 0x10 trainer-manager, 0x20 engineer) and `u8 relation flag`. It is a guild-tag update, not an activity log |
 | `0x38F5` | GuildUpdate | S→C | experimental | `update_type` only; per-type payload raw |
 | `0xB0F0` | GuildCreatedData | S→C | experimental | success + the same record inline |
+| `0xB0F8` | GuildRecordResponse | S→C | experimental | `u8 result`; the whole record on success, a `u16` guild code on refusal |
 | `0x70F9` | GuildNoticeEditRequest | C→S | experimental | title + message |
 
 ### Guild lifecycle & membership
