@@ -64,6 +64,7 @@ fn seed_mock_inventory(mut state: ResMut<InventoryState>, mut commands: Commands
         ref_id,
         data: ItemTypeData::Expendable {
             stack_count: count,
+            inscription: None,
             assimilation_prob: None,
             mag_params: vec![],
         },

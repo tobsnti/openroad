@@ -299,6 +299,7 @@ mod tests {
             items[0].data,
             ItemTypeData::Expendable {
                 stack_count: 2,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: Vec::new()
             }

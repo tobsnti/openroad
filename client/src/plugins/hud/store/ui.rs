@@ -2189,6 +2189,7 @@ mod test {
             rent: RentInfo::default(),
             ref_id: 3626,
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: 1,
                 assimilation_prob: None,
                 mag_params: Vec::new(),

@@ -1608,6 +1608,7 @@ mod tests {
         // A non-COS item has no state at all, and is never "dead".
         let potion = ItemTypeData::Expendable {
             stack_count: 1,
+            inscription: None,
             assimilation_prob: None,
             mag_params: Vec::new(),
         };
@@ -2122,6 +2123,7 @@ mod tests {
             item.data,
             ItemTypeData::Expendable {
                 stack_count: 2,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: Vec::new()
             }

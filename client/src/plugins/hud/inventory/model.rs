@@ -721,6 +721,7 @@ mod test {
             rent: RentInfo::default(),
             ref_id: 4,
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: count,
                 assimilation_prob: None,
                 mag_params: vec![],
@@ -752,6 +753,7 @@ mod test {
                 rent: RentInfo::default(),
                 ref_id: 62, // ITEM_ETC_AMMO_ARROW_01
                 data: ItemTypeData::Expendable {
+                    inscription: None,
                     stack_count,
                     assimilation_prob: None,
                     mag_params: vec![],
@@ -923,6 +925,7 @@ mod test {
             rent: RentInfo::default(),
             ref_id: 4,
             data: ItemTypeData::Expendable {
+                inscription: None,
                 stack_count: 1,
                 assimilation_prob: None,
                 mag_params: vec![],

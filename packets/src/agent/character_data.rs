@@ -180,10 +180,19 @@ pub enum ItemTypeData {
     },
     Expendable {
         stack_count: u16,
+        /// Sub-type `TID3 == 8` writes a text line behind the count and
+        /// nothing else.
+        inscription: Option<String>,
         /// Magic/attribute stones (`TID3 == 11`, `TID4 ∈ {1, 2}`).
         assimilation_prob: Option<u8>,
         /// Gacha cards carry their own magic-param list.
         mag_params: Vec<MagicParam>,
+    },
+    /// Sub-type `TID3 == 5` with `TID4 != 1` — the family whose party
+    /// distribution carries a money amount. Its body is a single amount and
+    /// carries no stack count at all.
+    ExpendableAmount {
+        amount: u32,
     },
     /// A *known-class* item whose sub-type falls outside go-sro's
     /// `WriteContainerItem` switch — the server writes NO body for those, so
@@ -296,6 +305,20 @@ impl ItemTypeData {
                 // TID3 values — a zero-byte body (see ItemTypeData::Unknown)
                 _ => ItemTypeData::Unknown,
             },
+            // TID3 5 (TID4 != 1) and TID3 8 are read before the ordinary
+            // stack: the first has no count at all, the second a text line
+            // behind it.
+            ItemClass::Expendable { tid3: 5, tid4 } if tid4 != 1 => {
+                ItemTypeData::ExpendableAmount {
+                    amount: u32::read_from(reader)?,
+                }
+            }
+            ItemClass::Expendable { tid3: 8, .. } => ItemTypeData::Expendable {
+                stack_count: u16::read_from(reader)?,
+                inscription: Some(read_string(reader)?),
+                assimilation_prob: None,
+                mag_params: Vec::new(),
+            },
             ItemClass::Expendable { tid3, tid4 } => {
                 let stack_count = u16::read_from(reader)?;
                 let assimilation_prob = if tid3 == 11 && (tid4 == 1 || tid4 == 2) {
@@ -321,6 +344,7 @@ impl ItemTypeData {
                 };
                 ItemTypeData::Expendable {
                     stack_count,
+                    inscription: None,
                     assimilation_prob,
                     mag_params,
                 }
@@ -1399,6 +1423,8 @@ mod test {
                                    // ITEM_COS_P_FLUTE is 3/2/1/1 (growth pet, no rent field).
     const PET_SCROLL_RENTABLE: u32 = 10365;
     const PET_SCROLL_GROWTH: u32 = 7488;
+    const INSCRIBED: u32 = 31000; // expendable, TID3 = 8: count plus a text line
+    const AMOUNT_ITEM: u32 = 31001; // expendable, TID3 = 5, TID4 != 1: one amount
 
     fn resolver() -> MockResolver {
         MockResolver {
@@ -1407,6 +1433,8 @@ mod test {
                 (PILLS, ItemClass::Expendable { tid3: 1, tid4: 1 }),
                 (MP_POTION, ItemClass::Expendable { tid3: 1, tid4: 2 }),
                 (GACHA_CARD, ItemClass::Expendable { tid3: 14, tid4: 2 }),
+                (INSCRIBED, ItemClass::Expendable { tid3: 8, tid4: 1 }),
+                (AMOUNT_ITEM, ItemClass::Expendable { tid3: 5, tid4: 0 }),
                 (
                     PET_SCROLL_RENTABLE,
                     ItemClass::Container { tid3: 1, tid4: 2 },
@@ -1600,6 +1628,7 @@ mod test {
             inv[1].data,
             ItemTypeData::Expendable {
                 stack_count: 50,
+                inscription: None,
                 assimilation_prob: None,
                 mag_params: vec![],
             }
@@ -1868,6 +1897,75 @@ mod test {
         let offender = trace.last().expect("trace keeps the offender");
         assert_eq!(offender.ref_id, 999_999);
         assert_eq!(offender.class, ItemClass::Unknown);
+    }
+
+    #[test]
+    fn an_inscribed_expendable_carries_a_string_after_its_count() {
+        // TID3 8 writes a count and a free-text line. Reading the count alone
+        // leaves the text in the stream and shifts every later record.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(10)
+            .u32(0)
+            .u32(INSCRIBED)
+            .u16(7)
+            .string("Mint")
+            // a plain stack behind it proves the alignment held
+            .u8(11)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].data,
+            ItemTypeData::Expendable {
+                stack_count: 7,
+                inscription: Some("Mint".to_string()),
+                assimilation_prob: None,
+                mag_params: Vec::new(),
+            }
+        );
+        assert_eq!(items[1].slot, 11);
+        assert_eq!(cursor.position() as usize, b.0.len());
+    }
+
+    #[test]
+    fn a_five_sub_type_expendable_is_one_amount_and_no_count() {
+        // TID3 5 with TID4 != 1 is the one expendable whose body is a four-byte
+        // amount instead of a two-byte count.
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(12)
+            .u32(0)
+            .u32(AMOUNT_ITEM)
+            .u32(0x0001_0000)
+            .u8(13)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &resolver(), &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].data,
+            ItemTypeData::ExpendableAmount {
+                amount: 0x0001_0000
+            }
+        );
+        assert_eq!(items[1].slot, 13);
+        assert_eq!(cursor.position() as usize, b.0.len());
     }
 
     #[test]
