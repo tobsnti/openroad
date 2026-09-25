@@ -400,7 +400,7 @@ on the wire, so all are `experimental`.
 | `0xB060` | PartyCreateResponse | S→C | experimental | the **create** ack (not the invite ack — attribution corrected); JID on success, `u16` code on failure |
 | `0xB062` | PartyInviteResponse | S→C | experimental | the invite ack; empty on success, the invitation itself is `0x3080` |
 | `0xB067` | PartyJoinResponse | S→C | experimental | the join ack; its body is read from the wire |
-| `0xB06D` | PartyMatchJoinAck | S→C | experimental | branches on `result == 1`, not `== 2` — both tails are `u16` |
+| `0xB06D` | PartyMatchJoinAck | S→C | experimental | our decoder branches on `result == 1`, not `== 2` — both tails are `u16` |
 
 ## Quest marks (wire only — the quest system itself is not built yet)
 
@@ -501,7 +501,7 @@ settings word and `0xB0C5` follow the binaries alone and are unconfirmed.
 | `0x30CA` | PetStateUpdate | S→C | experimental | `{u32 uid, u8 mask}` plus one byte per set mask bit. The two bits are not confirmed: `COS_STATE_MASK_A/B` = 0x01/0x02 are the lowest bits of the only mask value we know, 0x03, so the *reader* is honest about the frame's width while the meaning of the bytes is not claimed |
 | `0x30E7` | StuckDistanceWarning | S→C | experimental | one reason byte; not COS-only (1 = job trade cart, 2 = quest monster). The distances the original prints are its own literals |
 | `0xB0C5` | PetActionResponse | S→C | experimental | 0x70C5 ack. The error code sits **between** the action echo and the uid, so the uid's offset moves with `result`; `item_gid` only on action 8 |
-| `0xB0C6` | PetTerminateResponse | S→C | experimental | success body empty; the guard is `result != 1`, not `== 2` |
+| `0xB0C6` | PetTerminateResponse | S→C | experimental | success body empty; our guard is `result != 1`, not `== 2` |
 | `0xB0CB` | PetPlayerMounted | S→C | experimental | mount/dismount ack. `riding_unique_id` is **unconditional** — a dismount is 10 bytes, and gating it on `is_mounting` consumed 6 |
 | `0xB116` | PetUnsummonResponse | S→C | experimental | success body empty; COS error category `0x0C` |
 | `0xB117` | PetRenameResponse | S→C | experimental | success body empty — the new name arrives as `0x30C9` arm 5, so nothing is applied optimistically |
