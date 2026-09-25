@@ -793,11 +793,14 @@ pub struct PartyMatchJoinAck {
 /// 0x3068 — an item dropped by the party was distributed to a member.
 ///
 /// Hand-written for the same reason as the stall rows: the tail's *width*
-/// depends on the item's class in the client's own itemdata
-/// (`TID2 == 1` → one `opt_level` byte, `TID2 == 2` → nothing at all,
-/// `TID2 == 3` → a `u16` quantity), and `Deserialize` cannot take an
-/// [`ItemClassResolver`]. The tail is therefore kept raw behind a
-/// resolver-taking accessor, exactly like `StallEntityAction::rows`.
+/// depends on the item's class in the client's own itemdata (eight bytes for
+/// gold, a `u16` count for any other expendable, one `opt_level` byte for
+/// everything else), and `Deserialize` cannot take an [`ItemClassResolver`].
+/// The tail is therefore kept raw behind a resolver-taking accessor, exactly
+/// like `StallEntityAction::rows`.
+///
+/// There is no tail-less arm: every class ends in a read of 8, 2 or 1 bytes,
+/// and one byte is also the default.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct PartyDistribution {
     /// The member who received it.
@@ -810,13 +813,14 @@ pub struct PartyDistribution {
 /// The class-dependent tail of a 0x3068.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PartyDistributionDetail {
-    /// `TID2 == 1` (equipment): the item's plus level.
-    OptLevel(u8),
-    /// `TID2 == 2` (containers/COS): the original triggers no message and
-    /// writes no tail.
-    None,
-    /// `TID2 == 3` (expendables): how many.
+    /// Gold: an expendable of sub-type `TID3 == 5` with `TID4 != 1`, whose
+    /// tail is an eight-byte amount.
+    Gold(u64),
+    /// Expendables other than gold: how many.
     Quantity(u16),
+    /// Everything else, and the default: the item's plus level. Equipment and
+    /// containers both land here — there is no tail-less arm.
+    OptLevel(u8),
 }
 
 impl PartyDistribution {
@@ -826,16 +830,19 @@ impl PartyDistribution {
     /// short.
     pub fn detail(&self, resolver: &impl ItemClassResolver) -> Option<PartyDistributionDetail> {
         match resolver.item_class(self.ref_item_id) {
-            ItemClass::Equipment => self
-                .raw_tail
-                .first()
-                .copied()
-                .map(PartyDistributionDetail::OptLevel),
-            ItemClass::Container { .. } => Some(PartyDistributionDetail::None),
+            ItemClass::Expendable { tid3: 5, tid4 } if tid4 != 1 => {
+                let bytes: [u8; 8] = self.raw_tail.get(..8)?.try_into().ok()?;
+                Some(PartyDistributionDetail::Gold(u64::from_le_bytes(bytes)))
+            }
             ItemClass::Expendable { .. } => {
                 let bytes: [u8; 2] = self.raw_tail.get(..2)?.try_into().ok()?;
                 Some(PartyDistributionDetail::Quantity(u16::from_le_bytes(bytes)))
             }
+            ItemClass::Equipment | ItemClass::Container { .. } => self
+                .raw_tail
+                .first()
+                .copied()
+                .map(PartyDistributionDetail::OptLevel),
             ItemClass::Unknown => None,
         }
     }
@@ -1614,9 +1621,9 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// 0x3068's tail width is a property of the ITEM, not of the packet: one
-    /// byte for equipment, nothing for a container, two bytes for an
-    /// expendable — and unknown when the class is unknown, because a guessed
+    /// 0x3068's tail width is a property of the ITEM, not of the packet: eight
+    /// bytes for gold, two for any other expendable, one for equipment and for
+    /// containers — and unknown when the class is unknown, because a guessed
     /// width is how a fake record gets forged.
     #[test]
     fn the_distribution_tail_is_read_against_the_item_class() {
@@ -1646,7 +1653,7 @@ mod tests {
         );
         assert_eq!(
             decoded.detail(&Fixed(ItemClass::Container { tid3: 0, tid4: 0 })),
-            Some(PartyDistributionDetail::None)
+            Some(PartyDistributionDetail::OptLevel(9))
         );
         assert_eq!(
             decoded.detail(&Fixed(ItemClass::Unknown)),
@@ -1656,5 +1663,44 @@ mod tests {
 
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+    }
+
+    /// Gold is the one class with an eight-byte tail, and it is selected by the
+    /// item's sub-type (`TID3 == 5`, `TID4 != 1`), not by the packet. Reading
+    /// it as a plus level or a count would shift the frame by seven bytes.
+    #[test]
+    fn a_gold_distribution_carries_an_eight_byte_amount() {
+        struct Fixed(ItemClass);
+        impl ItemClassResolver for Fixed {
+            fn item_class(&self, _ref_id: u32) -> ItemClass {
+                self.0
+            }
+        }
+
+        let mut body = 7u32.to_le_bytes().to_vec();
+        body.extend(1u32.to_le_bytes());
+        body.extend(0x0102_0304_0506_0708u64.to_le_bytes());
+        let wire = Bytes::from(body);
+
+        let decoded = PartyDistribution::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded.detail(&Fixed(ItemClass::Expendable { tid3: 5, tid4: 0 })),
+            Some(PartyDistributionDetail::Gold(0x0102_0304_0506_0708))
+        );
+        assert_eq!(decoded.raw_tail.len(), 8);
+        // TID4 == 1 stays an ordinary counted expendable.
+        assert_eq!(
+            decoded.detail(&Fixed(ItemClass::Expendable { tid3: 5, tid4: 1 })),
+            Some(PartyDistributionDetail::Quantity(0x0708))
+        );
+        // A short tail is refused rather than padded.
+        let short = PartyDistribution::try_from(Bytes::from(
+            [7u32.to_le_bytes(), 1u32.to_le_bytes()].concat(),
+        ))
+        .unwrap();
+        assert_eq!(
+            short.detail(&Fixed(ItemClass::Expendable { tid3: 5, tid4: 0 })),
+            None
+        );
     }
 }
