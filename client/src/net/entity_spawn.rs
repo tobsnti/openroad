@@ -233,6 +233,10 @@ impl ItemClassResolver for TextdataResolver<'_> {
                 .and_then(|i| i.type_ids()),
         )
     }
+
+    fn cos_type_ids(&self, ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+        self.char_data.get(&(ref_id as i32))?.type_ids()
+    }
 }
 
 /// The itemdata `TypeID1..4` -> [`ItemClass`] mapping, in one place: the GUI

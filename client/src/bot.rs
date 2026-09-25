@@ -663,6 +663,10 @@ impl ItemClassResolver for BotResolver<'_> {
             _ => ItemClass::Unknown,
         }
     }
+
+    fn cos_type_ids(&self, ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+        self.0.chars.get(&(ref_id as i32))?.type_ids()
+    }
 }
 
 impl BotRefdata {

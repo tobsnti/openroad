@@ -59,6 +59,15 @@ pub enum ItemClass {
 /// the client, so the parser takes the lookup as a trait instead of the data.
 pub trait ItemClassResolver {
     fn item_class(&self, ref_id: u32) -> ItemClass;
+
+    /// `TypeID1..4` of a *character* record — the pet a summon scroll points
+    /// at. The scroll's body is cut by the referenced record, not by the
+    /// scroll, so this is the one place a second lookup decides a width.
+    /// Returning `None` means "no character table here"; the reader then falls
+    /// back to the scroll's own sub-type.
+    fn cos_type_ids(&self, _ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+        None
+    }
 }
 
 /// The fixed stat block at the head of the record (go-sro
@@ -242,7 +251,7 @@ impl InventoryItem {
         let slot = u8::read_from(reader)?;
         let rent = RentInfo::read_from(reader)?;
         let ref_id = u32::read_from(reader)?;
-        let data = ItemTypeData::read_body(reader, resolver.item_class(ref_id), ref_id)?;
+        let data = ItemTypeData::read_body(reader, resolver.item_class(ref_id), ref_id, resolver)?;
         Ok(InventoryItem {
             slot,
             rent,
@@ -275,6 +284,7 @@ impl ItemTypeData {
         reader: &mut T,
         class: ItemClass,
         ref_id: u32,
+        resolver: &impl ItemClassResolver,
     ) -> Result<Self, SerializationError> {
         let data = match class {
             ItemClass::Equipment => ItemTypeData::Equipment(EquipmentData::read_from(reader)?),
@@ -291,12 +301,24 @@ impl ItemTypeData {
                     } else {
                         None
                     };
-                    let name = if summoned {
+                    // Which of the two fields exist is a property of the pet
+                    // the scroll points at, not of the scroll. Without a
+                    // character table the scroll's own sub-type has to do.
+                    let (reads_name, reads_rent) =
+                        match cos_ref_id.and_then(|id| resolver.cos_type_ids(id)) {
+                            Some((1, 2, 3, referenced_tid4)) => (
+                                referenced_tid4 == 3 || referenced_tid4 == 4,
+                                referenced_tid4 == 4,
+                            ),
+                            Some(_) => (false, false),
+                            None => (true, tid4 == 2),
+                        };
+                    let name = if summoned && reads_name {
                         Some(read_string(reader)?)
                     } else {
                         None
                     };
-                    let rent_seconds = if summoned && tid4 == 2 {
+                    let rent_seconds = if summoned && reads_rent {
                         Some(u32::read_from(reader)?)
                     } else {
                         None
@@ -1146,7 +1168,7 @@ fn read_item_section(
                 cursor.read_exact(&mut skipped)?;
                 Ok(ItemTypeData::Unknown)
             }
-            None => ItemTypeData::read_body(cursor, class, ref_id),
+            None => ItemTypeData::read_body(cursor, class, ref_id, resolver),
         };
         let data = match data {
             Ok(data) => data,
@@ -2336,6 +2358,54 @@ mod test {
         // The item record itself, past the section's size and count bytes.
         let mut cursor = Cursor::new(&b.0[2..]);
         assert!(InventoryItem::read_with(&mut cursor, &resolver()).is_err());
+    }
+
+    /// A rentable scroll (TID4 2) pointing at a growth pet (referenced TID4 3)
+    /// carries no rent stamp: the referenced record decides, not the scroll.
+    #[test]
+    fn the_referenced_pet_decides_the_name_and_the_rent_stamp() {
+        struct Referenced;
+        impl ItemClassResolver for Referenced {
+            fn item_class(&self, ref_id: u32) -> ItemClass {
+                resolver().item_class(ref_id)
+            }
+            fn cos_type_ids(&self, _ref_id: u32) -> Option<(u32, u32, u32, u32)> {
+                Some((1, 2, 3, 3))
+            }
+        }
+
+        let b = Body::default()
+            .u8(45)
+            .u8(2)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_RENTABLE)
+            .u8(2)
+            .u32(1_907)
+            .string("Bunny")
+            .u8(0)
+            .u8(21)
+            .u32(0)
+            .u32(PILLS)
+            .u16(20);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let mut trace = Vec::new();
+        let items = read_item_section(&mut cursor, &Referenced, &mut trace, None)
+            .expect("section")
+            .items;
+
+        assert_eq!(items.len(), 2);
+        match &items[0].data {
+            ItemTypeData::CosPet {
+                name, rent_seconds, ..
+            } => {
+                assert_eq!(name.as_deref(), Some("Bunny"));
+                assert_eq!(*rent_seconds, None);
+            }
+            other => panic!("pet mis-parsed: {other:?}"),
+        }
+        assert_eq!(items[1].slot, 21);
+        assert_eq!(cursor.position() as usize, b.0.len());
     }
 
     #[test]
