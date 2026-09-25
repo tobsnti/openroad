@@ -87,23 +87,26 @@ pub struct CharacterStats {
     pub free_pvp: u8,
 }
 
-/// Item rent info: a type selector and its type-dependent fields (go-sro
-/// `WriteRentInfo`).
+/// Item rent info: a type selector and two independent halves.
+///
+/// `rent_type` is a bit set, not an enum: bit 0 adds the period half, bit 1 the
+/// metered half, and type 3 is simply both — in that order, periods first. The
+/// two halves share their fields, so type 2 and type 3 read the same recharge
+/// flag and the same rate.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct RentInfo {
     pub rent_type: u32,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 2 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 3 != 0")]
     pub can_delete: Option<u16>,
-    #[sro_packet(when = "rent_type == 2 || rent_type == 3")]
-    pub can_recharge: Option<u16>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_begin: Option<u32>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_end: Option<u32>,
-    #[sro_packet(when = "rent_type == 2")]
+    #[sro_packet(when = "rent_type & 2 != 0")]
+    pub can_recharge: Option<u16>,
+    /// Seconds; the original scales it to milliseconds on the way in.
+    #[sro_packet(when = "rent_type & 2 != 0")]
     pub meter_rate: Option<u32>,
-    #[sro_packet(when = "rent_type == 3")]
-    pub packing_time: Option<u32>,
 }
 
 /// A magic ("blue") parameter on an item.
@@ -1865,6 +1868,30 @@ mod test {
         let offender = trace.last().expect("trace keeps the offender");
         assert_eq!(offender.ref_id, 999_999);
         assert_eq!(offender.class, ItemClass::Unknown);
+    }
+
+    #[test]
+    fn a_type_three_rent_block_reads_its_two_periods_before_the_recharge() {
+        // Type 3 carries both halves of the block: the delete flag, the two
+        // period stamps, then the recharge flag and its rate. All 20 bytes are
+        // consumed either way, so a wrong order shows up as wrong values, not
+        // as a desync — which is why the values here are all distinguishable.
+        let b = Body::default()
+            .u32(3)
+            .u16(0x2222)
+            .u32(0x1111_1111)
+            .u32(0x3333_3333)
+            .u16(0x4444)
+            .u32(0x5555_5555);
+        let mut cursor = Cursor::new(b.0.as_slice());
+        let rent = RentInfo::read_from(&mut cursor).expect("rent block");
+
+        assert_eq!(rent.can_delete, Some(0x2222));
+        assert_eq!(rent.period_begin, Some(0x1111_1111));
+        assert_eq!(rent.period_end, Some(0x3333_3333));
+        assert_eq!(rent.can_recharge, Some(0x4444));
+        assert_eq!(rent.meter_rate, Some(0x5555_5555));
+        assert_eq!(cursor.position() as usize, b.0.len());
     }
 
     #[test]
