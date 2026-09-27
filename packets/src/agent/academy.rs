@@ -63,10 +63,14 @@ pub struct AcademyMatchListRequest {
 /// and no `packet_dump/0xb47d.log` exists to bind them.
 ///
 /// Therefore: the arms are typed, the bytes inside them are not renamed.
-/// [`Self::records`] is the undecoded remainder, and the per-record widths
-/// (`4 4 1 4 1 1 4 strS 4 1 4 4`) stay in the RE doc until a capture can say
-/// what they mean. Inventing twelve field names here is exactly the unsourced
-/// value the project's doctrine forbids.
+/// [`Self::records`] is the undecoded remainder, and the per-record widths stay
+/// undecoded until a capture can say what they mean. Inventing field names here
+/// is exactly the unsourced value the project's doctrine forbids.
+///
+/// The record is `4 4 1 strS 4 1 1 4 strS 4 1 4 4` — **thirteen** fields with
+/// **two** strings, not the twelve with one this comment used to claim. Nothing
+/// breaks today because the block stays raw, but whoever types it must start
+/// from the right shape: everything from the fourth field on shifts otherwise.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct AcademyMatchListResponse {
     pub result: u8,
