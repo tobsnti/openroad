@@ -126,13 +126,11 @@ pub struct GatewayServiceDisconnected;
 /// skips the whole body without reading a byte (`sro_client.exe 00842ff0:90-92`)
 /// and it appears in none of its registration tables; there is no layout to wire.
 ///
-/// `0x3C81` (SERVER_ACADEMY_DATA) is the same case one table over: it *is*
-/// registered (table B, handler `FUN_008986c0`), but the handler contains no
-/// read call at all — the original consumes zero bytes of the message
-/// (`docs/re/net/inbound/academy.md:118-127`, verdict do-not-wire `[V]`). A
-/// struct for it would model nothing, so it is ignored by name instead of
-/// showing up as an unhandled opcode forever (#261).
-const KNOWN_IGNORED_OPCODES: &[u16] = &[0x2110, 0x3C81];
+/// `0x3C81` used to be listed here on the same grounds and that was wrong: its
+/// handler reads no byte *itself*, but it forwards the packet to a reader that
+/// takes five fields. It is typed now (`AcademyData`), so a real packet is no
+/// longer discarded.
+const KNOWN_IGNORED_OPCODES: &[u16] = &[0x2110];
 
 /// Emit a decoded packet, or log an undecodable one. Opcodes we don't handle
 /// yet (buffs, inventory, chat, ...) are expected — surface them as network
@@ -524,17 +522,21 @@ mod tests {
         ));
     }
 
-    /// `0x3C81`'s handler in the original reads no bytes at all, so it is
-    /// ignored rather than typed (#261). The second assertion is the one that
-    /// matters: if someone later adds a body for it to the `packets!` macro,
-    /// the ignore entry becomes a lie and this fails.
+    /// `0x3C81` carries five fields behind a handler that reads none of them
+    /// itself, so it must be decoded rather than discarded. The ignore list is
+    /// the other half of the statement: an opcode cannot be both typed and
+    /// known-ignored.
     #[test]
-    fn academy_data_0x3c81_is_ignored_and_stays_unwired() {
-        assert!(KNOWN_IGNORED_OPCODES.contains(&0x3C81));
-        assert!(matches!(
-            Packet::deserialize(0x3C81, Bytes::new()),
-            Err(PacketError::UnknownOpcode(0x3C81))
-        ));
+    fn academy_data_0x3c81_is_decoded_and_not_ignored() {
+        assert!(!KNOWN_IGNORED_OPCODES.contains(&0x3C81));
+
+        let mut body = vec![0x2A, 0x00, 0x00, 0x00];
+        body.extend_from_slice(&[0u8; 16]);
+        body.push(7);
+        body.extend_from_slice(&[1, 0, b'a']);
+        body.extend_from_slice(&[1, 0, b'b']);
+        let decoded = Packet::deserialize(0x3C81, Bytes::from(body));
+        assert!(matches!(decoded, Ok(Packet::AcademyData(_))));
     }
 
     /// A `SilkroadFrame::Packet` carrying `data`, as `send_packets` sees it.

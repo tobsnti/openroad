@@ -161,16 +161,19 @@ pub fn apply_update_ack(
     response: &StallUpdateResponse,
     rows: Option<Vec<Option<StallRow>>>,
 ) -> Option<u16> {
-    match &response.body {
+    let body = match response {
+        // A refusal carries the code and nothing else — there is no body to
+        // apply, so the window is left exactly as it was.
+        StallUpdateResponse::Failure { error_code, .. } => return Some(*error_code),
+        StallUpdateResponse::Success { body, .. } => body,
+    };
+    match body {
         StallUpdateAck::ItemUpdate {
             stall_slot,
             quantity,
             price,
-            error_code,
+            error_code: _,
         } => {
-            if response.result != 1 {
-                return Some(*error_code);
-            }
             // The ack re-states the row's own numbers; a slot the window does
             // not know about is a capacity fact refuted, not a row to invent.
             if let Some(Some(row)) = state.slots.get_mut(*stall_slot as usize) {
@@ -181,10 +184,7 @@ pub fn apply_update_ack(
             }
             None
         }
-        StallUpdateAck::ItemList { error_code, .. } => {
-            if response.result != 1 {
-                return Some(*error_code);
-            }
+        StallUpdateAck::ItemList { .. } => {
             // Types 2 and 3 re-send the WHOLE list, so it replaces the grid.
             if let Some(rows) = rows {
                 state.slots = rows;
@@ -195,11 +195,8 @@ pub fn apply_update_ack(
         }
         StallUpdateAck::State {
             is_open,
-            stall_network_result,
+            stall_network_result: _,
         } => {
-            if response.result != 1 {
-                return Some(*stall_network_result);
-            }
             state.trading = if *is_open == 1 {
                 StallTradingState::Open
             } else {
@@ -208,9 +205,7 @@ pub fn apply_update_ack(
             None
         }
         StallUpdateAck::Note { note } => {
-            if response.result == 1 {
-                state.greeting = note.clone();
-            }
+            state.greeting = note.clone();
             None
         }
         // Type 7 carries no payload: the new title arrives on 0x30BB instead
@@ -222,8 +217,8 @@ pub fn apply_update_ack(
         }
         StallUpdateAck::Unknown { .. } => {
             warn!(
-                "stall: 0xB0BA update type {} is described by neither source — ignored",
-                response.update_type
+                "stall: 0xB0BA update type {:?} is described by neither source — ignored",
+                response.update_type()
             );
             None
         }
@@ -239,8 +234,8 @@ pub fn on_stall_update_response(
     mut toasts: MessageWriter<ShowToast>,
 ) {
     for response in reader.read() {
-        let rows = match response.update_type {
-            STALL_UPDATE_ITEM_ADDED | STALL_UPDATE_ITEM_REMOVED => response
+        let rows = match response.update_type() {
+            Some(STALL_UPDATE_ITEM_ADDED) | Some(STALL_UPDATE_ITEM_REMOVED) => response
                 .rows(&*item_data)
                 .map(|rows| rows_to_slots(&rows, |ref_id| item_name(&item_data, &names, ref_id))),
             _ => None,
@@ -337,7 +332,7 @@ pub fn on_trading_state_button(
 #[cfg(test)]
 mod test {
     use super::*;
-    use packets::agent::stall::{STALL_UPDATE_NOTE, STALL_UPDATE_STATE};
+    use packets::agent::stall::STALL_UPDATE_STATE;
 
     fn owned_stall() -> StallState {
         StallState {
@@ -348,12 +343,8 @@ mod test {
         }
     }
 
-    fn ack(update_type: u8, body: StallUpdateAck, result: u8) -> StallUpdateResponse {
-        StallUpdateResponse {
-            result,
-            update_type,
-            body,
-        }
+    fn ack(update_type: u8, body: StallUpdateAck) -> StallUpdateResponse {
+        StallUpdateResponse::Success { update_type, body }
     }
 
     /// The vanilla default title is a template with one `%s`, not a sentence
@@ -384,7 +375,6 @@ mod test {
                     is_open: 0,
                     stall_network_result: 0,
                 },
-                1,
             ),
             None,
         );
@@ -399,7 +389,6 @@ mod test {
                     is_open: 1,
                     stall_network_result: 0,
                 },
-                1,
             ),
             None,
         );
@@ -407,41 +396,25 @@ mod test {
         assert_eq!(state.trading, StallTradingState::Open);
     }
 
-    /// A refused edit reports its code and changes nothing.
+    /// A refused edit reports its code and changes nothing. A refusal has no
+    /// body at all, so there is nothing that could be applied by accident.
     #[test]
     fn a_refused_edit_leaves_the_window_alone_and_yields_its_code() {
         let mut state = owned_stall();
         state.greeting = "hello".into();
-        let error = apply_update_ack(
-            &mut state,
-            &ack(
-                STALL_UPDATE_NOTE,
-                StallUpdateAck::Note {
-                    note: "spam".into(),
-                },
-                2,
-            ),
-            None,
-        );
-        assert_eq!(error, None, "the note arm carries no error code of its own");
-        assert_eq!(
-            state.greeting, "hello",
-            "a refused note must not be applied"
-        );
+        state.trading = StallTradingState::Open;
 
         let error = apply_update_ack(
             &mut state,
-            &ack(
-                STALL_UPDATE_STATE,
-                StallUpdateAck::State {
-                    is_open: 1,
-                    stall_network_result: 0x3C0E,
-                },
-                2,
-            ),
+            &StallUpdateResponse::Failure {
+                result: 2,
+                error_code: 0x3C0E,
+            },
             None,
         );
+
         assert_eq!(error, Some(0x3C0E));
+        assert_eq!(state.greeting, "hello", "a refusal must apply no note");
         assert_eq!(
             state.trading,
             StallTradingState::Open,
@@ -476,7 +449,6 @@ mod test {
                     error_code: 0,
                     raw_rows: Default::default(),
                 },
-                1,
             ),
             Some(replacement),
         );
@@ -506,7 +478,6 @@ mod test {
                     price: 4200,
                     error_code: 0,
                 },
-                1,
             ),
             None,
         );
@@ -528,7 +499,6 @@ mod test {
                     price: 1,
                     error_code: 0,
                 },
-                1,
             ),
             None,
         );

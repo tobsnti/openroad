@@ -60,6 +60,10 @@ pub const STALL_UPDATE_TITLE: u8 = 7;
 pub const STALL_ACTION_EXIT: u8 = 1;
 pub const STALL_ACTION_ENTER: u8 = 2;
 pub const STALL_ACTION_BUY: u8 = 3;
+/// A purchase made through the ware network. Same body as
+/// [`STALL_ACTION_BUY`] — the original shares one case for both and only the
+/// message it shows differs (the ware-network sale also reports a fee).
+pub const STALL_ACTION_BUY_WARE_NETWORK: u8 = 4;
 
 /// Terminates a stall item list, in the row's stall-slot position.
 const STALL_ROW_SENTINEL: u8 = 0xFF;
@@ -308,8 +312,8 @@ fn decode_rows(raw: &Bytes, resolver: &impl ItemClassResolver) -> Option<Vec<Sta
 /// Hand-written: the buy arm ends in a sentinel-terminated item list, which no
 /// derive list mode can express.
 ///
-/// The enter/exit bodies are unconfirmed. Both are read as a `u32` id, because that
-/// id is the only thing that tells our own transition apart from another viewer's.
+/// Both the enter and the exit arm read a `u32` id, and that id is what tells our
+/// own transition apart from another viewer's.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum StallEntityAction {
     /// A viewer left the stall.
@@ -318,6 +322,9 @@ pub enum StallEntityAction {
     Enter { unique_id: u32 },
     /// A purchase completed; the rows are the stall's remaining listing.
     Buy {
+        /// `true` for the ware-network sale (action 4), `false` for the plain
+        /// street-stall sale (action 3). The body is the same either way.
+        via_ware_network: bool,
         stall_slot: u8,
         buyer_name: String,
         /// The 0xFF-terminated rows, undecoded — read with [`Self::rows`].
@@ -350,11 +357,12 @@ impl TryFrom<Bytes> for StallEntityAction {
             STALL_ACTION_ENTER => Ok(StallEntityAction::Enter {
                 unique_id: u32::read_from(&mut cursor)?,
             }),
-            STALL_ACTION_BUY => {
+            STALL_ACTION_BUY | STALL_ACTION_BUY_WARE_NETWORK => {
                 let stall_slot = u8::read_from(&mut cursor)?;
                 let buyer_name = read_ascii(&mut cursor)?;
                 let read = cursor.position() as usize;
                 Ok(StallEntityAction::Buy {
+                    via_ware_network: action == STALL_ACTION_BUY_WARE_NETWORK,
                     stall_slot,
                     buyer_name,
                     raw_rows: value.slice(read..),
@@ -381,11 +389,16 @@ impl From<StallEntityAction> for Bytes {
                 buf.put_u32_le(unique_id);
             }
             StallEntityAction::Buy {
+                via_ware_network,
                 stall_slot,
                 buyer_name,
                 raw_rows,
             } => {
-                buf.put_u8(STALL_ACTION_BUY);
+                buf.put_u8(if via_ware_network {
+                    STALL_ACTION_BUY_WARE_NETWORK
+                } else {
+                    STALL_ACTION_BUY
+                });
                 buf.put_u8(stall_slot);
                 put_ascii(&mut buf, &buyer_name);
                 buf.extend_from_slice(&raw_rows);
@@ -563,20 +576,46 @@ pub enum StallUpdateAck {
 ///
 /// Hand-written for the same reason as [`StallEntityAction`]: the add/remove arms
 /// end in a sentinel-terminated item list.
+///
+/// A refusal carries **no** update type: the byte behind `result` is then the low
+/// half of the `u16` error code, so reading it as an update type turned a refusal
+/// into a flea-market mode or ran the note reader off the end of the body. The
+/// two arms are therefore separate, the shape the neighbouring
+/// [`StallTalkResponse`] already has.
 #[derive(Message, Clone, Debug, PartialEq)]
-pub struct StallUpdateResponse {
-    pub result: u8,
-    /// See the `STALL_UPDATE_*` constants.
-    pub update_type: u8,
-    pub body: StallUpdateAck,
+pub enum StallUpdateResponse {
+    /// The edit was applied. See the `STALL_UPDATE_*` constants for the type.
+    Success {
+        update_type: u8,
+        body: StallUpdateAck,
+    },
+    /// The edit was refused. `result` is kept verbatim for the same reason
+    /// [`StallTalkResponse::Failure`] keeps it.
+    Failure { result: u8, error_code: u16 },
 }
 
 impl StallUpdateResponse {
+    /// The update type of an applied edit; `None` on a refusal.
+    pub fn update_type(&self) -> Option<u8> {
+        match self {
+            StallUpdateResponse::Success { update_type, .. } => Some(*update_type),
+            StallUpdateResponse::Failure { .. } => None,
+        }
+    }
+
+    /// The body of an applied edit; `None` on a refusal.
+    pub fn body(&self) -> Option<&StallUpdateAck> {
+        match self {
+            StallUpdateResponse::Success { body, .. } => Some(body),
+            StallUpdateResponse::Failure { .. } => None,
+        }
+    }
+
     /// Decode the add/remove arms' item rows. `None` for the other types, and on
     /// any malformed row.
     pub fn rows(&self, resolver: &impl ItemClassResolver) -> Option<Vec<StallItemRow>> {
-        match &self.body {
-            StallUpdateAck::ItemList { raw_rows, .. } => decode_rows(raw_rows, resolver),
+        match self.body() {
+            Some(StallUpdateAck::ItemList { raw_rows, .. }) => decode_rows(raw_rows, resolver),
             _ => None,
         }
     }
@@ -587,6 +626,12 @@ impl TryFrom<Bytes> for StallUpdateResponse {
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
         let mut cursor = Cursor::new(&value[..]);
         let result = u8::read_from(&mut cursor)?;
+        if result != STALL_RESULT_OK {
+            return Ok(StallUpdateResponse::Failure {
+                result,
+                error_code: u16::read_from(&mut cursor)?,
+            });
+        }
         let update_type = u8::read_from(&mut cursor)?;
         let body = match update_type {
             STALL_UPDATE_ITEM_UPDATE => StallUpdateAck::ItemUpdate {
@@ -618,20 +663,24 @@ impl TryFrom<Bytes> for StallUpdateResponse {
                 tail: value.slice(2..),
             },
         };
-        Ok(StallUpdateResponse {
-            result,
-            update_type,
-            body,
-        })
+        Ok(StallUpdateResponse::Success { update_type, body })
     }
 }
 
 impl From<StallUpdateResponse> for Bytes {
     fn from(p: StallUpdateResponse) -> Self {
         let mut buf = BytesMut::new();
-        buf.put_u8(p.result);
-        buf.put_u8(p.update_type);
-        match p.body {
+        let (update_type, body) = match p {
+            StallUpdateResponse::Failure { result, error_code } => {
+                buf.put_u8(result);
+                buf.put_u16_le(error_code);
+                return buf.freeze();
+            }
+            StallUpdateResponse::Success { update_type, body } => (update_type, body),
+        };
+        buf.put_u8(STALL_RESULT_OK);
+        buf.put_u8(update_type);
+        match body {
             StallUpdateAck::ItemUpdate {
                 stall_slot,
                 quantity,
@@ -902,7 +951,7 @@ mod tests {
 
     // --- 0x30B7 ------------------------------------------------------------
 
-    /// Enter/exit carry a viewer id, which no source confirms.
+    /// Enter/exit carry a viewer id.
     #[test]
     fn entity_action_enter_and_exit_carry_the_viewer_id() {
         let mut enter = vec![STALL_ACTION_ENTER];
@@ -950,6 +999,31 @@ mod tests {
         assert_eq!(&back[..], &wire[..]);
     }
 
+    /// Action 4 is the ware-network sale. It shares the whole body with action
+    /// 3, so its rows must decode — falling into the unknown arm threw a real
+    /// sale away.
+    #[test]
+    fn entity_action_four_is_the_same_sale_through_the_ware_network() {
+        let mut wire = vec![STALL_ACTION_BUY_WARE_NETWORK, 1];
+        wire.extend_from_slice(&ascii("Buyer"));
+        wire.push(STALL_ROW_SENTINEL);
+
+        let decoded = StallEntityAction::try_from(Bytes::from(wire.clone())).unwrap();
+
+        assert_eq!(
+            decoded,
+            StallEntityAction::Buy {
+                via_ware_network: true,
+                stall_slot: 1,
+                buyer_name: "Buyer".to_string(),
+                raw_rows: Bytes::from_static(&[STALL_ROW_SENTINEL]),
+            }
+        );
+        assert_eq!(decoded.rows(&expendable()), Some(vec![]));
+        let back: Bytes = decoded.into();
+        assert_eq!(&back[..], &wire[..]);
+    }
+
     #[test]
     fn an_unknown_entity_action_keeps_its_raw_tail() {
         let wire = vec![9u8, 0xAA, 0xBB];
@@ -979,8 +1053,8 @@ mod tests {
         let decoded = StallUpdateResponse::try_from(Bytes::from(wire.clone())).unwrap();
 
         assert_eq!(
-            decoded.body,
-            StallUpdateAck::ItemUpdate {
+            decoded.body().unwrap(),
+            &StallUpdateAck::ItemUpdate {
                 stall_slot: 2,
                 quantity: 7,
                 price: 1234,
@@ -1062,8 +1136,8 @@ mod tests {
         state.extend_from_slice(&1u16.to_le_bytes());
         let decoded = StallUpdateResponse::try_from(Bytes::from(state.clone())).unwrap();
         assert_eq!(
-            decoded.body,
-            StallUpdateAck::State {
+            decoded.body().unwrap(),
+            &StallUpdateAck::State {
                 is_open: 1,
                 stall_network_result: 1,
             }
@@ -1075,8 +1149,8 @@ mod tests {
         note.extend_from_slice(&ascii("open now"));
         let decoded = StallUpdateResponse::try_from(Bytes::from(note.clone())).unwrap();
         assert_eq!(
-            decoded.body,
-            StallUpdateAck::Note {
+            decoded.body().unwrap(),
+            &StallUpdateAck::Note {
                 note: "open now".to_string(),
             }
         );
@@ -1086,7 +1160,7 @@ mod tests {
         // Title carries no payload here — it arrives on 0x30BB instead.
         let title = vec![1u8, STALL_UPDATE_TITLE];
         let decoded = StallUpdateResponse::try_from(Bytes::from(title.clone())).unwrap();
-        assert_eq!(decoded.body, StallUpdateAck::Title);
+        assert_eq!(decoded.body().unwrap(), &StallUpdateAck::Title);
         let back: Bytes = decoded.into();
         assert_eq!(&back[..], &title[..]);
     }
@@ -1097,7 +1171,10 @@ mod tests {
 
         let decoded = StallUpdateResponse::try_from(Bytes::from(wire.clone())).unwrap();
 
-        assert_eq!(decoded.body, StallUpdateAck::FleaMarketMode { mode: 2 });
+        assert_eq!(
+            decoded.body().unwrap(),
+            &StallUpdateAck::FleaMarketMode { mode: 2 }
+        );
         let back: Bytes = decoded.into();
         assert_eq!(&back[..], &wire[..]);
     }
@@ -1109,15 +1186,52 @@ mod tests {
 
         let decoded = StallUpdateResponse::try_from(Bytes::from(wire.clone())).unwrap();
 
-        assert_eq!(decoded.update_type, 99);
+        assert_eq!(decoded.update_type(), Some(99));
         assert_eq!(
-            decoded.body,
-            StallUpdateAck::Unknown {
+            decoded.body().unwrap(),
+            &StallUpdateAck::Unknown {
                 tail: Bytes::from_static(&[0xAA]),
             }
         );
         let back: Bytes = decoded.into();
         assert_eq!(&back[..], &wire[..]);
+    }
+
+    /// A refusal has no update type: its second and third byte are the error
+    /// code. Reading the second byte as an update type decoded error 0x3C2E
+    /// ("the stall is not open") as an unknown update type.
+    #[test]
+    fn update_response_refusal_reads_an_error_code_and_no_update_type() {
+        let wire = vec![2u8, 0x2E, 0x3C];
+
+        let decoded = StallUpdateResponse::try_from(Bytes::from(wire.clone())).unwrap();
+
+        assert_eq!(
+            decoded,
+            StallUpdateResponse::Failure {
+                result: 2,
+                error_code: 15406,
+            }
+        );
+        assert_eq!(decoded.update_type(), None);
+        let back: Bytes = decoded.into();
+        assert_eq!(&back[..], &wire[..]);
+    }
+
+    /// The worse half of the same defect: an error code whose low byte happens
+    /// to be a valid update type used to decode as that update, silently.
+    #[test]
+    fn a_refusal_is_never_decoded_as_a_flea_market_mode() {
+        let decoded =
+            StallUpdateResponse::try_from(Bytes::from_static(&[0x02, 0x04, 0x3C])).unwrap();
+
+        assert_eq!(
+            decoded,
+            StallUpdateResponse::Failure {
+                result: 2,
+                error_code: 0x3C04,
+            }
+        );
     }
 
     // --- 0xB0B3 stall talk (#759) ------------------------------------------

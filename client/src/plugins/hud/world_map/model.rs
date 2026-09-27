@@ -70,9 +70,8 @@ pub enum MarkerKind {
     /// there is no roster to feed this from.
     #[allow(dead_code)]
     UnionParty,
-    /// Academy — the academy roster packet (0x3C81,
-    /// `docs/net-academy-0x3C81.md`) has no `packets` model yet, so there are
-    /// no member positions to place.
+    /// Academy — 0x3C81 is typed, but none of its five fields is a known member
+    /// position, so there is nothing to place here.
     #[allow(dead_code)]
     Academy,
 }

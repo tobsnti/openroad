@@ -275,9 +275,9 @@ pub fn spawn_academy_window(
                 "pt_slot_re.ddj"
             };
             content.spawn(img((SLOT_X, y, SLOT_W, SLOT_H), format!("{ART}{art}")));
-            // Row content is server-supplied and has no source here (0x3C81
-            // reads zero bytes in the original), so the four statics are
-            // spawned empty at their authored rects — a real empty slot, not a
+            // Row content is server-supplied and has no source here (no field
+            // of 0x3C81 is a known roster), so the four statics are spawned
+            // empty at their authored rects — a real empty slot, not a
             // placeholder shape.
             for rect in [SLOT_NAME_RECT, SLOT_LEVEL_RECT, SLOT_RANK_NAME_RECT] {
                 content.spawn(text(

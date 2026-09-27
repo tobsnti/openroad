@@ -551,19 +551,12 @@ impl PartyMatchJoinNotify {
 /// inbound form and encodes the outbound one — the same construction
 /// [`crate::agent::ingame::GameInvite`] uses for 0x3080.
 ///
-/// **Why a second hand-written codec instead of a direction axis in `packets!`:**
-/// there are exactly *two* opcodes in this tree that genuinely travel both ways
-/// with different bodies. Of the ten numbers that appear in both the inbound and
-/// the outbound verdict table, four are not C→S at all (local self-injections
-/// that never reach the sender, `0x3019`/`0xB034`/`0xB04C`/`0xB082`), three are
-/// unregistered with an unnamed inbound half (`0x7302`/`0x747E`/`0x751A`), and
-/// `0x7110`'s registered type *is* the outbound one. That leaves `0x3080`,
-/// already solved this way, and this one. Teaching `packets!` a direction axis
-/// would touch all 274 registry lines, `scripts/check_opcode_ledger.py` and the
-/// ledger docs for a second user.
-/// **The threshold, so this does not become a habit: at the THIRD genuine
-/// two-way opcode, `packets!` gets the direction axis and both hand-written
-/// codecs move onto it.**
+/// **The direction axis now exists.** This codec predates it: a third genuine
+/// two-way opcode turned up (`0x3091`, whose inbound body names the character
+/// and whose outbound body does not), and `packets!` grew `inbound`/`outbound`
+/// sections for it — one type per direction, no registry line touched. This
+/// codec and [`crate::agent::ingame::GameInvite`] should move onto those
+/// sections; until they do, decoding here yields the inbound arm only.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum PartyMatchJoin {
     /// S→C — the applicant knocking on our advertised party.
@@ -696,13 +689,29 @@ pub struct PartyMatchListPage {
     pub parties: Vec<PartyMatchEntry>,
 }
 
-/// 0xB06C — server → client: one page of the party-match list. Everything after
-/// `has_data` is absent when there is nothing to list.
+/// 0xB06C — server → client: one page of the party-match list, or why there is
+/// none.
+///
+/// `result` is the discriminator the rest of the family already uses, not a
+/// `bool`: a refusal is `02 <u16 code>`, so a `bool` read the page away as
+/// "nothing to list" and left the code unread — the failure mode
+/// [`PartyMatchDeleteResponse`] documents.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchListResponse {
-    pub has_data: bool,
-    #[sro_packet(when = "has_data")]
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub page: Option<PartyMatchListPage>,
+    /// The original tests `== 2` here, and reads nothing at all for any other
+    /// value — so a lone result byte stays decodable instead of running the
+    /// reader off the end.
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
+}
+
+impl PartyMatchListResponse {
+    pub fn is_success(&self) -> bool {
+        self.result == 1
+    }
 }
 
 // --- The family remainder: the four acks/pushes the seed never carried -----
@@ -1446,14 +1455,27 @@ mod tests {
         assert_eq!(notify.record_join_id(), Some(0x1234));
     }
 
-    /// The match list's whole body hangs off one flag.
+    /// An empty answer is one byte: no page and no code.
     #[test]
-    fn an_empty_match_list_is_just_the_flag() {
+    fn an_empty_match_list_is_just_the_result_byte() {
         let wire = Bytes::from_static(&[0]);
         let decoded = PartyMatchListResponse::try_from(wire.clone()).unwrap();
 
-        assert!(!decoded.has_data);
+        assert!(!decoded.is_success());
         assert!(decoded.page.is_none());
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A refused list carries a `u16` code, which a `bool` result used to drop.
+    #[test]
+    fn a_refused_match_list_keeps_its_error_code() {
+        let wire = Bytes::from_static(&[0x02, 0x10, 0x2C]);
+        let decoded = PartyMatchListResponse::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.error_code, Some(11280));
+        assert!(decoded.page.is_none());
+        assert_eq!(decoded.byte_size(), 3);
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
     }
@@ -1461,7 +1483,7 @@ mod tests {
     /// ...and round-trips a populated page.
     #[test]
     fn a_populated_match_list_round_trips() {
-        let mut body: Vec<u8> = vec![1, 2, 0, 1]; // has_data, page_count, page_index, party_count
+        let mut body: Vec<u8> = vec![1, 2, 0, 1]; // result, page_count, page_index, party_count
         body.extend(77u32.to_le_bytes()); // number
         body.extend(0x1234u32.to_le_bytes()); // registered_at
         body.extend(3u16.to_le_bytes());

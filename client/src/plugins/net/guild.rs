@@ -980,6 +980,7 @@ mod tests {
             result: 2,
             data: None,
             error: Some(0x0003),
+            secession_penalty_seconds: None,
             tail: Bytes::new(),
         });
         app.update();
