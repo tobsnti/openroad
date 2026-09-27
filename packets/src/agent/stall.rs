@@ -60,6 +60,10 @@ pub const STALL_UPDATE_TITLE: u8 = 7;
 pub const STALL_ACTION_EXIT: u8 = 1;
 pub const STALL_ACTION_ENTER: u8 = 2;
 pub const STALL_ACTION_BUY: u8 = 3;
+/// A purchase made through the ware network. Same body as
+/// [`STALL_ACTION_BUY`] — the original shares one case for both and only the
+/// message it shows differs (the ware-network sale also reports a fee).
+pub const STALL_ACTION_BUY_WARE_NETWORK: u8 = 4;
 
 /// Terminates a stall item list, in the row's stall-slot position.
 const STALL_ROW_SENTINEL: u8 = 0xFF;
@@ -308,8 +312,8 @@ fn decode_rows(raw: &Bytes, resolver: &impl ItemClassResolver) -> Option<Vec<Sta
 /// Hand-written: the buy arm ends in a sentinel-terminated item list, which no
 /// derive list mode can express.
 ///
-/// The enter/exit bodies are unconfirmed. Both are read as a `u32` id, because that
-/// id is the only thing that tells our own transition apart from another viewer's.
+/// Both the enter and the exit arm read a `u32` id, and that id is what tells our
+/// own transition apart from another viewer's.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum StallEntityAction {
     /// A viewer left the stall.
@@ -318,6 +322,9 @@ pub enum StallEntityAction {
     Enter { unique_id: u32 },
     /// A purchase completed; the rows are the stall's remaining listing.
     Buy {
+        /// `true` for the ware-network sale (action 4), `false` for the plain
+        /// street-stall sale (action 3). The body is the same either way.
+        via_ware_network: bool,
         stall_slot: u8,
         buyer_name: String,
         /// The 0xFF-terminated rows, undecoded — read with [`Self::rows`].
@@ -350,11 +357,12 @@ impl TryFrom<Bytes> for StallEntityAction {
             STALL_ACTION_ENTER => Ok(StallEntityAction::Enter {
                 unique_id: u32::read_from(&mut cursor)?,
             }),
-            STALL_ACTION_BUY => {
+            STALL_ACTION_BUY | STALL_ACTION_BUY_WARE_NETWORK => {
                 let stall_slot = u8::read_from(&mut cursor)?;
                 let buyer_name = read_ascii(&mut cursor)?;
                 let read = cursor.position() as usize;
                 Ok(StallEntityAction::Buy {
+                    via_ware_network: action == STALL_ACTION_BUY_WARE_NETWORK,
                     stall_slot,
                     buyer_name,
                     raw_rows: value.slice(read..),
@@ -381,11 +389,16 @@ impl From<StallEntityAction> for Bytes {
                 buf.put_u32_le(unique_id);
             }
             StallEntityAction::Buy {
+                via_ware_network,
                 stall_slot,
                 buyer_name,
                 raw_rows,
             } => {
-                buf.put_u8(STALL_ACTION_BUY);
+                buf.put_u8(if via_ware_network {
+                    STALL_ACTION_BUY_WARE_NETWORK
+                } else {
+                    STALL_ACTION_BUY
+                });
                 buf.put_u8(stall_slot);
                 put_ascii(&mut buf, &buyer_name);
                 buf.extend_from_slice(&raw_rows);
@@ -938,7 +951,7 @@ mod tests {
 
     // --- 0x30B7 ------------------------------------------------------------
 
-    /// Enter/exit carry a viewer id, which no source confirms.
+    /// Enter/exit carry a viewer id.
     #[test]
     fn entity_action_enter_and_exit_carry_the_viewer_id() {
         let mut enter = vec![STALL_ACTION_ENTER];
@@ -982,6 +995,31 @@ mod tests {
             }
         );
 
+        let back: Bytes = decoded.into();
+        assert_eq!(&back[..], &wire[..]);
+    }
+
+    /// Action 4 is the ware-network sale. It shares the whole body with action
+    /// 3, so its rows must decode — falling into the unknown arm threw a real
+    /// sale away.
+    #[test]
+    fn entity_action_four_is_the_same_sale_through_the_ware_network() {
+        let mut wire = vec![STALL_ACTION_BUY_WARE_NETWORK, 1];
+        wire.extend_from_slice(&ascii("Buyer"));
+        wire.push(STALL_ROW_SENTINEL);
+
+        let decoded = StallEntityAction::try_from(Bytes::from(wire.clone())).unwrap();
+
+        assert_eq!(
+            decoded,
+            StallEntityAction::Buy {
+                via_ware_network: true,
+                stall_slot: 1,
+                buyer_name: "Buyer".to_string(),
+                raw_rows: Bytes::from_static(&[STALL_ROW_SENTINEL]),
+            }
+        );
+        assert_eq!(decoded.rows(&expendable()), Some(vec![]));
         let back: Bytes = decoded.into();
         assert_eq!(&back[..], &wire[..]);
     }

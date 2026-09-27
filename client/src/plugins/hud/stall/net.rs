@@ -279,6 +279,7 @@ pub fn on_stall_entity_action(
     let own_unique_id = own.iter().next().map(|id| id.0);
     for action in reader.read() {
         if let StallEntityAction::Buy {
+            via_ware_network,
             stall_slot,
             buyer_name,
             ..
@@ -289,8 +290,13 @@ pub fn on_stall_entity_action(
                 warn!("stall: 0x30B7 buy rows did not decode — grid left unchanged");
                 continue;
             };
+            let route = if *via_ware_network {
+                "through the ware network"
+            } else {
+                "at the stall"
+            };
             info!(
-                "stall: {buyer_name} bought slot {stall_slot}; {} row(s) left",
+                "stall: {buyer_name} bought slot {stall_slot} {route}; {} row(s) left",
                 rows.len()
             );
             state.slots = rows_to_slots(&rows, |ref_id| item_name(&item_data, &names, ref_id));
