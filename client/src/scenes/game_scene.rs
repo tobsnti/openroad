@@ -1149,15 +1149,24 @@ fn on_game_reset(
 /// Decode the group spawn/despawn batches (0x3017 begin / 0x3019 data / 0x3018
 /// end). Reads the ordered `Packet` stream rather than the fanned-out per-type
 /// messages, because one network read can deliver several begin→data→end triples
-/// in a single frame; processing them in wire order keeps each data packet paired
-/// with its own begin's kind/count. Parsing is fail-safe (see `net::entity_spawn`),
-/// so a malformed record just truncates that batch rather than crashing.
+/// in a single frame; processing them in wire order keeps each batch paired with
+/// its own begin's kind/count.
+///
+/// The data packets of one batch are a single record stream, so a record may
+/// straddle two of them: they are joined in a buffer and decoded once at the end
+/// marker, like the guild storage stream. Records are variable-length, so a
+/// truncated one has no recoverable next offset — decoding each packet on its own
+/// drops the record at the boundary and the rest of the batch with it. Parsing
+/// itself is fail-safe (see `net::entity_spawn`), so a malformed record truncates
+/// that batch rather than crashing.
 #[allow(clippy::too_many_arguments)]
 fn on_group_spawn(
     mut packets: MessageReader<Packet>,
     // The active batch's (spawning, count), set by a begin until its end marker.
     // A `Local` so a batch split across frames stays paired.
     mut batch: Local<Option<(bool, u16)>>,
+    // The active batch's joined data packets, decoded at its end marker.
+    mut buffer: Local<Vec<u8>>,
     origin: Res<WorldOrigin>,
     local: Res<LocalPlayer>,
     entities: Res<NetworkEntities>,
@@ -1176,21 +1185,32 @@ fn on_group_spawn(
         match packet {
             Packet::GroupEntitySpawnBegin(begin) => {
                 *batch = Some((begin.kind == GROUP_SPAWN, begin.count));
-            }
-            Packet::GroupEntitySpawnEnd(_) => {
-                *batch = None;
+                buffer.clear();
             }
             Packet::GroupEntitySpawnData(data) => {
-                let Some((spawning, count)) = *batch else {
+                if batch.is_none() {
                     warn!("network: GroupEntitySpawnData without a preceding begin; ignoring");
                     continue;
+                }
+                buffer.extend_from_slice(&data.raw);
+            }
+            Packet::GroupEntitySpawnEnd(_) => {
+                let Some((spawning, count)) = batch.take() else {
+                    warn!("network: GroupEntitySpawnEnd without a preceding begin; ignoring");
+                    buffer.clear();
+                    continue;
                 };
+                let raw = std::mem::take(&mut *buffer);
+                if raw.is_empty() {
+                    warn!("network: group batch ended with no data packets; nothing to decode");
+                    continue;
+                }
                 let resolver = TextdataResolver {
                     char_data: &char_data,
                     item_data: &item_data,
                     teleport: &teleport,
                 };
-                let parsed = parse_group_spawn(&data.raw, spawning, count, &resolver);
+                let parsed = parse_group_spawn(&raw, spawning, count, &resolver);
                 info!(
                     "network: group {} — {} spawns, {} despawns",
                     if spawning { "spawn" } else { "despawn" },
@@ -2095,5 +2115,68 @@ mod test {
     #[test]
     fn distant_travel_during_an_engagement_is_still_travel() {
         assert!(!is_attack_approach(400.0, 180.0));
+    }
+
+    /// A batch whose records do not end on a packet boundary: the data packets
+    /// of one begin..end pair carry a single record stream, so a record may
+    /// straddle two of them. Decoding each packet on its own loses the record
+    /// at the boundary and, for spawns, the rest of the batch with it (records
+    /// are variable-length, so a truncated one has no recoverable next
+    /// offset). Uses a despawn batch because its record is a bare `u32`, which
+    /// pins the joining and nothing else.
+    #[test]
+    fn a_record_split_across_two_data_packets_is_not_lost() {
+        use packets::agent::prelude::{
+            GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, GROUP_DESPAWN,
+        };
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .init_resource::<WorldOrigin>()
+        .init_resource::<LocalPlayer>()
+        .init_resource::<NetworkEntities>()
+        .init_resource::<ClientCharacterData>()
+        .init_resource::<ClientItemData>()
+        .init_resource::<ClientRareEffects>()
+        .init_resource::<ClientTextNames>()
+        .init_resource::<crate::plugins::textdata::ClientUiStrings>()
+        .init_resource::<crate::plugins::textdata::ClientTeleport>()
+        .add_message::<Packet>()
+        .add_message::<EntityDied>()
+        .add_systems(Update, on_group_spawn);
+
+        app.world_mut().spawn(NetworkId(1));
+        app.world_mut().spawn(NetworkId(2));
+
+        app.world_mut()
+            .write_message(Packet::GroupEntitySpawnBegin(GroupEntitySpawnBegin {
+                kind: GROUP_DESPAWN,
+                count: 2,
+            }));
+        // uid 1 whole, then the first two bytes of uid 2
+        app.world_mut()
+            .write_message(Packet::GroupEntitySpawnData(GroupEntitySpawnData {
+                raw: Bytes::from_static(&[1, 0, 0, 0, 2, 0]),
+            }));
+        // the remaining two bytes of uid 2
+        app.world_mut()
+            .write_message(Packet::GroupEntitySpawnData(GroupEntitySpawnData {
+                raw: Bytes::from_static(&[0, 0]),
+            }));
+        app.world_mut()
+            .write_message(Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
+        app.update();
+
+        let index = app.world().resource::<NetworkEntities>();
+        assert_eq!(index.get(1), None, "the whole record despawned");
+        assert_eq!(
+            index.get(2),
+            None,
+            "the record split across the two packets despawned too"
+        );
     }
 }
