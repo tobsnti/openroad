@@ -314,10 +314,11 @@ packets! {
     0x70F3 => GuildInviteRequest,
     0x7472 => AcademyInviteRequest,
 
-    // Academy ("Training Camp") — the notice edit and the matching-board list
-    // pair (agent/academy.rs). Layouts follow the
-    // original's own builders and handlers. 0x3C81 is NOT wired — its
-    // handler reads zero bytes, so it lives in KNOWN_IGNORED_OPCODES.
+    // Academy ("Training Camp") — the notice edit, the matching-board list pair
+    // and the 0x3C81 push (agent/academy.rs). Layouts follow the original's own
+    // builders and handlers; 0x3C81's five fields sit one call behind its
+    // handler, which is why it was long taken for a body-less opcode.
+    0x3C81 => AcademyData,
     0x7477 => AcademyNoticeEditRequest,
     0x747D => AcademyMatchListRequest,
     0xB47D => AcademyMatchListResponse,

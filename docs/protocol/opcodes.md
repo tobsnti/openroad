@@ -144,6 +144,7 @@ have only ever been seen empty (see the struct docs in `agent/ingame.rs`).
 | `0x70F3` | GuildInviteRequest | C→S | wired | funnel |
 | `0x7472` | AcademyInviteRequest | C→S | wired | funnel |
 | `0x7477` | AcademyNoticeEditRequest | C→S | wired | academy notice edit, `strS strS` |
+| `0x3C81` | AcademyData | S→C | experimental | five fields (`u32`, 16-byte block, `u8`, two strings) read one call behind the handler; the fields have no known meaning yet |
 | `0x747D` | AcademyMatchListRequest | C→S | wired | matching-board page request, one byte |
 | `0xB47D` | AcademyMatchListResponse | S→C | experimental | arms typed; the record block stays raw until its fields are named |
 | `0xB081` | ExchangeInviteResponse | S→C | wired | inviter-side ack `{success, uid}` |

@@ -12,8 +12,8 @@
 //!
 //! What this panel can and cannot show, stated rather than papered over: the
 //! member roster has **no wire source in this tree**. `0x3C81`, the academy
-//! info push, is deliberately unwired because the original's own handler
-//! reads zero bytes of it — there is no layout to model. So the seven slots
+//! info push, is typed, but its five fields have no known meaning — none of
+//! them is a roster. So the seven slots
 //! render empty and the message board says so with the client's own shipped
 //! sentence; inventing a roster decode to fill them is exactly the unsourced
 //! value ADR-0009 forbids.

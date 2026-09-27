@@ -1,6 +1,5 @@
 //! Academy ("Training Camp") wire opcodes: the notice edit 0x7477, the
-//! matching-board list request 0x747D and its 0xB47D ack. 0x3C81 is
-//! deliberately absent — see below.
+//! matching-board list request 0x747D with its 0xB47D ack, and the 0x3C81 push.
 //!
 //! Idea: this family was documented as *capture-gated* because xBot decodes
 //! none of it. That premise is retired: the original client's own builders and
@@ -13,13 +12,10 @@
 //! not — the 0xB47D record block is kept as raw bytes rather than decoded into
 //! invented field names.
 //!
-//! **0x3C81 (SERVER_ACADEMY_DATA) is not here on purpose.** Its handler
-//! (`sro_client.exe@FUN_008986c0`) contains no read call at all: the original
-//! consumes zero bytes of it, so there is no layout to model. It is listed in
-//! the client's known-and-ignored opcodes instead
-//! (`client/src/plugins/net/plugin.rs`).
-//!
-//! Layouts: `docs/net-academy-0x3C81.md`.
+//! **0x3C81 (SERVER_ACADEMY_DATA) is typed here.** Its handler reads no byte
+//! itself, which is why it was filed as a packet without a body — but it passes
+//! the packet on, and the reader behind it takes five fields. The widths and
+//! their order are readable, their meaning is not, so they are numbered.
 
 use bevy::prelude::Message;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -29,6 +25,22 @@ use sro_macro::Deserialize;
 use sro_macro::SerializationError;
 use sro_macro::Serialize;
 use sro_macro_derive::*;
+
+/// 0x3C81 — server → client: the academy push.
+///
+/// The handler reads nothing of the body itself; it forwards the packet to a
+/// reader that takes these five fields, unconditionally and in this order, and
+/// reads nothing after them. Widths and order are readable; what the fields mean
+/// is not, so they are numbered rather than named. It used to be filed as
+/// known-and-ignored, which dropped a real packet.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct AcademyData {
+    pub unk_dword00: u32,
+    pub unk_block00: [u8; 16],
+    pub unk_byte00: u8,
+    pub unk_string00: String,
+    pub unk_string01: String,
+}
 
 /// 0x7477 — client → server: edit the academy notice.
 ///
@@ -149,6 +161,33 @@ impl From<AcademyMatchListResponse> for Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 0x3C81 body: `u32`, a 16-byte block, `u8`, then two strings. The
+    /// packet used to be discarded as body-less, so this pins the shape that
+    /// replaces that claim.
+    #[test]
+    fn academy_data_reads_five_fields_and_round_trips() {
+        let mut wire = vec![0x2A, 0x00, 0x00, 0x00];
+        wire.extend_from_slice(&[0xAB; 16]);
+        wire.push(7);
+        wire.extend_from_slice(&[2, 0, b'h', b'i']);
+        wire.extend_from_slice(&[1, 0, b'x']);
+        let wire = Bytes::from(wire);
+
+        let decoded = AcademyData::try_from(wire.clone()).unwrap();
+
+        assert_eq!(
+            decoded,
+            AcademyData {
+                unk_dword00: 42,
+                unk_block00: [0xAB; 16],
+                unk_byte00: 7,
+                unk_string00: "hi".to_string(),
+                unk_string01: "x".to_string(),
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
+    }
 
     #[test]
     fn notice_edit_writes_two_length_prefixed_strings() {

@@ -7,12 +7,10 @@
 //! (AGENTS.md): nothing here touches a HUD resource, so the headless netcheck
 //! harness can build this plugin without a HUD.
 //!
-//! What is **not** here, and why: `0x3C81` (the academy info push) is
-//! deliberately unwired — the original's own handler `FUN_008986c0` reads zero
-//! bytes of it, so there is no roster layout to model
-//! (`plugins/net/plugin.rs`). That is why
-//! [`AcademyMatchBoard`] below is the only academy state the client can hold:
-//! the member roster has no wire source in this tree at all.
+//! What is **not** here, and why: `0x3C81` (the academy info push) is typed in
+//! `packets::agent::academy` but not consumed yet — its five fields have no
+//! known meaning, so nothing can be filled from them. [`AcademyMatchBoard`]
+//! below stays the only academy state the client holds.
 
 use bevy::prelude::*;
 
