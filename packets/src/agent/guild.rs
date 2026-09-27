@@ -321,11 +321,19 @@ pub struct GuildCreatedData {
     /// Present when `result != 1`. The refusal code; `0x0003` = no NPC dialogue
     /// open.
     pub error: Option<u16>,
-    /// Anything after the record. On the wire this is **empty** once the
-    /// record's own closing list is read. Kept so a future server that appends
-    /// something does not lose it silently.
+    /// Present when `error` is [`GUILD_SECESSION_PENALTY`]: how long the
+    /// character still has to wait, in seconds.
+    pub secession_penalty_seconds: Option<u32>,
+    /// Anything after the record, and after the penalty when there is one. On
+    /// the wire this is empty in every other case. Kept so a future server that
+    /// appends something does not lose it silently.
     pub tail: Bytes,
 }
+
+/// The one refusal code of this opcode that carries a body of its own: the
+/// original reads a `u32` of seconds behind it and shows the remaining
+/// secession lock-out as days, hours and minutes.
+pub const GUILD_SECESSION_PENALTY: u16 = 0x4C3C;
 
 impl TryFrom<Bytes> for GuildCreatedData {
     type Error = SerializationError;
@@ -338,11 +346,19 @@ impl TryFrom<Bytes> for GuildCreatedData {
         })?;
         if result != 1 {
             let error = (value.len() >= 3).then(|| u16::from_le_bytes([value[1], value[2]]));
+            let mut read = value.len().min(3);
+            let mut secession_penalty_seconds = None;
+            if error == Some(GUILD_SECESSION_PENALTY) && value.len() >= 7 {
+                secession_penalty_seconds =
+                    Some(u32::from_le_bytes([value[3], value[4], value[5], value[6]]));
+                read = 7;
+            }
             return Ok(GuildCreatedData {
                 result,
                 data: None,
                 error,
-                tail: value.slice(value.len().min(3)..),
+                secession_penalty_seconds,
+                tail: value.slice(read..),
             });
         }
         // The record is length-prefixed only by its own member count, so parse it
@@ -353,6 +369,7 @@ impl TryFrom<Bytes> for GuildCreatedData {
             result,
             data: Some(data),
             error: None,
+            secession_penalty_seconds: None,
             tail: value.slice(1 + consumed..),
         })
     }
@@ -367,6 +384,9 @@ impl From<GuildCreatedData> for Bytes {
         }
         if let Some(error) = p.error {
             buf.put_u16_le(error);
+        }
+        if let Some(seconds) = p.secession_penalty_seconds {
+            buf.put_u32_le(seconds);
         }
         buf.extend_from_slice(&p.tail);
         buf.freeze()
@@ -870,6 +890,25 @@ mod tests {
             "the trailing byte is carried, not dropped"
         );
         assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// One refusal code carries four more bytes: the remaining secession
+    /// lock-out in seconds. They used to sit unnamed in `tail`, so nothing told
+    /// a caller they were a duration.
+    #[test]
+    fn the_secession_penalty_refusal_names_its_seconds() {
+        let wire = Bytes::from_static(&[0x02, 0x3C, 0x4C, 0x80, 0x51, 0x01, 0x00]);
+
+        let decoded = GuildCreatedData::try_from(wire.clone()).unwrap();
+
+        assert_eq!(decoded.error, Some(GUILD_SECESSION_PENALTY));
+        assert_eq!(decoded.secession_penalty_seconds, Some(86_400));
+        assert!(decoded.tail.is_empty());
+        assert_eq!(Bytes::from(decoded), wire);
+
+        // Any other code keeps the plain three-byte shape.
+        let plain = GuildCreatedData::try_from(Bytes::from_static(&[0x02, 0x03, 0x00])).unwrap();
+        assert_eq!(plain.secession_penalty_seconds, None);
     }
 
     /// 0x38F5 keeps its per-type payload raw — the original switches on the
