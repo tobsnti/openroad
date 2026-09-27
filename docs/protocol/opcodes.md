@@ -177,9 +177,9 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB0A1` | SkillLearnResponse | S→C | wired |  |
 | `0x70A2` | MasteryLearnRequest | C→S | wired | AGENT_SKILL_MASTERY_LEARN |
 | `0xB0A2` | MasteryLearnResponse | S→C | wired |  |
-| `0x7202` | SkillLevelDownRequest | C→S | experimental | level-down mirror of 0x70A1; body unknown (no builder in the original) |
+| `0x7202` | SkillLevelDownRequest | C→S | experimental | level-down mirror of 0x70A1; body is `u32 ref_skill_id, u32, u8` — the two trailing fields have no established meaning |
 | `0xB202` | MasterySkillLevelDownResponse | S→C | experimental | success returns the new (lower) skill id; failure shape unknown |
-| `0x7203` | MasteryLevelDownRequest | C→S | experimental | mirror of 0x70A2 minus its `amount` byte, which stays unknown |
+| `0x7203` | MasteryLevelDownRequest | C→S | experimental | twin of 0x7202: `u32 mastery_id, u32, u8` |
 | `0xB203` | MasteryLevelDownResponse | S→C | experimental | exact mirror of 0xB0A2; failure shape unknown |
 | `0xB0BD` | BuffAdd | S→C | wired |  |
 | `0xB072` | BuffRemove | S→C | wired |  |
@@ -222,7 +222,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0x3052` | InventoryItemDurabilityUpdate | S→C | wired | confirmed, 5 bytes |
 | `0x3040` | InventoryItemUpdate | S→C | wired | **byte 1 is a bitmask, not an updateType** — 8 bit-gated blocks, read off the original client; the shipped struct models 2 of 8 |
 | `0x3092` | InventoryCapacityUpdate | S→C | wired | fixed 2 bytes, read off the original client: byte 0 is a **target kind** (1 inventory / 2 storage), not a success flag — there is no failure tail |
-| `0x704C` | ItemUseRequest | C→S | experimental | CLIENT_ITEM_USE; unconfirmed on the wire |
+| `0x704C` | ItemUseRequest | C→S | experimental | CLIENT_ITEM_USE; the tail follows the item class (`type_id >> 0xB`) — none of the forms is confirmed on the wire, and which item takes which form is open |
 | `0xB04C` | ItemUseResponse | S→C | experimental | unconfirmed on the wire |
 | `0x7158` | QuickSlotSaveRequest | C→S | wired | under-bar quickslot persistence; kind 1 of a kind-discriminated opcode (kind 2 is the auto-potion settings, unwired) |
 
@@ -261,9 +261,9 @@ NPC dialog, teleporter, storage, repair.
 | `0xB03E` | ItemRepairResponse | S→C | wired |  |
 | `0x7157` | AlchemyDismantleRequest | C→S | wired | alchemy dismantle, `{u8 SlotCount, u8[] Slots}` — the family's **only** published body |
 | `0xB157` | AlchemyDismantleResponse | S→C | wired | `{u8 result, if result == 2 u16 errorCode}`; the error-code table is a dead page, so the code stays unnamed |
-| `0x7150` | AlchemyReinforceRequest | C→S | experimental | elixir fuse / cancel; `{u8 2, u8 op=3, u8 count, count × u8 inventory slot}`, confirmed against a real server |
+| `0x7150` | AlchemyReinforceRequest | C→S | experimental | elixir fuse / cancel; `{u8 2, u8 op=3, u8 count, count × u8 inventory slot}`, confirmed against a real server. A second form without the two leading bytes exists; the two are not distinguishable by their first byte |
 | `0xB150` | AlchemyReinforceResponse | S→C | experimental | `{u8 result, …}`; the outcome is classified by two flag bytes, as the original's handler does |
-| `0x7151` | AlchemyStoneRequest | C→S | experimental | stone attach / cancel; leads with the `AlchemyType` byte (4 magic / 5 attribute), then the same count-prefixed slot list |
+| `0x7151` | AlchemyStoneRequest | C→S | experimental | stone attach / cancel; leads with the `AlchemyType` byte (4 magic / 5 attribute), then the same count-prefixed slot list. A second form puts a `2` in front of that; the two are not distinguishable by their first byte |
 | `0xB151` | AlchemyStoneResponse | S→C | experimental | as `0xB150` minus the breakdown flag — a stone attach always delivers a record |
 
 ## Guild (wire only — see EP-15)
@@ -478,7 +478,7 @@ None of these is confirmed on the wire, so all are `experimental`.
 | `0x750E` | ConsignmentListRequest | C→S | experimental | empty body |
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
-| `0x7309` | MailSendRequest | C→S | experimental | confirmed head (title + message) only; everything after it is unknown and kept as a raw tail |
+| `0x7309` | MailSendRequest | C→S | experimental | title + message and nothing else; no recipient travels in this body |
 
 Deliberately **not** wired — all three bodies are entirely unverified, so a layout
 would have to be invented: `0xB309 SERVER_MAIL_SEND_RESPONSE` (declared in the
@@ -506,7 +506,7 @@ settings word and `0xB0C5` follow the binaries alone and are unconfirmed.
 | `0xB116` | PetUnsummonResponse | S→C | experimental | success body empty; COS error category `0x0C` |
 | `0xB117` | PetRenameResponse | S→C | experimental | success body empty — the new name arrives as `0x30C9` arm 5, so nothing is applied optimistically |
 | `0xB420` | PetSettingsChangeResponse | S→C | experimental | `settings` is present on **both** `settings_type` arms (1 = gold pet, 2 = cash pet), not just type 1 |
-| `0x70C5` | PetActionRequest | C→S | experimental | three builder shapes: `Movement`, `Turn` (`u16` heading), and the 9-byte `Attack`/`ItemPickUp`. Actions 2 and 8 are confirmed by the server's own writer; `Follow` (9) is unconfirmed — 0xB0C5 echoes the action byte, which is what will settle it. Unknown codes keep a raw tail |
+| `0x70C5` | PetActionRequest | C→S | experimental | the action byte picks the tail: `Movement` (sub-type 1) and its turn sub-type 0, `Turn` (4) and the same tail under action 3, the 9-byte `Attack`/`ItemPickUp`, and the tail-less actions 9 and 0x0B. Actions 2 and 8 are confirmed by the server's own writer; the names of 3, 9 and 0x0B are not. Unknown codes keep a raw tail |
 | `0x70C6` | PetTerminateRequest | C→S | experimental | `{u32}`. Distinct from unsummon |
 | `0x70CB` | PetMountRequest | C→S | experimental | `{u8 mount_state, u32 cos_unique_id}` — **byte first** |
 | `0x7116` | PetUnsummonRequest | C→S | experimental | `{u32}` |

@@ -313,6 +313,7 @@ pub fn dispatch_item_use(
                 slot: item.slot,
                 type_id,
                 target_slot,
+                unk_u32_00: None,
             },
             None => ItemUseRequest::Simple {
                 slot: item.slot,

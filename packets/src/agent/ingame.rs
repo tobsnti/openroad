@@ -2257,8 +2257,9 @@ impl From<NoticeUpdate> for Bytes {
 // --- Mastery / skill level-DOWN (0x7202/0x7203, 0xB202/0xB203) --------------
 //
 // The mirror of the level-UP flow above. Both responses are read from the
-// original's parsers, but neither *request* has a builder there, so their
-// bodies are mirrored from the level-UP siblings and stay unconfirmed.
+// original's parsers, and both *requests* are built by it too: each writes
+// three fields, `u32, u32, u8`, and the two twins differ only in what the
+// first field names.
 //
 // The response enums reuse the level-UP shapes verbatim, including the
 // `pos == len` guard. That guard matters more here than it does above: the
@@ -2269,12 +2270,20 @@ impl From<NoticeUpdate> for Bytes {
 
 /// 0x7202 — client → server "lower this skill by one level".
 ///
-/// **Unknown body.** The original has no builder for this opcode; the single
-/// `u32` is mirrored from the level-UP sibling [`SkillLearnRequest`]. Confirm
-/// it before anything sends it.
+/// `{u32 ref_skill_id, u32, u8}` — three fields in that order, the shape the
+/// original builds. The body used to carry the first field alone, i.e. five
+/// bytes short of what a server reads.
+///
+/// The two trailing fields keep neutral names: their widths and their order are
+/// settled, their meaning is not.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct SkillLevelDownRequest {
     pub ref_skill_id: u32,
+    /// [U] — the second word of the body.
+    pub unk_u32_00: u32,
+    /// [U] — a byte the original computes as the difference of two values of
+    /// the skill window, i.e. a count by shape. "Levels" would be a guess.
+    pub unk_u8_00: u8,
 }
 
 /// 0xB202 — server → client ack for [`SkillLevelDownRequest`].
@@ -2336,13 +2345,17 @@ impl From<MasterySkillLevelDownResponse> for Bytes {
 
 /// 0x7203 — client → server "lower this mastery by one level".
 ///
-/// **Unknown body.** No builder in the original. The level-UP sibling
-/// [`MasteryLearnRequest`] carries a trailing `amount: u8`; whether the DOWN
-/// request does too is unresolved, so it is **not** included here rather than
-/// assumed.
+/// `{u32 mastery_id, u32, u8}` — the twin of [`SkillLevelDownRequest`], built
+/// by the original from the same three arguments. It too used to carry the
+/// first field alone.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MasteryLevelDownRequest {
     pub mastery_id: u32,
+    /// [U] — the second word of the body.
+    pub unk_u32_00: u32,
+    /// [U] — a byte the original computes as the difference of two values of
+    /// the mastery window, i.e. a count by shape.
+    pub unk_u8_00: u8,
 }
 
 /// 0xB203 — server → client ack for [`MasteryLevelDownRequest`].
@@ -5597,28 +5610,6 @@ mod test {
     // --- Mastery/skill level-down + teleport recall --------------------------
 
     #[test]
-    fn skill_level_down_request_is_a_lone_skill_id() {
-        let req = SkillLevelDownRequest {
-            ref_skill_id: 0x0102_0304,
-        };
-        let wire: Bytes = req.clone().into();
-
-        assert_eq!(&wire[..], &0x0102_0304u32.to_le_bytes());
-        assert_eq!(SkillLevelDownRequest::try_from(wire).unwrap(), req);
-    }
-
-    /// The trailing `amount` byte the level-UP sibling carries is deliberately NOT
-    /// mirrored onto the DOWN request — it is unresolved, so the body is 4 bytes.
-    #[test]
-    fn mastery_level_down_request_omits_the_unresolved_amount_byte() {
-        let req = MasteryLevelDownRequest { mastery_id: 257 };
-        let wire: Bytes = req.clone().into();
-
-        assert_eq!(wire.len(), 4);
-        assert_eq!(MasteryLevelDownRequest::try_from(wire).unwrap(), req);
-    }
-
-    #[test]
     fn skill_level_down_response_reads_the_new_skill_id() {
         let mut wire = vec![1u8];
         wire.extend_from_slice(&9001u32.to_le_bytes());
@@ -5818,5 +5809,40 @@ mod test {
         assert_eq!(decoded.exp_origin, 109_440);
         assert_eq!(decoded.experience, -3235);
         assert_eq!(decoded.stat_points(), None, "no level-up tail on a death");
+    }
+
+    /// The level-down requests carry three fields, not one: `u32, u32, u8`.
+    /// A one-field body is five bytes short and a server reads past its end.
+    #[test]
+    fn skill_level_down_request_is_nine_bytes() {
+        let mut wire = 1234u32.to_le_bytes().to_vec();
+        wire.extend_from_slice(&7u32.to_le_bytes());
+        wire.push(3);
+
+        let decoded = SkillLevelDownRequest::try_from(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(decoded.ref_skill_id, 1234);
+        assert_eq!(decoded.unk_u32_00, 7);
+        assert_eq!(decoded.unk_u8_00, 3);
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back.len(), 9);
+        assert_eq!(&back[..], &wire[..]);
+    }
+
+    /// The mastery twin, same widths and same order.
+    #[test]
+    fn mastery_level_down_request_is_nine_bytes() {
+        let mut wire = 4321u32.to_le_bytes().to_vec();
+        wire.extend_from_slice(&9u32.to_le_bytes());
+        wire.push(1);
+
+        let decoded = MasteryLevelDownRequest::try_from(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(decoded.mastery_id, 4321);
+        assert_eq!(decoded.unk_u32_00, 9);
+        assert_eq!(decoded.unk_u8_00, 1);
+
+        let back: Bytes = decoded.into();
+        assert_eq!(back.len(), 9);
+        assert_eq!(&back[..], &wire[..]);
     }
 }
