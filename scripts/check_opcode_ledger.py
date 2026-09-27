@@ -31,20 +31,29 @@ MACRO_ENTRY = re.compile(r"0x([0-9A-Fa-f]{4})\s*=>\s*(\w+)")
 LEDGER_ROW = re.compile(r"^\|\s*`?0x([0-9A-Fa-f]{4})`?\s*\|\s*`?(\w+)`?\s*\|")
 
 
-def macro_opcodes() -> dict[str, str]:
+def macro_opcodes() -> dict[str, set[str]]:
+    """Opcode -> the type names bound to it.
+
+    A set, not one name: an opcode whose two directions carry different bodies
+    is bound to one type per direction (the macro's `inbound`/`outbound`
+    sections), and the ledger then carries one row per type.
+    """
     src = MACRO.read_text()
     block = re.search(r"packets!\s*\{(.*?)\n\}", src, re.S)
     if not block:
         sys.exit("check_opcode_ledger: could not find the packets! macro block")
-    return {op.upper(): name for op, name in MACRO_ENTRY.findall(block.group(1))}
+    out: dict[str, set[str]] = {}
+    for op, name in MACRO_ENTRY.findall(block.group(1)):
+        out.setdefault(op.upper(), set()).add(name)
+    return out
 
 
-def ledger_opcodes() -> dict[str, str]:
-    out: dict[str, str] = {}
+def ledger_opcodes() -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
     for line in LEDGER.read_text().splitlines():
         m = LEDGER_ROW.match(line)
         if m:
-            out[m.group(1).upper()] = m.group(2)
+            out.setdefault(m.group(1).upper(), set()).add(m.group(2))
     return out
 
 
@@ -66,6 +75,10 @@ def no_hardcoded_count(text: str) -> list[str]:
         for line in text.splitlines()
         if not line.lstrip().startswith("|") and COUNT_CLAIM.search(line)
     ]
+
+
+def names(bound: set[str]) -> str:
+    return " + ".join(sorted(bound))
 
 
 def main() -> int:
@@ -95,11 +108,11 @@ def main() -> int:
 
     print("check_opcode_ledger: ledger and packets! macro disagree\n")
     for op in missing:
-        print(f"  wired but missing from ledger: 0x{op} => {macro[op]}")
+        print(f"  wired but missing from ledger: 0x{op} => {names(macro[op])}")
     for op in extra:
-        print(f"  in ledger but not wired: 0x{op} => {ledger[op]}")
+        print(f"  in ledger but not wired: 0x{op} => {names(ledger[op])}")
     for op in renamed:
-        print(f"  name mismatch 0x{op}: macro={macro[op]} ledger={ledger[op]}")
+        print(f"  name mismatch 0x{op}: macro={names(macro[op])} ledger={names(ledger[op])}")
     print("\nUpdate docs/protocol/opcodes.md to match packets/src/lib.rs.")
     return 1
 

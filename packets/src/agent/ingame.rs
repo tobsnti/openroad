@@ -2897,8 +2897,10 @@ impl CharacterActionRequest {
 /// 0x3091 — client → server: play an emote. **One byte, the emote code.**
 ///
 /// Direction caveat, the same one [`GetUpRequest`] carries: 0x3091 sits in the
-/// 0x3xxx range this repo otherwise treats as S→C, and the opcode is aliased in
-/// both directions (the original has no *parser* for it, only a builder).
+/// 0x3xxx range this repo otherwise treats as S→C. The opcode really does travel
+/// both ways, with two different bodies: the original's builder writes this one
+/// byte, and its parser reads [`EmoteUpdate`]. Binding one type to both
+/// directions decoded another character's emote as a one-byte request.
 ///
 /// Both the opcode and the code table come from the action window's
 /// dispatcher: `CommandID` 4000 lands in a builder that opens `0x3091` and
@@ -2908,6 +2910,16 @@ impl CharacterActionRequest {
 /// why it is *not* the `4000 + n` order the icons suggest.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EmoteRequest {
+    pub emote: u8,
+}
+
+/// 0x3091 — server → client: a character plays an emote.
+///
+/// The inbound body is the entity and then the same code [`EmoteRequest`]
+/// carries.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct EmoteUpdate {
+    pub unique_id: u32,
     pub emote: u8,
 }
 
@@ -3543,6 +3555,34 @@ empty_packet!(GroupEntitySpawnEnd);
 
 #[cfg(test)]
 mod test {
+
+    /// 0x3091 travels both ways with two different bodies: our own emote is the
+    /// code alone, an inbound one names the character first. One type for both
+    /// read the first byte of the entity id as the emote code and dropped the
+    /// rest.
+    #[test]
+    fn the_emote_opcode_decodes_inbound_and_encodes_outbound() {
+        let inbound =
+            crate::Packet::deserialize(0x3091, Bytes::from_static(&[0xAA, 0x60, 0x01, 0x00, 0x03]))
+                .unwrap();
+        let crate::Packet::EmoteUpdate(update) = &inbound else {
+            panic!("an inbound 0x3091 is the update");
+        };
+        assert_eq!(
+            update,
+            &EmoteUpdate {
+                unique_id: 0x0001_60AA,
+                emote: 3,
+            }
+        );
+        let (opcode, back) = inbound.into_serialize();
+        assert_eq!(opcode, 0x3091);
+        assert_eq!(&back[..], &[0xAA, 0x60, 0x01, 0x00, 0x03]);
+
+        let (opcode, out) = crate::Packet::from(EmoteRequest { emote: 3 }).into_serialize();
+        assert_eq!(opcode, 0x3091);
+        assert_eq!(&out[..], &[0x03]);
+    }
 
     /// The quickslot save is `0x7158` *kind 1* — the leading discriminator is
     /// what separates it from the auto-potion settings on the same opcode, and

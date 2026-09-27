@@ -99,7 +99,8 @@ table and the macro disagree, so coverage stays honest.
 | `0x3011` | CharacterDied | S→C | wired | 1-byte `death_cause` |
 | `0x304D` | DropUnlocked | S→C | wired | drop `unique_id` |
 | `0x704F` | CharacterActionRequest | C→S | wired | posture/gait, one byte (2 walk / 3 run / 4 sit-stand toggle); the 2/3 pair is 0x30BF's own `MOTION_STATE_*` encoding |
-| `0x3091` | EmoteRequest | C→S | wired | emote code, one byte; C→S in the 0x3xxx range — the same documented exception as `0x3053` (builder only, no parser in the original) |
+| `0x3091` | EmoteRequest | C→S | wired | our own emote: the code alone, one byte; C→S in the 0x3xxx range — the same documented exception as `0x3053` |
+| `0x3091` | EmoteUpdate | S→C | wired | another character's emote: entity id `u32` + the same code byte. One opcode, two bodies — the macro binds one type per direction |
 
 ## Progression & vitals
 

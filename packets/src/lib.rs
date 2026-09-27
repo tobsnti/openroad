@@ -45,8 +45,15 @@ impl From<FromUtf16Error> for PacketError {
     }
 }
 
-macro_rules! packets {
-    ($($opcode:literal => $name:ident),*) => {
+/// Generates the `Packet` enum and its wiring from three lists: every type that
+/// is a packet, the opcodes that can be *decoded* into one, and the opcodes a
+/// packet is *encoded* onto. `packets!` below builds the three lists.
+macro_rules! packets_impl {
+    (
+        all: [ $($name:ident),* $(,)? ],
+        decode: [ $($de_opcode:literal => $de_name:ident),* $(,)? ],
+        encode: [ $($en_opcode:literal => $en_name:ident),* $(,)? ]
+    ) => {
         #[derive(Message)]
         pub enum Packet {
             $($name($name)),*
@@ -55,7 +62,7 @@ macro_rules! packets {
         impl Packet {
             pub fn deserialize(opcode: u16, data: Bytes) -> Result<Packet, PacketError> {
                 match opcode {
-                    $($opcode => Ok(Packet::$name(data.try_into()?)),)*
+                    $($de_opcode => Ok(Packet::$de_name(data.try_into()?)),)*
                     _ => {
                         trace!("unparsable packet body: {:X}", data);
                         Err(PacketError::UnknownOpcode(opcode))
@@ -65,7 +72,7 @@ macro_rules! packets {
 
             pub fn into_serialize(self) -> (u16, Bytes) {
                 match self {
-                    $(Packet::$name(data) => ($opcode, data.into()),)*
+                    $(Packet::$en_name(data) => ($en_opcode, data.into()),)*
                 }
             }
         }
@@ -112,7 +119,38 @@ macro_rules! packets {
                 self
             }
         }
+    }
+}
 
+/// The opcode registry. An entry `0x…  => Type` travels both ways through one
+/// type, which is what almost every opcode does.
+///
+/// Two optional sections carry the exception — an opcode whose two directions
+/// have **different** bodies: `inbound` types are decoded and encoded, `outbound`
+/// types are only encoded. The same opcode may appear in both sections, once per
+/// direction.
+macro_rules! packets {
+    (
+        $($opcode:literal => $name:ident),*
+        $(; inbound { $($in_opcode:literal => $in_name:ident),* })?
+        $(; outbound { $($out_opcode:literal => $out_name:ident),* })?
+    ) => {
+        packets_impl! {
+            all: [
+                $($name,)*
+                $($($in_name,)*)?
+                $($($out_name,)*)?
+            ],
+            decode: [
+                $($opcode => $name,)*
+                $($($in_opcode => $in_name,)*)?
+            ],
+            encode: [
+                $($opcode => $name,)*
+                $($($in_opcode => $in_name,)*)?
+                $($($out_opcode => $out_name,)*)?
+            ]
+        }
     }
 }
 
@@ -234,10 +272,9 @@ packets! {
     // action window's own command dispatcher, see CharacterActionRequest.
     0x704F => CharacterActionRequest,
 
-    // Emote (action-window slots 4000..=4006): one byte, the emote code. Like
-    // 0x3053 this is a C→S packet in the 0x3xxx range — the original ships a
-    // builder but no parser for it. Code table: see EmoteRequest.
-    0x3091 => EmoteRequest,
+    // 0x3091 (emote) is a two-direction opcode with two different bodies and is
+    // therefore split into the inbound/outbound sections at the end of this
+    // registry.
 
     // Hwan / berserk (mini-info jahwan button). The 0x70A7 action byte's enum
     // is unknown — see HwanActionRequest.
@@ -656,6 +693,20 @@ packets! {
     0xB0E4 => JobRankingResponse,
     0xB0E6 => JobPrevInfoResponse,
     0xB4D4 => JobExportDetailResponse
+
+    // --- opcodes whose two directions carry different bodies ----------------
+    ;
+    inbound {
+        // Emote: inbound it is another character's emote, so it carries the
+        // entity id in front of the code.
+        0x3091 => EmoteUpdate
+    }
+    ;
+    outbound {
+        // Outbound it is our own emote: the code alone (action-window slots
+        // 4000..=4006, table in EmoteRequest).
+        0x3091 => EmoteRequest
+    }
 }
 
 /// A compact hex preview of a packet body (used by the client's network

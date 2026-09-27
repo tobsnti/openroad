@@ -551,19 +551,12 @@ impl PartyMatchJoinNotify {
 /// inbound form and encodes the outbound one — the same construction
 /// [`crate::agent::ingame::GameInvite`] uses for 0x3080.
 ///
-/// **Why a second hand-written codec instead of a direction axis in `packets!`:**
-/// there are exactly *two* opcodes in this tree that genuinely travel both ways
-/// with different bodies. Of the ten numbers that appear in both the inbound and
-/// the outbound verdict table, four are not C→S at all (local self-injections
-/// that never reach the sender, `0x3019`/`0xB034`/`0xB04C`/`0xB082`), three are
-/// unregistered with an unnamed inbound half (`0x7302`/`0x747E`/`0x751A`), and
-/// `0x7110`'s registered type *is* the outbound one. That leaves `0x3080`,
-/// already solved this way, and this one. Teaching `packets!` a direction axis
-/// would touch all 274 registry lines, `scripts/check_opcode_ledger.py` and the
-/// ledger docs for a second user.
-/// **The threshold, so this does not become a habit: at the THIRD genuine
-/// two-way opcode, `packets!` gets the direction axis and both hand-written
-/// codecs move onto it.**
+/// **The direction axis now exists.** This codec predates it: a third genuine
+/// two-way opcode turned up (`0x3091`, whose inbound body names the character
+/// and whose outbound body does not), and `packets!` grew `inbound`/`outbound`
+/// sections for it — one type per direction, no registry line touched. This
+/// codec and [`crate::agent::ingame::GameInvite`] should move onto those
+/// sections; until they do, decoding here yields the inbound arm only.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum PartyMatchJoin {
     /// S→C — the applicant knocking on our advertised party.
