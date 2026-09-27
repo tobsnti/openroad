@@ -426,6 +426,11 @@ pub struct JobRankingResponse {
     pub entries: Vec<JobRankEntry>,
     /// Present on `result == 2`; see [`describe_job_error`].
     pub error_code: Option<u16>,
+    /// Two bytes the original reads behind the error code and throws away. They
+    /// count on the wire, so they are carried; what they mean is unknown, which
+    /// is why they are not named.
+    pub error_unk0: Option<u8>,
+    pub error_unk1: Option<u8>,
 }
 
 impl JobRankingResponse {
@@ -443,6 +448,8 @@ impl Deserialize for JobRankingResponse {
             rank_kind: None,
             entries: Vec::new(),
             error_code: None,
+            error_unk0: None,
+            error_unk1: None,
         };
         match result {
             JOB_RESULT_SUCCESS => {
@@ -457,7 +464,13 @@ impl Deserialize for JobRankingResponse {
                 packet.rank_kind = Some(rank_kind);
                 packet.entries = entries;
             }
-            JOB_RESULT_ERROR => packet.error_code = Some(u16::read_from(reader)?),
+            JOB_RESULT_ERROR => {
+                packet.error_code = Some(u16::read_from(reader)?);
+                // Read leniently: a server that sends the short form must not
+                // cost us the code we already have.
+                packet.error_unk0 = u8::read_from(reader).ok();
+                packet.error_unk1 = u8::read_from(reader).ok();
+            }
             // Any other leading byte carries no known body. Returning the bare
             // result beats failing: an unhandled push must not kill the reader.
             _ => {}
@@ -484,6 +497,12 @@ impl Serialize for JobRankingResponse {
             // only the error arm carries the code; writing it on a success
             // frame appended two bytes the reader never consumes
             self.error_code.unwrap_or_default().serialize_to(buf);
+            if let Some(byte) = self.error_unk0 {
+                byte.serialize_to(buf);
+            }
+            if let Some(byte) = self.error_unk1 {
+                byte.serialize_to(buf);
+            }
         }
     }
 }
@@ -501,7 +520,8 @@ impl ByteSize for JobRankingResponse {
                 .map(|entry| entry.byte_size_with_kind(rank_kind))
                 .sum::<usize>();
         } else if self.result == JOB_RESULT_ERROR {
-            size += 2;
+            size +=
+                2 + usize::from(self.error_unk0.is_some()) + usize::from(self.error_unk1.is_some());
         }
         size
     }
@@ -770,6 +790,8 @@ mod tests {
                 trailing: Some(0),
             }],
             error_code: None,
+            error_unk0: None,
+            error_unk1: None,
         };
         roundtrip(
             activity,
@@ -791,6 +813,8 @@ mod tests {
                 trailing: None,
             }],
             error_code: None,
+            error_unk0: None,
+            error_unk1: None,
         };
         roundtrip(
             contribution,
@@ -822,6 +846,8 @@ mod tests {
             rank_kind: Some(JOB_RANK_KIND_CONTRIBUTION),
             entries: vec![row(Some(9))],
             error_code: None,
+            error_unk0: None,
+            error_unk1: None,
         };
         let bytes: Bytes = stray.clone().into();
         assert_eq!(bytes.len(), stray.byte_size(), "byte_size must agree");
@@ -837,6 +863,8 @@ mod tests {
             rank_kind: Some(JOB_RANK_KIND_ACTIVITY),
             entries: vec![row(None)],
             error_code: None,
+            error_unk0: None,
+            error_unk1: None,
         };
         let bytes: Bytes = missing.clone().into();
         assert_eq!(bytes.len(), missing.byte_size());
@@ -850,6 +878,8 @@ mod tests {
             rank_kind: Some(JOB_RANK_KIND_CONTRIBUTION),
             entries: Vec::new(),
             error_code: Some(JOB_ERROR_INVALID_NPC_TARGET),
+            error_unk0: None,
+            error_unk1: None,
         };
         let bytes: Bytes = success_with_code.clone().into();
         assert_eq!(
@@ -883,6 +913,32 @@ mod tests {
         let odd = JobRankingResponse::try_from(Bytes::from_static(&[0x07])).unwrap();
         assert_eq!(odd.result, 7);
         assert!(odd.entries.is_empty());
+    }
+
+    /// The refusal body is four bytes, not two: the original reads two more
+    /// bytes behind the code and discards them. Writing back only the code
+    /// shortened a real refusal by two bytes, and every length assertion agreed
+    /// with the wrong number.
+    #[test]
+    fn job_ranking_refusal_carries_the_two_bytes_behind_its_code() {
+        let wire = Bytes::from_static(&[0x02, 0x29, 0x48, 0x00, 0x00]);
+
+        let refused = JobRankingResponse::try_from(wire.clone()).unwrap();
+
+        assert_eq!(refused.error_code, Some(0x4829));
+        assert_eq!(refused.error_unk0, Some(0));
+        assert_eq!(refused.error_unk1, Some(0));
+        assert_eq!(refused.byte_size(), 5);
+        let mut buf = bytes::BytesMut::new();
+        refused.serialize_to(&mut buf);
+        assert_eq!(&buf[..], &wire[..]);
+
+        // The short form a different server might send keeps the code and
+        // reports its own length.
+        let short = JobRankingResponse::try_from(Bytes::from_static(&[0x02, 0x29, 0x48])).unwrap();
+        assert_eq!(short.error_code, Some(0x4829));
+        assert_eq!(short.error_unk0, None);
+        assert_eq!(short.byte_size(), 3);
     }
 
     /// `01` + 3 × `(u8, u32)` = 16 bytes, pair order MERCHANT, THIEF, HUNTER.
