@@ -184,7 +184,11 @@ pub fn spawn_community_window(
     };
     let s = hud_scale();
 
-    let window = game_window::spawn_game_window(
+    // `GDR_COMMUNITY` is one of the two windows whose `mframe_wnd_` block
+    // declares a caption colour of its own (`ginterface.txt:546`,
+    // `FontColor="255,239,153,255"` = ARGB, so RGB 239,153,255) instead of the
+    // corpus' white — see `game_window::TITLE_COLOR_VIOLET`.
+    let window = game_window::spawn_game_window_styled(
         &mut commands,
         &asset_server,
         &fonts,
@@ -193,6 +197,10 @@ pub fn spawn_community_window(
         (CONTENT_W, CONTENT_H),
         (WINDOW_RIGHT, WINDOW_TOP),
         s,
+        game_window::GameWindowStyle {
+            title_color: game_window::TITLE_COLOR_VIOLET,
+            ..default()
+        },
     );
     commands
         .entity(window.root)
