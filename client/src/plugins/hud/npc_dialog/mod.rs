@@ -1,3 +1,4 @@
+pub mod job_menu;
 pub mod model;
 pub mod teleport;
 pub mod ui;
@@ -14,6 +15,11 @@ impl Plugin for NpcDialogPlugin {
 
         app.init_resource::<model::NpcDialogState>()
             .init_resource::<teleport::TeleportWindowState>()
+            // The job join/leave answer arrives one frame after the click, so
+            // the NPC and the action wait here — `ui::on_dialog_line` demands
+            // it, which makes registering it a hard requirement (`hud/mod.rs`
+            // pins that invariant).
+            .init_resource::<job_menu::PendingJobRequest>()
             .add_message::<model::OpenStore>()
             .add_message::<model::OpenTeleport>()
             .add_message::<model::OpenStorage>()
@@ -38,6 +44,7 @@ impl Plugin for NpcDialogPlugin {
                     teleport::close_teleport_with_dialog,
                     teleport::sync_teleport_window,
                     teleport::tint_teleport_lines,
+                    job_menu::send_confirmed_job_request,
                 )
                     .run_if(super::hud_scenes),
             );

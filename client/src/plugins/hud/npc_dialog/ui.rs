@@ -27,6 +27,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::npcs::TalkOption;
 use crate::plugins::hud::game_window;
+use crate::plugins::hud::npc_dialog::job_menu::{self, job_menu_lines, JobMenuAction};
 use crate::plugins::hud::npc_dialog::model::{
     DialogPage, NpcDialogState, OpenGuildStorage, OpenStorage, OpenStore, OpenTeleport,
 };
@@ -37,6 +38,7 @@ use crate::plugins::textdata::{
     ClientCharacterData, ClientNpcChat, ClientShops, ClientSpeechText, ClientTeleport,
     ClientUiStrings,
 };
+use crate::plugins::ui_v2::choice_confirm::{ChoiceConfirmRequest, ChoiceConfirmState};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
 /// Both of vanilla's frames, as authored. The `mframe_wnd_` shell
@@ -96,6 +98,10 @@ pub struct DialogClosing;
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum DialogAction {
     Option(TalkOption),
+    /// A job-NPC line (`super::job_menu`): it sends its request straight from
+    /// the click, because the answer opens a window of its own (`hud::job`)
+    /// and there is no session state to carry.
+    Job(JobMenuAction),
     BackToOptions,
     EndConversation,
 }
@@ -362,6 +368,15 @@ pub fn sync_dialog_window(
                                 true,
                             ));
                         }
+                        // The job NPC's own lines, keyed by codename
+                        // (`super::job_menu`, `job-trade-system.md` §11.8).
+                        for line in job_menu_lines(codename.unwrap_or_default()) {
+                            lines.push((
+                                ui(line.key, line.fallback),
+                                DialogAction::Job(line.action),
+                                true,
+                            ));
+                        }
                     }
                     DialogPage::Talk => {
                         lines.push((
@@ -574,9 +589,16 @@ pub fn tint_dialog_lines(
 fn on_dialog_line(
     activate: On<Activate>,
     actions: Query<&DialogAction>,
+    texts: Query<&Text>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     ids: Query<&NetworkId>,
     mut state: ResMut<NpcDialogState>,
+    // HUD-side, so all three are optional: an observer that demands a resource
+    // the scene has not registered fails parameter validation.
+    ui_strings: Option<Res<ClientUiStrings>>,
+    progress: Option<Res<crate::plugins::hud::underbar::model::PlayerProgress>>,
+    mut confirm: Option<ResMut<ChoiceConfirmState>>,
+    mut pending: ResMut<job_menu::PendingJobRequest>,
     mut store: MessageWriter<OpenStore>,
     mut teleport: MessageWriter<OpenTeleport>,
     mut storage: MessageWriter<OpenStorage>,
@@ -606,6 +628,56 @@ fn on_dialog_line(
         }
         DialogAction::Option(TalkOption::GuildStorage) => {
             guild_storage.write(OpenGuildStorage { npc });
+        }
+        DialogAction::Job(action) => {
+            // The NPC's network id is what every job request addresses
+            // (`npc_gid`); without it there is nothing to ask.
+            let Ok(id) = ids.get(npc) else {
+                warn!("job menu: talking to an NPC without a network id");
+                return;
+            };
+            match action {
+                // Gold and a seven-day lockout: ask first, send on the answer.
+                JobMenuAction::Join { .. } | JobMenuAction::Leave => {
+                    let shipped = ClientUiStrings::default();
+                    let strings = ui_strings.as_deref().unwrap_or(&shipped);
+                    let (tag, prompt) = match action {
+                        JobMenuAction::Join { .. } => (
+                            job_menu::JOIN_CONFIRM_TAG,
+                            strings.get_or(
+                                "UIIT_STT_JOBGUILD_JOIN_WINDOW",
+                                "Join job league?<br>Other previous job information will reset \
+                                 when you join a league.",
+                            ),
+                        ),
+                        _ => (
+                            job_menu::LEAVE_CONFIRM_TAG,
+                            strings.get_or(
+                                "UIIT_STT_JOBGUILD_WITHD_WINDOW",
+                                "Leave job league?<br>Job league you have left cannot be \
+                                 rejoined for 7 days.",
+                            ),
+                        ),
+                    };
+                    let level = progress.as_ref().map(|p| p.level);
+                    if let Some(mut confirm) = confirm.take() {
+                        confirm.ask(ChoiceConfirmRequest {
+                            tag,
+                            prompt: job_menu::confirm_text(*action, prompt, level),
+                            // One option row, captioned with the line the
+                            // player actually clicked ("Join hunter guild") —
+                            // the widget is a choice widget, and this is the
+                            // choice.
+                            options: vec![texts
+                                .get(activate.entity)
+                                .map(|text| text.0.clone())
+                                .unwrap_or_default()],
+                        });
+                        pending.0 = Some((id.0, *action));
+                    }
+                }
+                _ => job_menu::send_job_request(&conn, id.0, *action),
+            }
         }
         DialogAction::BackToOptions => {
             *state = NpcDialogState::Open {
