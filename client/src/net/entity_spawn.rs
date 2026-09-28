@@ -426,8 +426,19 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     let mut equipment = Vec::new();
     read_item_list(r, resolver, &mut equipment)?; // inventory (equipped gear)
     let _avatar_slots = r.u8()?;
-    read_item_list(r, resolver, &mut equipment)?; // avatar items
-    let _has_mask = r.u8()?;
+    // avatar items
+    read_item_list(r, resolver, &mut equipment)?;
+    // Mask block: a flag, and when it is set a mask ref id, one byte and a
+    // u8-counted list of u32s. Clear flag = one byte, as before. The shape is
+    // confirmed in the original reader; that a server sets the flag is not.
+    // (The original also type-checks the mask ref id; only the widths matter
+    // for staying in step with the record.)
+    if r.u8()? != 0 {
+        let _mask_ref_id = r.u32()?;
+        r.skip(1)?;
+        let mask_entries = r.u8()?;
+        r.skip(4 * mask_entries as usize)?;
+    }
 
     let unique_id = r.u32()?;
     let position = r.position()?;
@@ -878,6 +889,94 @@ mod test {
         let state = e.state.as_ref().expect("characters carry a state block");
         assert_eq!(state.walk_speed, 16.0);
         assert_eq!(state.run_speed, 50.0);
+    }
+
+    /// A mask flag of 1 is followed by the mask block: the mask ref id, a byte,
+    /// and a `u8`-counted list of `u32`s. Without it the mask ref id is read as
+    /// the unique id and every field after it shifts.
+    #[test]
+    fn parses_player_wearing_a_mask() {
+        const PLAYER_REF: u32 = 1907;
+        const MASK_REF: u32 = 12345;
+        let res = resolver(&[(PLAYER_REF, RefType::Player)]);
+
+        let body = Body::default()
+            .u32(PLAYER_REF)
+            // scale, hwan, pvp_cape, autoxp, base_inv_size
+            .raw(&[0, 0, 0, 1, 45])
+            // inventory: 0 items, avatar slots, 0 avatar items
+            .u8(0)
+            .u8(5)
+            .u8(0)
+            // has_mask + mask ref id + flag + 2-entry u32 list
+            .u8(1)
+            .u32(MASK_REF)
+            .u8(0)
+            .u8(2)
+            .u32(7)
+            .u32(9)
+            // unique id + position/movement/state
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Masked")
+            // job_type, job_level, pk_state, transport, in_combat, scroll, interact, unk
+            .raw(&[0, 1, 0xFF, 0, 0, 0, 0, 0])
+            // guild: empty name, guild id, empty nick, 3×u32 + 2×u8
+            .string("")
+            .u32(0)
+            .string("")
+            .raw(&[0u8; 14])
+            // equipment_cooldown, pk_flag
+            .u8(0)
+            .u8(0xFF)
+            .0;
+
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert_eq!(parsed.spawns.len(), 1, "masked player should parse");
+        let e = &parsed.spawns[0];
+        assert_eq!(e.unique_id, 352808, "the mask ref id is not the unique id");
+        assert_eq!(e.name.as_deref(), Some("Masked"));
+        assert_eq!(e.position.region, 0x60A8);
+    }
+
+    /// Non-regression for the mask block: with `has_mask = 0` the record width
+    /// must be exactly what it was, which a second record in the same batch
+    /// checks — it only parses if the player consumed neither byte more nor
+    /// less.
+    #[test]
+    fn a_maskless_player_keeps_its_record_width() {
+        const PLAYER_REF: u32 = 1907;
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(PLAYER_REF, RefType::Player), (NPC_REF, RefType::Npc)]);
+
+        let body = Body::default()
+            .u32(PLAYER_REF)
+            .raw(&[0, 0, 0, 1, 45])
+            .u8(0) // inventory: 0 items
+            .u8(5) // avatar slots
+            .u8(0) // 0 avatar items
+            .u8(0) // has_mask = 0: the block ends here
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Plain")
+            .raw(&[0, 1, 0xFF, 0, 0, 0, 0, 0])
+            .string("")
+            .u32(0)
+            .string("")
+            .raw(&[0u8; 14])
+            .u8(0)
+            .u8(0xFF)
+            // second record: an NPC, which only parses at the right offset
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(0) // talk flag: none
+            .0;
+
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert_eq!(parsed.spawns.len(), 2, "both records parse");
+        assert_eq!(parsed.spawns[0].unique_id, 352808);
+        assert_eq!(parsed.spawns[1].unique_id, 11);
     }
 
     #[test]
