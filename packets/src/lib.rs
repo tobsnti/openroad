@@ -301,6 +301,10 @@ packets! {
     // 0x34 application-period end), the other 52 keep their bytes. Five record
     // fields have a known width but no name, so they stay unk_*.
     0x385F => SiegeUpdate,
+    // Flag war (see agent/flagwar.rs). 0x34B1 is a u8 sub-command family with a
+    // second selector byte on arm 0xFF; the arms are named after the message
+    // keys the original shows for them, the fields stay unk_*.
+    0x34B1 => FlagWarUpdate,
     // Not yet wired: 0x3206 SERVER_TICKET (server-unnamed, purpose
     // unresolved — skipped).
 

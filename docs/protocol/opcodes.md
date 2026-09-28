@@ -381,6 +381,19 @@ they are all zero outside a war. Arithmetic for that record:
 |---|---|---|---|---|
 | `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, eight flat arms with `unk_*` fields, everything else raw |
 
+## Flag war (wire only — no consumer yet)
+
+`0x34B1` is a `u8` sub-command family and the leading byte indexes a jump table;
+arm `0xFF` reads a second byte and indexes a second table. Most arms read
+nothing at all. Each decoded arm is named after the `UIIT_MSG_FLAGWAR_*` message
+the original shows for it; the fields have no such source and stay `unk_*`. An
+arm outside the two tables, and an arm whose body does not close on its last
+byte, keeps its bytes.
+
+| Opcode | Name | Direction | Status | Notes |
+|---|---|---|---|---|
+| `0x34B1` | FlagWarUpdate | S→C | experimental | first table: arms 2, 4, 5, 9, 13, 14 bodyless, arm 8 a `u16`, arm 10 a `u32`; second table (arm `0xFF`): 17 arms, four of them with a body |
+
 ## Party (wire only — no consumer yet, see EP-14)
 
 Read from the original client's parser and builder; none of them is confirmed
