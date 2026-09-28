@@ -8752,7 +8752,9 @@ version = "0.1.5"
 dependencies = [
  "bevy",
  "bevy_pk2",
+ "byteorder",
  "bytes",
+ "chrono",
  "clap",
  "client",
  "fbxcel",
@@ -8761,6 +8763,8 @@ dependencies = [
  "gltf-json",
  "image 0.24.9",
  "lazy_static",
+ "packets",
+ "rand 0.9.5",
  "regex",
  "serde",
  "serde_json",
