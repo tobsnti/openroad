@@ -26,9 +26,11 @@ use bevy::window::PrimaryWindow;
 use bevy_tweening::{EaseMethod, Tween, TweenAnim};
 
 use crate::assets::bsr::resource::SroResource;
+use crate::assets::textdata::effectsound::SoundAddress;
 use crate::assets::FontAssets;
 use crate::plugins::camera::CinematicCamera2;
 use crate::plugins::settings::options::GameOptions;
+use crate::plugins::textdata::ClientEffectSounds;
 use crate::plugins::textdata::{
     ClientCharacterData, ClientItemData, ClientItemIndex, ClientUiStrings,
 };
@@ -681,22 +683,34 @@ pub fn update_region_plates(
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct ClickSound<'w> {
     options: Res<'w, GameOptions>,
-    assets: Res<'w, IntroV2Assets>,
+    effect_sounds: Option<Res<'w, ClientEffectSounds>>,
+    asset_server: Res<'w, AssetServer>,
 }
 
 impl ClickSound<'_> {
-    /// The sound the original plays for every activating button click
-    /// (`snd_button_click`, raised by its generic button class). Our race
-    /// plates are picked by a ray against the 3D idols rather than by a
+    /// The sound the original plays for *every* activating click: `snd_button_click`
+    /// at `0x00d9e938` has two push xrefs and one of them is `0x0065630c`, inside
+    /// the generic `IFButton` class — so it is not a per-button decision there.
+    /// Our race plates are picked by a ray against the 3D idols rather than by a
     /// `ui_v2` button, so they never reach `play_button_click_sound`'s
-    /// `On<Activate>` observer and have to play it here.
+    /// `On<Activate>` observer and the confirm click was silent (measured
+    /// 2026-08-26, lane `audit-pregame-sound`).
+    ///
+    /// Read from the table rather than from a preloaded handle so the click
+    /// picks between the two authored `UI/SND_BUTTON_CLICK` variants
+    /// (`uibutton_a.wav`, `uibutton_b.wav`) at the table's own volume, the way
+    /// `captcha.rs` and `server_select.rs` already do.
     fn play_click(&self, commands: &mut Commands) {
-        if let Some(playback) = self.options.audio.fx_playback() {
-            commands.spawn((
-                AudioPlayer::new(self.assets.sound_button_sound_a.clone()),
-                playback,
-            ));
-        }
+        let Some(sounds) = self.effect_sounds.as_deref() else {
+            return;
+        };
+        crate::plugins::audio_events::play(
+            commands,
+            &self.asset_server,
+            sounds,
+            &self.options.audio,
+            &SoundAddress::new("UI", "SND_BUTTON_CLICK"),
+        );
     }
 }
 

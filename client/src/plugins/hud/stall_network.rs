@@ -27,9 +27,17 @@
 //!   and `Text=""`; their contents are code-side (doc §9-U2/U4) and no
 //!   `WNETWORK` key names a *degree* at all. We draw the authored closed-state
 //!   field and leave the lists unpopulated rather than invent a category tree.
-//! * **The page strip is text, not art.** `CIFPageManager` has no art in the data
-//!   (`DDJ=""`, doc §9-U3), so the page numbers are drawn as plain labels on the
-//!   authored `80,582,385,26` band instead of guessed chrome.
+//! * **The page strip is the shared widget, and it has real art.** The
+//!   `DDJ=""` at `ifstallnetwork.txt:10` is the *instance's*; a `CIFPageManager`
+//!   takes its parts from the global prototype `Media/resinfo/ifpagemanager.txt`,
+//!   which names `interface\mall\mall_page_prev.ddj` (`:67`) and
+//!   `mall_page_next.ddj` (`:48`) — two 36x12 buttons with "Prev"/"Next" baked
+//!   in, at local x 0 and 64, three states each and no `_disable`. An earlier
+//!   version of this note read the empty instance field as "no art in the data"
+//!   and drew the pages as plain text labels; that was wrong. The strip now
+//!   comes from [`crate::plugins::hud::widgets::page_manager`], which also
+//!   carries the measured rule that the band is **not drawn at all** while
+//!   there is one page.
 //! * **`_BG_02` (`78,495,120,16`) is not drawn.** It is the doc's §9-U1 anomaly:
 //!   a `com_bg_tile_c` patch floating in the middle of the result list, with no
 //!   control on it. Drawing it would paint a stray band across rows 12/13.
@@ -43,6 +51,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::widgets::page_manager::{page_manager_root, spawn_parts, PageState};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::scenes::SceneState;
 
@@ -301,9 +310,6 @@ pub struct StallHeaderColumn(pub usize);
 
 #[derive(Component, Clone, Copy)]
 pub struct StallResultRow(pub usize);
-
-#[derive(Component, Clone, Copy)]
-pub struct StallPageButton(pub usize);
 
 /// An authored window rect as a board-local node.
 fn local(rect: (f32, f32, f32, f32), s: f32) -> Node {
@@ -598,6 +604,10 @@ pub fn refresh_stall_network(
     }
     let s = hud_scale();
     let page = state.page_indices();
+    // `PageState` is one-based like the numbers a player reads; `state.page` is
+    // a zero-based index into `rows`.
+    let page_state = PageState::new(state.page as u32 + 1, state.page_count() as u32);
+    let mut strip_buttons: Option<(Entity, Entity)> = None;
     for parent in results.iter() {
         commands.entity(parent).despawn_related::<Children>();
         commands.entity(parent).with_children(|list| {
@@ -670,40 +680,23 @@ pub fn refresh_stall_network(
                 ));
             }
 
-            // page strip — text on the authored band (see the module note)
-            let pages = state.page_count();
-            let step = PAGE_MGR.2 / pages.max(1) as f32;
-            for page_index in 0..pages {
-                let rect = (
-                    PAGE_MGR.0 + page_index as f32 * step,
-                    PAGE_MGR.1,
-                    step,
+            // The page strip is the shared `CIFPageManager`
+            // (`hud/widgets/page_manager.rs`): the prototype's own art at the
+            // prototype's own local offsets, dropped into the authored
+            // `80,582,385,26` band. It draws nothing at all while there is one
+            // page — the widget's rule, measured on the original.
+            list.spawn(page_manager_root(
+                (
+                    PAGE_MGR.0 - BOARD_ORIGIN.0,
+                    PAGE_MGR.1 - BOARD_ORIGIN.1,
+                    PAGE_MGR.2,
                     PAGE_MGR.3,
-                );
-                list.spawn((StallPageButton(page_index), Button, local(rect, s)))
-                    .observe(
-                        |activate: On<Activate>,
-                         buttons: Query<&StallPageButton>,
-                         mut state: ResMut<StallNetworkState>| {
-                            if let Ok(button) = buttons.get(activate.entity) {
-                                state.page = button.0;
-                                state.selected = None;
-                            }
-                        },
-                    );
-                list.spawn(label(
-                    (page_index + 1).to_string(),
-                    rect,
-                    JustifyContent::Center,
-                    if page_index == state.page {
-                        BUTTON_CAPTION_COLOR
-                    } else {
-                        Color::WHITE
-                    },
-                    fonts.nine.clone(),
-                    s,
-                ));
-            }
+                ),
+                s,
+            ))
+            .with_children(|strip| {
+                strip_buttons = spawn_parts(strip, &asset_server, &fonts, page_state, s);
+            });
 
             list.spawn(label(
                 state.gold.to_string(),
@@ -714,6 +707,24 @@ pub fn refresh_stall_network(
                 s,
             ));
         });
+        // The widget ships no observers on purpose — what a page *is* belongs
+        // to this window. Prev/Next step the zero-based index and clear the
+        // selection, exactly as the old per-page buttons did.
+        if let Some((prev, next)) = strip_buttons.take() {
+            commands.entity(prev).observe(
+                |_: On<Activate>, mut state: ResMut<StallNetworkState>| {
+                    state.page = state.page.saturating_sub(1);
+                    state.selected = None;
+                },
+            );
+            commands.entity(next).observe(
+                |_: On<Activate>, mut state: ResMut<StallNetworkState>| {
+                    let last = state.page_count() - 1;
+                    state.page = (state.page + 1).min(last);
+                    state.selected = None;
+                },
+            );
+        }
     }
 }
 
@@ -910,5 +921,39 @@ mod test {
         // a page index past the end clamps instead of drawing nothing
         state.page = 9;
         assert_eq!(state.page_indices(), vec![15]);
+    }
+
+    /// The board hands `refresh_stall_network`'s `PageState` exactly this, so
+    /// the widget's measured rule (§28: a single page draws **no** strip)
+    /// reaches this window without it restating anything. Falls over if the
+    /// one-based conversion drifts or the rule is taken out of the widget.
+    #[test]
+    fn the_page_strip_is_hidden_while_there_is_one_page() {
+        let mut state = StallNetworkState::default();
+        let page_state = |state: &StallNetworkState| {
+            PageState::new(state.page as u32 + 1, state.page_count() as u32)
+        };
+
+        // empty and a single full page: nothing to page through, no strip
+        assert!(!page_state(&state).visible());
+        state.rows = (0..ROWS_PER_PAGE)
+            .map(|index| row(index as u32, "Item", 1, 1, index as u64))
+            .collect();
+        assert_eq!(state.page_count(), 1);
+        assert!(!page_state(&state).visible());
+
+        // one row more is the first count that shows it
+        state.rows.push(row(99, "Item", 1, 1, 99));
+        assert_eq!(state.page_count(), 2);
+        let shown = page_state(&state);
+        assert!(shown.visible());
+        // zero-based index 0 reads as page 1 of 2, with only Next available
+        assert_eq!(shown.current(), 1);
+        assert_eq!(shown.label(), "1/2");
+        assert!(!shown.has_prev() && shown.has_next());
+        state.page = 1;
+        let last = page_state(&state);
+        assert_eq!(last.label(), "2/2");
+        assert!(last.has_prev() && !last.has_next());
     }
 }
