@@ -6,6 +6,7 @@ pub mod friend;
 pub mod gateway;
 pub mod guild;
 pub mod inventory;
+pub mod job;
 pub mod packet_dump;
 pub mod party;
 pub mod plugin;

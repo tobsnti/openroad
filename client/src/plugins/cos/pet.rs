@@ -18,9 +18,8 @@ use bevy::prelude::*;
 use packets::agent::pet::{
     AttackPetSettings, CosKind, PetActionRequest, PetActionResponse, PetRenameRequest,
     PetRenameResponse, PetSettingsChangeRequest, PetSettingsChangeResponse, PetTerminateRequest,
-    PetTerminateResponse, PetUnsummonResponse, StuckDistanceWarning, PET_ACTION_ATTACK,
-    PET_ACTION_ITEM_PICKUP, PET_SETTINGS_TYPE_GOLD, STUCK_REASON_QUEST_MONSTER,
-    STUCK_REASON_TRADE_CART,
+    PetTerminateResponse, PetUnsummonResponse, PET_ACTION_ATTACK, PET_ACTION_ITEM_PICKUP,
+    PET_SETTINGS_TYPE_GOLD,
 };
 use packets::Packet;
 
@@ -219,19 +218,6 @@ pub fn on_pet_settings_response(
         };
         if let Some(cos) = state.get_mut(unique_id) {
             cos.body.unk_f = Some(settings);
-        }
-    }
-}
-
-/// 0x30E7 — "you have wandered too far". The distances the original prints
-/// (100 / 30) are its own literals, not wire fields, so they are not echoed
-/// here; reasons the original ignores are ignored.
-pub fn on_stuck_distance_warning(mut reader: MessageReader<StuckDistanceWarning>) {
-    for msg in reader.read() {
-        match msg.reason {
-            STUCK_REASON_TRADE_CART => warn!("cos: too far from the trade cart"),
-            STUCK_REASON_QUEST_MONSTER => warn!("quest: too far from the quest monster"),
-            other => debug!("0x30E7 reason {other} (ignored, as the original does)"),
         }
     }
 }
