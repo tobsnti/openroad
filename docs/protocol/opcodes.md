@@ -367,14 +367,16 @@ on both sides). Details: . `0x3109`
 
 ## Fortress war (wire only — no consumer yet)
 
-`0x385F` is a `u8` sub-command family (0x35 arms). Two arms are decoded; the
-other 52 keep their bytes. Five record fields have a known width and no name, so
-they are carried as `unk_*`; outside a war they are all zero. Arithmetic:
+`0x385F` is a `u8` sub-command family (0x35 arms). The fortress list, the
+application-period end and eight flat arms are decoded; every other arm keeps
+its bytes, including the ones whose body is only partly readable. Fields that
+have a known width and no name are carried as `unk_*`; in the fortress record
+they are all zero outside a war. Arithmetic for that record:
 `1 + 1 + count x 28 + 1 + 4 = 91`, the exact body length.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
-| `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, everything else raw |
+| `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, eight flat arms with `unk_*` fields, everything else raw |
 
 ## Party (wire only — no consumer yet, see EP-14)
 
