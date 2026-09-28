@@ -50,6 +50,7 @@ pub mod guild_storage;
 pub mod hitcount;
 pub mod inventory;
 pub mod item_cell;
+pub mod item_mall;
 pub mod magic_state_board;
 pub mod main_popup;
 pub mod minimap;
@@ -183,6 +184,14 @@ impl Plugin for HudPlugin {
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
                 academy::AcademyWindowPlugin,
+                // The Item Mall page and its `Buying list` sub-window. It
+                // sorts alphabetically into group 2 (after `inventory`), but
+                // groups 2 and 3 are each one entry from the 15 the `Plugins`
+                // trait implements, and a group that fills up shifts rather
+                // than grows — so an append there would hand the next lane a
+                // group with no headroom on the repo's busiest merge hotspot
+                // (#558). This group has seven.
+                item_mall::ItemMallPlugin,
             ),
         ));
     }
