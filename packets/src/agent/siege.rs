@@ -31,9 +31,10 @@ pub const SIEGE_FORTRESS_LIST: u8 = 0x00;
 /// full hour, which is what identifies it as a scheduled period transition.
 pub const SIEGE_APPLICATION_PERIOD_END: u8 = 0x34;
 
-/// One fortress in the sub-0 list. Minimum 28 bytes: `4 + 2 + 4 + 2 + 2 + 4 + 4
-/// + 4 + 1 + 1`, with all three strings empty and both flags clear — which is
-/// exactly the record the peacetime capture carries three times.
+/// One fortress in the sub-0 list. Minimum 28 bytes
+/// (`4 + 2 + 4 + 2 + 2 + 4 + 4 + 4 + 1 + 1`), with all three strings empty and
+/// both flags clear — which is exactly the record the peacetime capture carries
+/// three times.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FortressStatus {
     /// Capture: 1, 3 and 6 — the same three ids the user's own

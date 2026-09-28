@@ -65,7 +65,7 @@ impl ReadStats {
             let entry = seen.entry(path.to_path_buf()).or_insert((0, size));
             entry.0 += 1;
         }
-        if reads % REPORT_EVERY == 0 {
+        if reads.is_multiple_of(REPORT_EVERY) {
             self.report();
         }
     }
