@@ -21,6 +21,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::SerializationError;
 
+use crate::agent::cursor::{put_string, Cursor};
+
 /// Sub-command 0: the fortress status list.
 pub const SIEGE_FORTRESS_LIST: u8 = 0x00;
 /// Sub-command 0x34: the application period ended. Empty body — captured on the
@@ -75,44 +77,10 @@ pub enum SiegeUpdate {
     Other { sub: u8, tail: Bytes },
 }
 
-fn short() -> SerializationError {
-    SerializationError::IoError(std::io::Error::new(
-        std::io::ErrorKind::UnexpectedEof,
-        "short 0x385F body",
-    ))
-}
-
-struct Cursor<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], SerializationError> {
-        let end = self.pos.checked_add(n).ok_or_else(short)?;
-        let slice = self.buf.get(self.pos..end).ok_or_else(short)?;
-        self.pos = end;
-        Ok(slice)
-    }
-    fn u8(&mut self) -> Result<u8, SerializationError> {
-        Ok(self.take(1)?[0])
-    }
-    fn u32(&mut self) -> Result<u32, SerializationError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-    fn string(&mut self) -> Result<String, SerializationError> {
-        let len = u16::from_le_bytes(self.take(2)?.try_into().unwrap()) as usize;
-        Ok(String::from_utf8_lossy(self.take(len)?).into_owned())
-    }
-}
-
 impl TryFrom<Bytes> for SiegeUpdate {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
-        let mut c = Cursor {
-            buf: &value,
-            pos: 0,
-        };
+        let mut c = Cursor::new(&value, "short 0x385F body");
         let sub = c.u8()?;
         match sub {
             SIEGE_APPLICATION_PERIOD_END if value.len() == 1 => {
@@ -161,7 +129,7 @@ impl TryFrom<Bytes> for SiegeUpdate {
                 // The body must be consumed exactly. A list that does not close
                 // on the last byte is a layout surprise, and keeping it raw is
                 // better than reporting a half-read fortress table.
-                .filter(|_| c.pos == value.len());
+                .filter(|_| c.at_end());
                 Ok(parsed.unwrap_or(SiegeUpdate::Other {
                     sub,
                     tail: value.slice(1..),
@@ -215,11 +183,6 @@ impl From<SiegeUpdate> for Bytes {
         }
         buf.freeze()
     }
-}
-
-fn put_string(buf: &mut BytesMut, s: &str) {
-    buf.put_u16_le(s.len() as u16);
-    buf.extend_from_slice(s.as_bytes());
 }
 
 #[cfg(test)]
