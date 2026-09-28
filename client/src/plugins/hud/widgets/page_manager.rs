@@ -34,9 +34,9 @@ use crate::plugins::ui_v2::style::ImageButtonStyle;
 //
 // `ifpagemanager.txt:44` (`GDR_PAGE_MGR_RIGHT_BTN:CIFButton`, ID 2) and `:63`
 // (`GDR_PAGE_MGR_LEFT_BTN:CIFButton`, ID 1) name the two base images.
-// (Line numbers re-counted 2026-08-23 against
-// `/Users/a/Projects/pk2/Media/resinfo/ifpagemanager.txt`; they cite the
-// control's declaration line, the same convention [`SITES`] uses.) The
+// (Line numbers re-counted 2026-08-23 against the user's own extracted
+// `Media/resinfo/ifpagemanager.txt`; they cite the control's declaration
+// line, the same convention [`SITES`] uses.) The
 // `_focus` / `_press` siblings exist in `Media/interface/mall/` and are the
 // standard state-suffix grammar (`shared-input-widgets.md` §5 grammar 1).
 
