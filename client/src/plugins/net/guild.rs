@@ -12,11 +12,11 @@
 //! notice, log — is a separate piece of work (#25, #252) and nothing here
 //! anticipates it.
 //!
-//! The 0x38F5 incremental update (`GuildUpdate`) is **not** applied: only its
-//! discriminator is known and every arm's payload is `[U]`
-//! (`docs/net-guild-0x3101.md`), so folding it in would mean inventing a
-//! layout. A permission change therefore only lands on the next full push —
-//! stated rather than papered over.
+//! The 0x38F5 incremental update (`GuildUpdate`) is **not** applied: its arms
+//! are decoded by width and order, but what the fields *mean* is `[U]`
+//! (`docs/net-guild-0x3101.md`), so folding them into the record would mean
+//! inventing a layout. A permission change therefore only lands on the next
+//! full push — stated rather than papered over.
 
 use bevy::prelude::*;
 
