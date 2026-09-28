@@ -422,12 +422,18 @@ on the wire, so all are `experimental`.
 | `0xB067` | PartyJoinResponse | S→C | experimental | the join ack; its body is read from the wire |
 | `0xB06D` | PartyMatchJoinAck | S→C | experimental | our decoder branches on `result == 1`, not `== 2` — both tails are `u16` |
 
-## Quest marks (wire only — the quest system itself is not built yet)
+## Quest
 
 The three opcodes of the quest family whose bodies are known. Everything else
 the family has is listed unwired, with its reason, in `docs/net-quest.md` —
 including the correction that `0x30D0`, `0x30D2`, `0x30D3` and `0x30DF` are not
 quest opcodes at all.
+
+`0x30D5` and the CHARACTER_DATA quest record now have a **consumer**: the
+journal (`client/src/plugins/net/quest.rs`) and its two surfaces
+(`client/src/plugins/hud/quest/`). The quest **send** path is still unwired —
+accept / abandon / hand-in have builders in the original but no evidenced
+client→server body, so nothing is sent.
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
@@ -566,7 +572,9 @@ Major subsystems with **no** opcodes wired yet. These are the coverage frontier:
 
 - **Guild** chat / war / storage / alliance — EP-15 (the guild record, log, update and notice edit are wired above)
 - **Storage** — EP-17 (player exchange is wired above; own-side staging still missing)
-- **Quest** — EP-21
+- **Quest send path** — accept / abandon / hand-in. The receive half is wired
+  (`0x30D5` plus the CHARACTER_DATA record, see Quest above); no request body is
+  evidenced, so none is invented
 - **Alchemy** (elixir/stone fusion) — P4/P5
 - **Friends / block list** — the join-time roster push `0x3305` is wired
   (experimental, only ever seen empty); the request/manage path is still later
