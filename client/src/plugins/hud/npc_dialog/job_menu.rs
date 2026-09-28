@@ -35,11 +35,13 @@
 //! `_CHANGER`s and the six thief-den shops — the test below pins that against
 //! the census, so widening the rule cannot silently put a job menu on a shop.
 //!
-//! What is deliberately **not** here yet: JOIN / WITHD (`0x70E1`/`0x70E2`),
-//! the alias pair and `HUNTERMENU_OUTCOME`. Joining costs gold and the success
-//! shape of the `0xB0E1`/`0xB0E2` acks is `[U]` (`packets::agent::job`), so
-//! that line wants the original's confirmation prompt and a decoded ack, not a
-//! send-on-click — `docs/planning/JOB-etappe3.md`.
+//! What is deliberately **not** here yet: the alias pair (`ALIASCREATE` /
+//! `ALIASMODIFY`) and `HUNTERMENU_OUTCOME`. JOIN / WITHD (`0x70E1`/`0x70E2`)
+//! are here, but never as a send-on-click: joining costs gold, leaving locks
+//! the league for seven days, and the success shape of the `0xB0E1`/`0xB0E2`
+//! acks is `[U]` (`packets::agent::job`), so each raises the original's own
+//! shipped confirmation and goes out on the answer —
+//! `docs/planning/JOB-etappe3.md`.
 
 use bevy::prelude::*;
 
