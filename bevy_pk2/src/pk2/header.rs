@@ -31,7 +31,7 @@ impl From<[u8; HEADER_SIZE]> for Header {
         header.checksum.copy_from_slice(&buf[35..51]);
         header.reserved.copy_from_slice(&buf[51..]);
 
-        return header;
+        header
     }
 }
 
@@ -71,7 +71,7 @@ impl From<&[u8]> for Header {
         let mut buf = [0; HEADER_SIZE];
         let take = header_buf.len().min(HEADER_SIZE);
         buf[..take].copy_from_slice(&header_buf[..take]);
-        return Header::from(buf);
+        Header::from(buf)
     }
 }
 
@@ -81,16 +81,18 @@ impl Header {
             return Ok(());
         }
 
-        let mut encrypted_checksum = CHECKSUM.clone();
+        // `CHECKSUM` is a `&[u8; 16]`, so the copy is explicit: `encrypt` takes
+        // `&mut [u8]` and must not alias the constant.
+        let mut encrypted_checksum = *CHECKSUM;
         blowfish.encrypt(&mut encrypted_checksum);
 
-        for i in 0..3 {
-            if encrypted_checksum[i] != self.checksum[i] {
-                return Err(InvalidHeader("Checksum is invalid"));
-            }
+        // Only the first three bytes are compared — that is the original's own
+        // check, and the remaining bytes of the block differ per archive.
+        if encrypted_checksum[..3] != self.checksum[..3] {
+            return Err(InvalidHeader("Checksum is invalid"));
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn verify_signature(&self) -> Result<(), Error> {

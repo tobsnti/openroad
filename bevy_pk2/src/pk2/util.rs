@@ -1,7 +1,13 @@
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 
+// `Cursor` and `Bytes` are named only by the `cfg(test)` in-memory block-chain
+// seam below, so they are gated with it; production reads go through `File`.
+#[cfg(test)]
+use std::io::Cursor;
+
+#[cfg(test)]
 use bytes::Bytes;
 
 use crate::pk2::blowfish::Blowfish;
@@ -12,7 +18,7 @@ use crate::pk2::errors::Error::{InvalidBlock, IO};
 
 /// Converts a byte slice in little endian to an u32 number.
 pub fn as_u32_le(array: &[u8]) -> u32 {
-    ((array[0] as u32) << 0)
+    (array[0] as u32)
         + ((array[1] as u32) << 8)
         + ((array[2] as u32) << 16)
         + ((array[3] as u32) << 24)
@@ -20,7 +26,7 @@ pub fn as_u32_le(array: &[u8]) -> u32 {
 
 /// Converts a byte slice in little endian to an u64 number.
 pub fn as_u64_le(array: &[u8]) -> u64 {
-    ((array[0] as u64) << 0)
+    (array[0] as u64)
         + ((array[1] as u64) << 8)
         + ((array[2] as u64) << 16)
         + ((array[3] as u64) << 24)
@@ -94,10 +100,15 @@ pub fn read_block(file: &mut File, offset: u64, blowfish: &Blowfish) -> Result<V
     Ok(entries)
 }
 
+/// Only this module's tests walk a block chain out of memory; production reads
+/// go through [`read_block`] on a real `File`. Gating it on `cfg(test)` keeps
+/// the crate free of an unused trait without deleting the test seam.
+#[cfg(test)]
 pub trait CursorExt {
     fn read_block(&mut self, offset: u64, blowfish: &Blowfish) -> Result<Vec<Entry>, Error>;
 }
 
+#[cfg(test)]
 impl CursorExt for Cursor<Bytes> {
     /// Same bounded walk as [`read_block`], over an in-memory archive.
     fn read_block(&mut self, offset: u64, blowfish: &Blowfish) -> Result<Vec<Entry>, Error> {
@@ -218,7 +229,10 @@ mod tests {
     /// The cap is a backstop for a chain of unique offsets that never ends.
     #[test]
     fn the_block_cap_is_bounded() {
-        assert!(MAX_CHAIN_BLOCKS >= 1024, "must fit real archives");
-        assert!(MAX_CHAIN_BLOCKS <= 1 << 20, "must still bound the walk");
+        // Both bounds are compile-time facts about a `const`, so they are
+        // asserted at compile time; a runtime `assert!` on a constant can only
+        // ever hold and clippy says so.
+        const _: () = assert!(MAX_CHAIN_BLOCKS >= 1024, "must fit real archives");
+        const _: () = assert!(MAX_CHAIN_BLOCKS <= 1 << 20, "must still bound the walk");
     }
 }

@@ -29,14 +29,14 @@ impl Display for EntryType {
 
 impl From<u8> for EntryType {
     fn from(val: u8) -> Self {
-        return match val {
+        match val {
             0 => EntryType::Empty,
             1 => EntryType::Dir,
             2 => EntryType::File,
             // An archive byte outside 0..=2 is corrupt or hostile input;
             // treat it as Empty so it is filtered out rather than aborting.
             _ => EntryType::Empty,
-        };
+        }
     }
 }
 
@@ -86,7 +86,7 @@ impl From<&[u8]> for Entry {
         entry.name.copy_from_slice(&buf[1..90]);
         entry.padding.copy_from_slice(&buf[126..128]);
 
-        return entry;
+        entry
     }
 }
 
@@ -104,7 +104,6 @@ impl Entry {
     pub fn path_buf(&self) -> PathBuf {
         let korean = encoding_from_whatwg_label("euc-kr").unwrap();
         let name = korean.decode(&self.name, DecoderTrap::Replace).unwrap();
-        let p = PathBuf::from(name.trim_end_matches("\x00"));
-        return p;
+        PathBuf::from(name.trim_end_matches("\x00"))
     }
 }

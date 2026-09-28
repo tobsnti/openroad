@@ -256,7 +256,7 @@ fn read_config_section(path: &Path) -> Result<Option<Pk2Section>, ResolveError> 
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, KeyError> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(KeyError::MalformedSaltHex);
     }
     (0..s.len())
