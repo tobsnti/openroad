@@ -9,5 +9,6 @@ pub mod inventory;
 pub mod packet_dump;
 pub mod party;
 pub mod plugin;
+pub mod quest;
 pub mod siege;
 pub mod stall;

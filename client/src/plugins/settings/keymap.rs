@@ -531,9 +531,8 @@ mod tests {
     fn every_bound_key_is_either_consumed_or_declared_unwired() {
         /// Ids whose consumer does not exist yet. Every entry is a row the
         /// pane draws without effect; removing one means wiring it.
-        const NOT_YET_WIRED: [(u16, &str); 12] = [
+        const NOT_YET_WIRED: [(u16, &str); 11] = [
             (3004, "KeyAction — no action window yet"),
-            (3006, "KeyQuest — no quest journal yet"),
             (3007, "KeyCommunity — no community window yet"),
             (3009, "KeyBerserkerMode — no berserk trigger yet"),
             (3011, "KeyHelp — no help window yet"),
