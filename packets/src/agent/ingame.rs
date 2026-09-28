@@ -1998,6 +1998,22 @@ impl From<SkillEnd> for Bytes {
     }
 }
 
+/// 0x30D1 — server → client: two values for one status-effect instance.
+///
+/// The original's handler forwards the body to one reader that takes `u32`,
+/// `u32`, `u16` straight through — no branch, no list, a ten-byte body.
+///
+/// The name follows the *only* thing the reader says about the first field: it
+/// is the key into the same instance table `0x3206` and `0xB0BC` look up. The
+/// other two are stored on that instance (`+0x13C` and `+0x140`) and nothing in
+/// the reader says what they mean, so they keep `unk_*` names.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct StatusEffectValueUpdate {
+    pub instance_id: u32,
+    pub unk_u32_00: u32,
+    pub unk_u16_00: u16,
+}
+
 // --- Skill / mastery learning (0x70A1/0x70A2) -------------------------------
 //
 // The two requests are read off the original's builders and both acks are

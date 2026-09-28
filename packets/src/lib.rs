@@ -359,6 +359,9 @@ packets! {
     0xB074 => ObjectActionResponse,
     0xB070 => ObjectActionUpdate,
     0xB071 => SkillEnd,
+    // One status-effect instance gets two values (see agent/ingame.rs). Ten
+    // fixed bytes; only the key field has a name.
+    0x30D1 => StatusEffectValueUpdate,
 
     // Skill/mastery learning — confirmed. The requests follow the
     // original's builders: one u32 for 0x70A1, u32 + u8 for 0x70A2.

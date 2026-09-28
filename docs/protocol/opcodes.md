@@ -175,6 +175,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB074` | ObjectActionResponse | S→C | wired |  |
 | `0xB070` | ObjectActionUpdate | S→C | wired |  |
 | `0xB071` | SkillEnd | S→C | wired |  |
+| `0x30D1` | StatusEffectValueUpdate | S→C | experimental | ten fixed bytes `u32, u32, u16`; the leading `u32` keys the same status-effect instance table `0x3206` and `0xB0BC` use, the other two have no established meaning |
 | `0x70A1` | SkillLearnRequest | C→S | wired | AGENT_SKILL_LEARN |
 | `0xB0A1` | SkillLearnResponse | S→C | wired |  |
 | `0x70A2` | MasteryLearnRequest | C→S | wired | AGENT_SKILL_MASTERY_LEARN |
