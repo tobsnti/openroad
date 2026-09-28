@@ -94,12 +94,25 @@ impl SilkroadFrame {
                 }
                 buf.put_u16_le(size);
                 buf.put_u16_le(*opcode);
-                buf.put_u8(security.context.sequence.next());
-                buf.put_u8(0);
-                buf.put_slice(data);
-
-                let crc = security.context.crc.calculate(&buf[0..6 + data.len()]);
-                buf[5] = crc;
+                // Offsets 4/5 are the security bytes (sequence count, CRC). A
+                // real server leaves both at zero on everything it sends — the
+                // live gateway capture shows it, e.g. the `0x2001` frame
+                // `1000 0120 0000 …` and the `0x5000` setup `2500 0050 0000 0e …`
+                // — and the original client resets the connection over a
+                // stamped inbound frame. So a server-role session
+                // (`SilkroadSecurityState::as_server_role`, used by
+                // `tools/src/bin/sro_peer`) must leave 4/5 at zero.
+                if security.context.stamps_security_bytes {
+                    buf.put_u8(security.context.sequence.next());
+                    buf.put_u8(0);
+                    buf.put_slice(data);
+                    let crc = security.context.crc.calculate(&buf[0..6 + data.len()]);
+                    buf[5] = crc;
+                } else {
+                    buf.put_u8(0);
+                    buf.put_u8(0);
+                    buf.put_slice(data);
+                }
                 if *encrypted == 1 {
                     let enc_len = (data.len() + 4 + 7) & (-8_isize as usize);
                     if enc_len + 2 > 4096 {
@@ -581,5 +594,63 @@ mod tests {
         };
         assert_eq!(opcode, 0x2322);
         assert_eq!(&data[..], &[1, 2, 3]);
+    }
+
+    /// Seeded session in the **client** role, the default. The two seeds are
+    /// arbitrary non-zero test values: with the zero seeds of
+    /// [`SilkroadSecurityState::new`] the sequence byte happens to be `0` too,
+    /// so a zero seed could not tell a stamped frame from an unstamped one.
+    fn client_role(seq_seed: u32, crc_seed: u32) -> Arc<RwLock<SilkroadSecurityState>> {
+        let mut state = SilkroadSecurityState::new();
+        state.state = SilkroadSecurity::Established;
+        state.context.blowfish = Some(Blowfish::new(&[0u8; 8]).expect("test key"));
+        state.context.sequence = crate::net::sequence::Sequence::from(seq_seed);
+        state.context.crc = Box::new(crate::net::crc::CRC::from(crc_seed));
+        Arc::new(RwLock::new(state))
+    }
+
+    /// Positive control for the `stamps_security_bytes` conditional in
+    /// [`SilkroadFrame::serialize`]: the client role — the live login path —
+    /// must keep stamping offsets 4/5 exactly as before the conditional existed.
+    ///
+    /// The expected bytes are pinned, and they are not invented: they are what
+    /// `Sequence::from(0x11)` and `CRC::from(0x22)` produce over this body,
+    /// recomputed independently from `sequence.rs` and `crc.rs` — the two files
+    /// the conditional does not touch. Two frames, because the second one is
+    /// what proves the sequence still *advances* (`2e` after `02`).
+    #[test]
+    fn a_client_role_session_still_stamps_its_security_bytes() {
+        let security = client_role(0x11, 0x22);
+        let first = packet(0x6102)
+            .serialize(security.clone())
+            .expect("serialize");
+        let second = packet(0x6102).serialize(security).expect("serialize");
+
+        assert_eq!(&first[..], &[0x03, 0x00, 0x02, 0x61, 0x02, 0xfb, 1, 2, 3]);
+        assert_eq!(&second[..], &[0x03, 0x00, 0x02, 0x61, 0x2e, 0x83, 1, 2, 3]);
+    }
+
+    /// The other half of the pair: a **server**-role session leaves offsets 4/5
+    /// at zero and does not advance the sequence at all. A real gateway sends
+    /// `0000` there and the original client resets the connection over a stamped
+    /// inbound frame, so our own test peer
+    /// (`tools/src/bin/sro_peer.rs`) cannot be reached without this.
+    ///
+    /// Same body and same seeds as the client-role test above, so the pair
+    /// isolates exactly one thing: the conditional.
+    #[test]
+    fn a_server_role_session_leaves_the_security_bytes_at_zero() {
+        let state = SilkroadSecurityState::established(&[0u8; 8], 0x11, 0x22)
+            .expect("established session")
+            .as_server_role();
+        let security = Arc::new(RwLock::new(state));
+
+        let first = packet(0x6102)
+            .serialize(security.clone())
+            .expect("serialize");
+        let second = packet(0x6102).serialize(security).expect("serialize");
+
+        assert_eq!(&first[..], &[0x03, 0x00, 0x02, 0x61, 0x00, 0x00, 1, 2, 3]);
+        assert_eq!(&second[..], &first[..]);
     }
 }

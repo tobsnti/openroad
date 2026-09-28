@@ -20,6 +20,33 @@ pub mod util {
     pub mod tweening_ext;
 }
 
+// The server half of the SRO security handshake, the framing and Blowfish.
+// Exposed for `tools/src/bin/sro_peer`, our own local test peer: a peer has to
+// *drive* the same handshake the client answers, and re-implementing it in the
+// tool would put a second copy of the byte layout next to this one — the very
+// duplication this lib target exists to avoid.
+//
+// Deliberately NOT `net/mod.rs`: that module also declares `connection`,
+// `reader` and `entity_spawn`, and `entity_spawn` reaches into
+// `crate::plugins::textdata`, which would break the "closed subset" property
+// above. The seven modules listed here reference only each other.
+// `dead_code` is allowed for the subset, and only here: the lib target
+// compiles these seven modules *without* the client that drives them, so
+// `handshake.rs`'s `pub(crate)` helpers (`setup_handshake`, `finalize`, the
+// four setup flags, …) read as unused although the bin target and
+// `sro_peer` both use them. The alternative — an `#[allow]` per item — would
+// put the noise in the net files, where it would outlive the reason.
+#[allow(dead_code)]
+pub mod net {
+    pub mod blowfish;
+    pub mod codec;
+    pub mod crc;
+    pub mod frame;
+    pub mod handshake;
+    pub mod security;
+    pub mod sequence;
+}
+
 pub mod assets {
     pub mod ainav;
     pub mod ban;
