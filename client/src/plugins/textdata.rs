@@ -582,6 +582,15 @@ impl ClientSpeechText {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.0.as_ref().and_then(|strings| strings.get(key))
     }
+
+    /// The whole table, `None` until the file has loaded — for a consumer that
+    /// resolves many keys behind one borrow rather than one call per key. The
+    /// quest journal decorates every entry of every record it folds, so it
+    /// takes the table (`QuestJournal::from_active` is written against
+    /// `Option<&UiSystemText>` so that it also works before the load).
+    pub fn strings(&self) -> Option<&UiSystemText> {
+        self.0.as_ref()
+    }
 }
 
 #[derive(Resource, Default)]
@@ -606,9 +615,13 @@ impl ClientQuestRewards {
             .is_some_and(|(modes, _, _)| modes.choose_one(quest))
     }
 
-    // There is no accessor for the gold/exp reward table: it is parsed and
-    // held in this resource, but no consumer reads it. Exposing it is one line
-    // the day a quest journal needs it.
+    /// The gold/exp reward table (`refqusetreward.txt` columns 10/11), `None`
+    /// until the file has loaded. Read by the quest journal, which decorates an
+    /// entry with its reward when the table has a row for the id — several live
+    /// ids have none, so the journal must survive the miss.
+    pub fn values(&self) -> Option<&QuestRewardValues> {
+        self.0.as_ref().map(|(_, values, _)| values)
+    }
 
     /// The quest's reward rows: candidates in pick-one mode, all granted
     /// otherwise.
@@ -629,13 +642,9 @@ pub struct ClientQuestTable(Option<QuestTable>);
 impl ClientQuestTable {
     /// The parsed table, `None` until `questdata.txt` has loaded.
     ///
-    /// This is the resource's only read path and it has **no reader yet** —
-    /// the journal UI that will use it is not written. It is kept rather than
-    /// deleted because the loader arm above it has to hand the parsed table
-    /// somewhere for the file to be loaded at all; an accessor that returns it
-    /// is the smallest such landing place. If the journal is still unwritten
-    /// when this file is next touched, delete the resource, the loader arm and
-    /// this method together — `QuestTable` itself carries its own tests.
+    /// Read by `plugins::hud::quest::model`, which passes it to
+    /// `QuestJournal::from_active` as decoration only: the active set comes off
+    /// the wire, and ids the table does not know still get an entry.
     pub fn table(&self) -> Option<&QuestTable> {
         self.0.as_ref()
     }

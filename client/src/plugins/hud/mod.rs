@@ -61,6 +61,7 @@ pub mod party_matching;
 pub mod pet_mini_info;
 pub mod petition;
 pub mod player_mini_info;
+pub mod quest;
 pub mod quest_reward;
 pub mod quest_reward_confirm;
 pub mod quick_party;
@@ -183,6 +184,12 @@ impl Plugin for HudPlugin {
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
                 academy::AcademyWindowPlugin,
+                // The quest journal, its tracker strip and the model that fills
+                // them. Here rather than next to `quest_reward` in group 2
+                // because that group already holds 14 of the 15 Bevy implements
+                // — this file's own rule is that a full group shifts, it does
+                // not grow.
+                quest::QuestPlugin,
             ),
         ));
     }

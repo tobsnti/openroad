@@ -30,10 +30,11 @@ pub struct CharacterInfo {
     /// [`packets::agent::quest::ActiveQuest`] and it fits every real login
     /// seen.
     ///
-    /// **No consumer yet** — there is no quest journal in this tree, so this is
-    /// the landing point one can be built on, not a wired feature. An empty vec
-    /// means "the server sent none **or** the section did not parse": a journal
-    /// must log that difference rather than infer it.
+    /// Consumed by `plugins::hud::quest::model::fill_journal_at_login`, which
+    /// builds [`crate::plugins::net::quest::QuestJournal`] from it on the frame
+    /// the component is added. An empty vec means "the server sent none **or**
+    /// the section did not parse", so that system logs the count rather than
+    /// inferring which of the two happened.
     pub active_quests: Vec<ActiveQuest>,
     pub job: Option<JobInfo>,
     pub extras: Option<PlayerExtras>,
