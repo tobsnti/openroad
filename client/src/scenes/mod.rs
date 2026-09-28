@@ -12,6 +12,7 @@ use crate::plugins::config::ClientConfig;
 use crate::plugins::dungeon::DungeonPlugin;
 use crate::plugins::map::MapPlugin;
 use crate::plugins::world_origin::WorldOrigin;
+use crate::scenes::testing::academy_ui::AcademyUiPreviewPlugin;
 use crate::scenes::testing::alchemy_ui::AlchemyUiPreviewPlugin;
 use crate::scenes::testing::animation_testing::AnimationTestingScenePlugin;
 use crate::scenes::testing::autopotion_ui::AutoPotionUiPreviewPlugin;
@@ -19,8 +20,10 @@ use crate::scenes::testing::char_select_ui::CharSelectUiPreviewPlugin;
 use crate::scenes::testing::character_info_ui::CharacterInfoUiPreviewPlugin;
 use crate::scenes::testing::chat_ui::ChatUiPreviewPlugin;
 use crate::scenes::testing::choice_confirm_ui::ChoiceConfirmUiPreviewPlugin;
+use crate::scenes::testing::cos_ui::CosUiPreviewPlugin;
 use crate::scenes::testing::dungeons::DungeonsScenePlugin;
 use crate::scenes::testing::equipments::EquipmentsScenePlugin;
+use crate::scenes::testing::guild_ui::GuildUiPreviewPlugin;
 use crate::scenes::testing::inventory_ui::InventoryUiPreviewPlugin;
 use crate::scenes::testing::mini_info_ui::MiniInfoUiPreviewPlugin;
 use crate::scenes::testing::minimap_ui::MinimapUiPreviewPlugin;
@@ -121,13 +124,24 @@ impl Plugin for SceneManagerPlugin {
                     UnderbarUiPreviewPlugin,
                     AlchemyUiPreviewPlugin,
                     CharacterInfoUiPreviewPlugin,
-                    PartyUiPreviewPlugin,
+                    // `PartyUiPreviewPlugin` sits in the nested tuple below,
+                    // which is what keeps this list at 15 entries.
                     NpcDialogUiPreviewPlugin,
                     QuestRewardUiPreviewPlugin,
                     ChoiceConfirmUiPreviewPlugin,
                     WorldMapUiPreviewPlugin,
                     AutoPotionUiPreviewPlugin,
                     StallUiPreviewPlugin,
+                    // Nested rather than four more siblings: Bevy's `Plugins`
+                    // arity ends at 15 and a 16th entry makes the *whole* tuple
+                    // fail the trait with an error that names no type
+                    // (AGENTS.md). This list is at 15 with the nest counted.
+                    (
+                        AcademyUiPreviewPlugin,
+                        PartyUiPreviewPlugin,
+                        GuildUiPreviewPlugin,
+                        CosUiPreviewPlugin,
+                    ),
                 ),
                 EquipmentsScenePlugin,
                 ParticleTestingScenePlugin,

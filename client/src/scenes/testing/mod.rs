@@ -1,3 +1,4 @@
+pub(crate) mod academy_ui;
 pub(crate) mod alchemy_ui;
 pub(crate) mod animation_testing;
 pub(crate) mod autopotion_ui;
@@ -5,8 +6,10 @@ pub(crate) mod char_select_ui;
 pub(crate) mod character_info_ui;
 pub(crate) mod chat_ui;
 pub(crate) mod choice_confirm_ui;
+pub(crate) mod cos_ui;
 pub(crate) mod dungeons;
 pub(crate) mod equipments;
+pub(crate) mod guild_ui;
 pub(crate) mod inventory_ui;
 pub(crate) mod mini_info_ui;
 pub(crate) mod minimap_ui;
