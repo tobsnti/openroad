@@ -141,6 +141,18 @@ pub fn on_siege_update(
             SiegeUpdate::ApplicationPeriodEnd => {
                 info!("siege: 0x385F sub 0x34 (period transition, no textdata key) — not shown");
             }
+            // These arms are read field by field, but nothing names the
+            // fields, so there is no line to show yet.
+            SiegeUpdate::Sub07 { .. }
+            | SiegeUpdate::Sub08 { .. }
+            | SiegeUpdate::Sub0A { .. }
+            | SiegeUpdate::Sub0C { .. }
+            | SiegeUpdate::Sub0D { .. }
+            | SiegeUpdate::Sub11 { .. }
+            | SiegeUpdate::Sub12 { .. }
+            | SiegeUpdate::Sub14 { .. } => {
+                info!("siege: 0x385F {msg:?} — decoded, not shown");
+            }
             SiegeUpdate::Other { sub, tail } => {
                 info!(
                     "siege: 0x385F sub {sub:#04X} not decoded, {} body bytes",
