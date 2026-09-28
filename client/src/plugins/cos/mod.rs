@@ -176,7 +176,6 @@ impl Plugin for CosPlugin {
                     pet::on_pet_action_response,
                     pet::on_pet_acks,
                     pet::on_pet_settings_response,
-                    pet::on_stuck_distance_warning,
                     riding::handle_cos_commands,
                     riding::route_move_orders_while_mounted,
                     riding::resolve_saddle_seats,

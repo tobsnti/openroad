@@ -75,6 +75,7 @@ impl Plugin for NetworkCorePlugin {
             .add_plugins(crate::plugins::net::stall::StallEntitiesPlugin)
             .add_plugins(crate::plugins::net::siege::SiegePlugin)
             .add_plugins(crate::plugins::net::academy::AcademyPlugin)
+            .add_plugins(crate::plugins::net::job::JobStatusPlugin)
             .init_resource::<NetworkState>()
             .init_resource::<crate::plugins::net::gateway::GatewayConnectionStatus>()
             .add_message::<GatewayServiceDisconnected>()
