@@ -8,6 +8,7 @@
 .PHONY: perf snapshot sample fps get set attribute
 .PHONY: profile chrome tracy summary windows
 .PHONY: cutscene convert
+.PHONY: peer protocol verify
 
 RUN_TARGET := $(word 2,$(MAKECMDGOALS))
 BUILD_TARGET := $(word 2,$(MAKECMDGOALS))
@@ -15,6 +16,7 @@ PK2_TARGET := $(word 2,$(MAKECMDGOALS))
 PERF_TARGET := $(word 2,$(MAKECMDGOALS))
 PROFILE_TARGET := $(word 2,$(MAKECMDGOALS))
 CUTSCENE_TARGET := $(word 2,$(MAKECMDGOALS))
+PROTOCOL_TARGET := $(word 2,$(MAKECMDGOALS))
 
 # The release profile is selected by the word `release` anywhere in the goal list —
 # `make build windows release`, `make run world release` — or equivalently by RELEASE=1.
@@ -51,6 +53,8 @@ help:
 	@echo "  watch launcher  Run launcher on code changes (requires cargo-watch)"
 	@echo "  run wsl         Run from PowerShell, NOT from WSL: launches the client.exe that"
 	@echo "                  'make build windows' cross-built in the WSL checkout"
+	@echo "  netcheck        Headless login->join roundtrip, no window (dumps every packet)"
+	@echo "  peer            Our own local test peer (gateway+agent) so netcheck needs no server"
 	@echo ""
 	@echo "Build and quality:"
 	@echo "  build           Build all workspace crates"
@@ -74,6 +78,7 @@ help:
 	@echo "  pk2 unpack      Extract PK2 contents (set PK2=/path/to/file.pk2, OUT=dir, PREFIX=opt)"
 	@echo "  bsr2glb         Convert a .bsr (+ deps) to .glb/.fbx (BSR='res\\...' [PK2=] [OUT=] [PREFIX=] [FORMAT=glb|fbx|both] [RAW=1])"
 	@echo "  cutscene convert Convert Media/script/intro/<name>.txt into assets/intros/<name>.intro (SCRIPT= [OUT=] [NAME=] [MUSIC=])"
+	@echo "  protocol verify Replay packet_dump/ through packets/ and write docs/protocol/CORPUS-VERIFICATION.md ([DUMP=] [OUT=] [STRICT=1])"
 	@echo "  perf snapshot   Dump diagnostics of the running client via BRP (PREFIX=opt)"
 	@echo "  perf sample     Record diagnostics to JSONL (SECS=30 INTERVAL=250 OUT=opt)"
 	@echo "  perf fps        Print settled avg fps/frame time (SECS=3)"
@@ -225,6 +230,12 @@ launcher intro intro_v2 world animations ui_testing asset-loading asset_loading 
 netcheck:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; NETCHECK=1 cargo run -p client
 
+# Our own headless test peer (gateway + agent leg) so `make netcheck` can reach
+# world entry without any foreign server. Bodies come from `packet_dump/`, so
+# run it from the repo root; see docs/planning/OWN-TEST-PEER.md.
+peer:
+	cargo run -p tools --bin sro_peer
+
 watch:
 	@case "$(RUN_TARGET)" in \
 		"") SCENE=$(SCENE) cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
@@ -345,6 +356,21 @@ clean:
 	cargo clean
 
 # Tools
+
+# Replay the recorded packet corpus through our own parser and write the report
+# (docs/protocol/CORPUS-VERIFICATION.md). Reads packet_dump/ only — no server,
+# no client, no network.
+protocol:
+	@case "$(PROTOCOL_TARGET)" in \
+		verify) cargo run -q -p tools --bin protocol_verify -- \
+			$(if $(DUMP),--dump "$(DUMP)",) $(if $(STRICT),--strict,) \
+			--out $(if $(OUT),"$(OUT)","docs/protocol/CORPUS-VERIFICATION.md") ;; \
+		"") echo "Usage: make protocol verify [DUMP=packet_dump] [OUT=docs/protocol/CORPUS-VERIFICATION.md] [STRICT=1]"; exit 2 ;; \
+		*) echo "Unknown protocol target: $(PROTOCOL_TARGET)"; exit 2 ;; \
+	esac
+
+verify:
+	@:
 
 pk2:
 	@case "$(PK2_TARGET)" in \

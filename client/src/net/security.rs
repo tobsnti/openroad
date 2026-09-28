@@ -33,6 +33,51 @@ impl SilkroadSecurityState {
             context: SilkroadSecurityData::new(),
         }
     }
+
+    /// A session that is **already past the handshake**, built from the three
+    /// values the handshake agreed on: the final blowfish key and the two
+    /// security-byte seeds.
+    ///
+    /// Exists for the side of the wire this crate does not otherwise play: a
+    /// server half (`tools/src/bin/sro_peer`) derives those three values itself
+    /// instead of reading them out of a `0x5000`, and every field of
+    /// [`SilkroadSecurityData`] is `pub(crate)` — deliberately, so callers
+    /// cannot half-initialise a crypto context. One constructor that takes
+    /// exactly the agreed parameters keeps that property while letting the peer
+    /// reuse `frame.rs` verbatim.
+    pub fn established(
+        blowfish_key: &[u8],
+        sequence_seed: u32,
+        crc_seed: u32,
+    ) -> Result<Self, crate::net::blowfish::InvalidKey> {
+        let mut context = SilkroadSecurityData::new();
+        context.blowfish = Some(Blowfish::new(blowfish_key)?);
+        context.sequence = Sequence::from(sequence_seed);
+        context.crc = Box::new(CRC::from(crc_seed));
+        context.sequence_seed = sequence_seed;
+        // Same bookkeeping as the client half's `setup_handshake`, which keeps
+        // the shifted copy (`handshake.rs`, `sec_data.crc_seed = crc_seed << 8`).
+        context.crc_seed = crc_seed << 8;
+        Ok(Self {
+            state: SilkroadSecurity::Established,
+            context,
+        })
+    }
+
+    /// Switch this session to the **server** role: stop stamping the security
+    /// bytes on everything it sends. See
+    /// [`SilkroadSecurityData::stamps_security_bytes`] — the original client
+    /// resets the connection over a stamped inbound frame.
+    ///
+    /// Takes `self` although it is named `as_*`, which is why the convention
+    /// lint is silenced here: it is the tail of the builder that
+    /// [`Self::established`] starts, and a borrowing variant would hand out a
+    /// session that is only *half* switched until the caller stores it.
+    #[allow(clippy::wrong_self_convention)]
+    pub fn as_server_role(mut self) -> Self {
+        self.context.stamps_security_bytes = false;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -51,6 +96,14 @@ pub struct SilkroadSecurityData {
     pub(crate) generator: u32,
     pub(crate) prime: u32,
     pub(crate) blowfish: Option<Blowfish>,
+    /// Whether *outgoing* frames get their count/CRC bytes stamped.
+    ///
+    /// True for the client role (us, normally). False for the server role: the
+    /// original leaves offsets 4/5 at zero on everything it sends (xBot
+    /// `Security.cs:700-712` guards the stamping on the client role, and a live
+    /// gateway capture confirms `0000` in every S→C frame), and the original
+    /// *client* resets the connection if we stamp them.
+    pub(crate) stamps_security_bytes: bool,
     pub(crate) sequence: Sequence,
     // must be boxed because of stack-size issues on Windows
     pub(crate) crc: Box<CRC>,
@@ -59,6 +112,7 @@ pub struct SilkroadSecurityData {
 impl SilkroadSecurityData {
     pub fn new() -> Self {
         Self {
+            stamps_security_bytes: true,
             setup_flags: 0,
             sequence_seed: 0,
             crc_seed: 0,

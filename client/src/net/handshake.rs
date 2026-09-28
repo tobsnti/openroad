@@ -363,10 +363,9 @@ fn derive_final_key(
             return Err(ChallengeFailed);
         }
 
-        let final_key = key_transform_value(
-            Bytes::copy_from_slice(&security.context.handshake_key.to_le_bytes()),
+        let final_key = final_blowfish_key(
+            security.context.handshake_key,
             security.context.common_secret,
-            3,
         );
         security.context.blowfish =
             Some(Blowfish::new(&final_key).expect("blowfish to be initialized with final key"));
@@ -396,6 +395,20 @@ fn derive_final_key(
         state: SilkroadSecurity::Established,
         context: s.read().expect("security to be readable").context.clone(),
     });
+}
+
+/// The **session** blowfish key both sides switch to once the challenge
+/// matched: the handshake blowfish key put through the same key transform,
+/// with the selector fixed at 3 (xBot `Security.cs:540,618`).
+///
+/// Public because a server half has to derive the identical key from the other
+/// side of the wire (`tools/src/bin/sro_peer`).
+pub fn final_blowfish_key(handshake_key: u64, common_secret: u32) -> Bytes {
+    key_transform_value(
+        Bytes::copy_from_slice(&handshake_key.to_le_bytes()),
+        common_secret,
+        3,
+    )
 }
 
 pub fn calc_key(common_secret: u32, secret1: u32, secret2: u32) -> Bytes {

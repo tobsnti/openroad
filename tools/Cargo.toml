@@ -23,6 +23,14 @@ bytes = { workspace = true }
 futures-lite = "2.5"
 bevy_pk2 = { path = "../bevy_pk2" }
 client = { path = "../client" }
+# `sro_peer` and `protocol_verify` speak real packet types and reuse the client's
+# net stack; `chrono`/`rand` are pinned to the same versions the client uses
+# (client/Cargo.toml: chrono = "0.4", rand = "0.9"), so the dump line format and
+# the handshake randomness cannot drift between the two.
+packets = { path = "../packets" }
+chrono = "0.4"
+rand = "0.9"
+byteorder = { workspace = true }
 gltf-json = { version = "1.4", features = ["names", "extras"] }
 fbxcel = { version = "0.9", features = ["writer", "tree"] }
 
