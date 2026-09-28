@@ -280,7 +280,7 @@ The record arrives chunked (BEGIN → DATA… → END) and is parsed once assemb
 | `0x3101` | GuildDataBody | S→C | experimental | one chunk, raw; assemble then `GuildData::parse` |
 | `0x34B4` | GuildDataEnd | S→C | experimental | marker |
 | `0x30FF` | EntityGuildUpdate | S→C | wired | **the original does have a parser**: `u32 gid`, `u32 guild_id`, `u16+N guild name`, then **only if the name length ≠ 0** `u16+M grant name`, `u32 crest rev`, `u32 union id`, `u32 union crest rev`, `u8 fortress position` (a **bit-valued** enum: 1 commander, 2 sub-commander, 4 battle-manager, 8 product-manager, 0x10 trainer-manager, 0x20 engineer) and `u8 relation flag`. It is a guild-tag update, not an activity log |
-| `0x38F5` | GuildUpdate | S→C | experimental | `update_type` only; per-type payload raw |
+| `0x38F5` | GuildUpdate | S→C | experimental | `u8` sub-command family; 16 sub-commands decoded into 15 variants with `unk_*` fields, the rest raw |
 | `0xB0F0` | GuildCreatedData | S→C | experimental | success + the same record inline |
 | `0xB0F8` | GuildRecordResponse | S→C | experimental | `u8 result`; the whole record on success, a `u16` guild code on refusal |
 | `0x70F9` | GuildNoticeEditRequest | C→S | experimental | title + message |
@@ -367,14 +367,16 @@ on both sides). Details: . `0x3109`
 
 ## Fortress war (wire only — no consumer yet)
 
-`0x385F` is a `u8` sub-command family (0x35 arms). Two arms are decoded; the
-other 52 keep their bytes. Five record fields have a known width and no name, so
-they are carried as `unk_*`; outside a war they are all zero. Arithmetic:
+`0x385F` is a `u8` sub-command family (0x35 arms). The fortress list, the
+application-period end and eight flat arms are decoded; every other arm keeps
+its bytes, including the ones whose body is only partly readable. Fields that
+have a known width and no name are carried as `unk_*`; in the fortress record
+they are all zero outside a war. Arithmetic for that record:
 `1 + 1 + count x 28 + 1 + 4 = 91`, the exact body length.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
-| `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, everything else raw |
+| `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, eight flat arms with `unk_*` fields, everything else raw |
 
 ## Party (wire only — no consumer yet, see EP-14)
 

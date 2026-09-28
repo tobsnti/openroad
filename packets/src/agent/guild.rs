@@ -27,6 +27,8 @@ use sro_macro::SerializationError;
 use sro_macro::Serialize;
 use sro_macro_derive::*;
 
+use crate::agent::cursor::{put_string, Cursor};
+
 /// `SRGuildMember.Permissions` — a `[Flags] uint`, so it is a newtype rather
 /// than a derived enum: real servers can set bits this list does not name, and
 /// an unknown discriminator would otherwise fail the whole packet.
@@ -254,38 +256,452 @@ pub struct EntityGuildAffiliation {
 
 /// 0x38F5 — server → client: an incremental guild update.
 ///
-/// The original reads `update_type` and then switches on it with an **empty**
-/// body for every arm, so only the discriminator is known: 5 = notice,
-/// 6 = permissions, 15 = ?. The rest is kept raw rather than guessed — one
-/// capture per type (`packet_dump/0x38F5.log`) is what resolves it.
+/// A `u8` sub-command family: the original dispatches the leading byte through
+/// a jump table, and most arms read a body of their own. What is decoded here
+/// is width, order and the arm a field belongs to — not meaning, hence the
+/// `unk_*` names.
+///
+/// Arms that hand the packet on to a helper and read there are **not** typed;
+/// they keep their bytes in [`GuildUpdate::Other`], together with every
+/// sub-command the jump table sends to its default arm. An unknown
+/// sub-command is not an error.
 #[derive(Message, Clone, Debug, PartialEq)]
-pub struct GuildUpdate {
-    pub update_type: u8,
-    /// [U] — the per-type payload, unparsed.
-    pub tail: Bytes,
+pub enum GuildUpdate {
+    /// Sub 0 — empty body.
+    Sub00,
+    /// Sub 1 — empty body.
+    Sub01,
+    Sub02 {
+        unk_u32_00: u32,
+        unk_str_00: String,
+        unk_u8_00: u8,
+        unk_u8_01: u8,
+        unk_u32_01: u32,
+        unk_u32_02: u32,
+        unk_u32_03: u32,
+        unk_u32_04: u32,
+        unk_u32_05: u32,
+        unk_str_01: String,
+        unk_u32_06: u32,
+        unk_u8_02: u8,
+        unk_u8_03: u8,
+    },
+    Sub03 {
+        unk_u32_00: u32,
+        unk_u8_00: u8,
+    },
+    /// Sub 13.
+    Sub0D {
+        unk_u32_00: u32,
+        unk_str_00: String,
+        unk_u8_00: u8,
+        unk_str_01: String,
+        unk_u32_01: u32,
+        unk_u8_01: u8,
+    },
+    /// Sub 14 — the arm carries a mask byte of its own, and four fields hang
+    /// off its bits. Bit 4 gates **two** fields, a string and a `u32`.
+    Sub0E {
+        mask: u8,
+        unk_u32_00: u32,
+        unk_str_00: Option<String>,
+        unk_u8_00: Option<u8>,
+        unk_str_01: Option<String>,
+        unk_u32_01: Option<u32>,
+        unk_u8_01: Option<u8>,
+    },
+    /// Sub 18 — `kind` selects the single `u32`; any other kind reads nothing.
+    Sub12 {
+        kind: u8,
+        unk_u32_00: Option<u32>,
+    },
+    /// Sub 20 — a counted list of pairs, the only list in this family.
+    Sub14List {
+        entries: Vec<GuildUpdateEntry>,
+    },
+    /// Sub 25 — a record shared with other call sites, then a string.
+    Sub19 {
+        record: GuildUpdateRecord,
+        unk_str_00: String,
+    },
+    /// Sub 26 and 27 share one arm. The sub-command is carried so the two stay
+    /// distinguishable on the way back out.
+    Sub1A1B {
+        sub: u8,
+        unk_u32_00: u32,
+    },
+    /// Sub 28.
+    Sub1C {
+        unk_u32_00: u32,
+        unk_u32_01: u32,
+    },
+    /// Sub 29.
+    Sub1D {
+        unk_u8_00: u8,
+        unk_u32_00: u32,
+        unk_u32_01: u32,
+        unk_u32_02: u32,
+        unk_str_00: String,
+        unk_str_01: String,
+    },
+    /// Sub 31.
+    Sub1F {
+        unk_u32_00: u32,
+        unk_u32_01: u32,
+    },
+    /// Sub 35.
+    Sub23 {
+        unk_u32_00: u32,
+        unk_str_00: String,
+    },
+    /// Sub 50 — `kind` selects the single string; any other kind reads nothing.
+    Sub32 {
+        kind: u8,
+        unk_str_00: Option<String>,
+    },
+    /// Every arm that is not decoded, and every sub-command the jump table
+    /// sends to its default arm.
+    Other {
+        sub: u8,
+        tail: Bytes,
+    },
+}
+
+/// One entry of the [`GuildUpdate::Sub14List`] list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildUpdateEntry {
+    pub unk_u32_00: u32,
+    pub unk_u32_01: u32,
+}
+
+/// The record [`GuildUpdate::Sub19`] reads. Its first field gates the rest, and
+/// the same record is read from other call sites, so it is a type of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildUpdateRecord {
+    pub unk_u32_00: u32,
+    /// Read only when [`Self::unk_u32_00`] is non-zero.
+    pub rest: Option<GuildUpdateRecordRest>,
+}
+
+/// The part of [`GuildUpdateRecord`] a zero head omits.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuildUpdateRecordRest {
+    pub unk_u32_01: u32,
+    pub unk_u8_00: u8,
+    pub unk_u32_02: u32,
+    pub unk_u32_03: u32,
+    pub unk_u32_04: u32,
+    pub unk_u32_05: u32,
+    pub unk_u32_06: u32,
 }
 
 impl TryFrom<Bytes> for GuildUpdate {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
-        let update_type = *value.first().ok_or_else(|| {
-            SerializationError::IoError(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "empty 0x38F5 body",
-            ))
-        })?;
-        Ok(GuildUpdate {
-            update_type,
+        let mut c = Cursor::new(&value, "short 0x38F5 body");
+        let sub = c.u8()?;
+        let parsed = (|| -> Option<GuildUpdate> {
+            let arm = match sub {
+                0 => GuildUpdate::Sub00,
+                1 => GuildUpdate::Sub01,
+                2 => GuildUpdate::Sub02 {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_str_00: c.string().ok()?,
+                    unk_u8_00: c.u8().ok()?,
+                    unk_u8_01: c.u8().ok()?,
+                    unk_u32_01: c.u32().ok()?,
+                    unk_u32_02: c.u32().ok()?,
+                    unk_u32_03: c.u32().ok()?,
+                    unk_u32_04: c.u32().ok()?,
+                    unk_u32_05: c.u32().ok()?,
+                    unk_str_01: c.string().ok()?,
+                    unk_u32_06: c.u32().ok()?,
+                    unk_u8_02: c.u8().ok()?,
+                    unk_u8_03: c.u8().ok()?,
+                },
+                3 => GuildUpdate::Sub03 {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_u8_00: c.u8().ok()?,
+                },
+                13 => GuildUpdate::Sub0D {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_str_00: c.string().ok()?,
+                    unk_u8_00: c.u8().ok()?,
+                    unk_str_01: c.string().ok()?,
+                    unk_u32_01: c.u32().ok()?,
+                    unk_u8_01: c.u8().ok()?,
+                },
+                14 => {
+                    let mask = c.u8().ok()?;
+                    let unk_u32_00 = c.u32().ok()?;
+                    let unk_str_00 = (mask & 1 != 0).then(|| c.string().ok()).flatten();
+                    let unk_u8_00 = (mask & 2 != 0).then(|| c.u8().ok()).flatten();
+                    // One bit, two fields.
+                    let unk_str_01 = (mask & 4 != 0).then(|| c.string().ok()).flatten();
+                    let unk_u32_01 = (mask & 4 != 0).then(|| c.u32().ok()).flatten();
+                    let unk_u8_01 = (mask & 8 != 0).then(|| c.u8().ok()).flatten();
+                    GuildUpdate::Sub0E {
+                        mask,
+                        unk_u32_00,
+                        unk_str_00,
+                        unk_u8_00,
+                        unk_str_01,
+                        unk_u32_01,
+                        unk_u8_01,
+                    }
+                }
+                18 => {
+                    let kind = c.u8().ok()?;
+                    let unk_u32_00 = matches!(kind, 1 | 2).then(|| c.u32().ok()).flatten();
+                    GuildUpdate::Sub12 { kind, unk_u32_00 }
+                }
+                20 => {
+                    let count = c.u8().ok()?;
+                    let mut entries = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        entries.push(GuildUpdateEntry {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u32_01: c.u32().ok()?,
+                        });
+                    }
+                    GuildUpdate::Sub14List { entries }
+                }
+                25 => {
+                    let unk_u32_00 = c.u32().ok()?;
+                    let rest = if unk_u32_00 != 0 {
+                        Some(GuildUpdateRecordRest {
+                            unk_u32_01: c.u32().ok()?,
+                            unk_u8_00: c.u8().ok()?,
+                            unk_u32_02: c.u32().ok()?,
+                            unk_u32_03: c.u32().ok()?,
+                            unk_u32_04: c.u32().ok()?,
+                            unk_u32_05: c.u32().ok()?,
+                            unk_u32_06: c.u32().ok()?,
+                        })
+                    } else {
+                        None
+                    };
+                    GuildUpdate::Sub19 {
+                        record: GuildUpdateRecord { unk_u32_00, rest },
+                        unk_str_00: c.string().ok()?,
+                    }
+                }
+                26 | 27 => GuildUpdate::Sub1A1B {
+                    sub,
+                    unk_u32_00: c.u32().ok()?,
+                },
+                28 => GuildUpdate::Sub1C {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_u32_01: c.u32().ok()?,
+                },
+                29 => GuildUpdate::Sub1D {
+                    unk_u8_00: c.u8().ok()?,
+                    unk_u32_00: c.u32().ok()?,
+                    unk_u32_01: c.u32().ok()?,
+                    unk_u32_02: c.u32().ok()?,
+                    unk_str_00: c.string().ok()?,
+                    unk_str_01: c.string().ok()?,
+                },
+                31 => GuildUpdate::Sub1F {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_u32_01: c.u32().ok()?,
+                },
+                35 => GuildUpdate::Sub23 {
+                    unk_u32_00: c.u32().ok()?,
+                    unk_str_00: c.string().ok()?,
+                },
+                50 => {
+                    let kind = c.u8().ok()?;
+                    let unk_str_00 = matches!(kind, 0 | 2).then(|| c.string().ok()).flatten();
+                    GuildUpdate::Sub32 { kind, unk_str_00 }
+                }
+                _ => return None,
+            };
+            Some(arm)
+        })()
+        // A body that does not close on its last byte is a layout surprise:
+        // keeping it whole beats reporting a half-read arm.
+        .filter(|_| c.at_end());
+        Ok(parsed.unwrap_or(GuildUpdate::Other {
+            sub,
             tail: value.slice(1..),
-        })
+        }))
     }
 }
 
 impl From<GuildUpdate> for Bytes {
     fn from(p: GuildUpdate) -> Self {
-        let mut buf = BytesMut::with_capacity(1 + p.tail.len());
-        buf.put_u8(p.update_type);
-        buf.extend_from_slice(&p.tail);
+        let mut buf = BytesMut::new();
+        match p {
+            GuildUpdate::Sub00 => buf.put_u8(0),
+            GuildUpdate::Sub01 => buf.put_u8(1),
+            GuildUpdate::Sub02 {
+                unk_u32_00,
+                unk_str_00,
+                unk_u8_00,
+                unk_u8_01,
+                unk_u32_01,
+                unk_u32_02,
+                unk_u32_03,
+                unk_u32_04,
+                unk_u32_05,
+                unk_str_01,
+                unk_u32_06,
+                unk_u8_02,
+                unk_u8_03,
+            } => {
+                buf.put_u8(2);
+                buf.put_u32_le(unk_u32_00);
+                put_string(&mut buf, &unk_str_00);
+                buf.put_u8(unk_u8_00);
+                buf.put_u8(unk_u8_01);
+                buf.put_u32_le(unk_u32_01);
+                buf.put_u32_le(unk_u32_02);
+                buf.put_u32_le(unk_u32_03);
+                buf.put_u32_le(unk_u32_04);
+                buf.put_u32_le(unk_u32_05);
+                put_string(&mut buf, &unk_str_01);
+                buf.put_u32_le(unk_u32_06);
+                buf.put_u8(unk_u8_02);
+                buf.put_u8(unk_u8_03);
+            }
+            GuildUpdate::Sub03 {
+                unk_u32_00,
+                unk_u8_00,
+            } => {
+                buf.put_u8(3);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u8(unk_u8_00);
+            }
+            GuildUpdate::Sub0D {
+                unk_u32_00,
+                unk_str_00,
+                unk_u8_00,
+                unk_str_01,
+                unk_u32_01,
+                unk_u8_01,
+            } => {
+                buf.put_u8(13);
+                buf.put_u32_le(unk_u32_00);
+                put_string(&mut buf, &unk_str_00);
+                buf.put_u8(unk_u8_00);
+                put_string(&mut buf, &unk_str_01);
+                buf.put_u32_le(unk_u32_01);
+                buf.put_u8(unk_u8_01);
+            }
+            GuildUpdate::Sub0E {
+                mask,
+                unk_u32_00,
+                unk_str_00,
+                unk_u8_00,
+                unk_str_01,
+                unk_u32_01,
+                unk_u8_01,
+            } => {
+                buf.put_u8(14);
+                buf.put_u8(mask);
+                buf.put_u32_le(unk_u32_00);
+                if let Some(v) = unk_str_00 {
+                    put_string(&mut buf, &v);
+                }
+                if let Some(v) = unk_u8_00 {
+                    buf.put_u8(v);
+                }
+                if let Some(v) = unk_str_01 {
+                    put_string(&mut buf, &v);
+                }
+                if let Some(v) = unk_u32_01 {
+                    buf.put_u32_le(v);
+                }
+                if let Some(v) = unk_u8_01 {
+                    buf.put_u8(v);
+                }
+            }
+            GuildUpdate::Sub12 { kind, unk_u32_00 } => {
+                buf.put_u8(18);
+                buf.put_u8(kind);
+                if let Some(v) = unk_u32_00 {
+                    buf.put_u32_le(v);
+                }
+            }
+            GuildUpdate::Sub14List { entries } => {
+                buf.put_u8(20);
+                buf.put_u8(entries.len() as u8);
+                for e in entries {
+                    buf.put_u32_le(e.unk_u32_00);
+                    buf.put_u32_le(e.unk_u32_01);
+                }
+            }
+            GuildUpdate::Sub19 { record, unk_str_00 } => {
+                buf.put_u8(25);
+                buf.put_u32_le(record.unk_u32_00);
+                if let Some(r) = record.rest {
+                    buf.put_u32_le(r.unk_u32_01);
+                    buf.put_u8(r.unk_u8_00);
+                    buf.put_u32_le(r.unk_u32_02);
+                    buf.put_u32_le(r.unk_u32_03);
+                    buf.put_u32_le(r.unk_u32_04);
+                    buf.put_u32_le(r.unk_u32_05);
+                    buf.put_u32_le(r.unk_u32_06);
+                }
+                put_string(&mut buf, &unk_str_00);
+            }
+            GuildUpdate::Sub1A1B { sub, unk_u32_00 } => {
+                buf.put_u8(sub);
+                buf.put_u32_le(unk_u32_00);
+            }
+            GuildUpdate::Sub1C {
+                unk_u32_00,
+                unk_u32_01,
+            } => {
+                buf.put_u8(28);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u32_le(unk_u32_01);
+            }
+            GuildUpdate::Sub1D {
+                unk_u8_00,
+                unk_u32_00,
+                unk_u32_01,
+                unk_u32_02,
+                unk_str_00,
+                unk_str_01,
+            } => {
+                buf.put_u8(29);
+                buf.put_u8(unk_u8_00);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u32_le(unk_u32_01);
+                buf.put_u32_le(unk_u32_02);
+                put_string(&mut buf, &unk_str_00);
+                put_string(&mut buf, &unk_str_01);
+            }
+            GuildUpdate::Sub1F {
+                unk_u32_00,
+                unk_u32_01,
+            } => {
+                buf.put_u8(31);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u32_le(unk_u32_01);
+            }
+            GuildUpdate::Sub23 {
+                unk_u32_00,
+                unk_str_00,
+            } => {
+                buf.put_u8(35);
+                buf.put_u32_le(unk_u32_00);
+                put_string(&mut buf, &unk_str_00);
+            }
+            GuildUpdate::Sub32 { kind, unk_str_00 } => {
+                buf.put_u8(50);
+                buf.put_u8(kind);
+                if let Some(v) = unk_str_00 {
+                    put_string(&mut buf, &v);
+                }
+            }
+            GuildUpdate::Other { sub, tail } => {
+                buf.put_u8(sub);
+                buf.extend_from_slice(&tail);
+            }
+        }
         buf.freeze()
     }
 }
@@ -911,18 +1327,283 @@ mod tests {
         assert_eq!(plain.secession_penalty_seconds, None);
     }
 
-    /// 0x38F5 keeps its per-type payload raw — the original switches on the
-    /// type with an empty body for every arm, so there is nothing to decode.
-    #[test]
-    fn a_guild_update_keeps_its_unknown_payload() {
-        let wire = Bytes::from_static(&[5, 0xAA, 0xBB]);
+    /// Body bytes for a 0x38F5 arm, decoded and written back: every arm must
+    /// reproduce its own wire bytes exactly.
+    fn guild_update(hex: &str) -> GuildUpdate {
+        let clean: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+        let wire = Bytes::from(
+            (0..clean.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>(),
+        );
         let decoded = GuildUpdate::try_from(wire.clone()).unwrap();
+        assert_eq!(Bytes::from(decoded.clone()), wire, "write-back differs");
+        decoded
+    }
 
-        assert_eq!(decoded.update_type, 5);
-        assert_eq!(&decoded.tail[..], &[0xAA, 0xBB]);
-        assert_eq!(Bytes::from(decoded), wire);
-
+    /// Two arms read nothing at all, which is not the same as "unknown".
+    #[test]
+    fn the_two_empty_guild_update_arms_are_named() {
+        assert_eq!(guild_update("00"), GuildUpdate::Sub00);
+        assert_eq!(guild_update("01"), GuildUpdate::Sub01);
         assert!(GuildUpdate::try_from(Bytes::new()).is_err());
+    }
+
+    /// The longest flat arm — thirteen fields, two of them strings.
+    #[test]
+    fn the_thirteen_field_guild_update_arm_decodes_in_order() {
+        let decoded = guild_update(
+            "02 00222222 020066 31 12 13 04222222 05222222 06222222 07222222 08222222 \
+             020066 39 0A222222 1B 1C",
+        );
+        assert_eq!(
+            decoded,
+            GuildUpdate::Sub02 {
+                unk_u32_00: 0x2222_2200,
+                unk_str_00: "f1".into(),
+                unk_u8_00: 0x12,
+                unk_u8_01: 0x13,
+                unk_u32_01: 0x2222_2204,
+                unk_u32_02: 0x2222_2205,
+                unk_u32_03: 0x2222_2206,
+                unk_u32_04: 0x2222_2207,
+                unk_u32_05: 0x2222_2208,
+                unk_str_01: "f9".into(),
+                unk_u32_06: 0x2222_220A,
+                unk_u8_02: 0x1B,
+                unk_u8_03: 0x1C,
+            }
+        );
+    }
+
+    #[test]
+    fn the_short_guild_update_arms_decode() {
+        assert_eq!(
+            guild_update("03 00222222 11"),
+            GuildUpdate::Sub03 {
+                unk_u32_00: 0x2222_2200,
+                unk_u8_00: 0x11,
+            }
+        );
+        assert_eq!(
+            guild_update("1C 00222222 01222222"),
+            GuildUpdate::Sub1C {
+                unk_u32_00: 0x2222_2200,
+                unk_u32_01: 0x2222_2201,
+            }
+        );
+        assert_eq!(
+            guild_update("1F 00222222 01222222"),
+            GuildUpdate::Sub1F {
+                unk_u32_00: 0x2222_2200,
+                unk_u32_01: 0x2222_2201,
+            }
+        );
+        assert_eq!(
+            guild_update("23 00222222 0200 6631"),
+            GuildUpdate::Sub23 {
+                unk_u32_00: 0x2222_2200,
+                unk_str_00: "f1".into(),
+            }
+        );
+    }
+
+    /// Strings and numbers alternate here, so a shifted frame shows up at once.
+    #[test]
+    fn the_alternating_guild_update_arm_decodes() {
+        assert_eq!(
+            guild_update("0D 00222222 020066 31 12 020066 33 04222222 15"),
+            GuildUpdate::Sub0D {
+                unk_u32_00: 0x2222_2200,
+                unk_str_00: "f1".into(),
+                unk_u8_00: 0x12,
+                unk_str_01: "f3".into(),
+                unk_u32_01: 0x2222_2204,
+                unk_u8_01: 0x15,
+            }
+        );
+    }
+
+    /// The mask arm. The second body is the interesting one: one bit carries
+    /// two fields, so reading the bits as "one bit, one field" shifts the frame
+    /// by four bytes.
+    #[test]
+    fn the_mask_arm_reads_two_fields_behind_one_bit() {
+        assert_eq!(
+            guild_update("0E 00 01000000"),
+            GuildUpdate::Sub0E {
+                mask: 0,
+                unk_u32_00: 1,
+                unk_str_00: None,
+                unk_u8_00: None,
+                unk_str_01: None,
+                unk_u32_01: None,
+                unk_u8_01: None,
+            }
+        );
+        assert_eq!(
+            guild_update("0E 04 01000000 0200 6162 09000000"),
+            GuildUpdate::Sub0E {
+                mask: 4,
+                unk_u32_00: 1,
+                unk_str_00: None,
+                unk_u8_00: None,
+                unk_str_01: Some("ab".into()),
+                unk_u32_01: Some(9),
+                unk_u8_01: None,
+            }
+        );
+    }
+
+    /// A leading byte selects the single field; any other value reads nothing.
+    #[test]
+    fn the_kind_selected_arms_read_one_field_or_none() {
+        assert_eq!(
+            guild_update("12 01 07000000"),
+            GuildUpdate::Sub12 {
+                kind: 1,
+                unk_u32_00: Some(7),
+            }
+        );
+        assert_eq!(
+            guild_update("12 03"),
+            GuildUpdate::Sub12 {
+                kind: 3,
+                unk_u32_00: None,
+            }
+        );
+        assert_eq!(
+            guild_update("32 00 0200 6162"),
+            GuildUpdate::Sub32 {
+                kind: 0,
+                unk_str_00: Some("ab".into()),
+            }
+        );
+        assert_eq!(
+            guild_update("32 05"),
+            GuildUpdate::Sub32 {
+                kind: 5,
+                unk_str_00: None,
+            }
+        );
+    }
+
+    #[test]
+    fn the_counted_list_arm_handles_an_empty_and_a_filled_list() {
+        assert_eq!(
+            guild_update("14 00"),
+            GuildUpdate::Sub14List { entries: vec![] }
+        );
+        assert_eq!(
+            guild_update("14 02 01000000 02000000 03000000 04000000"),
+            GuildUpdate::Sub14List {
+                entries: vec![
+                    GuildUpdateEntry {
+                        unk_u32_00: 1,
+                        unk_u32_01: 2,
+                    },
+                    GuildUpdateEntry {
+                        unk_u32_00: 3,
+                        unk_u32_01: 4,
+                    },
+                ],
+            }
+        );
+    }
+
+    /// The record's head gates its own tail, so a zero head is a five-byte
+    /// record followed by the arm's string.
+    #[test]
+    fn the_record_arm_gates_its_tail_on_the_head_field() {
+        assert_eq!(
+            guild_update("19 00000000 0200 6162"),
+            GuildUpdate::Sub19 {
+                record: GuildUpdateRecord {
+                    unk_u32_00: 0,
+                    rest: None,
+                },
+                unk_str_00: "ab".into(),
+            }
+        );
+        assert_eq!(
+            guild_update(
+                "19 01000000 02000000 03 04000000 05000000 06000000 07000000 08000000 0200 6162"
+            ),
+            GuildUpdate::Sub19 {
+                record: GuildUpdateRecord {
+                    unk_u32_00: 1,
+                    rest: Some(GuildUpdateRecordRest {
+                        unk_u32_01: 2,
+                        unk_u8_00: 3,
+                        unk_u32_02: 4,
+                        unk_u32_03: 5,
+                        unk_u32_04: 6,
+                        unk_u32_05: 7,
+                        unk_u32_06: 8,
+                    }),
+                },
+                unk_str_00: "ab".into(),
+            }
+        );
+    }
+
+    /// Two sub-commands share one arm, so the variant carries the sub-command:
+    /// without it the two could not be told apart on the way back out.
+    #[test]
+    fn the_shared_arm_carries_its_sub_command() {
+        assert_eq!(
+            guild_update("1A 09000000"),
+            GuildUpdate::Sub1A1B {
+                sub: 26,
+                unk_u32_00: 9,
+            }
+        );
+        assert_eq!(
+            guild_update("1B 09000000"),
+            GuildUpdate::Sub1A1B {
+                sub: 27,
+                unk_u32_00: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn the_six_field_guild_update_arm_decodes() {
+        assert_eq!(
+            guild_update("1D 10 01000000 02000000 03000000 0200 6162 0200 6364"),
+            GuildUpdate::Sub1D {
+                unk_u8_00: 0x10,
+                unk_u32_00: 1,
+                unk_u32_01: 2,
+                unk_u32_02: 3,
+                unk_str_00: "ab".into(),
+                unk_str_01: "cd".into(),
+            }
+        );
+    }
+
+    /// Arms that read through a helper, and every sub-command the jump table
+    /// sends to its default arm, keep their bytes. An unknown value is not an
+    /// error.
+    #[test]
+    fn undecoded_guild_update_arms_keep_their_bytes() {
+        for hex in ["05 AABB", "06 AABB", "16 AABB", "0F 0102"] {
+            assert!(
+                matches!(guild_update(hex), GuildUpdate::Other { .. }),
+                "{hex} should stay raw"
+            );
+        }
+    }
+
+    /// A body that does not close on the last byte is kept whole rather than
+    /// reported as a half-read arm.
+    #[test]
+    fn a_guild_update_arm_that_does_not_close_stays_raw() {
+        assert!(matches!(
+            guild_update("03 00222222 11 FF"),
+            GuildUpdate::Other { sub: 3, .. }
+        ));
     }
 
     #[test]

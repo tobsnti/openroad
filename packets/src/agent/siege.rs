@@ -1,11 +1,13 @@
 //! Fortress war (siege) wire opcode `0x385F`.
 //!
 //! Idea: `0x385F` is not one message but a **`u8` sub-command family** — the
-//! original's handler `FUN_00895BB0` dispatches 0x35 arms through a jump table,
-//! the same shape `0x3080` and `0x3101` use elsewhere in this protocol. Only the
-//! two arms our own capture contains are modelled: sub `0x00`, the fortress
-//! list, and sub `0x34`, the 1-byte application-period-end push. Every other arm
-//! keeps its bytes.
+//! original's handler dispatches 0x35 arms through a jump table, the same shape
+//! `0x3080` and `0x3101` use elsewhere in this protocol. Decoded are the two
+//! arms our own capture contains — sub `0x00`, the fortress list, and sub
+//! `0x34`, the 1-byte application-period-end push — plus eight arms whose body
+//! is a flat field sequence. Their field *meaning* is unknown, so they carry
+//! `unk_*` names. Every other arm keeps its bytes, and so does an arm whose
+//! body is only partly readable.
 //!
 //! Sub 0's record is what makes this wireable without a wartime capture: the
 //! arithmetic closes exactly on the captured body,
@@ -20,6 +22,8 @@ use bevy::prelude::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::SerializationError;
+
+use crate::agent::cursor::{put_string, Cursor};
 
 /// Sub-command 0: the fortress status list.
 pub const SIEGE_FORTRESS_LIST: u8 = 0x00;
@@ -70,49 +74,45 @@ pub enum SiegeUpdate {
     },
     /// Sub 0x34, empty body.
     ApplicationPeriodEnd,
-    /// Any of the other 52 arms. They are `do-not-wire` until one disassembly
-    /// pass names them, so their bytes are kept whole rather than guessed at.
+    /// Sub 7.
+    Sub07 { unk_u32_00: u32, unk_u16_00: u16 },
+    /// Sub 8.
+    Sub08 {
+        unk_u32_00: u32,
+        unk_str_00: String,
+        unk_str_01: String,
+        unk_str_02: String,
+        unk_u32_01: u32,
+        unk_u32_02: u32,
+        unk_u32_03: u32,
+        unk_u32_04: u32,
+    },
+    /// Sub 10.
+    Sub0A { unk_u32_00: u32 },
+    /// Sub 12.
+    Sub0C { unk_u32_00: u32, unk_u8_00: u8 },
+    /// Sub 13.
+    Sub0D { unk_u32_00: u32, unk_u8_00: u8 },
+    /// Sub 17.
+    Sub11 {
+        unk_u32_00: u32,
+        unk_u32_01: u32,
+        unk_u32_02: u32,
+    },
+    /// Sub 18.
+    Sub12 { unk_u32_00: u32, unk_u8_00: u8 },
+    /// Sub 20.
+    Sub14 { unk_u8_00: u8 },
+    /// Every remaining arm. Arms whose body is only partly readable — a field
+    /// behind a condition this decode cannot source, or a list whose count
+    /// field is not settled — stay here on purpose: raw beats half-read.
     Other { sub: u8, tail: Bytes },
-}
-
-fn short() -> SerializationError {
-    SerializationError::IoError(std::io::Error::new(
-        std::io::ErrorKind::UnexpectedEof,
-        "short 0x385F body",
-    ))
-}
-
-struct Cursor<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], SerializationError> {
-        let end = self.pos.checked_add(n).ok_or_else(short)?;
-        let slice = self.buf.get(self.pos..end).ok_or_else(short)?;
-        self.pos = end;
-        Ok(slice)
-    }
-    fn u8(&mut self) -> Result<u8, SerializationError> {
-        Ok(self.take(1)?[0])
-    }
-    fn u32(&mut self) -> Result<u32, SerializationError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-    fn string(&mut self) -> Result<String, SerializationError> {
-        let len = u16::from_le_bytes(self.take(2)?.try_into().unwrap()) as usize;
-        Ok(String::from_utf8_lossy(self.take(len)?).into_owned())
-    }
 }
 
 impl TryFrom<Bytes> for SiegeUpdate {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
-        let mut c = Cursor {
-            buf: &value,
-            pos: 0,
-        };
+        let mut c = Cursor::new(&value, "short 0x385F body");
         let sub = c.u8()?;
         match sub {
             SIEGE_APPLICATION_PERIOD_END if value.len() == 1 => {
@@ -161,7 +161,58 @@ impl TryFrom<Bytes> for SiegeUpdate {
                 // The body must be consumed exactly. A list that does not close
                 // on the last byte is a layout surprise, and keeping it raw is
                 // better than reporting a half-read fortress table.
-                .filter(|_| c.pos == value.len());
+                .filter(|_| c.at_end());
+                Ok(parsed.unwrap_or(SiegeUpdate::Other {
+                    sub,
+                    tail: value.slice(1..),
+                }))
+            }
+            7 | 8 | 10 | 12 | 13 | 17 | 18 | 20 => {
+                let parsed = (|| -> Option<SiegeUpdate> {
+                    let arm = match sub {
+                        7 => SiegeUpdate::Sub07 {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u16_00: c.u16().ok()?,
+                        },
+                        8 => SiegeUpdate::Sub08 {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_str_00: c.string().ok()?,
+                            unk_str_01: c.string().ok()?,
+                            unk_str_02: c.string().ok()?,
+                            unk_u32_01: c.u32().ok()?,
+                            unk_u32_02: c.u32().ok()?,
+                            unk_u32_03: c.u32().ok()?,
+                            unk_u32_04: c.u32().ok()?,
+                        },
+                        10 => SiegeUpdate::Sub0A {
+                            unk_u32_00: c.u32().ok()?,
+                        },
+                        12 => SiegeUpdate::Sub0C {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u8_00: c.u8().ok()?,
+                        },
+                        13 => SiegeUpdate::Sub0D {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u8_00: c.u8().ok()?,
+                        },
+                        17 => SiegeUpdate::Sub11 {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u32_01: c.u32().ok()?,
+                            unk_u32_02: c.u32().ok()?,
+                        },
+                        18 => SiegeUpdate::Sub12 {
+                            unk_u32_00: c.u32().ok()?,
+                            unk_u8_00: c.u8().ok()?,
+                        },
+                        _ => SiegeUpdate::Sub14 {
+                            unk_u8_00: c.u8().ok()?,
+                        },
+                    };
+                    Some(arm)
+                })()
+                // Same rule as the list arm: a body that does not close on its
+                // last byte is kept whole instead of half-read.
+                .filter(|_| c.at_end());
                 Ok(parsed.unwrap_or(SiegeUpdate::Other {
                     sub,
                     tail: value.slice(1..),
@@ -208,6 +259,76 @@ impl From<SiegeUpdate> for Bytes {
                 buf.put_u8(period);
                 buf.put_u32_le(unk_u32_00);
             }
+            SiegeUpdate::Sub07 {
+                unk_u32_00,
+                unk_u16_00,
+            } => {
+                buf.put_u8(7);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u16_le(unk_u16_00);
+            }
+            SiegeUpdate::Sub08 {
+                unk_u32_00,
+                unk_str_00,
+                unk_str_01,
+                unk_str_02,
+                unk_u32_01,
+                unk_u32_02,
+                unk_u32_03,
+                unk_u32_04,
+            } => {
+                buf.put_u8(8);
+                buf.put_u32_le(unk_u32_00);
+                put_string(&mut buf, &unk_str_00);
+                put_string(&mut buf, &unk_str_01);
+                put_string(&mut buf, &unk_str_02);
+                buf.put_u32_le(unk_u32_01);
+                buf.put_u32_le(unk_u32_02);
+                buf.put_u32_le(unk_u32_03);
+                buf.put_u32_le(unk_u32_04);
+            }
+            SiegeUpdate::Sub0A { unk_u32_00 } => {
+                buf.put_u8(10);
+                buf.put_u32_le(unk_u32_00);
+            }
+            SiegeUpdate::Sub0C {
+                unk_u32_00,
+                unk_u8_00,
+            } => {
+                buf.put_u8(12);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u8(unk_u8_00);
+            }
+            SiegeUpdate::Sub0D {
+                unk_u32_00,
+                unk_u8_00,
+            } => {
+                buf.put_u8(13);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u8(unk_u8_00);
+            }
+            SiegeUpdate::Sub11 {
+                unk_u32_00,
+                unk_u32_01,
+                unk_u32_02,
+            } => {
+                buf.put_u8(17);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u32_le(unk_u32_01);
+                buf.put_u32_le(unk_u32_02);
+            }
+            SiegeUpdate::Sub12 {
+                unk_u32_00,
+                unk_u8_00,
+            } => {
+                buf.put_u8(18);
+                buf.put_u32_le(unk_u32_00);
+                buf.put_u8(unk_u8_00);
+            }
+            SiegeUpdate::Sub14 { unk_u8_00 } => {
+                buf.put_u8(20);
+                buf.put_u8(unk_u8_00);
+            }
             SiegeUpdate::Other { sub, tail } => {
                 buf.put_u8(sub);
                 buf.extend_from_slice(&tail);
@@ -215,11 +336,6 @@ impl From<SiegeUpdate> for Bytes {
         }
         buf.freeze()
     }
-}
-
-fn put_string(buf: &mut BytesMut, s: &str) {
-    buf.put_u16_le(s.len() as u16);
-    buf.extend_from_slice(s.as_bytes());
 }
 
 #[cfg(test)]
@@ -339,6 +455,106 @@ mod tests {
             SiegeUpdate::try_from(body).unwrap(),
             SiegeUpdate::Other { sub: 0, .. }
         ));
+    }
+
+    /// Body bytes for a 0x385F arm, decoded and written back.
+    fn siege_update(hex: &str) -> SiegeUpdate {
+        let wire = Bytes::from(hex_to_bytes(hex));
+        let decoded = SiegeUpdate::try_from(wire.clone()).unwrap();
+        assert_eq!(Bytes::from(decoded.clone()), wire, "write-back differs");
+        decoded
+    }
+
+    /// The eight flat arms, one body each.
+    #[test]
+    fn the_flat_siege_arms_decode_by_width_and_order() {
+        assert_eq!(
+            siege_update("07 00222222 0111"),
+            SiegeUpdate::Sub07 {
+                unk_u32_00: 0x2222_2200,
+                unk_u16_00: 0x1101,
+            }
+        );
+        assert_eq!(
+            siege_update(
+                "08 00222222 0200 6631 0200 6632 0200 6633 04222222 05222222 06222222 07222222"
+            ),
+            SiegeUpdate::Sub08 {
+                unk_u32_00: 0x2222_2200,
+                unk_str_00: "f1".into(),
+                unk_str_01: "f2".into(),
+                unk_str_02: "f3".into(),
+                unk_u32_01: 0x2222_2204,
+                unk_u32_02: 0x2222_2205,
+                unk_u32_03: 0x2222_2206,
+                unk_u32_04: 0x2222_2207,
+            }
+        );
+        assert_eq!(
+            siege_update("0A 00222222"),
+            SiegeUpdate::Sub0A {
+                unk_u32_00: 0x2222_2200,
+            }
+        );
+        assert_eq!(
+            siege_update("0C 00222222 11"),
+            SiegeUpdate::Sub0C {
+                unk_u32_00: 0x2222_2200,
+                unk_u8_00: 0x11,
+            }
+        );
+        assert_eq!(
+            siege_update("0D 00222222 11"),
+            SiegeUpdate::Sub0D {
+                unk_u32_00: 0x2222_2200,
+                unk_u8_00: 0x11,
+            }
+        );
+        assert_eq!(
+            siege_update("11 00222222 01222222 02222222"),
+            SiegeUpdate::Sub11 {
+                unk_u32_00: 0x2222_2200,
+                unk_u32_01: 0x2222_2201,
+                unk_u32_02: 0x2222_2202,
+            }
+        );
+        assert_eq!(
+            siege_update("12 00222222 11"),
+            SiegeUpdate::Sub12 {
+                unk_u32_00: 0x2222_2200,
+                unk_u8_00: 0x11,
+            }
+        );
+        assert_eq!(
+            siege_update("14 10"),
+            SiegeUpdate::Sub14 { unk_u8_00: 0x10 }
+        );
+    }
+
+    /// The first field of sub 7 is four bytes wide and the second two — a decode
+    /// that reads both as `u32` would swallow the arm.
+    #[test]
+    fn a_flat_siege_arm_that_does_not_close_stays_raw() {
+        assert!(matches!(
+            siege_update("07 00222222 0111 FF"),
+            SiegeUpdate::Other { sub: 7, .. }
+        ));
+    }
+
+    /// Arms with a field behind a condition this decode cannot source, and arms
+    /// with an unsettled list count, stay raw rather than half-read.
+    #[test]
+    fn partly_readable_siege_arms_stay_raw() {
+        for sub in [11u8, 14, 15, 16] {
+            let body = Bytes::from(vec![sub, 0x01, 0x02, 0x03, 0x04]);
+            assert!(
+                matches!(
+                    SiegeUpdate::try_from(body).unwrap(),
+                    SiegeUpdate::Other { .. }
+                ),
+                "sub {sub} should stay raw"
+            );
+        }
     }
 
     fn hex_to_bytes(hex: &str) -> Vec<u8> {
