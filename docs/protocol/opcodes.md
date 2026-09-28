@@ -175,6 +175,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB074` | ObjectActionResponse | S→C | wired |  |
 | `0xB070` | ObjectActionUpdate | S→C | wired |  |
 | `0xB071` | SkillEnd | S→C | wired |  |
+| `0x30D1` | StatusEffectValueUpdate | S→C | experimental | ten fixed bytes `u32, u32, u16`; the leading `u32` keys the same status-effect instance table `0x3206` and `0xB0BC` use, the other two have no established meaning |
 | `0x70A1` | SkillLearnRequest | C→S | wired | AGENT_SKILL_LEARN |
 | `0xB0A1` | SkillLearnResponse | S→C | wired |  |
 | `0x70A2` | MasteryLearnRequest | C→S | wired | AGENT_SKILL_MASTERY_LEARN |
@@ -352,7 +353,8 @@ fields have known widths but no names.
 relation to every member of that guild. `0xB114`'s `u32` is the compensation
 amount, named by the server writer itself (`0x4C45` = "no compensation" appears
 on both sides). Details: . `0x3109`
-`GuildWarInfo` and `0x7113` stay unwired, with reasons in that doc.
+carries a list whose entries have two lengths; `0x7113` stays unwired, with the
+reason in that doc.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
@@ -364,6 +366,7 @@ on both sides). Details: . `0x3109`
 | `0xB110` | GuildWarStartAck | S→C | experimental | shared ack form; tears down the dialog on **both** arms |
 | `0xB112` | GuildWarEndAck | S→C | experimental | shared ack form |
 | `0xB114` | GuildWarRewardAck | S→C | experimental | `u32` compensation on success |
+| `0x3109` | GuildWarInfo | S→C | experimental | `u8` count, then entries of **two lengths**: the `u32` that leads an entry ends it when zero, otherwise seven scalars and a name follow |
 
 ## Fortress war (wire only — no consumer yet)
 
@@ -377,6 +380,19 @@ they are all zero outside a war. Arithmetic for that record:
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
 | `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (confirmed), sub 0x34 application-period end, eight flat arms with `unk_*` fields, everything else raw |
+
+## Flag war (wire only — no consumer yet)
+
+`0x34B1` is a `u8` sub-command family and the leading byte indexes a jump table;
+arm `0xFF` reads a second byte and indexes a second table. Most arms read
+nothing at all. Each decoded arm is named after the `UIIT_MSG_FLAGWAR_*` message
+the original shows for it; the fields have no such source and stay `unk_*`. An
+arm outside the two tables, and an arm whose body does not close on its last
+byte, keeps its bytes.
+
+| Opcode | Name | Direction | Status | Notes |
+|---|---|---|---|---|
+| `0x34B1` | FlagWarUpdate | S→C | experimental | first table: arms 2, 4, 5, 9, 13, 14 bodyless, arm 8 a `u16`, arm 10 a `u32`; second table (arm `0xFF`): 17 arms, four of them with a body |
 
 ## Party (wire only — no consumer yet, see EP-14)
 

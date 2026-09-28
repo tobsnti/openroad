@@ -5,6 +5,7 @@ pub mod character_data;
 pub mod chat;
 pub(crate) mod cursor;
 pub mod exchange;
+pub mod flagwar;
 pub mod guild;
 pub mod guild_leadership;
 pub mod guild_storage;
@@ -36,6 +37,7 @@ pub mod prelude {
     pub use crate::agent::barena::*;
     pub use crate::agent::chat::*;
     pub use crate::agent::exchange::*;
+    pub use crate::agent::flagwar::*;
     pub use crate::agent::guild::*;
     pub use crate::agent::guild_leadership::*;
     pub use crate::agent::guild_storage::*;

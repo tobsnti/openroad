@@ -301,6 +301,10 @@ packets! {
     // 0x34 application-period end), the other 52 keep their bytes. Five record
     // fields have a known width but no name, so they stay unk_*.
     0x385F => SiegeUpdate,
+    // Flag war (see agent/flagwar.rs). 0x34B1 is a u8 sub-command family with a
+    // second selector byte on arm 0xFF; the arms are named after the message
+    // keys the original shows for them, the fields stay unk_*.
+    0x34B1 => FlagWarUpdate,
     // Not yet wired: 0x3206 SERVER_TICKET (server-unnamed, purpose
     // unresolved — skipped).
 
@@ -359,6 +363,9 @@ packets! {
     0xB074 => ObjectActionResponse,
     0xB070 => ObjectActionUpdate,
     0xB071 => SkillEnd,
+    // One status-effect instance gets two values (see agent/ingame.rs). Ten
+    // fixed bytes; only the key field has a name.
+    0x30D1 => StatusEffectValueUpdate,
 
     // Skill/mastery learning — confirmed. The requests follow the
     // original's builders: one u32 for 0x70A1, u32 + u8 for 0x70A2.
@@ -528,9 +535,10 @@ packets! {
     0xB501 => GuildGpHistoryResponse,
 
     // Guild war & siege authority (see agent/guild_war.rs).
-    // 0x3109 GuildWarInfo stays unwired: its layout is
-    // unknown. 0x7113 is a bare u32 whose verb nobody has named, so
-    // it is documented rather than modelled.
+    // 0x3109 is a mixed-length list: the u32 that leads an entry decides
+    // whether the rest of that entry follows. 0x7113 is a bare u32 whose verb
+    // nobody has named, so it is documented rather than modelled.
+    0x3109 => GuildWarInfo,
     0x30EF => GuildRelationUpdate,
     0x70FF => SiegeAuthorityUpdateRequest,
     0x7110 => GuildWarStartRequest,

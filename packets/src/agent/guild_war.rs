@@ -11,7 +11,9 @@
 //! Layouts and evidence: `docs/net-guild-war.md`.
 
 use bevy::prelude::Message;
+use bytes::{BufMut, Bytes, BytesMut};
 
+use crate::agent::cursor::{put_string, Cursor};
 use crate::agent::guild::guild_op_ack;
 
 use sro_macro::ByteSize;
@@ -138,6 +140,113 @@ impl GuildWarRewardAck {
     }
 }
 
+/// 0x3109 — server → client: the guild-war list.
+///
+/// A `u8` count, then that many entries. An entry leads with a `u32` that also
+/// decides its length: on zero the entry ends there, otherwise seven more
+/// scalars and a name follow. The original's reader is the pair
+/// "record reader + the name behind it": the record reader stops right after
+/// the leading `u32` when that `u32` is zero, and the caller reads the string
+/// only for a non-zero one. So a list mixes long and short entries, and a
+/// decoder that reads a fixed record length loses the rest of the list.
+///
+/// Field *meanings* are not readable from the reader — it stores the record and
+/// hands it on whole — so everything but the structural count keeps an `unk_*`
+/// name.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct GuildWarInfo {
+    pub entries: Vec<GuildWarInfoEntry>,
+}
+
+/// One entry of [`GuildWarInfo`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuildWarInfoEntry {
+    /// Zero ends the entry here.
+    pub unk_u32_00: u32,
+    /// Present exactly when [`Self::unk_u32_00`] is non-zero.
+    pub detail: Option<GuildWarInfoDetail>,
+}
+
+/// The long form of a [`GuildWarInfoEntry`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuildWarInfoDetail {
+    pub unk_u32_00: u32,
+    pub unk_u8_00: u8,
+    pub unk_u32_01: u32,
+    pub unk_u32_02: u32,
+    pub unk_u32_03: u32,
+    pub unk_u32_04: u32,
+    pub unk_u32_05: u32,
+    pub unk_str_00: String,
+}
+
+/// A body that carries more bytes than the list describes. It is refused rather
+/// than truncated: the surplus would mean the entry shape is wrong, and a
+/// half-read war list is worse than a logged decode failure.
+fn trailing() -> SerializationError {
+    SerializationError::IoError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "trailing bytes in 0x3109 body",
+    ))
+}
+
+impl TryFrom<Bytes> for GuildWarInfo {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        let mut c = Cursor::new(&value, "short 0x3109 body");
+        let count = c.u8()?;
+        let mut entries = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let unk_u32_00 = c.u32()?;
+            let detail = if unk_u32_00 == 0 {
+                None
+            } else {
+                Some(GuildWarInfoDetail {
+                    unk_u32_00: c.u32()?,
+                    unk_u8_00: c.u8()?,
+                    unk_u32_01: c.u32()?,
+                    unk_u32_02: c.u32()?,
+                    unk_u32_03: c.u32()?,
+                    unk_u32_04: c.u32()?,
+                    unk_u32_05: c.u32()?,
+                    unk_str_00: c.string()?,
+                })
+            };
+            entries.push(GuildWarInfoEntry { unk_u32_00, detail });
+        }
+        if !c.at_end() {
+            return Err(trailing());
+        }
+        Ok(GuildWarInfo { entries })
+    }
+}
+
+impl From<GuildWarInfo> for Bytes {
+    fn from(p: GuildWarInfo) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(p.entries.len() as u8);
+        for entry in &p.entries {
+            buf.put_u32_le(entry.unk_u32_00);
+            // The leading `u32` decides the length, so a detail is written only
+            // where the reader would look for one.
+            if entry.unk_u32_00 == 0 {
+                continue;
+            }
+            if let Some(detail) = &entry.detail {
+                buf.put_u32_le(detail.unk_u32_00);
+                buf.put_u8(detail.unk_u8_00);
+                buf.put_u32_le(detail.unk_u32_01);
+                buf.put_u32_le(detail.unk_u32_02);
+                buf.put_u32_le(detail.unk_u32_03);
+                buf.put_u32_le(detail.unk_u32_04);
+                buf.put_u32_le(detail.unk_u32_05);
+                put_string(&mut buf, &detail.unk_str_00);
+            }
+        }
+        buf.freeze()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +323,74 @@ mod tests {
         let ack = GuildWarStartAck::try_from(refused.clone()).unwrap();
         assert_eq!(ack.error_code, Some(0x1C0E));
         assert_eq!(Bytes::from(ack), refused);
+    }
+
+    /// A war-list body, decoded and written back byte for byte.
+    fn war_info(hex: &str) -> GuildWarInfo {
+        let clean: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+        let wire = Bytes::from(
+            (0..clean.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>(),
+        );
+        let decoded = GuildWarInfo::try_from(wire.clone()).unwrap();
+        assert_eq!(Bytes::from(decoded.clone()), wire, "write-back differs");
+        decoded
+    }
+
+    /// The list mixes entry lengths: the leading `u32` decides whether the
+    /// seven scalars and the name follow.
+    #[test]
+    fn the_war_list_mixes_short_and_long_entries() {
+        assert_eq!(war_info("00").entries, vec![]);
+
+        assert_eq!(
+            war_info("01 00000000").entries,
+            vec![GuildWarInfoEntry {
+                unk_u32_00: 0,
+                detail: None,
+            }]
+        );
+
+        let both = war_info(
+            "02 01000000 02000000 03 04000000 05000000 06000000 07000000 \
+             08000000 0200 4142 00000000",
+        );
+        assert_eq!(
+            both.entries,
+            vec![
+                GuildWarInfoEntry {
+                    unk_u32_00: 1,
+                    detail: Some(GuildWarInfoDetail {
+                        unk_u32_00: 2,
+                        unk_u8_00: 3,
+                        unk_u32_01: 4,
+                        unk_u32_02: 5,
+                        unk_u32_03: 6,
+                        unk_u32_04: 7,
+                        unk_u32_05: 8,
+                        unk_str_00: "AB".into(),
+                    }),
+                },
+                GuildWarInfoEntry {
+                    unk_u32_00: 0,
+                    detail: None,
+                },
+            ]
+        );
+    }
+
+    /// A fixed-length record would read the second entry out of the first
+    /// entry's name — the count must drive the walk, and the walk must end on
+    /// the last byte.
+    #[test]
+    fn a_war_list_that_does_not_close_is_refused() {
+        let short = Bytes::from_static(&[0x01, 0x01, 0x00, 0x00, 0x00]);
+        assert!(GuildWarInfo::try_from(short).is_err());
+
+        let surplus = Bytes::from_static(&[0x01, 0x00, 0x00, 0x00, 0x00, 0xFF]);
+        assert!(GuildWarInfo::try_from(surplus).is_err());
     }
 
     /// The two single-`u32` requests round-trip at four bytes.
