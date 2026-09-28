@@ -50,6 +50,7 @@ pub mod guild_storage;
 pub mod hitcount;
 pub mod inventory;
 pub mod item_cell;
+pub mod job;
 pub mod magic_state_board;
 pub mod main_popup;
 pub mod minimap;
@@ -183,6 +184,15 @@ impl Plugin for HudPlugin {
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
                 academy::AcademyWindowPlugin,
+            ),
+            (
+                // The job-league windows. Their own group rather than a slot in
+                // groups 2/3, which stand at 14 of the 15 `Plugins` tuple
+                // entries Bevy implements: three port slices touch this
+                // registry at once, and two of them landing in the same group
+                // would push it to 16 — the failure mode the group test above
+                // was written for.
+                job::JobWindowsPlugin,
             ),
         ));
     }
