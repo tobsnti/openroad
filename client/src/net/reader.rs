@@ -23,6 +23,43 @@ pub struct GuildTag {
     pub granted_nick: String,
 }
 
+/// The six numeric fields behind the guild tag (`GuildID`, crest revisions,
+/// union, hostility, siege authority). Separate from [`GuildTag`] because the
+/// tag is the nameplate's text component while these drive hostile-guild
+/// styling and the fortress-position display — and because a job-suited
+/// player's record carries the tag's name but **not** this sub-block (see
+/// [`Reader::guild`]).
+///
+/// Field order and widths: `id:u32`, `crest_rev:u32`, `union_id:u32`,
+/// `union_crest_rev:u32`, `is_friendly:u8`, `siege_authority:u8`.
+/// Little-endian like the whole wire.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GuildAffiliation {
+    pub id: u32,
+    /// Crest revision the *sender* holds; a client with an older one refetches
+    /// the emblem out of band.
+    pub crest_rev: u32,
+    pub union_id: u32,
+    pub union_crest_rev: u32,
+    /// War hostility: false = at war with the observer's guild. The byte is a
+    /// bool on the wire (`!= 0`); which side sets it is unconfirmed, so no
+    /// consumer may key colour off it yet.
+    pub is_friendly: bool,
+    /// Siege/member authority. Only `0xFF` ("none") is known; every other
+    /// value is unconfirmed.
+    pub siege_authority: u8,
+}
+
+/// A player record's guild block: the tag plus the sub-block that a job-suited
+/// player omits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuildBlock {
+    pub tag: GuildTag,
+    /// `None` when the record was read in job mode, i.e. the sub-block was not
+    /// on the wire at all — *not* "all zeroes".
+    pub affiliation: Option<GuildAffiliation>,
+}
+
 /// Bounds-checked little-endian reader.
 pub struct Reader<'a> {
     buf: &'a [u8],
@@ -141,27 +178,53 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Read the guild block: name string, guild id (u32), member-nick string,
-    /// then 14 bytes — crest revision, union id, union crest revision and two
-    /// flag bytes — that nothing consumes yet.
+    /// Read a player record's guild block. `job_mode` is the record's own
+    /// `job_type != 0` (read a few fields earlier by the caller) and decides
+    /// **how much of the block is on the wire**:
     ///
-    /// The block is **always present**, guild or not: a guildless player sends
-    /// a zero-length name and the same zeroed tail, so this is not conditional
-    /// on membership. `None` (a short read) aborts the record like every other
-    /// parse failure here.
+    /// - always: the guild `name` string (empty for a guildless player — the
+    ///   name field is never omitted, only the sub-block behind it);
+    /// - only when *not* in job mode: `id:u32`, the granted-nick string,
+    ///   `crest_rev:u32`, `union_id:u32`, `union_crest_rev:u32`,
+    ///   `is_friendly:u8`, `siege_authority:u8`.
     ///
-    /// UNVERIFIED against real bytes — `packet_dump/0x3019.log` holds no player
-    /// spawn record at all (`docs/net-captured-opcodes.md`), so the layout
-    /// comes from go-sro's `WriteGuild` (the server these dumps were captured
-    /// against), corroborated field-for-field by the vSRO client-side parser.
-    /// Closing it needs the guilded-player capture, `docs/re/CAPTURE_LIST.md`
-    /// row A5.
-    pub fn guild(&mut self) -> Option<GuildTag> {
+    /// The sub-block's field set and widths come from go-sro's `WriteGuild`
+    /// (`model/packetutils_entity.go:331-342`), corroborated field-for-field by
+    /// the vSRO client-side parser and by xBot `PacketParser.cs:759-765`.
+    ///
+    /// **Why the branch.** Consuming `u32 + string + 14` unconditionally
+    /// desyncs the rest of a spawn batch as soon as one job-suited player is
+    /// in view. The caller's predicate is the worn job suit rather than the
+    /// record's `job_type` byte (`entity_spawn::parse_player`): a record with
+    /// `job_type = 1` and no suit equipped still carries the full sub-block.
+    ///
+    /// `None` (a short read) aborts the record like every other parse failure
+    /// here.
+    pub fn guild(&mut self, job_mode: bool) -> Option<GuildBlock> {
         let name = self.string()?;
-        self.skip(4)?; // guild id
+        if job_mode {
+            return Some(GuildBlock {
+                tag: GuildTag {
+                    name,
+                    granted_nick: String::new(),
+                },
+                affiliation: None,
+            });
+        }
+        let id = self.u32()?;
         let granted_nick = self.string()?;
-        self.skip(14)?; // crest rev, union id, union crest rev, 2×u8 flags
-        Some(GuildTag { name, granted_nick })
+        let affiliation = GuildAffiliation {
+            id,
+            crest_rev: self.u32()?,
+            union_id: self.u32()?,
+            union_crest_rev: self.u32()?,
+            is_friendly: self.u8()? != 0,
+            siege_authority: self.u8()?,
+        };
+        Some(GuildBlock {
+            tag: GuildTag { name, granted_nick },
+            affiliation: Some(affiliation),
+        })
     }
 }
 
@@ -204,5 +267,55 @@ mod test {
         let mut r = Reader::new(&b);
         r.skip_movement(0x8001).unwrap();
         assert_eq!(r.u8(), Some(0xEE));
+    }
+
+    fn guild_bytes(name: &str, nick: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&7u32.to_le_bytes()); // guild id
+        b.extend_from_slice(&(nick.len() as u16).to_le_bytes());
+        b.extend_from_slice(nick.as_bytes());
+        b.extend_from_slice(&3u32.to_le_bytes()); // guild crest rev
+        b.extend_from_slice(&9u32.to_le_bytes()); // union id
+        b.extend_from_slice(&4u32.to_le_bytes()); // union crest rev
+        b.push(0); // is_friendly = false -> at war
+        b.push(0xFF); // authority: None
+        b
+    }
+
+    /// The six fields behind the tag were skipped as 14 anonymous bytes; a
+    /// sentinel proves the width is unchanged and the values now land.
+    #[test]
+    fn guild_block_full_reads_every_field() {
+        let mut b = guild_bytes("Ironclad", "Quartermaster");
+        b.push(0xEE);
+        let mut r = Reader::new(&b);
+        let block = r.guild(false).unwrap();
+        assert_eq!(block.tag.name, "Ironclad");
+        assert_eq!(block.tag.granted_nick, "Quartermaster");
+        let a = block
+            .affiliation
+            .expect("non-job record carries the sub-block");
+        assert_eq!(a.id, 7);
+        assert_eq!(a.crest_rev, 3);
+        assert_eq!(a.union_id, 9);
+        assert_eq!(a.union_crest_rev, 4);
+        assert!(!a.is_friendly);
+        assert_eq!(a.siege_authority, 0xFF);
+        assert_eq!(r.u8(), Some(0xEE), "block width must be unchanged");
+    }
+
+    /// In job mode only the name string is on the wire: reading the
+    /// sub-block anyway eats the following record's bytes.
+    #[test]
+    fn guild_block_in_job_mode_is_name_only() {
+        let b: Vec<u8> = vec![3, 0, b'A', b'B', b'C', 0xEE];
+        let mut r = Reader::new(&b);
+        let block = r.guild(true).unwrap();
+        assert_eq!(block.tag.name, "ABC");
+        assert_eq!(block.tag.granted_nick, "");
+        assert_eq!(block.affiliation, None);
+        assert_eq!(r.u8(), Some(0xEE), "nothing behind the name may be eaten");
     }
 }
