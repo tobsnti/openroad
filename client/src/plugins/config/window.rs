@@ -94,7 +94,15 @@ impl PresentModeConfig {
     }
 }
 
+/// Idea: every field carries a default, so a `config.yaml` may name only the
+/// window keys it cares about — or none at all. The defaults are deliberately
+/// the *cautious* ones rather than the example file's showcase values: a first
+/// start happens on hardware we know nothing about, and a windowed 1280x720 on
+/// the primary monitor is recoverable with the mouse on a 1366x768 laptop,
+/// where a borderless-fullscreen window on a machine whose GPU falls over is
+/// not. `config.example.yaml` stays the full reference and may differ.
 #[derive(Deserialize)]
+#[serde(default)]
 pub struct WindowSettings {
     pub width: f32,
     pub height: f32,
@@ -124,6 +132,22 @@ pub struct WindowSettings {
     /// a property of the engine, not a bug here.
     #[serde(default)]
     pub max_frame_latency: Option<u32>,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            width: 1280.0,
+            height: 720.0,
+            mode: WindowModeConfig::Windowed,
+            title: String::from("OpenRoad"),
+            // Not `Current`: at config-load time there is no window yet, so
+            // "the monitor this window is on" has no answer.
+            monitor: MonitorSelection::Primary,
+            present_mode: PresentModeConfig::default(),
+            max_frame_latency: None,
+        }
+    }
 }
 
 impl WindowSettings {

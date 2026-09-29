@@ -1,6 +1,9 @@
 use serde_derive::Deserialize;
 
+/// `#[serde(default)]` on the container, so a `scenes:` block may name one key
+/// and inherit the rest — and so the whole block may be left out.
 #[derive(Deserialize)]
+#[serde(default)]
 pub(crate) struct SceneSettings {
     pub intro_location: String,
     pub char_select_location: String,
