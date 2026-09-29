@@ -270,6 +270,31 @@ impl From<MailSendRequest> for Bytes {
     }
 }
 
+/// 0x730B — client → server: the mailbox asks for its list. Empty body.
+#[derive(Message, Clone, Debug, Default, PartialEq)]
+pub struct MailListRequest;
+
+impl TryFrom<Bytes> for MailListRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        // Nothing is read, so anything present would be silently dropped.
+        if value.is_empty() {
+            Ok(MailListRequest)
+        } else {
+            Err(SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "body on an empty request",
+            )))
+        }
+    }
+}
+
+impl From<MailListRequest> for Bytes {
+    fn from(_: MailListRequest) -> Self {
+        Bytes::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +310,15 @@ mod tests {
 
     fn expendable() -> MockResolver {
         MockResolver(ItemClass::Expendable { tid3: 1, tid4: 1 })
+    }
+
+    #[test]
+    fn mail_list_request_has_an_empty_body() {
+        let wire: Bytes = MailListRequest.into();
+        assert!(wire.is_empty());
+        assert_eq!(MailListRequest::try_from(wire).unwrap(), MailListRequest);
+        // Nothing is read here, so a body would be dropped without a trace.
+        assert!(MailListRequest::try_from(Bytes::from_static(&[0x00])).is_err());
     }
 
     #[test]

@@ -243,6 +243,10 @@ packets! {
     0x3809 => WeatherUpdate,
     0x3305 => FriendListInfo,
     0x3077 => CharacterFinished,
+    // The two community requests the original client sends from the friend and
+    // block tabs. Both end on their name; their answers stay unwired.
+    0x7302 => FriendAddRequest,
+    0x730D => BlockAddRequest,
     // Fortress war (see agent/siege.rs, docs/net-siege-0x385F.md). 0x385F is a
     // u8 sub-command family; only the two arms our capture holds are decoded
     // (0x00 fortress list, 0x34 application-period end), the other 52 keep
@@ -594,6 +598,7 @@ packets! {
     0xB508 => ConsignmentRegisterResponse,
     0xB509 => ConsignmentUnregisterResponse,
     0x7309 => MailSendRequest,
+    0x730B => MailListRequest,
 
     // Player stall / private shop (see agent/stall.rs, docs/net-stall-0x30B7.md).
     // Spec-derived: no packet_dump exists for any of these yet. The stall listing

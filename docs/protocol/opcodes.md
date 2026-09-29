@@ -125,6 +125,8 @@ shapes are unverified (see the struct docs in `agent/ingame.rs`).
 | `0x3153` | SilkUpdate | S→C | experimental | account silks `{own, gift, point}` (u32×3); capture-verified; feeds cash-shop epic |
 | `0x3809` | WeatherUpdate | S→C | experimental | `{weather_type, intensity}` (u8×2); EP-27 (environment/weather) |
 | `0x3305` | FriendListInfo | S→C | experimental | friend roster; captured empty; EP-32 / #154 (social) |
+| `0x7302` | FriendAddRequest | C→S | wired | add a character to the friend roster: `u16` length + name, and nothing behind it |
+| `0x730D` | BlockAddRequest | C→S | wired | add a character to the block list: one byte ([U], the original client sends 1), then `u16` length + name |
 | `0x3077` | CharacterFinished | S→C | experimental | join-time cooldown replay (item + skill lists); captured empty; EP-07 |
 
 ## Invites & petitions
@@ -462,6 +464,7 @@ for each unknown: .
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
 | `0x7309` | MailSendRequest | C→S | experimental | verified head (title + message) only; everything after it is [U] and kept as a raw tail |
+| `0x730B` | MailListRequest | C→S | wired | the mailbox asks for its list; empty body |
 
 Deliberately **not** wired — all three bodies are entirely unverified, so a layout
 would have to be invented: `0xB309 SERVER_MAIL_SEND_RESPONSE` (declared in the
