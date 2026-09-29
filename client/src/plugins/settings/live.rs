@@ -196,8 +196,9 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                `bindless_materials` (the wgpu \
                features requested in main.rs::render_plugin), `water.quality` \
                (map::setup_terrain_mesh at OnExit(Loading)), `shadows` \
-               enabled/cascades/distance/map_size (map::setup_lighting; a \
-               live cascade-count change panics, see there), `sheen` and \
+               cascades/distance/map_size (map::setup_lighting; a \
+               live cascade-count change panics, see there; \
+               `shadows.enabled` is live, see below), `sheen` and \
                `rim` intensities (baked into the .bmt materials), and \
                `anisotropy` (main builds the default image sampler and sets \
                the ground-tile sampler's clamp from it), \
@@ -244,10 +245,15 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                change too, same as the rest of this group. The Sun's own \
                DirectionalLight (illuminance, shadow_maps_enabled) is the \
                exception: it only follows render_mode once, at boot, and \
-               thereafter changes solely via the dev-tools-gated hotkey N \
+               thereafter changes via the dev-tools-gated hotkey N \
                (environment::seed_environment_settings_from_config, \
                environment::apply_render_mode) — a later config-only edit to \
-               render_mode does not move the live Sun. `preset` has one more \
+               render_mode does not move the live Sun. `shadows.enabled` is \
+               the one field of that light which does follow the config: \
+               environment::options::apply_shadow_detail_option carries it \
+               into the Sun on every change, in PBR mode only, which is what \
+               lets the Video pane's Shadow Detail row drop its restart note. \
+               `preset` has one more \
                writer since the Video pane's Graphics Preset row became \
                settable: `video.preset_override` in user_settings.yaml, read \
                by main before ClientConfig::load so the chosen layer goes \

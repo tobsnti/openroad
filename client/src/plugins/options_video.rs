@@ -227,7 +227,9 @@ fn config_row(id: u16) -> Option<ConfigRow> {
     };
     let off_on: &'static [&'static str] = &["Off", "On"];
     match id {
-        1 => row_requiring(off_on, Some("restart"), Requirement::PbrLighting),
+        // no restart note: `environment::options::apply_shadow_detail_option`
+        // follows the key into the live Sun
+        1 => row_requiring(off_on, None, Requirement::PbrLighting),
         2 => row(
             &[
                 "Shortest (1920)",
@@ -475,6 +477,10 @@ fn config_row_text(id: u16, config: &ClientConfig) -> Option<String> {
 /// the resinfo tree. Ids 14/15 exist in the id space but their CSV name cells
 /// are blank, so they are left out rather than captioned by guess.
 const DETAIL_ROWS: [DetailRow; 13] = [
+    // Steps `graphics.shadows.enabled`, which
+    // `environment::options::apply_shadow_detail_option` follows into the
+    // Sun's cascaded shadow maps while the game runs. PBR mode only: vanilla
+    // has no dynamic shadows, which is what `Requirement::PbrLighting` says.
     DetailRow {
         id: 1,
         key: "UIIT_STT_SHADOW_DETAIL",
@@ -1831,12 +1837,12 @@ mod tests {
 
     /// The shipped default is `render_mode: vanilla`, which draws no shadow
     /// maps at all (`map/mod.rs:342`). So the Shadow Detail row can hold "On"
-    /// and change nothing — and before this it said "(restart; PBR lighting
-    /// only)", a condition wearing a restart note's clothes. The condition is
-    /// data now, and it outranks the restart note: relaunching does not give
-    /// vanilla lighting shadows.
+    /// and change nothing, and it has to name that condition. With the
+    /// condition met the row has nothing left to note: it is applied while
+    /// the game runs (`environment::options::apply_shadow_detail_option`), so
+    /// a restart note here would be a lie in the other direction.
     #[test]
-    fn a_row_whose_condition_is_unmet_names_the_condition_not_a_restart() {
+    fn a_row_whose_condition_is_unmet_names_the_condition() {
         let mut config = test_config();
         assert_eq!(
             config.graphics.render_mode,
@@ -1851,9 +1857,9 @@ mod tests {
 
         config.graphics.render_mode = RenderMode::Pbr;
         let text = config_row_text(1, &config).expect("Shadow Detail is config-backed");
-        assert!(
-            text.ends_with("(restart)"),
-            "with the condition met the restart note is what is left: {text:?}"
+        assert_eq!(
+            text, "On",
+            "with the condition met the row is live and has nothing to note"
         );
     }
 
