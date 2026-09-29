@@ -793,7 +793,6 @@ mod tests {
     /// them ("Dismount (Home)", "Terminated (PgUp)", "Offensive/Defensive
     /// (PgDn)") and `SROptionSet.dat` carries the same three VK codes plus the
     /// two no caption names — follow = `0x2E` VK_DELETE, attack = `0x23`
-    /// two no caption names — follow = `0x2E` VK_DELETE, attack = `0x23`
     /// VK_END.
     #[test]
     fn the_cos_keys_named_by_vanilla_captions_are_bound() {
