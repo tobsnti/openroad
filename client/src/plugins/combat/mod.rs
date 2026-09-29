@@ -14,8 +14,9 @@ use bevy::prelude::*;
 pub mod action_slot;
 
 use packets::agent::prelude::{
-    ActionKind, CharacterDied, DamageContent, EntityLevelUp, EntityStateUpdate, HitEffect,
-    HitPosition, ObjectActionRequest, ObjectActionResponse, ObjectActionUpdate, SkillEnd,
+    ActionMask, ActionPart, CharacterDied, DamageContent, EntityLevelUp, EntityStateUpdate,
+    HitEffect, HitPosition, ObjectActionRequest, ObjectActionResponse, ObjectActionUpdate,
+    SkillEnd,
 };
 use packets::Packet;
 
@@ -691,7 +692,7 @@ fn on_object_action_update(
             source,
             instance,
             target,
-            kind,
+            mask,
             ..
         } = msg
         else {
@@ -709,7 +710,7 @@ fn on_object_action_update(
             continue;
         };
         debug!(
-            "combat: action update skill {skill_id} source {source} target {target} kind {kind:?}"
+            "combat: action update skill {skill_id} source {source} target {target} mask {mask:?}"
         );
         // remember the cast for 0xB071 damage attribution; prune stragglers
         instances.0.retain(|_, info| {
@@ -743,20 +744,27 @@ fn on_object_action_update(
             }
         }
         let spec = resolve_online_swing(*skill_id, &skill_data, &skill_effects);
-        let damage = match kind {
-            ActionKind::Attack { damage } => damage.as_ref(),
-            // kind-None cast starts (and self-buffs): skill presentation
-            // only, the damage follows in 0xB071
-            ActionKind::None => None,
-            ActionKind::Teleport => continue,
-        };
+        // A mask without the damage bit is a cast start or a self-buff: skill
+        // presentation only, the damage follows in 0xB071.
+        let damage = mask.damage();
+        // Every part gets its own arm, so a part we do not consume yet says so
+        // instead of passing unnoticed.
+        for part in &mask.parts {
+            match part {
+                ActionPart::Damage(_) => {}
+                ActionPart::Unk08 { .. } | ActionPart::Unk02 { .. } => debug!(
+                    "combat: 0xB070 mask {:#04x} carries a part we do not read yet",
+                    mask.flags
+                ),
+            }
+        }
         // Our own attack: say how many instances it delivered, so the ammo
         // prediction can spend one arrow per arrow actually loosed. Taken here,
         // off the packet itself, rather than off the swing presentation — every
         // swing produces exactly one of these, including the echo of a swing we
         // predicted at the click (the clip was already playing, but the arrow
         // still flew).
-        if local_uid == Some(*source) && matches!(kind, ActionKind::Attack { .. }) {
+        if local_uid == Some(*source) && mask.has(ActionMask::DAMAGE) {
             let instances = damage.map_or(1, |damage| damage.instance_count.max(1));
             landed.write(LocalAttackLanded(instances as u16));
         }
@@ -870,7 +878,7 @@ fn on_object_action_update(
                     }
                 }
             }
-            (None, Some(owner)) if matches!(kind, ActionKind::Attack { .. }) => {
+            (None, Some(owner)) if mask.has(ActionMask::DAMAGE) => {
                 // The animation layer replays these popups with hit-timed
                 // delays — the pre-skill auto-attack path, byte-identical.
                 //
@@ -1227,18 +1235,26 @@ fn on_skill_end(
             SkillEnd::Success {
                 instance,
                 target,
-                kind,
+                mask,
             } => {
                 let info = instances.0.remove(instance);
-                debug!("combat: cast {instance} ended (target {target} kind {kind:?})");
+                debug!("combat: cast {instance} ended (target {target} mask {mask:?})");
                 // our own cast ended → the auto-attack resume trigger
                 if local_uid.is_some() && info.as_ref().map(|i| i.source) == local_uid {
                     local_ends.write(LocalCastEnded);
                 }
-                let ActionKind::Attack {
-                    damage: Some(damage),
-                } = kind
-                else {
+                // Every part gets its own arm, so a part we do not consume yet
+                // says so instead of passing unnoticed.
+                for part in &mask.parts {
+                    match part {
+                        ActionPart::Damage(_) => {}
+                        ActionPart::Unk08 { .. } | ActionPart::Unk02 { .. } => debug!(
+                            "combat: 0xB071 mask {:#04x} carries a part we do not read yet",
+                            mask.flags
+                        ),
+                    }
+                }
+                let Some(damage) = mask.damage() else {
                     continue;
                 };
                 let queued = queue_damage_popups(
