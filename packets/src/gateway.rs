@@ -8,6 +8,96 @@ use sro_macro::SerializationError;
 use sro_macro::Serialize;
 use sro_macro_derive::*;
 
+/// `0x6100 CLIENT_GATEWAY_PATCH_REQUEST` — the version check the **original**
+/// launcher sends first on the gateway connection, before the shard list.
+///
+/// The body of the original v1.208 client is
+/// `16 | 0900 "SR_Client" | d0 00 00 00` = locale `0x16` (22, vSRO), a
+/// u16-length-prefixed module name, then the build version as a `u32`
+/// (0xD0 = 208). It is encrypted on the wire — `0x6100` is in the
+/// outbound-encryption allowlist (`client/src/net/frame.rs`).
+///
+/// OpenRoad's own client does not send it (its launcher does an `SV.T`
+/// preflight instead), so this exists to *read* what a real client asks and to
+/// let a test peer answer it. No in-tree sender yet.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PatchRequest {
+    /// Region/locale byte the gateway gates content on (`0x16` = 22 for vSRO).
+    pub locale: u8,
+    /// Module name the client compiles in — `"SR_Client"` on the v1.208
+    /// client.
+    pub module_name: String,
+    /// Client build number; `208` on the v1.208 client.
+    pub version: u32,
+}
+
+/// `0xA100 SERVER_GATEWAY_PATCH_RESPONSE` — the launcher's go/no-go verdict.
+///
+/// `result == 1` means "up to date" and carries **no further body**: one byte
+/// is the whole packet. `result == 2` carries a `PatchErrorCode`, and only code
+/// `2` ("update available") is followed by the download-server triple and the
+/// file list.
+///
+/// The launcher branches on exactly `1` (proceed) and `2` (version incorrect)
+/// and reads nothing more in the success case.
+///
+/// **Minimal on purpose**: the `error_code == 2` file list (a `has-more`
+/// sequence of id/name/path/size/packed entries) is *not* modelled. We never
+/// send it, and modelling it would be guesswork. A real `result == 2` with
+/// `error_code == 2` therefore deserializes only as far as the triple.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PatchResponse {
+    /// `1` = up to date, `2` = rejected (see [`PatchError`]).
+    pub result: u8,
+    #[sro_packet(when = "result == 0x02")]
+    pub error: Option<PatchError>,
+}
+
+/// The `result == 2` body. `error_code` is a `PatchErrorCode`: `1` invalid
+/// version, `2` update available (the only code with a payload), `3` gateway
+/// not in service, `4` abnormal module, `5` patch disabled. Kept a raw `u8` so
+/// a code we have no name for cannot fail deserialization — the same reasoning
+/// as [`crate::login::LoginError`].
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PatchError {
+    pub error_code: u8,
+    #[sro_packet(when = "error_code == 0x02")]
+    pub download_server_ip: Option<String>,
+    #[sro_packet(when = "error_code == 0x02")]
+    pub download_server_port: Option<u16>,
+    #[sro_packet(when = "error_code == 0x02")]
+    pub latest_version: Option<u32>,
+}
+
+/// `0x6104 CLIENT_GATEWAY_NOTICE_REQUEST` — the launcher's news request, the
+/// packet it sends a few milliseconds after the patch verdict. Body: one
+/// content-id byte, `0x16` on the v1.208 client — the same locale byte the
+/// patch request carries.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct NoticeRequest {
+    pub content_id: u8,
+}
+
+/// `0xA104 SERVER_GATEWAY_NOTICE_RESPONSE` — the launcher's news list, and the
+/// packet it blocks on: with the notice service dead the launcher keeps
+/// keepaliving forever and never offers its Start button.
+///
+/// The layout is `u8 noticeCount`, then per notice a u16-length-prefixed
+/// subject and article followed by six `u16` date fields (year, month, day,
+/// hour, minute, second) and a `u32` nanosecond.
+///
+/// **Only the count is modelled**, on purpose and twice over: our derive cannot
+/// express a counted list of *structs* (`sro_macro_derive` rejects nested
+/// collection-like types), and the only answer we ever *send* is the empty one
+/// — `noticeCount = 0`, a single byte, which is the honest answer for a server
+/// that has no notices. A real non-empty `0xA104` therefore decodes to its
+/// count with the entries left unread; OpenRoad's own client never sends
+/// `0x6104`.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct NoticeResponse {
+    pub notice_count: u8,
+}
+
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct ShardListRequest;
 
@@ -94,6 +184,84 @@ mod tests {
         assert_eq!(decoded.farms.len(), 2);
         assert_eq!(decoded.farms[1].id, 0x15);
         assert_eq!(decoded.farms[1].ip, Ipv4Addr::new(192, 168, 1, 10));
+    }
+
+    /// The original v1.208 launcher's first gateway packet: locale `0x16`,
+    /// u16-prefixed `"SR_Client"`, build `208` (`0xD0`).
+    const PATCH_REQUEST_WIRE: &[u8] = &[
+        0x16, 0x09, 0x00, b'S', b'R', b'_', b'C', b'l', b'i', b'e', b'n', b't', 0xd0, 0x00, 0x00,
+        0x00,
+    ];
+
+    #[test]
+    fn patch_request_roundtrips() {
+        let decoded =
+            PatchRequest::try_from(Bytes::from_static(PATCH_REQUEST_WIRE)).expect("decodes");
+        assert_eq!(decoded.locale, 0x16);
+        assert_eq!(decoded.module_name, "SR_Client");
+        assert_eq!(decoded.version, 208);
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), PATCH_REQUEST_WIRE);
+    }
+
+    /// `result == 1` ("up to date") is the whole packet: one byte, no error
+    /// block. A response that read further here would stall the launcher.
+    #[test]
+    fn an_up_to_date_patch_response_is_a_single_byte() {
+        let decoded = PatchResponse::try_from(Bytes::from_static(&[0x01])).expect("decodes");
+        assert_eq!(
+            decoded,
+            PatchResponse {
+                result: 1,
+                error: None,
+            }
+        );
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), &[0x01]);
+    }
+
+    /// Only error code `2` ("update available") carries the download triple.
+    #[test]
+    fn an_update_available_response_carries_the_download_triple() {
+        const BODY: &[u8] = &[
+            0x02, 0x02, 0x09, 0x00, 0x31, 0x32, 0x37, 0x2e, 0x30, 0x2e, 0x30, 0x2e, 0x31, 0xa3,
+            0x3d, 0xd1, 0x00, 0x00, 0x00,
+        ];
+        let decoded = PatchResponse::try_from(Bytes::from_static(BODY)).expect("decodes");
+        let error = decoded.error.clone().expect("result 2 carries an error");
+        assert_eq!(error.error_code, 2);
+        assert_eq!(error.download_server_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(error.download_server_port, Some(15779));
+        assert_eq!(error.latest_version, Some(209));
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), BODY);
+    }
+
+    /// Any other error code ends after the code itself — "gateway not in
+    /// service" (3) has no triple behind it.
+    #[test]
+    fn a_non_update_error_code_ends_after_the_code() {
+        let decoded = PatchResponse::try_from(Bytes::from_static(&[0x02, 0x03])).expect("decodes");
+        let error = decoded.error.clone().expect("result 2 carries an error");
+        assert_eq!(error.error_code, 3);
+        assert_eq!(error.download_server_ip, None);
+        let encoded: Bytes = decoded.into();
+        assert_eq!(encoded.as_ref(), &[0x02, 0x03]);
+    }
+
+    /// The news pair: the request is the locale byte, and the only answer we
+    /// send is the empty list.
+    #[test]
+    fn notice_request_and_empty_response_roundtrip() {
+        let request = NoticeRequest::try_from(Bytes::from_static(&[0x16])).expect("decodes");
+        assert_eq!(request.content_id, 0x16);
+        let encoded: Bytes = request.into();
+        assert_eq!(encoded.as_ref(), &[0x16]);
+
+        let response = NoticeResponse::try_from(Bytes::from_static(&[0x00])).expect("decodes");
+        assert_eq!(response.notice_count, 0);
+        let encoded: Bytes = response.into();
+        assert_eq!(encoded.as_ref(), &[0x00]);
     }
 
     #[test]
