@@ -49,6 +49,7 @@ use crate::scenes::{in_playable_world, SceneState};
 use crate::GameState;
 
 pub mod celestial;
+pub mod options;
 pub mod reflections;
 
 /// Marks the world's single directional light (spawned in `map::setup_lighting`).
@@ -543,7 +544,11 @@ impl Plugin for EnvironmentPlugin {
                     // the render mode `setup_lighting` already spawned the Sun
                     // with, not a live-toggleable one.
                     .run_if(not(in_state(SceneState::WorldDebug))),
-            );
+            )
+            // Outside both gates on purpose: the Video pane's Shadow Detail
+            // row is read from `GameOptions`, not from `EnvironmentSettings`,
+            // and it gates itself on `options.is_changed()`.
+            .add_systems(Update, options::apply_shadow_detail_option);
 
         // Dev-tools gate (config.yaml `dev_tools`, inserted in main() before
         // any Plugin::build): egui inspector windows cost FPS every frame, and
