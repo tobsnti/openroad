@@ -59,7 +59,7 @@ pub struct LoginError {
 /// reasoning as `describe_agent_auth_error` in `agent/mod.rs`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoginFailure {
-    /// `1` — wrong password. The counter is `[U]` on the wire (see
+    /// `1` — wrong password. The counter is optional on the wire (see
     /// [`WrongAttempt`]), hence the `Option`: it is `None` if the server sent
     /// the code without one.
     WrongPassword(Option<WrongAttempt>),
@@ -238,13 +238,12 @@ pub fn login_error_text(code: u8) -> Option<(&'static str, &'static str)> {
 
 /// Rendered as "Password entry has failed {cur} out of {max} times."
 ///
-/// ⚠️ **`[U]` on the wire.** The binary only shows the *internal* form — one
-/// `u32` split `lo16`/`hi16` into the two format arguments
-/// (`FUN_0086bfc0:243-255`) — so whether the wire carries `2 × u32` or a single
-/// packed `u32`, and whether max precedes cur, is unresolved. **What settles
-/// it:** one captured `0xA102` with `result == 2, error_code == 1`; all five
-/// captured `0xa102` lines are `result == 1`. Left unchanged deliberately
-/// (#465) rather than guessed at.
+/// Settled on the wire: a `0xA102` that refuses a wrong password reads
+/// `02 01 06 00 00 00 01 00 00 00` — `result 2`, `error_code 1`, then **two
+/// `u32`s, max before cur**, which is the layout below. The binary only shows
+/// the *internal* form — one `u32` split `lo16`/`hi16` into the two format
+/// arguments (`FUN_0086bfc0:243-255`) — so that form is not what travels, and
+/// the open question in #465 is answered rather than guessed at.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct WrongAttempt {
     pub max_attempts: u32,
@@ -332,6 +331,24 @@ mod tests {
         assert_eq!(request.byte_size(), 3);
         let bytes: Bytes = request.into();
         assert_eq!(bytes.as_ref(), &[0x01, 0x00, b'1']);
+    }
+
+    /// A refusal for a wrong password carries the two counters as `max` then
+    /// `cur`: a gateway that allows six attempts answers the first wrong one
+    /// with `02 01 06 00 00 00 01 00 00 00`.
+    #[test]
+    fn a_wrong_password_refusal_reads_max_before_cur() {
+        const REFUSAL: &[u8] = &[0x02, 0x01, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+        let response = LoginResponse::try_from(Bytes::from_static(REFUSAL)).expect("decodes");
+        assert_eq!(response.result, 0x02);
+        let error = response.login_error.expect("an error body");
+        assert_eq!(
+            error.failure(),
+            LoginFailure::WrongPassword(Some(WrongAttempt {
+                max_attempts: 6,
+                cur_attempts: 1,
+            }))
+        );
     }
 
     fn error(code: u8) -> LoginError {
