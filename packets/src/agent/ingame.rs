@@ -2468,8 +2468,10 @@ impl From<TalkResponse> for Bytes {
     }
 }
 
-/// 0x7059 — client → server "make this teleporter my recall point"
-/// (`DesignateRecall`). A single u32, verified from the original's builder.
+/// 0x7059 — client → server "make this teleporter my recall point".
+///
+/// The original has no builder for this opcode, so the single `u32` below — one
+/// teleporter id — is **unconfirmed**.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct TeleportRecallRequest {
     pub teleport_unique_id: u32,
@@ -5359,8 +5361,10 @@ mod test {
         assert_eq!(TeleportRecallRequest::try_from(wire).unwrap(), req);
     }
 
-    /// 0xB059 has no parser in any source, so it must not claim a shape — any body,
-    /// including an empty one, round-trips untouched instead of failing to decode.
+    /// 0xB059 is carried raw (see the struct's note: the original reads
+    /// `u8 result` [+ `u16` error], but the error-code values are unknown), so
+    /// any body — including an empty one — round-trips untouched instead of
+    /// failing to decode.
     #[test]
     fn teleport_recall_response_keeps_any_body_whole() {
         for body in [
