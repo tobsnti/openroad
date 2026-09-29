@@ -70,6 +70,30 @@ format obsolete ("this file is not used anymore"), with `n = 1` in every build w
 have: the `[V]` confidence covers the *byte layout*, not the claim that this
 projection triple is what the shipped gameplay camera used.
 
+## Verdict on loading it: no
+
+The obvious follow-up — *stop hardcoding near/fov, load them* — is answered
+**no**:
+
+| Question | Answer |
+|---|---|
+| Does the client open `Map/config.ifo`? | **No** |
+| Does it open `Map/camera_path.txt`? | **No** |
+| Is there a camera file it *does* open? | **Yes** — `config\cameradata.txt`, read on world entry. |
+
+So a `config.ifo` loader would make our projection depend on a file the original ignores — a saved
+editor viewpoint, `n = 1`, of which we would then override the far plane anyway. The three numbers
+stay constants in `client/src/plugins/camera.rs`, with their offsets cited at the constant. What changes is
+the *claim*: the values are sourced, they are **not** evidence about the shipped camera.
+
+### `Map/camera_path.txt` — unresolved, and not built on
+
+261 bytes of ASCII, three lines, all in region `78, 70` (`Map/70/78.m` exists) at a constant height of
+`800.0`, each with `1.570796, 0, 0, 2190.306152`. Read in the `(pitch, yaw, roll, distance)` shape
+this family uses elsewhere, `1.570796` = π/2 is straight down and `2190.3` an orbit radius — a
+top-down pass, not a flythrough. **But the client never opens the file.** No
+consumer, no second sample: unknown, and no loader.
+
 > **Round 2 (F3) — the `n = 1` blocker is terminal, so the residual unknowns are moot.** The only
 > known `JMXVCAMR1002` sample is `Map/config.ifo`, and an exhaustive grep of the v1.188 client
 > string table for `.ifo`/`.mfo` literals shows **`config.ifo` never appears** — the client does
