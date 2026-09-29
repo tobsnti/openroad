@@ -17,13 +17,11 @@
 //! `Visibility::Inherited` (not `Visible`) on re-enable for the same reason
 //! it does — a wrapper must keep following its anchor's visibility.
 //!
-//! Deliberately NOT invented (ADR-0009): the row's *value space*. The
-//! `SROptionSet` cell is a `u16` and the name says "Quality", so a graded
-//! 0/1/2 scale is conceivable, but nothing states what the steps would mean —
-//! and the original's own tooltip says "toggles". So this
-//! reads `!= 0` as on, exactly like the Bloom row
-//! (`options_video::apply_bloom_option`), and a graded scale stays an
-//! UNKNOWN rather than a guessed ramp.
+//! The row is a **three-step** control in the original (`GraphicProfile::
+//! quality_step` reads the step index), not the toggle its tooltip suggests.
+//! [`EffectsEnabled`] is one boolean, so step 0 is off and steps 1 and 2 are
+//! both on: the original's middle step is **not distinguished**, and which
+//! effects it keeps is UNKNOWN. Stated rather than approximated.
 
 use bevy::prelude::*;
 
@@ -36,14 +34,19 @@ use super::EffectsEnabled;
 /// Id of the "Effect Quality" row within a profile bank (`DETAIL_ROWS`).
 pub const EFFECT_QUALITY_ID: u16 = 13;
 
-/// Reads the row out of the active graphic profile. `None` (row never
-/// written) means on: the original ships the detail rows enabled.
-pub fn effect_quality_on(options: &GameOptions, profile: GraphicProfileTab) -> bool {
+/// The row's step index in the active graphic profile.
+pub fn effect_quality_step(options: &GameOptions, profile: GraphicProfileTab) -> u8 {
     let bank = match profile {
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    bank.quality.get(&EFFECT_QUALITY_ID).copied().unwrap_or(1) != 0
+    bank.quality_step(EFFECT_QUALITY_ID)
+}
+
+/// Whether the effect runtime should run at this step. Step 0 is the
+/// original's "Turn Off All"; 1 and 2 both mean on here (module doc).
+pub fn effect_quality_on(options: &GameOptions, profile: GraphicProfileTab) -> bool {
+    effect_quality_step(options, profile) != 0
 }
 
 /// Applies the Effect Quality row to the effect runtime.
@@ -80,14 +83,14 @@ pub fn apply_effect_quality_option(
 mod tests {
     use super::*;
 
-    fn options_with(profile_two: bool, value: u16) -> GameOptions {
+    fn options_with(profile_two: bool, value: u8) -> GameOptions {
         let mut options = GameOptions::default();
         let bank = if profile_two {
             &mut options.video.graphic2
         } else {
             &mut options.video.graphic1
         };
-        bank.quality.insert(EFFECT_QUALITY_ID, value);
+        bank.set_quality_step(EFFECT_QUALITY_ID, value);
         options
     }
 
@@ -99,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_is_off_and_every_other_value_is_on() {
+    fn step_zero_is_off_and_the_two_effect_steps_are_both_on() {
         assert!(!effect_quality_on(
             &options_with(false, 0),
             GraphicProfileTab::One
@@ -108,8 +111,8 @@ mod tests {
             &options_with(false, 1),
             GraphicProfileTab::One
         ));
-        // "Quality" is a u16 cell; while the value space is unknown, any
-        // non-zero step means on (see the module doc's ADR-0009 note).
+        // The original's middle step ("See Hit Effects") is not
+        // distinguished here: the runtime is one switch (module doc).
         assert!(effect_quality_on(
             &options_with(false, 2),
             GraphicProfileTab::One
@@ -149,8 +152,7 @@ mod tests {
             .resource_mut::<GameOptions>()
             .video
             .graphic1
-            .quality
-            .insert(EFFECT_QUALITY_ID, 0);
+            .set_quality_step(EFFECT_QUALITY_ID, 0);
         app.update();
         assert!(!app.world().resource::<EffectsEnabled>().0);
         assert_eq!(
@@ -163,8 +165,7 @@ mod tests {
             .resource_mut::<GameOptions>()
             .video
             .graphic1
-            .quality
-            .insert(EFFECT_QUALITY_ID, 1);
+            .set_quality_step(EFFECT_QUALITY_ID, 1);
         app.update();
         assert!(app.world().resource::<EffectsEnabled>().0);
         assert_eq!(
