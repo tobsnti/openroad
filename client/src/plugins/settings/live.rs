@@ -183,9 +183,12 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                change too, same as the rest of this group. The Sun's own \
                DirectionalLight (illuminance, shadow_maps_enabled) is the \
                exception: it only follows render_mode once, at boot, and \
-               thereafter changes solely via the dev-tools-gated hotkey N \
+               thereafter changes via the dev-tools-gated hotkey N \
                (environment::seed_environment_settings_from_config, \
-               environment::apply_render_mode) — a later config-only edit to \
+               environment::apply_render_mode) and, for shadow_maps_enabled \
+               alone, via the Video pane's Shadow Detail row \
+               (environment::options::apply_shadow_detail_option, PBR mode \
+               only) — a later config-only edit to \
                render_mode does not move the live Sun. Brightness and the \
                unbacked quality rows have no feature behind them yet and say \
                so in the pane",
