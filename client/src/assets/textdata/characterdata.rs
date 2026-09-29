@@ -75,7 +75,7 @@ enum ChardataFields {
     // which have no 1:1 item.
     AssocFileIcon = 54,
     // RefObjChar tail (after the shared RefObjCommon columns): Lvl(57),
-    // CharGender(58), MaxHP(59). Verified against Media.pk2 characterdata:
+    // CharGender(58), MaxHP(59). In the shipped characterdata:
     // MOB_CH_MANGNYANG lvl 1 / 54 HP, MOB_CH_TIGERWOMAN lvl 20 / 598720 HP,
     // NPCs 0 / 0. CharGender: CHAR_CH_MAN_* = 1, CHAR_CH_WOMAN_* = 0, 2 on
     // gender-neutral monsters — matches itemdata's Sex encoding.
@@ -137,8 +137,8 @@ impl CharacterDataRow {
     /// The `.bsr` model path, or `None` when the row has no own model — the
     /// column is `xxx`/blank for summon clones and invisible helpers (e.g.
     /// `MOB_CH_WATERGHOST_CLON`, the "water ghost slave"). Loading `xxx`
-    /// produced spurious `Path not found: res/xxx` errors, so callers skip
-    /// the model when this is `None` (the entity still spawns, indexed).
+    /// `MOB_CH_WATERGHOST_CLON`, the "water ghost slave"). Loading `xxx`
+    /// produces spurious `Path not found: res/xxx` errors, so callers skip
     pub fn resource_path(&self) -> Option<String> {
         let path = &self.0[ChardataFields::ResourcePath];
         if path.is_empty() || path == "xxx" {
@@ -178,6 +178,15 @@ impl CharacterDataRow {
 
     pub fn code_name(&self) -> &String {
         &self.0[ChardataFields::CodeName]
+    }
+
+    /// `Service` (column 0): the data's own on/off switch for a row. `0` is off;
+    /// anything else, or an unreadable/blank column, counts as in service.
+    pub fn in_service(&self) -> bool {
+        self.0
+            .first()
+            .and_then(|v| v.trim().trim_start_matches('\u{feff}').parse::<i32>().ok())
+            .is_none_or(|v| v != 0)
     }
 
     /// The object's own UI icon as an asset path (`media://icon/...`), or
