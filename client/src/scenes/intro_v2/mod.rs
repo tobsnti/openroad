@@ -33,7 +33,10 @@ pub mod chrome;
 pub mod dev_fast_login;
 pub mod fade;
 pub mod login_form;
+pub mod model;
 pub mod net;
+pub mod race_catalog;
+pub mod race_stage;
 pub mod region_select;
 pub mod scene_data;
 pub mod server_select;
@@ -244,11 +247,25 @@ impl Plugin for IntroV2ScenePlugin {
                 )
                     .run_if(in_state(IntroV2State::CharacterList)),
             )
+            // Leaving the list has two destinations, and only one of them is
+            // "off the stage". Going deeper into the pregame flow (race board,
+            // creation) stays on the very same 3D stage, so the stage and its
+            // camera survive that exit; only leaving for the shard list takes
+            // them down. `EnteringCharacterCreate` is the marker the Create
+            // button already sets for the connection (see
+            // `character_select::disconnect_from_agent_server`).
             .add_systems(
                 OnExit(IntroV2State::CharacterList),
                 (
                     character_select::despawn_controls,
                     character_select::despawn_selection_ui,
+                    character_select::disconnect_from_agent_server,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                OnExit(IntroV2State::CharacterList),
+                (
                     character_select::despawn_characters,
                     character_select::disconnect_from_agent_server,
                     despawn_cinematic_camera::<CinematicCamera2>,
@@ -259,13 +276,17 @@ impl Plugin for IntroV2ScenePlugin {
                     set_origin_to_intro,
                     start_camera_animation,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(not(resource_exists::<
+                        character_create::EnteringCharacterCreate,
+                    >)),
             )
             // The region-select board sits between the list and creation: race
-            // plates over the held creation camera pose; picking one cuts to
-            // the original loading screen and enters CharacterCreate. The
-            // agent connection is kept alive across the whole sub-flow (see
-            // `disconnect_from_agent_server`) so Create/CheckName can use it.
+            // plates over the idols on the stage; picking one flies the camera
+            // to the chosen figure, shows the race loading art and enters
+            // CharacterCreate. The agent connection is kept alive across the
+            // whole sub-flow (see `disconnect_from_agent_server`) so
+            // Create/CheckName can use it.
             .add_systems(
                 OnEnter(IntroV2State::RegionSelect),
                 (
@@ -273,26 +294,77 @@ impl Plugin for IntroV2ScenePlugin {
                     disable_camera::<CinematicCamera>,
                     spawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera2>,
-                    character_create::set_create_camera_pose,
+                    race_stage::fly_camera_to_race_board,
+                    // The props the camera is flying *to* — without them the
+                    // pose frames empty sky.
+                    race_stage::spawn_race_board_props,
                     region_select::enter_region_select,
                 )
                     .chain(),
             )
+            // The race plates are a hover state on the idols, not furniture:
+            // the original picks the idol under the cursor, ramps that plate's
+            // alpha in, hangs it on the idol's projected point and confirms on
+            // a left click. Chained because the click has to see this frame's
+            // hover, not last frame's.
+            .add_systems(
+                Update,
+                (
+                    region_select::update_region_hover,
+                    region_select::update_region_plates,
+                    region_select::confirm_hovered_region,
+                )
+                    .chain()
+                    .run_if(in_state(IntroV2State::RegionSelect)),
+            )
+            // Cancel on the board flies the camera home; the state follows
+            // when the flight lands.
+            .add_systems(
+                Update,
+                race_stage::tick_return_flight
+                    .run_if(in_state(IntroV2State::RegionSelect))
+                    .run_if(resource_exists::<race_stage::RaceBoardReturn>),
+            )
+            // After the click, in the original's order: the camera move to the
+            // chosen figure, then the race loading art with its gauge at zero,
+            // then `CharacterCreate` once the creation screen's assets loaded.
+            .add_systems(
+                Update,
+                region_select::tick_region_confirm
+                    .run_if(in_state(IntroV2State::RegionSelect))
+                    .run_if(resource_exists::<region_select::RegionConfirm>),
+            )
             .add_systems(
                 OnExit(IntroV2State::RegionSelect),
                 (
+                    race_stage::clear_race_board_flight,
+                    region_select::clear_region_confirm,
+                    race_stage::despawn_race_board_props,
                     region_select::despawn_region_select,
                     despawn_cinematic_camera::<CinematicCamera2>,
                 ),
             )
+            // Board -> creation is a move on one stage, so the camera survives
+            // it; only Cancel back to the list takes it down.
+            .add_systems(
+                OnExit(IntroV2State::RegionSelect),
+                despawn_cinematic_camera::<CinematicCamera2>.run_if(not(resource_exists::<
+                    character_create::EnteringCharacterCreate,
+                >)),
+            )
             .add_systems(
                 OnEnter(IntroV2State::CharacterCreate),
                 (
-                    character_select::set_origin_to_char_select,
+                    // Not the char-select anchor: creation stands in its own
+                    // world region, one per race.
+                    character_create::set_origin_to_create_stage,
                     disable_camera::<CinematicCamera>,
                     spawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera2>,
                     character_create::set_create_camera_pose,
+                    // The figure renders in its own pass, after the UI, so it
+                    // stands in front of the screen's bands like the original's.
+                    character_create::spawn_figure_overlay_camera,
                     character_create::enter_character_create,
                 )
                     .chain(),
@@ -300,20 +372,20 @@ impl Plugin for IntroV2ScenePlugin {
             .add_systems(
                 Update,
                 (
-                    character_create::update_preview.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
-                    character_create::highlight_selection_buttons.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
+                    character_create::update_preview
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
+                    character_create::highlight_selection_buttons
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
                     // The rows carry no value text; the Explain box is the
                     // readout, so it re-reads on either a selection change or
                     // a focus change.
                     character_create::update_explain_panel
                         .run_if(resource_exists::<character_create::CharCreateFocus>),
-                    character_create::update_slider_thumbs.run_if(
-                        resource_exists_and_changed::<character_create::CharCreateSelection>,
-                    ),
+                    character_create::update_slider_thumbs
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
+                    // The demand the gates wrote goes away once it is met.
+                    character_create::clear_satisfied_gate_line
+                        .run_if(resource_exists_and_changed::<model::CharCreateSelection>),
                     // `Section = Rotate`: yaw + zoom are applied whenever the
                     // view state changes (and once on enter, via the added
                     // resource), so the preview keeps them across re-spawns.
@@ -323,6 +395,20 @@ impl Plugin for IntroV2ScenePlugin {
                     character_create::on_check_name_response,
                     character_create::on_character_create_response,
                     region_select::tick_loading_cut,
+                    // The overlay pass: it follows the create camera, owns the
+                    // figure's meshes, and steps aside for the confirm modal.
+                    character_create::sync_figure_overlay_camera,
+                    character_create::tag_figure_overlay_meshes,
+                    character_create::hide_figure_overlay_behind_modal,
+                    // The frame is solved against the body actually on stage,
+                    // so the body is sized first and the camera set after.
+                    // Running every frame is what makes a window resize
+                    // re-solve it.
+                    (
+                        character_create::measure_create_figure,
+                        character_create::frame_create_camera,
+                    )
+                        .chain(),
                 )
                     .run_if(in_state(IntroV2State::CharacterCreate)),
             )
@@ -330,6 +416,7 @@ impl Plugin for IntroV2ScenePlugin {
                 OnExit(IntroV2State::CharacterCreate),
                 (
                     character_create::despawn_character_create,
+                    character_create::despawn_figure_overlay_camera,
                     region_select::despawn_loading_cut,
                     despawn_cinematic_camera::<CinematicCamera2>,
                 ),
@@ -761,6 +848,60 @@ pub(super) fn fill_placeholders(template: &str, values: &[u32]) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Renders one lobby error code (`0xB007`, `0xB001`) the way the original's
+/// dispatcher renders it — or `None` for the one code it deliberately swallows.
+///
+/// Idea: the *table* lives in `packets` ([`packets::agent::lobby_error_text`],
+/// because login, select and create share one dispatcher in the original), and
+/// the *rendering* is here, because it needs the loaded `textuisystem.txt` and
+/// all four pregame call sites want the same sentence: delete/restore, world
+/// join and the create screen's CheckName/Create answers.
+///
+/// The `(S<code>)` suffix is the original's: its appending helper formats
+/// `(%c%d)` with `'S'` and the raw code onto the looked-up row. A code past the
+/// table renders as *just* `(S1049)` — the original passes an empty key there,
+/// and inventing a row for a code the client has none for is the mistake this
+/// table exists to end.
+pub(super) fn lobby_error_line(
+    code: u16,
+    ui_strings: &crate::plugins::textdata::ClientUiStrings,
+) -> Option<String> {
+    use packets::agent::lobby::{lobby_error_text, LobbyErrorText};
+
+    match lobby_error_text(code) {
+        LobbyErrorText::Silent => None,
+        LobbyErrorText::Text {
+            key,
+            fallback,
+            code_suffix,
+        } => {
+            let mut line = ui_strings.get_plain_or(key, fallback);
+            if code_suffix {
+                line.push_str(&format!("(S{code})"));
+            }
+            Some(line)
+        }
+        LobbyErrorText::CodeOnly => Some(format!("(S{code})")),
+    }
+}
+
+/// [`lobby_error_line`] for an *optional* code, with the caller's own row as
+/// the last resort.
+///
+/// A `0xB007` refusal may arrive without an `error_code` (the field is gated on
+/// `result == 2`), and `0x0401` is the code the original deliberately swallows.
+/// Neither case may leave the screen silent, so the caller names its own row
+/// and this keeps the table for everything else.
+pub(super) fn lobby_error_line_or(
+    code: Option<u16>,
+    ui_strings: &crate::plugins::textdata::ClientUiStrings,
+    fallback_key: &str,
+    fallback: &str,
+) -> String {
+    code.and_then(|code| lobby_error_line(code, ui_strings))
+        .unwrap_or_else(|| ui_strings.get_plain_or(fallback_key, fallback))
 }
 
 /// Plays the original's `snd_error` once, honouring the audio options. Shared
