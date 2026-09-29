@@ -1651,16 +1651,87 @@ pub struct DamageContent {
     pub entities: Vec<PerEntityDamage>,
 }
 
-/// What kind of action a 0xB070 update describes (wire byte 0 / 1 / 8).
+/// One part of a 0xB070/0xB071 body, named after the mask bit that selects it.
+///
+/// The two 14-byte parts stay unnamed on purpose. Their FORM is proven in the
+/// original (a `u16` followed by twelve bytes, each read in one go); their
+/// OCCURRENCE is not — no recorded body has ever carried bit 0x08 or bit 0x02,
+/// so a field name would be a guess dressed as a fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ActionKind {
-    /// Self-casts / buffs — no damage payload.
-    None,
-    /// A swing/cast that dealt damage; `None` damage = swing without payload.
-    Attack {
-        damage: Option<DamageContent>,
-    },
-    Teleport,
+pub enum ActionPart {
+    /// Bit 0x01 — the per-target damage list. `None` = the bit is set but the
+    /// body ends there (swings that carry no list on this wire).
+    Damage(Option<DamageContent>),
+    /// Bit 0x08 — a `u16` and twelve bytes, read after the damage part.
+    Unk08 { unk_a: u16, unk_b: [u8; 12] },
+    /// Bit 0x02 — a `u16` and twelve bytes, read last.
+    Unk02 { unk_a: u16, unk_b: [u8; 12] },
+}
+
+/// The action byte of 0xB070 / 0xB071 and the parts it selects.
+///
+/// It is a BITMASK, not an enumeration. The original tests three bits
+/// independently and reads their parts in THIS order — 0x01, then 0x08, then
+/// 0x02, which is not the numeric order of the bits — so a body may carry any
+/// combination, 0x09 among them. Bits the original never tests (0x04, 0x10,
+/// 0x20, 0x40, 0x80) select nothing: such a body is complete right after the
+/// mask byte. They are kept in `flags` so it still writes back byte for byte.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ActionMask {
+    /// The mask byte as it stands on the wire, unknown bits included.
+    pub flags: u8,
+    /// The selected parts, in the original's read order.
+    pub parts: Vec<ActionPart>,
+}
+
+impl ActionMask {
+    /// Selects the per-target damage list.
+    pub const DAMAGE: u8 = 0x01;
+    /// Selects the first 14-byte part.
+    pub const UNK_08: u8 = 0x08;
+    /// Selects the second 14-byte part.
+    pub const UNK_02: u8 = 0x02;
+
+    /// Is `bit` set in the mask byte?
+    pub fn has(&self, bit: u8) -> bool {
+        self.flags & bit != 0
+    }
+
+    /// The damage list of the 0x01 part, if that part carried one.
+    pub fn damage(&self) -> Option<&DamageContent> {
+        self.parts.iter().find_map(|part| match part {
+            ActionPart::Damage(damage) => damage.as_ref(),
+            _ => None,
+        })
+    }
+
+    /// Read the mask byte and every part it selects. `body` is the whole body,
+    /// needed because a set 0x01 bit with nothing behind it is a valid shape.
+    fn parse(r: &mut Reader, body: &Bytes) -> Option<ActionMask> {
+        let flags = r.u8().ok()?;
+        let mut parts = Vec::new();
+        if flags & Self::DAMAGE != 0 {
+            let damage = if r.pos == body.len() {
+                None
+            } else {
+                Some(ObjectActionUpdate::parse_damage(r)?)
+            };
+            parts.push(ActionPart::Damage(damage));
+        }
+        if flags & Self::UNK_08 != 0 {
+            parts.push(ActionPart::Unk08 {
+                unk_a: r.u16().ok()?,
+                unk_b: r.take(12).ok()?.try_into().unwrap(),
+            });
+        }
+        if flags & Self::UNK_02 != 0 {
+            parts.push(ActionPart::Unk02 {
+                unk_a: r.u16().ok()?,
+                unk_b: r.take(12).ok()?.try_into().unwrap(),
+            });
+        }
+        Some(ActionMask { flags, parts })
+    }
 }
 
 /// 0xB070 — server → client: one action instance executes (a basic-attack
@@ -1686,7 +1757,7 @@ pub enum ObjectActionUpdate {
         instance: u32,
         /// Unique id of the primary target (0 for self-casts).
         target: u32,
-        kind: ActionKind,
+        mask: ActionMask,
     },
     /// `02 <error u16>` — the action failed and the original pops a message
     /// box. The handler's non-success branch is a single 2-byte read followed
@@ -1707,26 +1778,14 @@ impl ObjectActionUpdate {
         let source = r.u32().ok()?;
         let instance = r.u32().ok()?;
         let target = r.u32().ok()?;
-        let kind = match r.u8().ok()? {
-            0 => ActionKind::None,
-            1 => {
-                let damage = if r.pos == value.len() {
-                    None
-                } else {
-                    Some(Self::parse_damage(&mut r)?)
-                };
-                ActionKind::Attack { damage }
-            }
-            8 => ActionKind::Teleport,
-            _ => return None,
-        };
+        let mask = ActionMask::parse(&mut r, value)?;
         (r.pos == value.len()).then_some(ObjectActionUpdate::Success {
             unknown,
             skill_id,
             source,
             instance,
             target,
-            kind,
+            mask,
         })
     }
 
@@ -1838,15 +1897,15 @@ fn write_hit(buf: &mut BytesMut, hit: &SkillPartDamage) {
     }
 }
 
-/// Encode an [`ActionKind`] + optional damage block — the shared tail of
-/// [`ObjectActionUpdate`] and [`SkillEnd`].
-fn write_action_kind(buf: &mut BytesMut, kind: &ActionKind) {
-    match kind {
-        ActionKind::None => buf.put_u8(0),
-        ActionKind::Teleport => buf.put_u8(8),
-        ActionKind::Attack { damage } => {
-            buf.put_u8(1);
-            if let Some(damage) = damage {
+/// Encode an [`ActionMask`] and its parts — the shared tail of
+/// [`ObjectActionUpdate`] and [`SkillEnd`]. The parts go out in the order they
+/// are held, which is the order the original reads them.
+fn write_action_mask(buf: &mut BytesMut, mask: &ActionMask) {
+    buf.put_u8(mask.flags);
+    for part in &mask.parts {
+        match part {
+            ActionPart::Damage(None) => {}
+            ActionPart::Damage(Some(damage)) => {
                 buf.put_u8(damage.instance_count);
                 buf.put_u8(damage.entities.len() as u8);
                 for entity in &damage.entities {
@@ -1855,6 +1914,10 @@ fn write_action_kind(buf: &mut BytesMut, kind: &ActionKind) {
                         write_hit(buf, hit);
                     }
                 }
+            }
+            ActionPart::Unk08 { unk_a, unk_b } | ActionPart::Unk02 { unk_a, unk_b } => {
+                buf.put_u16_le(*unk_a);
+                buf.extend_from_slice(unk_b);
             }
         }
     }
@@ -1890,7 +1953,7 @@ impl From<ObjectActionUpdate> for Bytes {
                 source,
                 instance,
                 target,
-                kind,
+                mask,
             } => {
                 buf.put_u8(1);
                 buf.put_u16_le(unknown);
@@ -1898,7 +1961,7 @@ impl From<ObjectActionUpdate> for Bytes {
                 buf.put_u32_le(source);
                 buf.put_u32_le(instance);
                 buf.put_u32_le(target);
-                write_action_kind(&mut buf, &kind);
+                write_action_mask(&mut buf, &mask);
             }
             ObjectActionUpdate::Failure { error } => {
                 buf.put_u8(2);
@@ -1928,7 +1991,7 @@ pub enum SkillEnd {
         instance: u32,
         /// Unique id of the damaged/affected entity, 0 when none.
         target: u32,
-        kind: ActionKind,
+        mask: ActionMask,
     },
     Unknown {
         result: u8,
@@ -1947,23 +2010,11 @@ impl TryFrom<Bytes> for SkillEnd {
             }
             let instance = r.u32().ok()?;
             let target = r.u32().ok()?;
-            let kind = match r.u8().ok()? {
-                0 => ActionKind::None,
-                1 => {
-                    let damage = if r.pos == value.len() {
-                        None
-                    } else {
-                        Some(ObjectActionUpdate::parse_damage(&mut r)?)
-                    };
-                    ActionKind::Attack { damage }
-                }
-                8 => ActionKind::Teleport,
-                _ => return None,
-            };
+            let mask = ActionMask::parse(&mut r, &value)?;
             Some(SkillEnd::Success {
                 instance,
                 target,
-                kind,
+                mask,
             })
         })()
         // leftover bytes = wrong shape guess; keep raw rather than misread
@@ -1982,12 +2033,12 @@ impl From<SkillEnd> for Bytes {
             SkillEnd::Success {
                 instance,
                 target,
-                kind,
+                mask,
             } => {
                 buf.put_u8(1);
                 buf.put_u32_le(instance);
                 buf.put_u32_le(target);
-                write_action_kind(&mut buf, &kind);
+                write_action_mask(&mut buf, &mask);
             }
             SkillEnd::Unknown { result, tail } => {
                 buf.put_u8(result);
@@ -3571,6 +3622,21 @@ empty_packet!(GroupEntitySpawnEnd);
 
 #[cfg(test)]
 mod test {
+    /// The damage list a decoded 0xB070 success body carried, if any.
+    fn update_damage(p: &ObjectActionUpdate) -> Option<&DamageContent> {
+        match p {
+            ObjectActionUpdate::Success { mask, .. } => mask.damage(),
+            _ => None,
+        }
+    }
+
+    /// The damage list a decoded 0xB071 success body carried, if any.
+    fn end_damage(p: &SkillEnd) -> Option<&DamageContent> {
+        match p {
+            SkillEnd::Success { mask, .. } => mask.damage(),
+            _ => None,
+        }
+    }
 
     /// 0x3091 travels both ways with two different bodies: our own emote is the
     /// code alone, an inbound one names the character first. One type for both
@@ -3988,7 +4054,7 @@ mod test {
                 source: 0x58990,
                 instance: 0x627,
                 target: 0,
-                kind: ActionKind::None,
+                mask: ActionMask::default(),
             }
         );
         let back: Bytes = decoded.into();
@@ -4002,7 +4068,7 @@ mod test {
             SkillEnd::Success {
                 instance: 0x627,
                 target: 0,
-                kind: ActionKind::None,
+                mask: ActionMask::default(),
             }
         );
         let back: Bytes = decoded.into();
@@ -4023,8 +4089,9 @@ mod test {
             SkillEnd::Success {
                 instance: 0x3B,
                 target: 0xC40C,
-                kind: ActionKind::Attack {
-                    damage: Some(DamageContent {
+                mask: ActionMask {
+                    flags: ActionMask::DAMAGE,
+                    parts: vec![ActionPart::Damage(Some(DamageContent {
                         instance_count: 1,
                         entities: vec![PerEntityDamage {
                             target: 0xC40C,
@@ -4033,7 +4100,7 @@ mod test {
                                 amount: 151,
                             })],
                         }],
-                    }),
+                    }))],
                 },
             }
         );
@@ -4066,15 +4133,11 @@ mod test {
             0x1c, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         let decoded: ObjectActionUpdate = wire.clone().try_into().unwrap();
-        let ObjectActionUpdate::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("captured attack line did not decode as an attack: {decoded:?}");
-        };
+        let damage = update_damage(&decoded)
+            .unwrap_or_else(|| {
+                panic!("captured attack line did not decode as an attack: {decoded:?}")
+            })
+            .clone();
         let hit = damage.entities[0].hits[0];
         assert_eq!(
             hit,
@@ -4095,15 +4158,9 @@ mod test {
         unknown_kind[27] = 0x06;
         let unknown_kind = Bytes::from(unknown_kind);
         let decoded: ObjectActionUpdate = unknown_kind.clone().try_into().unwrap();
-        let ObjectActionUpdate::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("unknown-outcome line did not decode as an attack");
-        };
+        let damage = update_damage(&decoded)
+            .unwrap_or_else(|| panic!("unknown-outcome line did not decode as an attack"))
+            .clone();
         let value = damage.entities[0].hits[0].value().unwrap();
         assert_eq!(value.kind, 0x06);
         assert!(value.is_unknown_kind());
@@ -4123,15 +4180,11 @@ mod test {
             0x01, 0x00, 0x00, 0x01, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         let decoded: SkillEnd = wire.clone().try_into().unwrap();
-        let SkillEnd::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("captured damage line did not decode as an attack: {decoded:?}");
-        };
+        let damage = end_damage(&decoded)
+            .unwrap_or_else(|| {
+                panic!("captured damage line did not decode as an attack: {decoded:?}")
+            })
+            .clone();
         assert_eq!(
             damage.entities[0].hits[0],
             SkillPartDamage::hit(DamageValue {
@@ -4149,15 +4202,9 @@ mod test {
         with_trailer[21] = 0xFF;
         let with_trailer = Bytes::from(with_trailer);
         let decoded: SkillEnd = with_trailer.clone().try_into().unwrap();
-        let SkillEnd::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("trailer variant did not decode as an attack");
-        };
+        let damage = end_damage(&decoded)
+            .unwrap_or_else(|| panic!("trailer variant did not decode as an attack"))
+            .clone();
         assert_eq!(
             damage.entities[0].hits[0],
             SkillPartDamage {
@@ -4195,15 +4242,9 @@ mod test {
         let wire = Bytes::from(wire);
 
         let decoded: SkillEnd = wire.clone().try_into().unwrap();
-        let SkillEnd::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("arm-4 line did not decode as an attack: {decoded:?}");
-        };
+        let damage = end_damage(&decoded)
+            .unwrap_or_else(|| panic!("arm-4 line did not decode as an attack: {decoded:?}"))
+            .clone();
         assert_eq!(
             damage.entities[0].hits,
             vec![
@@ -4239,15 +4280,9 @@ mod test {
             0x01, 0x00, 0x08,
         ]);
         let decoded: SkillEnd = abort.clone().try_into().unwrap();
-        let SkillEnd::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("arm-8 line did not decode as an attack");
-        };
+        let damage = end_damage(&decoded)
+            .unwrap_or_else(|| panic!("arm-8 line did not decode as an attack"))
+            .clone();
         assert_eq!(
             damage.entities[0].hits[0],
             SkillPartDamage {
@@ -4273,15 +4308,9 @@ mod test {
             0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
         ]);
         let decoded: ObjectActionUpdate = line.clone().try_into().unwrap();
-        let ObjectActionUpdate::Success {
-            kind: ActionKind::Attack {
-                damage: Some(damage),
-            },
-            ..
-        } = decoded.clone()
-        else {
-            panic!("captured line did not decode as an attack");
-        };
+        let damage = update_damage(&decoded)
+            .unwrap_or_else(|| panic!("captured line did not decode as an attack"))
+            .clone();
         assert_eq!(damage.instance_count, 2);
         let hits = &damage.entities[0].hits;
         // instance 1: an ordinary 6-damage hit
@@ -4305,8 +4334,9 @@ mod test {
             source: 0x58990,
             instance: 0x629,
             target: 0x9001,
-            kind: ActionKind::Attack {
-                damage: Some(DamageContent {
+            mask: ActionMask {
+                flags: ActionMask::DAMAGE,
+                parts: vec![ActionPart::Damage(Some(DamageContent {
                     instance_count: 2,
                     entities: vec![PerEntityDamage {
                         target: 0x9001,
@@ -4321,7 +4351,7 @@ mod test {
                             }),
                         ],
                     }],
-                }),
+                }))],
             },
         };
         let bytes: Bytes = packet.clone().into();
@@ -4335,7 +4365,10 @@ mod test {
             source: 1,
             instance: 2,
             target: 3,
-            kind: ActionKind::Attack { damage: None },
+            mask: ActionMask {
+                flags: ActionMask::DAMAGE,
+                parts: vec![ActionPart::Damage(None)],
+            },
         };
         let bytes: Bytes = whiff.clone().into();
         let decoded: ObjectActionUpdate = bytes.try_into().unwrap();
@@ -4359,6 +4392,176 @@ mod test {
             decoded,
             ObjectActionUpdate::Unknown { result: 2, .. }
         ));
+    }
+
+    /// A body written as hex, whitespace ignored, so the mask bodies below can
+    /// be grouped field by field.
+    fn mask_body(hex: &str) -> Bytes {
+        let clean: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+        Bytes::from(
+            (0..clean.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>(),
+        )
+    }
+
+    /// The smallest damage part: one hit on one target, arm 0.
+    const DAMAGE_PART: &str = "01 01 11111111 00 64000000 00000000";
+    /// One 14-byte unnamed part: a `u16` and twelve bytes.
+    const UNNAMED_PART: &str = "3412 01000000 02000000 03000000";
+    /// The fields a 0xB070 success body carries before the mask byte.
+    const B070_HEAD: &str = "01 0030 c6980000 90890500 27060000 11223344";
+    /// The fields a 0xB071 success body carries before the mask byte.
+    const B071_HEAD: &str = "01 aabbccdd 11223344";
+
+    /// The decoded form of [`DAMAGE_PART`].
+    fn damage_part() -> ActionPart {
+        ActionPart::Damage(Some(DamageContent {
+            instance_count: 1,
+            entities: vec![PerEntityDamage {
+                target: 0x1111_1111,
+                hits: vec![SkillPartDamage::hit(DamageValue {
+                    kind: 0x64,
+                    amount: 0,
+                })],
+            }],
+        }))
+    }
+
+    /// The two halves of [`UNNAMED_PART`].
+    const UNNAMED_A: u16 = 0x1234;
+    const UNNAMED_B: [u8; 12] = [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0];
+
+    /// The mask byte is a mask: with 0x01 and 0x08 both set the body carries
+    /// the damage list AND the first unnamed part, damage first.
+    #[test]
+    fn a_mask_with_two_bits_set_carries_both_parts_in_read_order() {
+        let wire = mask_body(&format!("{B070_HEAD} 09 {DAMAGE_PART} {UNNAMED_PART}"));
+        let decoded: ObjectActionUpdate = wire.clone().try_into().unwrap();
+        assert_eq!(
+            decoded,
+            ObjectActionUpdate::Success {
+                unknown: 0x3000,
+                skill_id: 0x98C6,
+                source: 0x0005_8990,
+                instance: 0x627,
+                target: 0x4433_2211,
+                mask: ActionMask {
+                    flags: 0x09,
+                    parts: vec![
+                        damage_part(),
+                        ActionPart::Unk08 {
+                            unk_a: UNNAMED_A,
+                            unk_b: UNNAMED_B,
+                        },
+                    ],
+                },
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// All three bits set: the parts follow in the original's read order
+    /// 0x01, 0x08, 0x02 — which is not the numeric order of the bits.
+    #[test]
+    fn all_three_bits_read_damage_then_the_eight_part_then_the_two_part() {
+        let wire = mask_body(&format!(
+            "{B071_HEAD} 0b {DAMAGE_PART} {UNNAMED_PART} {UNNAMED_PART}"
+        ));
+        let decoded: SkillEnd = wire.clone().try_into().unwrap();
+        assert_eq!(
+            decoded,
+            SkillEnd::Success {
+                instance: 0xDDCC_BBAA,
+                target: 0x4433_2211,
+                mask: ActionMask {
+                    flags: 0x0B,
+                    parts: vec![
+                        damage_part(),
+                        ActionPart::Unk08 {
+                            unk_a: UNNAMED_A,
+                            unk_b: UNNAMED_B,
+                        },
+                        ActionPart::Unk02 {
+                            unk_a: UNNAMED_A,
+                            unk_b: UNNAMED_B,
+                        },
+                    ],
+                },
+            }
+        );
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// Either unnamed part may stand alone, on both opcodes.
+    #[test]
+    fn each_unnamed_part_also_stands_alone_on_both_opcodes() {
+        let update = mask_body(&format!("{B070_HEAD} 08 {UNNAMED_PART}"));
+        let decoded: ObjectActionUpdate = update.clone().try_into().unwrap();
+        let ObjectActionUpdate::Success { mask, .. } = &decoded else {
+            panic!("a lone 0x08 part did not decode: {decoded:?}");
+        };
+        assert_eq!(mask.flags, 0x08);
+        assert_eq!(
+            mask.parts,
+            vec![ActionPart::Unk08 {
+                unk_a: UNNAMED_A,
+                unk_b: UNNAMED_B,
+            }]
+        );
+        assert_eq!(mask.damage(), None);
+        assert_eq!(Bytes::from(decoded.clone()), update);
+
+        let end = mask_body(&format!("{B071_HEAD} 02 {UNNAMED_PART}"));
+        let decoded: SkillEnd = end.clone().try_into().unwrap();
+        let SkillEnd::Success { mask, .. } = &decoded else {
+            panic!("a lone 0x02 part did not decode: {decoded:?}");
+        };
+        assert_eq!(mask.flags, 0x02);
+        assert_eq!(
+            mask.parts,
+            vec![ActionPart::Unk02 {
+                unk_a: UNNAMED_A,
+                unk_b: UNNAMED_B,
+            }]
+        );
+        assert_eq!(Bytes::from(decoded.clone()), end);
+    }
+
+    /// Bits the original never tests select nothing: the body is complete
+    /// right after the mask byte, and the byte still writes back unchanged.
+    #[test]
+    fn a_bit_the_original_ignores_ends_the_body_after_the_mask_byte() {
+        let wire = mask_body(&format!("{B070_HEAD} 40"));
+        let decoded: ObjectActionUpdate = wire.clone().try_into().unwrap();
+        let ObjectActionUpdate::Success { mask, .. } = &decoded else {
+            panic!("an unused mask bit did not decode: {decoded:?}");
+        };
+        assert_eq!(mask.flags, 0x40);
+        assert!(mask.parts.is_empty());
+        assert_eq!(Bytes::from(decoded.clone()), wire);
+    }
+
+    /// A set part bit whose fourteen bytes are missing is a body we cannot
+    /// account for: it stays raw instead of decoding into a shorter shape.
+    #[test]
+    fn a_part_bit_without_its_fourteen_bytes_stays_raw() {
+        let update = mask_body(&format!("{B070_HEAD} 08"));
+        let decoded: ObjectActionUpdate = update.clone().try_into().unwrap();
+        assert!(
+            matches!(decoded, ObjectActionUpdate::Unknown { .. }),
+            "0xB070 body without the 0x08 part decoded anyway: {decoded:?}"
+        );
+        assert_eq!(Bytes::from(decoded), update);
+
+        let end = mask_body(&format!("{B071_HEAD} 08"));
+        let decoded: SkillEnd = end.clone().try_into().unwrap();
+        assert!(
+            matches!(decoded, SkillEnd::Unknown { .. }),
+            "0xB071 body without the 0x08 part decoded anyway: {decoded:?}"
+        );
+        assert_eq!(Bytes::from(decoded), end);
     }
 
     /// `0xB074 result=3` is `code u8 + error u16` — the handler reads the
