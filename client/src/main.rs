@@ -175,7 +175,13 @@ fn main() {
             plugins::effects::EffectsPlugin,
             plugins::animation_culling::AnimationCullingPlugin,
             // animation-keyed SFX from the .bsr mod palette (Sound ModData)
-            plugins::animation_sounds::AnimationSoundsPlugin,
+            // Nested as one element (the `Plugins` tuple impl tops out at 15):
+            // both halves are effect sound, one from the model palette, one
+            // from the `effectsound.txt` handle table.
+            (
+                plugins::animation_sounds::AnimationSoundsPlugin,
+                plugins::audio_events::AudioEventsPlugin,
+            ),
             // zone BGM from effectenvsnd.txt, played out of Music.pk2 (#771)
             plugins::zone_ambience::ZoneAmbiencePlugin,
             plugins::zone_bgm::ZoneBgmPlugin,
