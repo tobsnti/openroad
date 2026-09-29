@@ -250,19 +250,21 @@ const BLOOM_ID: u16 = 11;
 /// position, because the block is not in id order: `_11` says "Texture detail",
 /// which is id 9, so a positional read would shift every later row by one.
 ///
-/// Five of the seventeen strings are deliberately absent here:
+/// `_15` is the one string that names no row, and it lands on id 8 by
+/// elimination rather than by wording: `_04`..`_16` is exactly thirteen
+/// strings for exactly thirteen rows, twelve of them name their row outright,
+/// and the single row left over is id 8 `UIIT_STT_FILTERING`. Its subject —
+/// compensating rough outlines — is what texture filtering does.
+///
+/// Four of the seventeen strings are deliberately absent here:
 /// * `_01`/`_02` belong to the resolution and brightness controls, not to a row
 ///   (wired at their own call sites below).
 /// * `_03` describes the graphic-quality **preset**, which exists only in the
 ///   `#else` (classic) branch of `ifoption_video.txt`; this pane transcribes
 ///   the 4th-gen branch, which has the two profile tabs instead.
-/// * `_15` ("Compensates rough outlines...") describes edge smoothing. Our id 8
-///   is `UIIT_STT_FILTERING`, "Texture Filtering" — near, but the string does
-///   not name the row, and `_11` already proved that positional inference is
-///   wrong here. Left unwired.
 /// * `_17` (large-scale combat outfit unification) belongs to ids 14/15, whose
 ///   name cells are blank and which this pane therefore does not render.
-const ROW_TOOLTIPS: [(u16, &str, &str); 12] = [
+const ROW_TOOLTIPS: [(u16, &str, &str); 13] = [
     (
         1,
         "UIIT_STT_VIDIO_TTDESC_04",
@@ -297,6 +299,11 @@ const ROW_TOOLTIPS: [(u16, &str, &str); 12] = [
         7,
         "UIIT_STT_VIDIO_TTDESC_10",
         "Light Effect is indicating an effect of light when(Sun/Torch) is shown.",
+    ),
+    (
+        8,
+        "UIIT_STT_VIDIO_TTDESC_15",
+        "Compensates rough outlines to produce more natural-looking objects.",
     ),
     (
         9,
@@ -1177,19 +1184,36 @@ mod tests {
         }
     }
 
-    /// The one row left unwired on purpose:
-    /// id 8 `UIIT_STT_FILTERING`, whose candidate string `_15` describes edge
-    /// smoothing and does not name the row, and nothing else. If a later change
-    /// wires id 8, this test should be updated deliberately.
+    /// Every rendered row has help. The block `_04`..`_16` holds exactly one
+    /// string per row, so a row without one would mean a string was dropped.
     #[test]
-    fn only_the_unmatched_row_is_left_without_help() {
+    fn every_rendered_row_has_help() {
         let strings = ClientUiStrings::default();
         let missing: Vec<u16> = DETAIL_ROWS
             .iter()
             .filter(|row| row_tooltip(&strings, row.id).is_none())
             .map(|row| row.id)
             .collect();
-        assert_eq!(missing, vec![8]);
+        assert_eq!(missing, Vec::<u16>::new());
+    }
+
+    /// The elimination argument the `_15` mapping rests on, as a test: the
+    /// help block covers every rendered row exactly once, so the one string
+    /// that names no row belongs to the one row no string names.
+    #[test]
+    fn the_help_block_is_a_bijection_onto_the_rendered_rows() {
+        assert_eq!(ROW_TOOLTIPS.len(), DETAIL_ROWS.len());
+        for row in &DETAIL_ROWS {
+            assert_eq!(
+                ROW_TOOLTIPS
+                    .iter()
+                    .filter(|(id, _, _)| *id == row.id)
+                    .count(),
+                1,
+                "{} must have exactly one help string",
+                row.english
+            );
+        }
     }
 
     #[test]
