@@ -24,6 +24,7 @@ pub mod aabb_lines;
 pub mod glass_ball;
 pub mod lighting;
 pub mod navmesh_lines;
+mod ui_dump;
 pub mod world_inspector;
 // pub: `map::objects::cull_fogged_objects` reads `RenderDebugSettings` to
 // stand down while the panel's render_objects toggle owns wrapper visibility
@@ -132,6 +133,9 @@ impl Plugin for DevPlugin {
             //     WireframePlugin::default(),
             //     auto_screenshot::AutoScreenshotPlugin,
             // ))
+            // The UI dump switch carries no UI and no hotkey either, so it
+            // follows the same unconditional rule.
+            .add_plugins(ui_dump::UiDumpPlugin)
             // Always on: the mode switch (Tab — the way *into* debug mode),
             // which claims no letter a vanilla HUD toggle wants. The dev-window
             // button moved into the gated block: it is chrome for tooling that
