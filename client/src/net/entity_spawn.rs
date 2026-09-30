@@ -25,10 +25,12 @@
 //! tid4-dependent owner tail, and a riding player inserts a `u32` mount uid
 //! between its state flags — both used to desync the whole batch.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use packets::agent::character_data::{EntityState, ItemClass, ItemClassResolver};
 use packets::hexdump;
 
-use crate::net::reader::{GuildTag, Reader};
+use crate::net::reader::{GuildAffiliation, GuildTag, Reader};
 use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientTeleport};
 use packets::agent::pet::CosKind;
 
@@ -73,9 +75,14 @@ pub struct SpawnedEntity {
     /// The character's name (players only; `None` otherwise).
     pub name: Option<String>,
     /// The player's guild, or `None` for a guildless player and every
-    /// non-player kind. The block is always on the wire for players — a
+    /// non-player kind. The guild *name* is always on the wire for players — a
     /// guildless one just sends an empty name.
     pub guild: Option<GuildTag>,
+    /// The numeric part of the guild block (id, crest revisions, union,
+    /// hostility, siege authority). `None` for non-players, and also for a
+    /// **job-suited** player, whose record omits the sub-block entirely
+    /// (`Reader::guild`) — so "absent" here means "not sent", not "zero".
+    pub guild_affiliation: Option<GuildAffiliation>,
     /// Life/motion/body states and movement speeds (characters only; `None`
     /// for dropped items, which carry no state block).
     pub state: Option<EntityState>,
@@ -131,6 +138,39 @@ pub trait RefResolver {
     /// Whether an *item* ref id (inside a player's equipment list) is equipment,
     /// which decides its extra optimization-level byte.
     fn item_is_equipment(&self, ref_id: u32) -> bool;
+    /// The itemdata TypeID tuple of an *item* ref id, or `None` when the id is
+    /// in no itemdata table. Only used to cross-check the record's job-mode
+    /// flag against the equipment the player is actually wearing
+    /// ([`is_job_suit`]); defaults to "unknown" so a resolver that has no
+    /// itemdata simply skips that check.
+    fn item_type_ids(&self, _ref_id: u32) -> Option<ItemTypeIds> {
+        None
+    }
+}
+
+/// An itemdata `TypeID1..4` tuple, as `itemdata*.txt` columns 10-13 spell it.
+pub type ItemTypeIds = (u32, u32, u32, u32);
+
+/// Whether an itemdata TypeID tuple is a **job suit** (the trader/thief/hunter
+/// outfit that puts a player into job mode).
+///
+/// The suits are exactly `TID (3, 1, 7, t4)` with `t4 ∈ {1, 2, 3, 6, 7}` —
+/// 98 items in `itemdata*.txt`, no false positive:
+///
+/// | `t4` | rows | codename family |
+/// |---|---|---|
+/// | 1 | 24 | `*_TRADE_TRADER_*` |
+/// | 2 | 24 | `*_TRADE_THIEF_*` |
+/// | 3 | 24 | `*_TRADE_HUNTER_*` |
+/// | 6 | 8 | `*_TRADE_TRADER_*_01` (second set) |
+/// | 7 | 8 | `*_TRADE_HUNTER_*_01` (second set) |
+///
+/// **The trap this function exists for:** `t4 == 5` is *not* a job suit — those
+/// are the ten `ITEM_CH_M/F_FRPVP_VOUCHER_A..E` free-PvP capes (we render them
+/// in `plugins/hud/free_pvp.rs`). Branching on "TID3 == 7" alone would treat
+/// every free-PvP player as job-suited and eat their guild block.
+pub fn is_job_suit(type_ids: ItemTypeIds) -> bool {
+    matches!(type_ids, (3, 1, 7, 1 | 2 | 3 | 6 | 7))
 }
 
 /// [`RefResolver`] backed by the loaded characterdata/itemdata tables, plus
@@ -178,6 +218,10 @@ impl RefResolver for TextdataResolver<'_> {
             .map(|i| i.is_equipment())
             .unwrap_or(false)
     }
+
+    fn item_type_ids(&self, ref_id: u32) -> Option<ItemTypeIds> {
+        self.item_data.get(&(ref_id as i32))?.type_ids()
+    }
 }
 
 /// The itemdata classification used by the CHARACTER_DATA parser in the
@@ -185,16 +229,25 @@ impl RefResolver for TextdataResolver<'_> {
 /// this lookup as a trait).
 impl ItemClassResolver for TextdataResolver<'_> {
     fn item_class(&self, ref_id: u32) -> ItemClass {
-        match self
-            .item_data
-            .get(&(ref_id as i32))
-            .and_then(|i| i.type_ids())
-        {
-            Some((3, 1, _, _)) => ItemClass::Equipment,
-            Some((3, 2, tid3, tid4)) => ItemClass::Container { tid3, tid4 },
-            Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
-            _ => ItemClass::Unknown,
-        }
+        item_class_of(
+            self.item_data
+                .get(&(ref_id as i32))
+                .and_then(|i| i.type_ids()),
+        )
+    }
+}
+
+/// The itemdata `TypeID1..4` -> [`ItemClass`] mapping, in one place: the GUI
+/// client (`TextdataResolver`) and the clientless bot (`bot::BotResolver`) share
+/// it, so the mapping cannot drift between them.
+/// `TID1 == 3` is the item family; `TID2` 1/2/3 are equipment / container /
+/// expendable (`itemdata*.txt` columns 10-13).
+pub fn item_class_of(type_ids: Option<ItemTypeIds>) -> ItemClass {
+    match type_ids {
+        Some((3, 1, _, _)) => ItemClass::Equipment,
+        Some((3, 2, tid3, tid4)) => ItemClass::Container { tid3, tid4 },
+        Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
+        _ => ItemClass::Unknown,
     }
 }
 
@@ -333,7 +386,7 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
         RefType::Monster => parse_character(r, ref_id, true),
         RefType::Npc => parse_character(r, ref_id, false),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
-        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold),
+        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold, resolver),
         RefType::Structure => parse_structure(r, ref_id),
         RefType::Unknown => None,
     }
@@ -357,6 +410,7 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
         position,
         name: None,
         guild: None,
+        guild_affiliation: None,
         state: None,
         spawn_rarity: None,
         talk_options: Vec::new(),
@@ -378,8 +432,11 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     r.skip_movement(position.region)?;
     let state = r.character_state()?;
     let name = r.string()?;
-    // job_type, job_level, pk_state
-    r.skip(3)?;
+    // job_type selects the guild block's shape below, so it must be read, not
+    // skipped: 0 = no job, 1 TRADER / 2 THIEF / 3 HUNTER.
+    let job_type = r.u8()?;
+    // job_level, pk_state
+    r.skip(2)?;
     // A mounted player inserts its COS's unique id between the riding and
     // scroll flags ([S] xBot PacketParser.cs:744-747; the old flat skip(8)
     // desynced the batch by 4 bytes whenever a rider was in view).
@@ -388,8 +445,41 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     let riding_uid = if riding { Some(r.u32()?) } else { None };
     // scroll, interact, unk
     r.skip(3)?;
-    // guildless players send an empty name here, not an absent block
-    let guild = r.guild()?;
+    // A job-suited player's guild block is the name string and nothing else
+    // (see `Reader::guild`); guildless players send an empty name, not an
+    // absent block.
+    //
+    // The predicate is the **equipment**, not the `job_type` byte: job mode in
+    // the original is the suit being worn, and the two are not the same fact.
+    // A player record can carry `job_type = 1` with no job suit equipped and
+    // still send the full `GuildID…authority` sub-block; branching on the byte
+    // leaves 20 bytes of it standing and desyncs the batch. A suit implies a
+    // nonzero `job_type`, so keying off the suit is the narrower of the two
+    // rules. The mismatch is logged rather than silently resolved.
+    let wears_job_suit = equipment
+        .iter()
+        .filter_map(|(id, _)| resolver.item_type_ids(*id))
+        .any(is_job_suit);
+    let job_mode = wears_job_suit;
+    if wears_job_suit != (job_type != 0) {
+        // Rate-limited: a town gate puts dozens of players in a single batch and
+        // every one of them would repeat the same layout question, drowning the
+        // log the line exists for.
+        static SEEN: AtomicU64 = AtomicU64::new(0);
+        if should_log_job_mismatch(SEEN.fetch_add(1, Ordering::Relaxed)) {
+            bevy::log::warn!(
+                "entity_spawn: player {} has job_type={} but {} a job suit equipped; \
+                 parsing the guild block as job_mode={} (the equipment). If the record \
+                 desyncs from here, the branch predicate is the flag, not the equipment \
+                 (docs/net-entity-spawn-0x3019.md, \"job mode\")",
+                name,
+                job_type,
+                if wears_job_suit { "does" } else { "does not" },
+                job_mode,
+            );
+        }
+    }
+    let guild = r.guild(job_mode)?;
     // equipment_cooldown, pk_flag(0xFF)
     r.skip(2)?;
 
@@ -398,7 +488,8 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         unique_id,
         position,
         name: Some(name),
-        guild: (!guild.name.is_empty()).then_some(guild),
+        guild: (!guild.tag.name.is_empty()).then_some(guild.tag),
+        guild_affiliation: guild.affiliation,
         state: Some(state),
         spawn_rarity: None,
         talk_options: Vec::new(),
@@ -407,6 +498,13 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
             riding_uid,
         },
     })
+}
+
+/// Whether the `seen`-th job-mode mismatch should reach the log: the first
+/// one, then one in every 64. The first line carries the whole message; the
+/// later ones only say the condition persists, so a rare sample is enough.
+fn should_log_job_mismatch(seen: u64) -> bool {
+    seen == 0 || seen.is_multiple_of(64)
 }
 
 /// Read a `u8`-count-prefixed equipment list, appending each item's
@@ -453,6 +551,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
         position,
         name: None,
         guild: None,
+        guild_affiliation: None,
         state: Some(state),
         spawn_rarity,
         talk_options,
@@ -508,6 +607,7 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
         position,
         name: None,
         guild: None,
+        guild_affiliation: None,
         state: Some(state),
         spawn_rarity: None,
         talk_options,
@@ -520,13 +620,54 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     })
 }
 
+/// Whether a dropped item's record starts with an extra owner-name string.
+///
+/// True for the quest/event family `TID (3,3,9,*)` and only for it. The drop
+/// of ref 3862 `ITEM_ETC_E050618_TREASUREBOX` is on the wire as
+/// `160f0000 | 0700 "Player1" | c75f0200 | a860 …` — a u16-length-prefixed
+/// character name between the ref id and the unique id. Without the string the
+/// record's uid, position, owner flag and rarity are all read 9 bytes early
+/// and every later record of the batch is lost.
+///
+/// The *class* is the narrowest itemdata grouping that holds that ref (694
+/// rows, all `(3,3,9,0)`: quest and event items); widening or narrowing it is
+/// unconfirmed either way. What the string means is unknown — it is a
+/// character name, but the record already carries a numeric owner id, so it is
+/// skipped rather than guessed at.
+fn carries_owner_name(type_ids: Option<ItemTypeIds>) -> bool {
+    matches!(type_ids, Some((3, 3, 9, _)))
+}
+
 /// Dropped item record. Layout follows skrillax's `ItemSpawnData` (owner as a
 /// flagged optional), corrected against live vSRO 1.188 captures
-/// (`packet_dump/0x3015.log`, 2026-07-24): the drop-source tail is present on
-/// **every** dropped item, gold included —
-/// `ref u32, [amount u32 | upgrade u8], uid u32, pos, owner flag(+u32),
-/// rarity u8, drop source u8, dropper uid u32`.
-fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Option<SpawnedEntity> {
+/// (`packet_dump/0x3015.log`, 2026-07-24):
+/// `ref u32, [quest/event item: owner name string], [amount u32 | upgrade u8],
+/// uid u32, pos, owner flag(+u32), rarity u8` — and the record **ends there**.
+///
+/// **Why there is no drop-source tail here.** The five bytes behind `rarity`
+/// (`drop source u8 + dropper uid u32`) belong to the
+/// 0x3015 *frame*, not to the item record: in a 0x3019 batch they are simply
+/// not on the wire. A spawn batch that carries item records consumes its body
+/// to the last byte **only** without the tail, and does not parse with it. The
+/// same item shows both shapes: ref 6 uid 154 759 is 26 bytes inside a 0x3019
+/// batch and 31 bytes inside a 0x3015 frame.
+///
+/// In 0x3015 every record leaves a frame-level remainder that the single-spawn
+/// path ignores: one byte (0x01/0x04) behind a monster, player or COS record,
+/// and `0x05|0x06 + u32 dropper uid` behind an item — the drop reason with its
+/// dropper. A heuristic that classifies the next four bytes as a ref id to
+/// decide whether the tail is present fails on a drop whose dropper uid is 0,
+/// where those bytes read `05 00 00 00` = ref 5 `ITEM_ETC_HP_POTION_02`.
+fn parse_item(
+    r: &mut Reader,
+    ref_id: u32,
+    equipment: bool,
+    gold: bool,
+    resolver: &impl RefResolver,
+) -> Option<SpawnedEntity> {
+    if carries_owner_name(resolver.item_type_ids(ref_id)) {
+        let _owner_name = r.string()?;
+    }
     let mut amount = None;
     if equipment {
         r.skip(1)?; // upgrade / opt level
@@ -546,13 +687,13 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
     // colour. Values beyond 0/1 are UNKNOWN and are carried through unmapped
     // rather than guessed at.
     let rarity = r.u8()?;
-    r.skip(5)?; // drop source (u8) + dropper uid (u32)
     Some(SpawnedEntity {
         ref_id,
         unique_id,
         position,
         name: None,
         guild: None,
+        guild_affiliation: None,
         state: None,
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
@@ -569,6 +710,15 @@ mod test {
     /// to `Unknown`).
     struct MockResolver {
         types: HashMap<u32, RefType>,
+        /// itemdata TypeIDs for the ids the test cares about (job suit vs cape).
+        item_tids: HashMap<u32, ItemTypeIds>,
+    }
+
+    impl MockResolver {
+        fn with_item_tids(mut self, entries: &[(u32, ItemTypeIds)]) -> Self {
+            self.item_tids = entries.iter().copied().collect();
+            self
+        }
     }
 
     impl RefResolver for MockResolver {
@@ -583,6 +733,9 @@ mod test {
                     ..
                 })
             )
+        }
+        fn item_type_ids(&self, ref_id: u32) -> Option<ItemTypeIds> {
+            self.item_tids.get(&ref_id).copied()
         }
     }
 
@@ -642,6 +795,7 @@ mod test {
     fn resolver(entries: &[(u32, RefType)]) -> MockResolver {
         MockResolver {
             types: entries.iter().copied().collect(),
+            item_tids: HashMap::new(),
         }
     }
 
@@ -788,9 +942,14 @@ mod test {
         assert!(parsed.spawns[1].talk_options.is_empty());
     }
 
+    /// A gold pile as it is on the wire, byte for byte: ref 1
+    /// `ITEM_ETC_GOLD_01`, 84 coins, reserved for owner jid 2. The five
+    /// bytes behind the rarity (`05 30610100` = drop reason 5, dropper uid
+    /// 90 416) are the 0x3015 frame's, not the record's, and the single-spawn
+    /// path ignores what the record leaves.
     #[test]
     fn parses_gold_drop() {
-        const GOLD_REF: u32 = 3000;
+        const GOLD_REF: u32 = 1;
         let res = resolver(&[(
             GOLD_REF,
             RefType::Item {
@@ -798,29 +957,16 @@ mod test {
                 gold: true,
             },
         )]);
-        // mirrors a live 0x3015 gold line: gold carries the drop-source tail
-        let body = Body::default()
-            .u32(GOLD_REF)
-            .u32(5000) // amount
-            .u32(77) // unique id
-            .u16(0x60A8)
-            .f32(1.0)
-            .f32(2.0)
-            .f32(3.0)
-            .u16(0) // position
-            .u8(1) // owner flag: present
-            .u32(4) // owner jid
-            .u8(0) // rarity
-            .u8(5) // drop source
-            .u32(0x147A8) // dropper uid
-            .0;
-        let parsed = parse_group_spawn(&body, true, 1, &res);
+        let body: Vec<u8> = vec![
+            0x01, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x31, 0x61, 0x01, 0x00, 0xa8, 0x60,
+            0x45, 0x24, 0x3d, 0x44, 0x08, 0xd9, 0x89, 0xc1, 0x24, 0xbd, 0x7a, 0x44, 0xea, 0x79,
+            0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x05, 0x30, 0x61, 0x01, 0x00,
+        ];
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
         assert_eq!(parsed.spawns.len(), 1);
-        assert_eq!(parsed.spawns[0].unique_id, 77);
-        assert_eq!(
-            parsed.spawns[0].kind,
-            SpawnKind::Item { amount: Some(5000) }
-        );
+        assert_eq!(parsed.spawns[0].unique_id, 90_417);
+        assert_eq!(parsed.spawns[0].position.region, 0x60A8);
+        assert_eq!(parsed.spawns[0].kind, SpawnKind::Item { amount: Some(84) });
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
@@ -1174,6 +1320,152 @@ mod test {
         player_body(player_ref, guild_name, nick, None)
     }
 
+    /// A one-player spawn body wearing `equipment` (all equipment-class, so
+    /// each id is followed by its opt byte) with an explicit `job_type`. When
+    /// `job_type != 0` the guild block is written the way the original server
+    /// writes it for a job-suited player: the guild **name only**, no
+    /// id/nick/crest/union/flags sub-block. Every other fixture in this file
+    /// uses `job_type = 0`.
+    fn job_player_body(
+        player_ref: u32,
+        equipment: &[u32],
+        job_type: u8,
+        guild_name: &str,
+    ) -> Vec<u8> {
+        let mut body = Body::default()
+            .u32(player_ref)
+            // scale, hwan, pvp_cape, autoxp, base_inv_size
+            .raw(&[0u8; 5])
+            .u8(equipment.len() as u8);
+        for id in equipment {
+            body = body.u32(*id).u8(0); // equipment-class: opt byte present
+        }
+        body = body
+            // avatar slots, 0 avatar items, has_mask
+            .u8(0)
+            .u8(0)
+            .u8(0)
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Remote")
+            // job_type, job_level, pk_state
+            .u8(job_type)
+            .u8(1)
+            .u8(0xFF)
+            // riding flag, in_combat
+            .u8(0)
+            .u8(0)
+            // scroll, interact, unk
+            .raw(&[0, 0, 0])
+            .string(guild_name);
+        if job_type == 0 {
+            body = body
+                .u32(7) // guild id
+                .string("Quartermaster")
+                .u32(3) // guild crest rev
+                .u32(9) // union id
+                .u32(4) // union crest rev
+                .u8(1) // is_friendly
+                .u8(0xFF); // authority: None
+        }
+        // equipment_cooldown, pk_flag
+        body.u8(0).u8(0xFF).0
+    }
+
+    /// **The job-suit hazard (guild.md §13 D1).** A trader in a job suit sends
+    /// the guild block without its `GuildID…authority` sub-block; an
+    /// unconditional `u32 + string + 14` eats 22 bytes of the *next* record and
+    /// kills the rest of the batch. The follower NPC is the proof: it can only
+    /// parse if the player record ended on its true boundary.
+    #[test]
+    fn job_suited_player_omits_the_guild_sub_block() {
+        const PLAYER_REF: u32 = 1907;
+        const NPC_REF: u32 = 1900;
+        const JOB_SUIT: u32 = 2160; // ITEM_CH_M_TRADE_TRADER_02, TID (3,1,7,1)
+        let res = resolver(&[
+            (PLAYER_REF, RefType::Player),
+            (NPC_REF, RefType::Npc),
+            (
+                JOB_SUIT,
+                RefType::Item {
+                    equipment: true,
+                    gold: false,
+                },
+            ),
+        ])
+        .with_item_tids(&[(JOB_SUIT, (3, 1, 7, 1))]);
+
+        let mut body = job_player_body(PLAYER_REF, &[JOB_SUIT], 1, "Ironclad");
+        body.extend_from_slice(&follower_npc(Body::default(), NPC_REF, 99).0);
+
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert_eq!(
+            parsed.spawns.len(),
+            2,
+            "job-suited player must not desync the batch"
+        );
+        let player = &parsed.spawns[0];
+        assert_eq!(
+            player.guild.as_ref().map(|g| g.name.as_str()),
+            Some("Ironclad"),
+            "the guild NAME is still on the wire in job mode"
+        );
+        assert_eq!(
+            player.guild_affiliation, None,
+            "the sub-block was not sent, so it must not be invented"
+        );
+        assert_eq!(parsed.spawns[1].unique_id, 99);
+    }
+
+    /// **The trap next door.** `ITEM_CH_M/F_FRPVP_VOUCHER_*` is TID
+    /// `(3,1,7,5)` — a free-PvP cape, *not* a job suit. A predicate of
+    /// "TID3 == 7" would put this player into job mode and swallow their guild
+    /// block; the full block must be read, values and all.
+    #[test]
+    fn free_pvp_cape_is_not_a_job_suit() {
+        const PLAYER_REF: u32 = 1907;
+        const NPC_REF: u32 = 1900;
+        const FRPVP_CAPE: u32 = 3726; // ITEM_CH_M_FRPVP_VOUCHER_A, TID (3,1,7,5)
+        assert!(!is_job_suit((3, 1, 7, 5)), "t4 = 5 is the free-PvP cape");
+        assert!(is_job_suit((3, 1, 7, 1)));
+        assert!(is_job_suit((3, 1, 7, 7)));
+        assert!(!is_job_suit((3, 1, 6, 1)), "(3,1,6,*) are weapons");
+
+        let res = resolver(&[
+            (PLAYER_REF, RefType::Player),
+            (NPC_REF, RefType::Npc),
+            (
+                FRPVP_CAPE,
+                RefType::Item {
+                    equipment: true,
+                    gold: false,
+                },
+            ),
+        ])
+        .with_item_tids(&[(FRPVP_CAPE, (3, 1, 7, 5))]);
+
+        let mut body = job_player_body(PLAYER_REF, &[FRPVP_CAPE], 0, "Ironclad");
+        body.extend_from_slice(&follower_npc(Body::default(), NPC_REF, 98).0);
+
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert_eq!(parsed.spawns.len(), 2, "free-PvP player is not job-suited");
+        let player = &parsed.spawns[0];
+        assert_eq!(
+            player.guild.as_ref().map(|g| g.granted_nick.as_str()),
+            Some("Quartermaster")
+        );
+        let affiliation = player
+            .guild_affiliation
+            .expect("a non-job record carries the full sub-block");
+        assert_eq!(affiliation.id, 7);
+        assert_eq!(affiliation.crest_rev, 3);
+        assert_eq!(affiliation.union_id, 9);
+        assert_eq!(affiliation.union_crest_rev, 4);
+        assert!(affiliation.is_friendly);
+        assert_eq!(affiliation.siege_authority, 0xFF);
+        assert_eq!(parsed.spawns[1].unique_id, 98);
+    }
+
     /// A mounted player inserts a `u32` mount uid; the old flat skip desynced
     /// the batch, so a follower record proves the boundary ([S] until F7).
     #[test]
@@ -1246,5 +1538,189 @@ mod test {
             Some("Ironclad")
         );
         assert_eq!(parsed.spawns[1].guild, None);
+    }
+
+    /// An item record ends after its rarity byte — 26 bytes here (ref 6
+    /// `ITEM_ETC_HP_POTION_03`, uid 154 759). The very same drop is 31 bytes
+    /// inside a 0x3015 frame, where `05 00000000` follows: those five bytes
+    /// are the single-spawn frame's drop reason and dropper uid, not part of
+    /// the record. Demanding them here aborts the whole batch.
+    #[test]
+    fn an_item_record_ends_after_the_rarity_byte() {
+        let raw: Vec<u8> = vec![
+            0x06, 0x00, 0x00, 0x00, // ref 6 (ITEM_ETC_HP_POTION_03)
+            0x87, 0x5C, 0x02, 0x00, // uid 154759
+            0xA8, 0x60, // region 24744 (0x60A8)
+            0x0D, 0x74, 0x62, 0x44, // x 905.8
+            0xCF, 0x4F, 0x29, 0xBE, // y -0.165
+            0x2C, 0x83, 0xC8, 0x44, // z 1604.1
+            0x68, 0x79, // heading
+            0x00, // owner flag: nobody
+            0x00, // rarity
+        ];
+        let resolver = MockResolver {
+            types: HashMap::from([(
+                6,
+                RefType::Item {
+                    equipment: false,
+                    gold: false,
+                },
+            )]),
+            item_tids: HashMap::new(),
+        };
+        let parsed = parse_group_spawn(&bytes::Bytes::from(raw), true, 1, &resolver);
+        assert_eq!(parsed.spawns.len(), 1, "the record must parse");
+        assert_eq!(parsed.spawns[0].unique_id, 154_759);
+        assert_eq!(parsed.spawns[0].position.region, 24_744);
+    }
+
+    /// The mismatch line is a layout question, not a per-player event: a busy
+    /// batch must not repeat it for every record.
+    #[test]
+    fn the_job_mismatch_warning_is_rate_limited() {
+        assert!(should_log_job_mismatch(0), "the first one always logs");
+        assert!(
+            (1..64).all(|seen| !should_log_job_mismatch(seen)),
+            "the 63 behind it stay silent"
+        );
+        assert!(should_log_job_mismatch(64), "then one in every 64");
+        assert!(should_log_job_mismatch(128));
+    }
+
+    /// **The record behind an item drop.** A real spawn batch of 4 records:
+    /// monster 1933, two gold piles, monster 1956. The trailing monster is the
+    /// proof — its uid only comes out right if neither item read a byte past
+    /// its rarity. With a 5-byte drop-source tail per item the batch does not
+    /// parse at all.
+    #[test]
+    fn a_batch_keeps_the_record_behind_an_item_drop() {
+        let body: Vec<u8> = vec![
+            0x8d, 0x07, 0x00, 0x00, 0x9e, 0x5d, 0x02, 0x00, 0xa8, 0x60, 0x0e, 0xf2, 0x60, 0x44,
+            0x9a, 0xc5, 0xac, 0xc1, 0x68, 0xc0, 0x86, 0x44, 0x9f, 0xfd, 0x01, 0x00, 0xa8, 0x60,
+            0x83, 0x03, 0xeb, 0xff, 0x36, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x41,
+            0x00, 0x00, 0x04, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x00, 0x02, 0x01, 0x05, 0x01, 0x01,
+            0x00, 0x00, 0x00, 0xc2, 0x00, 0x00, 0x00, 0xfc, 0x5f, 0x02, 0x00, 0xa8, 0x60, 0x58,
+            0xc7, 0x55, 0x44, 0xef, 0x6b, 0x5b, 0xc1, 0x73, 0x66, 0x8c, 0x44, 0xb2, 0xc9, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x91, 0x00, 0x00, 0x00, 0xfd, 0x5f, 0x02, 0x00, 0xa8,
+            0x60, 0x50, 0x12, 0x54, 0x44, 0xd7, 0xc6, 0x4f, 0xc1, 0xd4, 0x31, 0x8d, 0x44, 0x2c,
+            0xb6, 0x00, 0x00, 0xa4, 0x07, 0x00, 0x00, 0x07, 0x60, 0x02, 0x00, 0xa8, 0x60, 0x00,
+            0x00, 0x2b, 0x44, 0x85, 0x48, 0x13, 0x40, 0x00, 0x40, 0x9b, 0x44, 0x60, 0xbc, 0x01,
+            0x00, 0xa8, 0x60, 0xac, 0x02, 0x02, 0x00, 0xda, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xb4, 0x41, 0x00, 0x00, 0xa5, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x00, 0x02, 0x01,
+            0x05, 0x01,
+        ];
+        let res = resolver(&[
+            (1933, RefType::Monster),
+            (1956, RefType::Monster),
+            (
+                1,
+                RefType::Item {
+                    equipment: false,
+                    gold: true,
+                },
+            ),
+        ]);
+
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 4, &res);
+        assert_eq!(parsed.spawns.len(), 4, "all four records must parse");
+        assert_eq!(parsed.spawns[0].unique_id, 155_038);
+        assert_eq!(parsed.spawns[1].kind, SpawnKind::Item { amount: Some(194) });
+        assert_eq!(parsed.spawns[1].unique_id, 155_644);
+        assert_eq!(parsed.spawns[2].kind, SpawnKind::Item { amount: Some(145) });
+        assert_eq!(parsed.spawns[2].unique_id, 155_645);
+        assert_eq!(
+            parsed.spawns[3].unique_id, 155_655,
+            "the monster behind the two drops keeps its boundary"
+        );
+        assert_eq!(parsed.spawns[3].kind, SpawnKind::Monster);
+        assert!(parsed.unresolved.is_empty());
+    }
+
+    /// **A quest/event item leads with an owner name.** Byte for byte off the
+    /// wire: ref 3862 `ITEM_ETC_E050618_TREASUREBOX`, itemdata TID (3,3,9,0),
+    /// then `0700 "Player1"` before the unique id. Without the string every
+    /// field behind it is read 9 bytes early.
+    #[test]
+    fn a_quest_item_drop_carries_a_leading_owner_name() {
+        let body: Vec<u8> = vec![
+            0x16, 0x0f, 0x00, 0x00, 0x07, 0x00, 0x50, 0x6c, 0x61, 0x79, 0x65, 0x72, 0x31, 0xc7,
+            0x5f, 0x02, 0x00, 0xa8, 0x60, 0xc0, 0xad, 0x5f, 0x44, 0xff, 0xcc, 0x40, 0xbe, 0x29,
+            0x83, 0xc8, 0x44, 0x22, 0x37, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        let res = resolver(&[(
+            3862,
+            RefType::Item {
+                equipment: false,
+                gold: false,
+            },
+        )])
+        .with_item_tids(&[(3862, (3, 3, 9, 0))]);
+
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
+        assert_eq!(parsed.spawns.len(), 1, "the record must parse");
+        let drop = &parsed.spawns[0];
+        assert_eq!(drop.ref_id, 3862);
+        assert_eq!(
+            drop.unique_id, 155_591,
+            "uid comes after the name string, not in place of it"
+        );
+        assert_eq!(drop.position.region, 0x60A8);
+        assert_eq!(drop.spawn_rarity, Some(0));
+    }
+
+    /// **`job_type != 0` does not omit the guild sub-block.** Byte for byte
+    /// off the wire: player ref 1931, "Test", job type 1 / job level 2, seven
+    /// pieces of ordinary clothing — no job suit — and behind the empty guild
+    /// name the full `GuildID…authority` sub-block. Branching on the byte
+    /// leaves 20 bytes of it standing.
+    #[test]
+    fn a_job_flagged_player_without_a_suit_keeps_its_guild_sub_block() {
+        let body: Vec<u8> = vec![
+            0x8b, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x6d, 0x06, 0x0b, 0x06, 0x00, 0x00,
+            0x00, 0x77, 0x06, 0x00, 0x00, 0x00, 0x53, 0x06, 0x00, 0x00, 0x00, 0xc6, 0x06, 0x00,
+            0x00, 0x03, 0x9b, 0x06, 0x00, 0x00, 0x00, 0xea, 0x06, 0x00, 0x00, 0x01, 0x05, 0x01,
+            0x9f, 0x24, 0x00, 0x00, 0x00, 0x00, 0x13, 0xfb, 0x01, 0x00, 0xa8, 0x61, 0xee, 0x0e,
+            0x9d, 0x43, 0x96, 0xac, 0x25, 0xbf, 0x00, 0x52, 0x9b, 0x40, 0xd7, 0x30, 0x01, 0x01,
+            0xa8, 0x61, 0x49, 0x01, 0xff, 0xff, 0x2b, 0x00, 0x01, 0x00, 0x03, 0x04, 0x9a, 0x99,
+            0x19, 0x42, 0x01, 0x00, 0xf0, 0x42, 0x00, 0x00, 0xc8, 0x42, 0x01, 0xc6, 0x98, 0x00,
+            0x00, 0xd4, 0x07, 0x00, 0x00, 0x04, 0x00, 0x54, 0x65, 0x73, 0x74, 0x01, 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xff, 0x04,
+        ];
+        let mut entries: Vec<(u32, RefType)> = vec![(1931, RefType::Player)];
+        entries.extend([1547, 1655, 1619, 1734, 1691, 1770, 9375].map(|id| {
+            (
+                id,
+                RefType::Item {
+                    equipment: true,
+                    gold: false,
+                },
+            )
+        }));
+        // the worn clothes are (3,1,1,*) armor and a (3,1,13,4) flag — the
+        // itemdata rows of these refs, none of them a job suit
+        let res = resolver(&entries).with_item_tids(&[
+            (1547, (3, 1, 1, 1)),
+            (1655, (3, 1, 1, 3)),
+            (1619, (3, 1, 1, 2)),
+            (1734, (3, 1, 1, 5)),
+            (1691, (3, 1, 1, 4)),
+            (1770, (3, 1, 1, 6)),
+            (9375, (3, 1, 13, 4)),
+        ]);
+
+        let parsed = parse_group_spawn(&bytes::Bytes::from(body), true, 1, &res);
+        assert_eq!(parsed.spawns.len(), 1, "the player record must parse");
+        let player = &parsed.spawns[0];
+        assert_eq!(player.name.as_deref(), Some("Test"));
+        assert_eq!(player.unique_id, 129_811);
+        assert_eq!(
+            player.guild_affiliation,
+            Some(GuildAffiliation::default()),
+            "the sub-block is on the wire (all-zero for a guildless player)"
+        );
+        assert_eq!(player.guild, None, "empty guild name = guildless");
     }
 }
