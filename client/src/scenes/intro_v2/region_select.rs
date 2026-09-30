@@ -760,7 +760,7 @@ fn enter_creation_for(
 ) {
     if !race_available(char_data, race) {
         // The label key follows the chosen race, so a blocked Chinese plate is
-        // not reported as European.
+        // not reported as European (#643).
         let (key, fallback) = race.label();
         info_text_writer.write(InfoTextV2Update(
             ui_strings
