@@ -70,6 +70,12 @@ pub fn sun_direction(t: f32) -> Vec3 {
     Vec3::new(0.0, theta.sin(), theta.cos())
 }
 
+/// Night while the sun is below the horizon. The one day/night predicate of the
+/// client, so nothing that reacts to the hour can disagree with the sky.
+pub fn is_night(t: f32) -> bool {
+    sun_direction(t).y <= 0.0
+}
+
 pub struct CelestialPlugin;
 
 impl Plugin for CelestialPlugin {

@@ -144,6 +144,7 @@ impl Plugin for EffectsPlugin {
                     spawn::instantiate_effects,
                     systems::rebuild_program_caches,
                     systems::cull_effect_simulation,
+                    systems::toggle_night_only_effects,
                     systems::tick_effect_nodes,
                     systems::emit_particles,
                     systems::run_programs,

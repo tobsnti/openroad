@@ -154,6 +154,29 @@ pub fn cull_effect_simulation(
     }
 }
 
+/// Shows the lamp glows flagged "night only" by their model data while the sun
+/// is down and hides them by day, on the world clock the sky runs on. Dungeon
+/// interiors keep them lit: their lighting never follows the outdoor hour.
+///
+/// Runs after `cull_effect_simulation` and skips paused effects, so distance
+/// culling stays the stronger switch.
+pub fn toggle_night_only_effects(
+    time_of_day: Res<crate::plugins::environment::TimeOfDay>,
+    active_dungeon: Option<Res<crate::plugins::dungeon::ActiveDungeon>>,
+    mut effects: Query<&mut Visibility, (With<NightOnlyEffect>, Without<EffectSimPaused>)>,
+) {
+    let lit =
+        active_dungeon.is_some() || crate::plugins::environment::celestial::is_night(time_of_day.t);
+    let wanted = if lit {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut effects {
+        visibility.set_if_neq(wanted);
+    }
+}
+
 /// Advances node age and despawns/wraps finished nodes. Expired emitted
 /// *leaf* particles with a finite timeline (no children, no sub-emitter)
 /// are not despawned but hidden and parked in their emitter's
@@ -1181,6 +1204,85 @@ mod tests {
     use bevy::camera::ImageRenderTarget;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::{Image, World};
+
+    /// One world with a clock, a night-only effect and a plain one, both
+    /// starting hidden; returns (night-only entity, plain entity).
+    fn night_toggle_world(t: f32) -> (World, Entity, Entity) {
+        let mut world = World::new();
+        world.insert_resource(crate::plugins::environment::TimeOfDay {
+            t,
+            ..Default::default()
+        });
+        let lamp = world.spawn((NightOnlyEffect, Visibility::Hidden)).id();
+        let plain = world.spawn(Visibility::Hidden).id();
+        (world, lamp, plain)
+    }
+
+    fn visibility(world: &World, entity: Entity) -> Visibility {
+        *world.get::<Visibility>(entity).expect("visibility")
+    }
+
+    /// A lamp effect spawned in daylight still has to light up when the night
+    /// comes around — the toggle runs on the clock, not on spawn.
+    #[test]
+    fn night_only_effects_show_at_night() {
+        let (mut world, lamp, plain) = night_toggle_world(0.5);
+        world
+            .run_system_once(toggle_night_only_effects)
+            .expect("run");
+        assert_eq!(visibility(&world, lamp), Visibility::Hidden);
+
+        world
+            .resource_mut::<crate::plugins::environment::TimeOfDay>()
+            .t = 0.0;
+        world
+            .run_system_once(toggle_night_only_effects)
+            .expect("run");
+        assert_eq!(visibility(&world, lamp), Visibility::Inherited);
+        // an effect without the flag is never touched
+        assert_eq!(visibility(&world, plain), Visibility::Hidden);
+    }
+
+    /// Dungeon interiors have their own lighting; the outdoor hour must not
+    /// put their lamps out.
+    #[test]
+    fn night_only_effects_stay_lit_in_a_dungeon() {
+        let (mut world, lamp, _) = night_toggle_world(0.5);
+        let root = world.spawn_empty().id();
+        world.insert_resource(crate::plugins::dungeon::ActiveDungeon {
+            region_id: 1,
+            root,
+            dof: Default::default(),
+            current_block: None,
+        });
+        world
+            .run_system_once(toggle_night_only_effects)
+            .expect("run");
+        assert_eq!(visibility(&world, lamp), Visibility::Inherited);
+    }
+
+    /// Daylight hides them again, and a paused (distance-culled) effect keeps
+    /// the culling verdict.
+    #[test]
+    fn night_only_effects_hide_by_day() {
+        let (mut world, lamp, _) = night_toggle_world(0.0);
+        world
+            .run_system_once(toggle_night_only_effects)
+            .expect("run");
+        assert_eq!(visibility(&world, lamp), Visibility::Inherited);
+
+        world
+            .resource_mut::<crate::plugins::environment::TimeOfDay>()
+            .t = 0.5;
+        let culled = world
+            .spawn((NightOnlyEffect, EffectSimPaused, Visibility::Hidden))
+            .id();
+        world
+            .run_system_once(toggle_night_only_effects)
+            .expect("run");
+        assert_eq!(visibility(&world, lamp), Visibility::Hidden);
+        assert_eq!(visibility(&world, culled), Visibility::Hidden);
+    }
 
     /// Headless pulse probe against REAL authored data (needs the user's
     /// Particles.pk2 under assets/, hence ignored): simulates the Seal-of-Star

@@ -29,8 +29,8 @@ pub struct EffectInstance {
 pub struct EffectPendingInit;
 
 /// The effect's ModData entry is flagged "night time only" (street and
-/// building lamp glows). Rendered around the clock until a day/night cycle
-/// exists; that driver should toggle `Visibility` on entities carrying this.
+/// building lamp glows). `toggle_night_only_effects` switches the
+/// `Visibility` of these on the world clock.
 #[derive(Component)]
 pub struct NightOnlyEffect;
 

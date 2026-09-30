@@ -525,7 +525,7 @@ fn on_settings_changed(
     }
     // Effects: pause the runtime and hide the (frozen) wrappers. Inherited
     // (not Visible) on re-enable so wrappers keep following their anchor's
-    // visibility (hidden map objects, future night_only gating).
+    // visibility (hidden map objects, the night-only lamp gating).
     effect_params.enabled.0 = settings.render_effects;
     effect_params.leaf.global = settings.leaf_emit_global;
     effect_params.leaf.density = settings.leaf_emit_density;

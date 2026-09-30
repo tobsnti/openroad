@@ -32,7 +32,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::assets::textdata::zonesound::{Ambient, TimeOfDay as AmbientPhase, ZoneSound};
-use crate::plugins::environment::celestial::sun_direction;
+use crate::plugins::environment::celestial::is_night;
 use crate::plugins::environment::TimeOfDay;
 use crate::plugins::hud::minimap::MinimapDungeonContext;
 use crate::plugins::map::terrain::REGION_SIZE;
@@ -70,10 +70,10 @@ pub struct ZoneAmbienceState {
 /// `sun_direction` curve the sky and the celestial bodies use, so the ambience
 /// can never disagree with what the player sees.
 pub fn phase_at(t: f32) -> AmbientPhase {
-    if sun_direction(t).y > 0.0 {
-        AmbientPhase::Day
-    } else {
+    if is_night(t) {
         AmbientPhase::Night
+    } else {
+        AmbientPhase::Day
     }
 }
 
