@@ -10,7 +10,8 @@ pub struct SplashRoot;
 
 /// `GDR_STA_BIGLOGO` (`Media/resinfo/pstitle_europe.txt:624`,
 /// `Rect="360,448,896,300"`) — the rect the title tree authors for the big
-/// logo, verbatim, in the tree's **1600x1200** design space.
+/// logo, verbatim, in the tree's **1600x1200** design space
+/// (`docs/re/ui/scene-intro-splash.md` §3, `docs/re/ui/scene-intro-login-form.md:19`).
 ///
 /// A control with a real rect in that space is *scaled*, not drawn native: the
 /// whole title tree is one flat 1600x1200 canvas (`GDR_FADE` `0,0,1600,1200`),
