@@ -179,7 +179,6 @@ impl CharSelectScene {
 
     /// Where the body being customised stands on that stage, in render space.
     /// Local to the stage's own region for the same reason the camera is:
-    /// Local to the stage's own region for the same reason the camera is:
     /// the selection stage's `char_*_offset` are local to *its* region, so
     /// reusing them here would put the figure half a map away.
     pub fn create_character_position(&self, race: Race, origin: Vec3) -> Vec3 {
