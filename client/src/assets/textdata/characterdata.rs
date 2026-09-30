@@ -75,7 +75,7 @@ enum ChardataFields {
     // which have no 1:1 item.
     AssocFileIcon = 54,
     // RefObjChar tail (after the shared RefObjCommon columns): Lvl(57),
-    // CharGender(58), MaxHP(59). In the shipped characterdata:
+    // CharGender(58), MaxHP(59). Verified against Media.pk2 characterdata:
     // MOB_CH_MANGNYANG lvl 1 / 54 HP, MOB_CH_TIGERWOMAN lvl 20 / 598720 HP,
     // NPCs 0 / 0. CharGender: CHAR_CH_MAN_* = 1, CHAR_CH_WOMAN_* = 0, 2 on
     // gender-neutral monsters — matches itemdata's Sex encoding.
