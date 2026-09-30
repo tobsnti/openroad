@@ -215,9 +215,15 @@ pub(crate) fn resolved_window_mode(settings: &WindowSettings, session: Option<bo
 
 /// The full intent, kept a pure function so it can be tested without an `App`
 /// and without touching the process environment.
+///
+/// The size is one precedence rule, in one place: **`RESOLUTION=` env > a size
+/// the player chose in the Video pane > `config.yaml`**. `chosen` is
+/// [`GraphicProfile::chosen_size`](crate::plugins::settings::options::GraphicProfile::chosen_size),
+/// `None` while the stored pair is still the shipped default.
 pub(crate) fn window_intent(
     settings: &WindowSettings,
     session: Option<bool>,
+    chosen: Option<(u32, u32)>,
     env_resolution: Option<&str>,
 ) -> WindowIntent {
     let mode = resolved_window_mode(settings, session);
@@ -227,6 +233,7 @@ pub(crate) fn window_intent(
         Some(
             env_resolution
                 .and_then(parse_resolution)
+                .or_else(|| chosen.map(|(w, h)| (w as f32, h as f32)))
                 .unwrap_or((settings.width, settings.height)),
         )
     } else {
@@ -344,6 +351,7 @@ pub(crate) fn apply_window_settings(
     let intent = window_intent(
         &config.window_settings,
         options.video.window_mode_override,
+        options.video.graphic1.chosen_size(),
         env::var("RESOLUTION").ok().as_deref(),
     );
     if applied.as_ref() == Some(&intent) {
@@ -594,16 +602,54 @@ mod tests {
         };
 
         assert_eq!(
-            window_intent(&settings, None, Some("1600x900")).size,
+            window_intent(&settings, None, None, Some("1600x900")).size,
             Some((1600.0, 900.0))
         );
         assert_eq!(
-            window_intent(&settings, None, Some("nonsense")).size,
+            window_intent(&settings, None, None, Some("nonsense")).size,
             Some((1920.0, 1080.0))
         );
         // In either fullscreen the monitor owns the resolution.
         assert_eq!(
-            window_intent(&settings, Some(false), Some("1600x900")).size,
+            window_intent(&settings, Some(false), None, Some("1600x900")).size,
+            None
+        );
+    }
+
+    /// The Video pane's saved size is the only way a stored resolution reaches
+    /// the window, and it sits *between* `RESOLUTION=` and `config.yaml`. All
+    /// three rungs of that ladder in one place, because a dropped `.or_else`
+    /// would be silent: the window would simply keep `config.yaml`'s size.
+    #[test]
+    fn a_chosen_size_beats_the_config_and_loses_to_the_env() {
+        let settings = WindowSettings {
+            width: 1920.0,
+            height: 1080.0,
+            mode: WindowModeConfig::Windowed,
+            title: "t".into(),
+            monitor: MonitorSelection::Primary,
+            present_mode: PresentModeConfig::default(),
+            max_frame_latency: None,
+        };
+
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), None).size,
+            Some((1280.0, 720.0)),
+            "the saved size has to win over config.yaml"
+        );
+        assert_eq!(
+            window_intent(&settings, None, Some((1280, 720)), Some("1600x900")).size,
+            Some((1600.0, 900.0)),
+            "RESOLUTION= outranks the saved size"
+        );
+        assert_eq!(
+            window_intent(&settings, None, None, None).size,
+            Some((1920.0, 1080.0)),
+            "nothing saved, nothing in the env: config.yaml"
+        );
+        // Fullscreen still means the monitor owns the size.
+        assert_eq!(
+            window_intent(&settings, Some(false), Some((1280, 720)), None).size,
             None
         );
     }
