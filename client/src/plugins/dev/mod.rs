@@ -94,16 +94,14 @@ pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 8] = [
     KeyCode::KeyL,
 ];
 
-/// The collisions the `dev_tools` gate does **not** cover: keys a dev system
-/// reads in every session, gated or not.
+/// The chord the ungated dev tooling reads instead of a bare key.
 ///
-/// `Tab` is the only one today. `switch_mode` (below) is registered
-/// unconditionally, and `SROptionSet.dat` id 3009 `KeyBerserkerMode` now
-/// defaults to `Tab` (`settings/keymap.rs`). 3009 has no consumer yet
-/// (`keymap.rs`'s `NOT_YET_WIRED`), so the clash is latent — the first system
-/// that reads the berserk binding inherits a silent `AppMode` flip, which is
-/// why it is named here rather than discovered then.
-pub const DEV_UNGATED_HOTKEY_COLLISIONS: [KeyCode; 1] = [KeyCode::Tab];
+/// `switch_mode` (below) is registered in every session, gated or not, and
+/// keymap id 3009 `KeyBerserkerMode` defaults to `Tab`. A bare read there
+/// would swallow the player's key, so the mode switch takes `Ctrl+Tab`.
+fn dev_chord_held(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight)
+}
 
 /// Whether the dev tooling may be registered at all — the key-driven systems
 /// **and** the egui windows and the corner button that toggles them.
@@ -277,7 +275,7 @@ fn switch_mode(
     mut next_app_mode: ResMut<NextState<AppMode>>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
-    if keys.just_pressed(KeyCode::Tab) {
+    if dev_chord_held(&keys) && keys.just_pressed(KeyCode::Tab) {
         if *app_mode.get() == AppMode::PlayMode {
             next_app_mode.set(AppMode::DebugMode)
         } else {
@@ -315,15 +313,24 @@ mod test {
         ] {
             assert!(DEV_HOTKEY_COLLISIONS.contains(&key), "{key:?}");
         }
-        // Tab (the mode switch) stays ungated and must not be in the list
+        // Tab is the mode switch's chord half, not a gated dev hotkey
         assert!(!DEV_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
-        assert!(DEV_UNGATED_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+    }
+
+    /// The mode switch must leave bare `Tab` to the berserk binding.
+    #[test]
+    fn the_mode_switch_needs_the_chord() {
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Tab);
+        assert!(!dev_chord_held(&keys));
+        keys.press(KeyCode::ControlLeft);
+        assert!(dev_chord_held(&keys));
     }
 
     /// Every key a dev system reads must be listed once a keymap default
     /// claims it — otherwise the clash is only visible to whoever
     /// happens to press it. `Z`/`N`/`L` are read by `dev/lighting.rs` and
-    /// `environment/mod.rs`, `Tab` by the ungated `switch_mode`.
+    /// `environment/mod.rs`.
     #[test]
     fn the_keys_the_keymap_defaults_claim_are_all_listed() {
         use crate::plugins::settings::keymap::KEY_ACTIONS;
@@ -332,7 +339,6 @@ mod test {
             (KeyCode::KeyZ, &DEV_HOTKEY_COLLISIONS[..]),
             (KeyCode::KeyN, &DEV_HOTKEY_COLLISIONS[..]),
             (KeyCode::KeyL, &DEV_HOTKEY_COLLISIONS[..]),
-            (KeyCode::Tab, &DEV_UNGATED_HOTKEY_COLLISIONS[..]),
         ] {
             // The premise: the key really is a keymap default now.
             assert!(
