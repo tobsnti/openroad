@@ -160,11 +160,15 @@ const DETAIL_ROWS: [DetailRow; 13] = [
         backing: Backing::Missing,
         steps: 5,
     },
+    // Wired to the high water tier's reflection blend by
+    // `map::water_options::apply_water_reflection_option`. High tier only:
+    // the low tier has no reflection, and that module's handle lookup says
+    // so.
     DetailRow {
         id: 4,
         key: "UIIT_STT_WATER_REFLECTION",
         english: "Water Reflection",
-        backing: Backing::Missing,
+        backing: Backing::Live,
         steps: 2,
     },
     DetailRow {
@@ -1081,6 +1085,7 @@ mod tests {
     // scoped to the test module and a normal build carries no unused import.
     use crate::plugins::effects::options::EFFECT_QUALITY_ID;
     use crate::plugins::environment::options::SHADOW_DETAIL_ID;
+    use crate::plugins::map::water_options::WATER_REFLECTION_ID;
 
     /// The resolution is a *control*. The pure stepper must
     /// visit every mode the monitor offers and come back — a combo box that
@@ -1287,14 +1292,24 @@ mod tests {
         // If a later change wires another feature, this test should be updated
         // deliberately — it is the guard against quietly marking rows Live.
         // Live today: Shadow Detail
-        // (`environment::options::apply_shadow_detail_option`), Bloom and
-        // Effect Quality (`effects::options::apply_effect_quality_option`).
+        // (`environment::options::apply_shadow_detail_option`), Water
+        // Reflection (`map::water_options::apply_water_reflection_option`),
+        // Bloom and Effect Quality
+        // (`effects::options::apply_effect_quality_option`).
         let live: Vec<u16> = DETAIL_ROWS
             .iter()
             .filter(|r| r.backing == Backing::Live)
             .map(|r| r.id)
             .collect();
-        assert_eq!(live, vec![SHADOW_DETAIL_ID, BLOOM_ID, EFFECT_QUALITY_ID]);
+        assert_eq!(
+            live,
+            vec![
+                SHADOW_DETAIL_ID,
+                WATER_REFLECTION_ID,
+                BLOOM_ID,
+                EFFECT_QUALITY_ID
+            ]
+        );
     }
 
     #[test]

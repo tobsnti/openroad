@@ -29,6 +29,7 @@ pub mod objects;
 pub mod terrain;
 pub mod water_hq_material;
 pub mod water_material;
+pub mod water_options;
 
 pub struct MapPlugin;
 impl Plugin for MapPlugin {
@@ -101,6 +102,7 @@ impl Plugin for MapPlugin {
                 Update,
                 generate_water_normal_mips.run_if(resource_exists::<WaterNormalMapImage>),
             )
+            .add_systems(Update, water_options::apply_water_reflection_option)
             .add_systems(
                 Update,
                 cull_fogged_objects.run_if(in_state(GameState::Game)),

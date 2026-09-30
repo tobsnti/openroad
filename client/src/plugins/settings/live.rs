@@ -189,7 +189,12 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                alone, via the Video pane's Shadow Detail row \
                (environment::options::apply_shadow_detail_option, PBR mode \
                only) — a later config-only edit to \
-               render_mode does not move the live Sun. Brightness and the \
+               render_mode does not move the live Sun. water.quality picks \
+               the water tier once, at terrain setup \
+               (map::setup_terrain_mesh), but within the high tier the Video \
+               pane's Water Reflection row moves the reflection blend live \
+               (map::water_options::apply_water_reflection_option). \
+               Brightness and the \
                unbacked quality rows have no feature behind them yet and say \
                so in the pane",
     },
