@@ -28,7 +28,7 @@ use crate::plugins::options_game::{refresh_game_toggles, spawn_game_pane};
 use crate::plugins::options_input_tab::{build_input_pane, reset_all_bindings};
 use crate::plugins::options_video::{
     apply_bloom_option, apply_profile_tab, refresh_extra_rows, refresh_row_values,
-    spawn_video_pane, VideoPane,
+    refresh_window_mode_row, spawn_video_pane, VideoPane,
 };
 use crate::plugins::settings::edit_session::OptionsEditSession;
 use crate::plugins::settings::options::{
@@ -217,6 +217,7 @@ impl Plugin for OptionsWindowPlugin {
                 apply_profile_tab,
                 refresh_row_values,
                 refresh_extra_rows,
+                refresh_window_mode_row,
                 refresh_game_toggles,
                 refresh_sight_radios,
                 refresh_audio_rows,
