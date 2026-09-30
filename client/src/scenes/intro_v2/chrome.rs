@@ -1,9 +1,9 @@
 //! Intro chrome: the two full-width bars and the notice line that frame every
 //! intro state.
 //!
-//! Idea: the bars are `GDR_STA_SCREENUP` / `GDR_STA_SCREENDOWN` (ids 1/2),
-//! declared once per intro tree — and **each tree names its own art**, which is
-//! why one handle cannot serve the whole scene:
+//! The bars are `GDR_STA_SCREENUP` / `GDR_STA_SCREENDOWN` (ids 1/2), declared
+//! once per intro tree — and **each tree names its own art**, which is why one
+//! handle cannot serve the whole scene:
 //!
 //! | state | tree | up / down art |
 //! |---|---|---|
@@ -12,17 +12,11 @@
 //! | character create (European) | `pscharactercreate_europe.txt:253/234` | `redbar_up_europe` / `redbar_down_europe` |
 //! | character create (Chinese) | `pscharactercreatechina.txt:253/234` | `redbar_up` / `redbar_down` |
 //!
-//! The create row is **two** rows because the create screen is two trees, one
-//! per race — `_europe` in these filenames is the *race*, not the
-//! `EUROPE_SYSTEM` `#ifdef` that resolves `pstitle.txt`. The two files differ
-//! in their first section header (`Section = CreateEurope` vs
-//! `Section = CreateChina`) and in five arts besides the bands. That is also
-//! why there is a 4th `redbar` reference below.
-//!
-//! `blackbar` alone appears 13 times and in none of the create trees, which
-//! reads as "the create screen has no chrome". It has one — in red. Across the
-//! resinfo files there are 16 `interface\outer\*bar*` references: 13 `blackbar`
-//! + 4 `redbar`. All eight arts are 1600x172 ARGB1555 and distinct.
+//! A sweep for `blackbar` alone finds 13 references and none in the create
+//! trees, which reads as "the create screen has no chrome". It has — in red
+//! (`docs/re/ui/intro-chrome.md` §3). The classified sweep over all 247 resinfo
+//! files returns 16 `interface\outer\*bar*` references: 13 `blackbar` + 4
+//! `redbar`. All six arts are 1600x172 ARGB1555 and md5-distinct.
 //!
 //! `#ifdef` resolution is unambiguous: `define.txt:7` defines `EUROPE_SYSTEM`
 //! and `APPLY_GNGWC_SYSTEM_2007` is absent from its 22 symbols, so `pstitle.txt`
@@ -42,9 +36,9 @@ use super::{intro_font_px, IntroV2State};
 
 /// Bar rects, verbatim: `Rect="0,0,1600,172"` and `Rect="0,1030,1600,172"` in
 /// the trees' 1600x1200 design space. Height is expressed as a percentage of
-/// that space so the bars scale with the window, as they did before; 1030+172
-/// overruns the 1200 canvas by 2px, which is why the bottom bar is anchored to
-/// the bottom edge instead of to y=1030.
+/// that space so the bars scale with the window; 1030+172 overruns the 1200
+/// canvas by 2px, which is why the bottom bar is anchored to the bottom edge
+/// instead of to y=1030.
 /// The canvas height, from the one shared constant
 /// ([`crate::plugins::ui_v2::RESINFO_CANVAS`]) — not a second literal `1200`.
 const DESIGN_H: f32 = crate::plugins::ui_v2::RESINFO_CANVAS.1;
@@ -180,10 +174,10 @@ pub fn bar_tree(state: IntroV2State) -> BarTree {
 /// `region_select::spawn_loading_cut` already picks
 /// `LOADING_CHINA_DDJ`/`LOADING_EUROPE_DDJ` off the same [`Race`].
 /// A race the interface data does not pair art for gets the bare (un-suffixed)
-/// half of the pair — the file that exists in every corpus — rather than a
-/// guessed `_<code>` filename.
+/// half of the pair — the file that always ships — rather than a guessed
+/// `_<code>` filename.
 fn create_bar_art(race: Race, assets: &IntroV2Assets) -> (Handle<Image>, Handle<Image>) {
-    if race == Race::European {
+    if race == Race::EUROPEAN {
         (
             assets.redbar_up_europe.clone(),
             assets.redbar_down_europe.clone(),
@@ -357,14 +351,13 @@ pub fn update_chrome_art(
 
 /// Applies notice-line messages — and empties the line on a screen change.
 ///
-/// Idea: the notice line is **one entity for the whole intro scene**
-/// ([`info_text`]), while every sentence in it belongs to exactly one screen.
-/// Without a clear-on-change, a sentence written for one screen is still
-/// standing on the next one: click the data-blocked European plate on region
-/// select, pick the Chinese one instead, and its rejection ("Out of service
-/// area." / `region_select::PLATE_DISABLED_REASON`) rides along into character
-/// creation. Clearing was per-screen handwork until now (`character_select`,
-/// `net`), so every new writer had to remember it.
+/// The notice line is **one entity for the whole intro scene** ([`info_text`]),
+/// while every sentence in it belongs to exactly one screen. Without a
+/// clear-on-change, a sentence written for one screen still stands on the next:
+/// click the data-blocked European plate on region select, pick the Chinese one
+/// instead, and its rejection ("Out of service area." /
+/// `region_select::PLATE_DISABLED_FALLBACK`) rides along into character
+/// creation.
 ///
 /// The original does empty the band on a screen change: it shows the three-line
 /// "The character's deletion is reserved." notice on the select screen, and the
@@ -402,7 +395,7 @@ mod test {
     use crate::scenes::SceneState;
 
     /// The bar height is the authored one, not a round percentage: 172 of the
-    /// 1600x1200 design space. The old 15% was unsourced and 8px too tall.
+    /// 1600x1200 design space.
     #[test]
     fn the_bar_height_is_the_authored_rect() {
         assert_eq!(BAR_H, 172.0);
@@ -617,9 +610,9 @@ mod test {
             .split_once("\n}\n")
             .expect("create_bar_art is closed")
             .0;
-        // The race list is data-borne now, so the function is a comparison
-        // against the one race whose art the data pairs (`Race::European`)
-        // plus the bare fallback branch — not two enum arms.
+        // The race list is data-borne, so the function is a comparison against
+        // the one race whose art the data pairs (`Race::EUROPEAN`) plus the
+        // bare fallback branch — not two enum arms.
         let (europe_branch, fallback_branch) = body
             .split_once("} else {")
             .expect("create_bar_art has a fallback branch");

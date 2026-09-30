@@ -100,7 +100,11 @@ pub enum CameraLayers {
     Portrait = 1,
     /// Offscreen full-body player view for the inventory equipment panel.
     PaperDoll = 2,
-    // 3-6 free
+    /// The character-creation preview figure, drawn in its own pass after the
+    /// UI so it stands in front of the screen's ornamental bands, the way the
+    /// original's create screen does.
+    CreateFigure = 3,
+    // 4-6 free
     // 7-10 reserved for UI Stuff
     Ui = 8,
     LoadingScreen = 9,
@@ -189,7 +193,8 @@ impl From<Layer> for CameraLayers {
         match item {
             0 => CameraLayers::Main,
             1 => CameraLayers::Portrait,
-            //2..7 => CameraLayers::xxx,
+            2 => CameraLayers::PaperDoll,
+            3 => CameraLayers::CreateFigure,
             8 => CameraLayers::Ui,
             9 => CameraLayers::LoadingScreen,
             10 => CameraLayers::Debug,
