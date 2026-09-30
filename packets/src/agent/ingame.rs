@@ -911,6 +911,81 @@ pub struct FriendEntry {
     pub is_online: u8,
 }
 
+/// Reads a `u16`-length-prefixed name and insists the body ends with it, so a
+/// request that carries more than a name is refused rather than half-read.
+fn only_a_name(value: &Bytes) -> Result<String, SerializationError> {
+    let mut r = Reader::new(value);
+    let len = r.u16()? as usize;
+    let name = r.take(len)?.to_vec();
+    if r.pos != value.len() {
+        return Err(short_packet());
+    }
+    String::from_utf8(name).map_err(|_| {
+        SerializationError::IoError(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "name is not text",
+        ))
+    })
+}
+
+fn put_name(buf: &mut BytesMut, name: &str) {
+    buf.put_u16_le(name.len() as u16);
+    buf.put_slice(name.as_bytes());
+}
+
+/// 0x7302 — client → server: add the named character to the friend roster.
+/// The name is the whole body.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct FriendAddRequest {
+    pub name: String,
+}
+
+impl TryFrom<Bytes> for FriendAddRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        Ok(FriendAddRequest {
+            name: only_a_name(&value)?,
+        })
+    }
+}
+
+impl From<FriendAddRequest> for Bytes {
+    fn from(p: FriendAddRequest) -> Self {
+        let mut buf = BytesMut::new();
+        put_name(&mut buf, &p.name);
+        buf.freeze()
+    }
+}
+
+/// 0x730D — client → server: add the named character to the block list.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct BlockAddRequest {
+    /// One byte ahead of the name. The single value the original client sends
+    /// is 1; what it enumerates is [U], so it is carried rather than named.
+    pub unknown: u8,
+    pub name: String,
+}
+
+impl TryFrom<Bytes> for BlockAddRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        let unknown = *value.first().ok_or_else(short_packet)?;
+        Ok(BlockAddRequest {
+            unknown,
+            name: only_a_name(&value.slice(1..))?,
+        })
+    }
+}
+
+impl From<BlockAddRequest> for Bytes {
+    fn from(p: BlockAddRequest) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(p.unknown);
+        put_name(&mut buf, &p.name);
+        buf.freeze()
+    }
+}
+
 /// 0x3077 — CharacterFinished: the join-time cooldown replay. Two
 /// count-prefixed lists — item cooldowns then skill cooldowns, keyed by ref-id
 /// (openroad RE wave A3 / skrillax `item_cooldowns` + `skill_cooldowns`).
@@ -3779,6 +3854,35 @@ mod test {
         assert_eq!(back, wire);
     }
 
+    #[test]
+    fn friend_and_block_requests_end_on_their_name() {
+        let wire =
+            Bytes::from_static(&[0x08, 0x00, b'T', b'e', b's', b't', b'm', b'a', b't', b'e']);
+        let decoded = FriendAddRequest::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            FriendAddRequest {
+                name: "Testmate".to_string(),
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+
+        let wire = Bytes::from_static(&[
+            0x01, 0x08, 0x00, b'T', b'e', b's', b't', b'm', b'a', b't', b'e',
+        ]);
+        let decoded = BlockAddRequest::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            BlockAddRequest {
+                unknown: 0x01,
+                name: "Testmate".to_string(),
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
     /// A body that would not end where its fields end is worth less than the
     /// bytes it came in as, so it keeps them.
     #[test]
@@ -3801,6 +3905,30 @@ mod test {
         }
         // Without the selector byte there is not even a sub-type to keep.
         assert!(BuffRemainTime::try_from(Bytes::new()).is_err());
+    }
+
+    /// The length prefix is two bytes wide and it has to be the end of the
+    /// body: a name that outruns it, or anything behind it, is a decode error
+    /// rather than a short read.
+    #[test]
+    fn a_name_request_with_anything_behind_it_is_refused() {
+        // one byte too many
+        assert!(FriendAddRequest::try_from(Bytes::from_static(&[
+            0x08, 0x00, b'T', b'e', b's', b't', b'm', b'a', b't', b'e', 0x00
+        ]))
+        .is_err());
+        // a length that outruns the body
+        assert!(FriendAddRequest::try_from(Bytes::from_static(&[
+            0x09, 0x00, b'T', b'e', b's', b't'
+        ]))
+        .is_err());
+        // the block request without its leading byte reads the name length wrong
+        assert!(BlockAddRequest::try_from(Bytes::from_static(&[
+            0x08, 0x00, b'T', b'e', b's', b't', b'm', b'a', b't', b'e'
+        ]))
+        .is_err());
+        assert!(FriendAddRequest::try_from(Bytes::new()).is_err());
+        assert!(BlockAddRequest::try_from(Bytes::new()).is_err());
     }
 
     #[test]
