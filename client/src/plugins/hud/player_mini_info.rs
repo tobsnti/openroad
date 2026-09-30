@@ -1164,12 +1164,44 @@ pub fn refresh_mini_info(
 
     // the activation button appears once the gauge is full
     for mut visibility in jahwan_button.iter_mut() {
-        *visibility = if vitals.berserk_pips >= 5 {
+        *visibility = if berserk_available(vitals.berserk_pips) {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
     }
+}
+
+/// Whether berserk can be activated: the gauge has all five pips.
+///
+/// One predicate, because two callers share the rule — the ring's button is
+/// only shown when it holds, and the shortcut only sends when it holds. What
+/// the player cannot click, the key must not send either.
+pub fn berserk_available(berserk_pips: u8) -> bool {
+    berserk_pips >= 5
+}
+
+/// `KeyBerserkerMode` (id 3009, `Tab` by default) activates berserk.
+///
+/// Same request and same gate as the ring's button; the binding was offered by
+/// the Key Map tab and read by nothing.
+pub fn berserk_hotkey(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::plugins::hud::chat::model::ChatState>,
+    options: Res<crate::plugins::settings::options::GameOptions>,
+    vitals: Res<PlayerVitals>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    let Some(key) = options.key_for(crate::plugins::settings::keymap::KEY_BERSERK) else {
+        return;
+    };
+    if !keys.just_pressed(key) || chat.input_open {
+        return;
+    }
+    if !berserk_available(vitals.berserk_pips) {
+        return;
+    }
+    send_hwan_activation(&conn);
 }
 
 /// Swap the berserk button art on hover/press and send the activation request.
@@ -1896,7 +1928,15 @@ impl Plugin for PlayerMiniInfoPlugin {
                     tag_player_meshes_for_portrait,
                     aim_portrait_camera,
                     freeze_portrait_camera,
-                    update_jahwan_button,
+                    // Grouped, not tidying: `IntoScheduleConfigs` is implemented
+                    // for tuples up to 20 entries, and the shortcut was the
+                    // 21st — the error that follows names `ObserverSystem` and
+                    // no parameter at all.
+                    (
+                        update_jahwan_button,
+                        berserk_hotkey
+                            .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
+                    ),
                     wire_cinfo_button,
                     refresh_stat_drawer,
                     wire_statup_button,
@@ -1912,5 +1952,82 @@ impl Plugin for PlayerMiniInfoPlugin {
                         in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
                     ),
             );
+    }
+}
+
+#[cfg(test)]
+mod berserk_key_test {
+    use super::*;
+    use crate::plugins::settings::keymap::{action_is_wired, KEY_BERSERK};
+    use crate::plugins::settings::options::GameOptions;
+
+    /// Five pips is the whole rule, and it is shared: the button is shown by
+    /// it and the shortcut sends by it.
+    #[test]
+    fn berserk_needs_a_full_gauge() {
+        for pips in 0..5u8 {
+            assert!(!berserk_available(pips), "{pips} pips is not full");
+        }
+        assert!(berserk_available(5));
+        // The wire type is a u8; a value above five is still full.
+        assert!(berserk_available(6));
+    }
+
+    /// One rule, one place. A second literal threshold is how the button and
+    /// the key would drift apart.
+    #[test]
+    fn only_the_predicate_knows_the_threshold() {
+        let shipping = include_str!("player_mini_info.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first part");
+        let body = shipping
+            .split_once("pub fn berserk_available")
+            .expect("the predicate is declared")
+            .1;
+        let after = body.split_once('}').expect("the predicate has a body").1;
+        assert!(
+            !after.contains("berserk_pips >= 5"),
+            "the threshold must be read through berserk_available"
+        );
+    }
+
+    /// The shipped default resolves without any stored binding, and the shared
+    /// registry now reports the action as wired.
+    #[test]
+    fn the_shipped_default_is_the_berserk_key() {
+        assert_eq!(
+            GameOptions::default().key_for(KEY_BERSERK),
+            Some(KeyCode::Tab)
+        );
+        assert!(action_is_wired(KEY_BERSERK));
+    }
+
+    /// The guard belongs on the shortcut itself: `Tab` moves focus between
+    /// text fields, so a focused field must swallow it.
+    #[test]
+    fn the_shortcut_carries_the_text_field_guard() {
+        // Sliced to the plugin's own body: the file's test modules mention
+        // every name below, so a search over the whole text finds them in this
+        // very test and proves nothing. Deleting the registration line left
+        // this green until the slice was cut here (measured).
+        let source = include_str!("player_mini_info.rs");
+        let plugin = source
+            .find("impl Plugin for PlayerMiniInfoPlugin")
+            .expect("the plugin is declared");
+        let after = source[plugin..]
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields a first part");
+        let hotkey = after
+            .find("berserk_hotkey")
+            .expect("the shortcut is registered");
+        let guard = after[hotkey..]
+            .find("text_field_focused")
+            .expect("the shortcut carries no text-field guard");
+        let next = after[hotkey..]
+            .find("wire_cinfo_button")
+            .expect("the next system follows the shortcut");
+        assert!(guard < next, "the guard must sit on the shortcut itself");
     }
 }
