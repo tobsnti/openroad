@@ -517,8 +517,8 @@ fn shard_row(
 /// shard list changes — or when the server window itself has just spawned.
 /// The gateway can deliver the list during scene loading, before the chrome
 /// exists; with a plain `resource_exists_and_changed` gate that change tick
-/// is consumed against a missing window and the server list stays empty: the
-/// response can arrive ~0.1 s after connect, while the scene is still in Splash.
+/// is consumed against a missing window and the server list stays empty
+/// (live-observed 2026-08-11: response 0.1s after connect, still in Splash).
 pub fn shard_rows_need_refresh(
     shard_list: Option<Res<ShardList>>,
     scroll: Res<ShardListScroll>,
