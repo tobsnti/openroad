@@ -356,7 +356,8 @@ pub fn update_chrome_art(
 /// clear-on-change, a sentence written for one screen still stands on the next:
 /// click the data-blocked European plate on region select, pick the Chinese one
 /// instead, and its rejection ("Out of service area." /
-/// `region_select::PLATE_DISABLED_REASON`) rides along into character creation.
+/// `region_select::PLATE_DISABLED_FALLBACK`) rides along into character
+/// creation.
 ///
 /// The original does empty the band on a screen change: it shows the three-line
 /// "The character's deletion is reserved." notice on the select screen, and the
