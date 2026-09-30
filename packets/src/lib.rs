@@ -599,8 +599,10 @@ packets! {
     0x7420 => PetSettingsChangeRequest,
 
     // Mail/memo + consignment "avatar market" (see agent/mail.rs,
-    // docs/net-mail-consignment-0x7309.md). Spec-derived: no packet_dump exists
-    // for any of these yet. 0xB509's records are variable-length and their width
+    // docs/net-mail-consignment-0x7309.md). The consignment half is
+    // spec-derived; the memo send carries the body the original client builds,
+    // which is a recipient and a text and ends there.
+    // 0xB509's records are variable-length and their width
     // depends on the client's itemdata, so its list stays raw behind a
     // resolver-taking accessor.
     //

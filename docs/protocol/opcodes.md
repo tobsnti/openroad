@@ -469,7 +469,7 @@ for each unknown: .
 | `0x750E` | ConsignmentListRequest | C→S | experimental | empty body |
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
-| `0x7309` | MailSendRequest | C→S | experimental | verified head (title + message) only; everything after it is [U] and kept as a raw tail |
+| `0x7309` | MailSendRequest | C→S | wired | send a memo: `u16` length + recipient, then `u16` length + text, and the body ends there; a body that continues past the text is refused |
 | `0x730B` | MailListRequest | C→S | wired | the mailbox asks for its list; empty body |
 
 Deliberately **not** wired — all three bodies are entirely unverified, so a layout
