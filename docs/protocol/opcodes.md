@@ -257,6 +257,7 @@ Landed with `feat/ui-windows` (PR #81): NPC dialog, teleporter, storage, repair.
 | `0x34D2` | BArenaOperation | S→C | wired | Battle Arena scheduler broadcast; tagged union, body length varies per op; ops `02/03/05/0D/0E` capture-verified from `packet_dump/0x34d2.log`, the rest and the `0xFF` sub-stream spec-derived |
 | `0x703E` | ItemRepairRequest | C→S | wired |  |
 | `0xB03E` | ItemRepairResponse | S→C | wired |  |
+| `0x7155` | AlchemyFuseRequest | C→S | wired | runs the operation laid out in the alchemy window: `u8` op, 2 = `{u8 [U], u8 count, u8[count] slots}`, 1 = the window closed on an open operation; any other op, and a body that does not end on the last slot, is kept whole |
 | `0x7157` | AlchemyDismantleRequest | C→S | wired | alchemy dismantle, `{u8 SlotCount, u8[] Slots}` — the family's **only** published body |
 | `0xB157` | AlchemyDismantleResponse | S→C | wired | `{u8 result, if result == 2 u16 errorCode}`; the error-code table is a dead page, so the code stays unnamed |
 
