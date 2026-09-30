@@ -132,11 +132,14 @@ enum Backing {
 /// the resinfo tree. Ids 14/15 exist in the id space but their CSV name cells
 /// are blank, so they are left out rather than captioned by guess.
 const DETAIL_ROWS: [DetailRow; 13] = [
+    // Wired to the Sun's cascaded shadow maps by
+    // `environment::options::apply_shadow_detail_option`. PBR mode only:
+    // vanilla has no dynamic shadows, and that module's query says so.
     DetailRow {
         id: 1,
         key: "UIIT_STT_SHADOW_DETAIL",
         english: "Shadow Detail",
-        backing: Backing::Missing,
+        backing: Backing::Live,
     },
     DetailRow {
         id: 2,
@@ -1194,6 +1197,7 @@ mod tests {
     // Only the assertion below names the effect-quality row, so the import is
     // scoped to the test module and a normal build carries no unused import.
     use crate::plugins::effects::options::EFFECT_QUALITY_ID;
+    use crate::plugins::environment::options::SHADOW_DETAIL_ID;
 
     /// The resolution is a *control*. The pure stepper must
     /// visit every mode the monitor offers and come back — a combo box that
@@ -1443,14 +1447,15 @@ mod tests {
     fn only_deliberately_wired_rows_are_live() {
         // If a later change wires another feature, this test should be updated
         // deliberately — it is the guard against quietly marking rows Live.
-        // Live today: Bloom and Effect Quality
-        // (`effects::options::apply_effect_quality_option`).
+        // Live today: Shadow Detail
+        // (`environment::options::apply_shadow_detail_option`), Bloom and
+        // Effect Quality (`effects::options::apply_effect_quality_option`).
         let live: Vec<u16> = DETAIL_ROWS
             .iter()
             .filter(|r| r.backing == Backing::Live)
             .map(|r| r.id)
             .collect();
-        assert_eq!(live, vec![BLOOM_ID, EFFECT_QUALITY_ID]);
+        assert_eq!(live, vec![SHADOW_DETAIL_ID, BLOOM_ID, EFFECT_QUALITY_ID]);
     }
 
     #[test]
