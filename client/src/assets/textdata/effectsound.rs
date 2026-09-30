@@ -151,6 +151,10 @@ impl EffectSoundTable {
 
     /// The first row at an address — what a call site with no reason to pick a
     /// variant should play.
+    ///
+    /// No caller yet outside this module's own tests. Kept because it is the
+    /// deterministic accessor a single-row caller needs.
+    #[allow(dead_code)]
     pub fn first(&self, address: &SoundAddress) -> Option<&EffectSound> {
         self.sounds(address).first()
     }

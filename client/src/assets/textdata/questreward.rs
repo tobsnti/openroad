@@ -21,6 +21,15 @@ use std::collections::HashMap;
 
 /// `SelectionCnt` column index in `refqusetreward.txt`.
 const SELECTION_CNT_COL: usize = 7;
+/// `refqusetreward.txt` columns `[10]`/`[11]` **[V]**: gold and experience.
+/// Named against the client's *own* pre-rendered reward text (`SN_PAYCON_*` in
+/// `textquest_otherstring.txt`) — `[10]`
+/// appears in its quest's reward sentence in 399 of the 402 rows where it is
+/// non-zero, `[11]` in 502 of 610, and every miss inspected is the text's
+/// thousands separator (`186,120` for `186120`), not a disagreement.
+/// `QNO_CH_SMITH_1`: `[10]=205 [11]=270` vs "Exp 270 / GOLD 205".
+const GOLD_COL: usize = 10;
+const EXP_COL: usize = 11;
 /// `refquestrewarditems.txt`: quest id, item codename, count.
 const ITEM_QUEST_COL: usize = 0;
 const ITEM_CODE_COL: usize = 3;
@@ -29,6 +38,47 @@ const ITEM_COUNT_COL: usize = 7;
 /// Per-quest `SelectionCnt` (`true` = the player picks exactly one).
 #[derive(Debug, Clone, Default)]
 pub struct QuestRewardModes(pub HashMap<u32, bool>);
+
+/// Per-quest gold/experience reward (columns 10 and 11).
+#[derive(Debug, Clone, Default)]
+pub struct QuestRewardValues(pub HashMap<u32, QuestRewardValue>);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct QuestRewardValue {
+    pub gold: u64,
+    pub exp: u64,
+}
+
+impl QuestRewardValues {
+    pub fn parse(content: &str) -> Self {
+        let mut map = HashMap::new();
+        for line in content.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let Some(quest) = cols.first().and_then(|c| c.trim().parse::<u32>().ok()) else {
+                continue;
+            };
+            let number = |col: usize| {
+                cols.get(col)
+                    .and_then(|c| c.trim().parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            map.insert(
+                quest,
+                QuestRewardValue {
+                    gold: number(GOLD_COL),
+                    exp: number(EXP_COL),
+                },
+            );
+        }
+        QuestRewardValues(map)
+    }
+
+    /// Gold/exp for a quest, `None` for an id the table does not carry (ids
+    /// 220 and 399 have no row here either).
+    pub fn get(&self, quest: u32) -> Option<QuestRewardValue> {
+        self.0.get(&quest).copied()
+    }
+}
 
 /// Per-quest reward rows, in file order.
 #[derive(Debug, Clone, Default)]
@@ -121,6 +171,34 @@ mod test {
         assert!(modes.choose_one(9), "17 quests pick exactly one");
         // an unknown quest is not a picker
         assert!(!modes.choose_one(12345));
+    }
+
+    /// The gold/exp columns, on the two rows §11.4 cross-checked against the
+    /// client's own reward text.
+    #[test]
+    fn gold_and_exp_come_from_columns_ten_and_eleven() {
+        let content = "3\tQNO_CH_SMITH_1\t1\t1\t0\t0\t0\t0\t0\t0\t205\t270\r\n\
+                       11\tQNO_CH_GENARAL_SP_1\t1\t1\t0\t0\t0\t0\t0\t0\t0\t14500\r\n\
+                       //comment";
+        let values = QuestRewardValues::parse(content);
+        assert_eq!(
+            values.get(3),
+            Some(QuestRewardValue {
+                gold: 205,
+                exp: 270
+            }),
+            "\"Exp 270 / GOLD 205\" in the quest's own SN_PAYCON text"
+        );
+        assert_eq!(
+            values.get(11),
+            Some(QuestRewardValue {
+                gold: 0,
+                exp: 14500
+            }),
+            "\"Experience 14500 / 50 Vigor recovery herbs\" — no gold"
+        );
+        // an id the table has no row for stays absent instead of reading 0/0
+        assert_eq!(values.get(220), None);
     }
 
     /// Real rows from `refquestrewarditems.txt`, including the `//DBtoMedia`
