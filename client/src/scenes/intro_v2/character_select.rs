@@ -1316,9 +1316,10 @@ pub(crate) fn info_box(
                     ),
                     // HP/MP gauges. A vanilla `CIFGauge` with `Style=0` CROPS its art
                     // along X at 1:1 texel scale, it does not stretch it to the fill
-                    // width, so the percentage
+                    // width (`docs/re/ui/hp-mp-gauge-widget.md`), so the percentage
                     // goes on a clip wrapper and the image keeps its full authored
-                    // width. Same three-node recipe as `hud/character_info/ui.rs`.
+                    // width. Same three-node recipe as `hud/character_info/ui.rs`,
+                    // which is the one site in the tree that already had it right.
                     // Here the two models happen to render identically — `hp.ddj` and
                     // `mp.ddj` are 136x8 with no X structure — so this is for
                     // consistency, not for the pixels.
