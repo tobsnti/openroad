@@ -198,6 +198,10 @@ impl<'a> Reader<'a> {
     /// record's `job_type` byte (`entity_spawn::parse_player`): a record with
     /// `job_type = 1` and no suit equipped still carries the full sub-block.
     ///
+    /// Still UNVERIFIED against real bytes: `packet_dump/0x3019.log` holds no
+    /// player spawn record at all (`docs/net-captured-opcodes.md`), so closing
+    /// this needs the guilded-player capture, `docs/re/CAPTURE_LIST.md` row A5.
+    ///
     /// `None` (a short read) aborts the record like every other parse failure
     /// here.
     pub fn guild(&mut self, job_mode: bool) -> Option<GuildBlock> {
