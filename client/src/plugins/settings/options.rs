@@ -72,6 +72,31 @@ impl GraphicProfile {
         (self.width != default_width() || self.height != default_height())
             .then_some((self.width, self.height))
     }
+
+    /// The chosen step of a quality row, as the zero-based index into the
+    /// original's own value list for that row.
+    ///
+    /// The cell is two bytes and the index lives in the **low** one. That is
+    /// measured, not inferred: a file whose rows were last written by the
+    /// original carries the same index in both bytes, while an untouched
+    /// install carries e.g. `00 01` for Shadow Detail — and the original
+    /// displays the first entry of the list for it, i.e. the low byte. What
+    /// the high byte means before the first write is UNKNOWN; it looks like a
+    /// maximum, but the original overwrites it with the index, so nothing can
+    /// depend on it. It is therefore not read here.
+    ///
+    /// A row the player never touched reads as step 1. That is openroad's own
+    /// baseline (the rows ship enabled), not a recovered default — the shipped
+    /// video block is explicitly not adopted, see `docs/formats/sroptionset.md`.
+    pub fn quality_step(&self, id: u16) -> u8 {
+        self.quality.get(&id).map_or(1, |value| *value as u8)
+    }
+
+    /// Writes a step index back. Only the low byte is written: the pane is not
+    /// the original's Apply button and must not fabricate the second byte.
+    pub fn set_quality_step(&mut self, id: u16, step: u8) {
+        self.quality.insert(id, u16::from(step));
+    }
 }
 
 impl Default for GraphicProfile {
