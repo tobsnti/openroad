@@ -1052,12 +1052,12 @@ mod test {
         assert_eq!(fill_placeholders("%d and %d", &[3]), "3 and %d");
     }
 
-    /// Ownership: character creation lives *inside* the intro scene. The state
-    /// graph is what makes creation share the char-select stage, world origin,
-    /// cinematic camera and agent connection — promoting `CharacterCreate` to
-    /// its own `SceneState` would tear all four down on entry. Pinned here so
-    /// the promotion cannot happen silently; the rationale and its citations
-    /// sit on the variant itself.
+    /// #645, ownership half: character creation lives *inside* the intro scene.
+    /// The state graph is what makes creation share the char-select stage,
+    /// world origin, cinematic camera and agent connection — promoting
+    /// `CharacterCreate` to its own `SceneState` would tear all four down on
+    /// entry. Pinned here so the promotion cannot happen silently; the
+    /// rationale and its citations sit on the variant itself.
     #[test]
     fn character_create_is_a_sub_state_of_the_intro_scene() {
         let mut app = App::new();
