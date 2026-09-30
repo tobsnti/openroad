@@ -137,8 +137,8 @@ impl CharacterDataRow {
     /// The `.bsr` model path, or `None` when the row has no own model — the
     /// column is `xxx`/blank for summon clones and invisible helpers (e.g.
     /// `MOB_CH_WATERGHOST_CLON`, the "water ghost slave"). Loading `xxx`
-    /// `MOB_CH_WATERGHOST_CLON`, the "water ghost slave"). Loading `xxx`
     /// produces spurious `Path not found: res/xxx` errors, so callers skip
+    /// the model when this is `None` (the entity still spawns, indexed).
     pub fn resource_path(&self) -> Option<String> {
         let path = &self.0[ChardataFields::ResourcePath];
         if path.is_empty() || path == "xxx" {

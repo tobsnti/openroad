@@ -307,7 +307,6 @@ pub fn enter_region_select(
 ) {
     commands.remove_resource::<super::character_create::EnteringCharacterCreate>();
     // Before the camera gate, not after it: `update_region_hover` takes
-    // Before the camera gate, not after it: `update_region_hover` takes
     // `ResMut<HoveredRegion>` and Bevy does not skip a system whose resource is
     // missing — it fails parameter validation and panics the schedule
     // (AGENTS.md). Behind the early return, a frame without a 2d camera would
