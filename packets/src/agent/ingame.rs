@@ -2765,6 +2765,90 @@ impl From<BuffRemove> for Bytes {
     }
 }
 
+/// [`BuffRemainTime::Own`]: the refresh names no entity.
+pub const BUFF_REMAIN_TIME_OWN: u8 = 0;
+/// [`BuffRemainTime::Entity`]: the refresh names the entity it applies to.
+pub const BUFF_REMAIN_TIME_ENTITY: u8 = 8;
+
+/// 0x3206 — server → client: the remaining time of a running buff. A leading
+/// `u8` selects the body.
+///
+/// A sub-type we do not know, and a known one whose fields do not end on the
+/// last byte of the body, are both kept whole rather than half-read: the width
+/// of a body we have never seen is not ours to assume.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum BuffRemainTime {
+    /// A buff on the player's own character, which the refresh therefore does
+    /// not have to name.
+    Own {
+        /// The instance id [`BuffAdd`] announced the buff under.
+        buff_instance_id: u32,
+        /// Time left on the buff. It runs down with time spent in the game, not
+        /// with the clock, and the server keeps it to whole seconds. A consumer
+        /// that shows it must say so.
+        remaining_play_ms: u32,
+    },
+    /// The same refresh for a named entity. [U] — no body of this sub-type has
+    /// been seen; the field order is the one the client's handler reads.
+    Entity {
+        unique_id: u32,
+        buff_instance_id: u32,
+        remaining_ms: u32,
+    },
+    /// Kept as it arrived, so nothing downstream reads a field that is not there.
+    Unknown { raw: Bytes },
+}
+
+impl TryFrom<Bytes> for BuffRemainTime {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        let mut r = Reader::new(&value);
+        // A body without the selector byte is not a sub-type we can keep.
+        let sub = r.u8()?;
+        let rest = value.len() - 1;
+        match (sub, rest) {
+            (BUFF_REMAIN_TIME_OWN, 8) => Ok(BuffRemainTime::Own {
+                buff_instance_id: r.u32()?,
+                remaining_play_ms: r.u32()?,
+            }),
+            (BUFF_REMAIN_TIME_ENTITY, 12) => Ok(BuffRemainTime::Entity {
+                unique_id: r.u32()?,
+                buff_instance_id: r.u32()?,
+                remaining_ms: r.u32()?,
+            }),
+            _ => Ok(BuffRemainTime::Unknown { raw: value }),
+        }
+    }
+}
+
+impl From<BuffRemainTime> for Bytes {
+    fn from(p: BuffRemainTime) -> Self {
+        let mut buf = BytesMut::new();
+        match p {
+            BuffRemainTime::Own {
+                buff_instance_id,
+                remaining_play_ms,
+            } => {
+                buf.put_u8(BUFF_REMAIN_TIME_OWN);
+                buf.put_u32_le(buff_instance_id);
+                buf.put_u32_le(remaining_play_ms);
+            }
+            BuffRemainTime::Entity {
+                unique_id,
+                buff_instance_id,
+                remaining_ms,
+            } => {
+                buf.put_u8(BUFF_REMAIN_TIME_ENTITY);
+                buf.put_u32_le(unique_id);
+                buf.put_u32_le(buff_instance_id);
+                buf.put_u32_le(remaining_ms);
+            }
+            BuffRemainTime::Unknown { raw } => return raw,
+        }
+        buf.freeze()
+    }
+}
+
 /// 0x70A7 — client → server: the hwan (jahwan / berserk) activation request.
 ///
 /// One byte. The original's builder writes exactly one
@@ -3647,6 +3731,76 @@ mod test {
         assert_eq!(back, wire);
         // A count that outruns the body is a decode error, not a silent short read.
         assert!(BuffRemove::try_from(Bytes::from_static(&[0x02, 0x8c, 0x03, 0x00, 0x00])).is_err());
+    }
+
+    #[test]
+    fn buff_remain_time_reads_the_own_character_arm() {
+        for (wire, id, ms) in [
+            (
+                [0x00, 0x57, 0x25, 0x00, 0x00, 0xa0, 0x5a, 0x02, 0x08],
+                0x2557,
+                134_372_000u32,
+            ),
+            (
+                [0x00, 0x59, 0x25, 0x00, 0x00, 0xa0, 0x1e, 0xe8, 0x0d],
+                0x2559,
+                233_316_000,
+            ),
+        ] {
+            let wire = Bytes::copy_from_slice(&wire);
+            let decoded: BuffRemainTime = wire.clone().try_into().unwrap();
+            assert_eq!(
+                decoded,
+                BuffRemainTime::Own {
+                    buff_instance_id: id,
+                    remaining_play_ms: ms,
+                }
+            );
+            let back: Bytes = decoded.into();
+            assert_eq!(back, wire);
+        }
+    }
+
+    #[test]
+    fn buff_remain_time_reads_the_entity_arm() {
+        let wire = Bytes::from_static(&[
+            0x08, 0x90, 0x89, 0x05, 0x00, 0x57, 0x25, 0x00, 0x00, 0xa0, 0x5a, 0x02, 0x08,
+        ]);
+        let decoded: BuffRemainTime = wire.clone().try_into().unwrap();
+        assert_eq!(
+            decoded,
+            BuffRemainTime::Entity {
+                unique_id: 0x58990,
+                buff_instance_id: 0x2557,
+                remaining_ms: 134_372_000,
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A body that would not end where its fields end is worth less than the
+    /// bytes it came in as, so it keeps them.
+    #[test]
+    fn buff_remain_time_keeps_a_body_it_cannot_close() {
+        for body in [
+            // the own-character arm one byte short
+            &[0x00, 0x57, 0x25, 0x00, 0x00, 0xa0, 0x5a, 0x02][..],
+            // and one byte long
+            &[0x00, 0x57, 0x25, 0x00, 0x00, 0xa0, 0x5a, 0x02, 0x08, 0x00][..],
+            // the entity arm with the own-character width
+            &[0x08, 0x57, 0x25, 0x00, 0x00, 0xa0, 0x5a, 0x02, 0x08][..],
+            // a sub-type nobody has a body for
+            &[0x01, 0x57, 0x25, 0x00, 0x00][..],
+        ] {
+            let wire = Bytes::copy_from_slice(body);
+            let decoded: BuffRemainTime = wire.clone().try_into().unwrap();
+            assert_eq!(decoded, BuffRemainTime::Unknown { raw: wire.clone() });
+            let back: Bytes = decoded.into();
+            assert_eq!(back, wire);
+        }
+        // Without the selector byte there is not even a sub-type to keep.
+        assert!(BuffRemainTime::try_from(Bytes::new()).is_err());
     }
 
     #[test]
