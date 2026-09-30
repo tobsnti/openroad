@@ -303,11 +303,11 @@ pub fn jump_to_requested_screen(
 /// screen is entered with; Chinese (the resource's own default) otherwise.
 fn jump_race() -> Race {
     match std::env::var("OPENROAD_INTRO_JUMP_RACE").ok().as_deref() {
-        Some("european") => Race::European,
-        Some("chinese") | None => Race::Chinese,
+        Some("european") => Race::EUROPEAN,
+        Some("chinese") | None => Race::CHINESE,
         Some(other) => {
             warn!("OPENROAD_INTRO_JUMP_RACE: unknown race '{other}' (chinese|european)");
-            Race::Chinese
+            Race::CHINESE
         }
     }
 }

@@ -558,6 +558,15 @@ impl Plugin for IntroV2ScenePlugin {
                     .run_if(in_state(IntroV2State::CharacterList))
                     .run_if(dev_fast_login::enabled),
             )
+            // Dev hook (`OPENROAD_INTRO_JUMP`), inert unless the env var is
+            // set: the race board and the creation screen are otherwise only
+            // reachable by hand.
+            .add_systems(
+                Update,
+                dev_fast_login::jump_to_requested_screen
+                    .run_if(in_state(IntroV2State::CharacterList))
+                    .run_if(dev_fast_login::enabled),
+            )
             .add_systems(
                 OnExit(SceneState::IntroV2),
                 (disable_camera::<CinematicCamera>, cleanup),
