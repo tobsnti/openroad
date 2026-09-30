@@ -253,6 +253,12 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                environment::options::apply_shadow_detail_option carries it \
                into the Sun on every change, in PBR mode only, which is what \
                lets the Video pane's Shadow Detail row drop its restart note. \
+               `water.reflection` is the same arrangement one tier down: \
+               water.quality picks the tier once, at terrain setup \
+               (map::setup_terrain_mesh), while inside the high tier \
+               map::water_options::apply_water_reflection_option moves the \
+               reflection blend on every change, which is what lets the Water \
+               Reflection row drop its note too. \
                `preset` has one more \
                writer since the Video pane's Graphics Preset row became \
                settable: `video.preset_override` in user_settings.yaml, read \

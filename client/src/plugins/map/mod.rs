@@ -30,6 +30,7 @@ pub mod terrain;
 pub mod view_range;
 pub mod water_hq_material;
 pub mod water_material;
+pub mod water_options;
 
 pub struct MapPlugin;
 impl Plugin for MapPlugin {
@@ -118,6 +119,17 @@ impl Plugin for MapPlugin {
             .add_systems(
                 Update,
                 generate_water_normal_mips.run_if(resource_exists::<WaterNormalMapImage>),
+            )
+            // The Video pane's Water Reflection row writes
+            // `graphics.water.reflection`; this carries it into the live
+            // material, the same shape `effects::apply_effect_quality` uses.
+            .add_systems(
+                Update,
+                water_options::apply_water_reflection_option.run_if(
+                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                        crate::plugins::config::ClientConfig,
+                    >,
+                ),
             )
             .add_systems(
                 Update,

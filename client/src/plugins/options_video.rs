@@ -31,7 +31,7 @@ use bevy::ui_widgets::{Activate, Button};
 use bevy::window::Monitor;
 
 use crate::assets::resinfo::interface_text::font_index_px;
-use crate::plugins::config::graphics::{FoliageMode, RenderMode, RenderScale};
+use crate::plugins::config::graphics::{FoliageMode, RenderMode, RenderScale, WaterQuality};
 use crate::plugins::config::preset::QualityPreset;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::options::{GameOptions, GraphicProfile};
@@ -176,6 +176,10 @@ enum Requirement {
     /// and `render_mode: vanilla` — the faithful default — is the mode that
     /// draws none.
     PbrLighting,
+    /// Only the high water tier reflects anything: the low tier's material
+    /// drops the whole reflection term (`map::water_material`), so there is
+    /// nothing for the row to switch there.
+    HighWater,
 }
 
 impl Requirement {
@@ -184,6 +188,7 @@ impl Requirement {
         match self {
             Requirement::Always => true,
             Requirement::PbrLighting => config.graphics.render_mode == RenderMode::Pbr,
+            Requirement::HighWater => config.graphics.water.quality == WaterQuality::High,
         }
     }
 
@@ -194,6 +199,7 @@ impl Requirement {
         match self {
             Requirement::Always => None,
             Requirement::PbrLighting => Some("no effect in vanilla lighting"),
+            Requirement::HighWater => Some("no effect on low water"),
         }
     }
 }
@@ -244,7 +250,9 @@ fn config_row(id: u16) -> Option<ConfigRow> {
             &["Near (1000)", "Medium (1500)", "Far (2500)", "Unlimited"],
             None,
         ),
-        4 => row(off_on, Some("next scene; high water only")),
+        // no restart note: `map::water_options::apply_water_reflection_option`
+        // carries the key into the live material
+        4 => row_requiring(off_on, None, Requirement::HighWater),
         5 => row(&["Low", "High"], Some("restart")),
         6 => row(off_on, Some("restart")),
         7 => row(
@@ -286,7 +294,7 @@ fn nearest_step<T: Copy + Into<f64>>(steps: &[T], value: T) -> usize {
 /// The step row `id` is on in `config`. Off-scale values (a hand-edited
 /// view distance) read as the nearest step.
 fn config_row_step(id: u16, config: &ClientConfig) -> usize {
-    use crate::plugins::config::graphics::{EffectQuality, TextureDetail, WaterQuality};
+    use crate::plugins::config::graphics::{EffectQuality, TextureDetail};
     let graphics = &config.graphics;
     match id {
         1 => usize::from(graphics.shadows.enabled),
@@ -296,7 +304,7 @@ fn config_row_step(id: u16, config: &ClientConfig) -> usize {
             range if range <= 0.0 => CHARACTER_SIGHT_STEPS.len() - 1,
             range => nearest_step(&CHARACTER_SIGHT_STEPS[..3], range),
         },
-        4 => usize::from(graphics.depth_prepass),
+        4 => usize::from(graphics.water.reflection),
         5 => usize::from(graphics.water.quality == WaterQuality::High),
         6 => usize::from(graphics.sheen.enabled),
         7 => match graphics.dungeon.max_lights {
@@ -323,9 +331,7 @@ fn config_row_step(id: u16, config: &ClientConfig) -> usize {
 
 /// Puts row `id` on `step` in `config`.
 fn set_config_row_step(id: u16, step: usize, config: &mut ClientConfig) {
-    use crate::plugins::config::graphics::{
-        Anisotropy, EffectQuality, TextureDetail, WaterQuality,
-    };
+    use crate::plugins::config::graphics::{Anisotropy, EffectQuality, TextureDetail};
     let graphics = &mut config.graphics;
     let pick = |steps_len: usize| step.min(steps_len - 1);
     match id {
@@ -334,7 +340,7 @@ fn set_config_row_step(id: u16, step: usize, config: &mut ClientConfig) {
             graphics.view.character_distance =
                 CHARACTER_SIGHT_STEPS[pick(CHARACTER_SIGHT_STEPS.len())]
         }
-        4 => graphics.depth_prepass = step != 0,
+        4 => graphics.water.reflection = step != 0,
         6 => graphics.sheen.enabled = step != 0,
         7 => graphics.dungeon.max_lights = LIGHT_STEPS[pick(LIGHT_STEPS.len())] as usize,
         8 => graphics.anisotropy = Anisotropy(FILTERING_STEPS[pick(FILTERING_STEPS.len())]),
@@ -499,6 +505,10 @@ const DETAIL_ROWS: [DetailRow; 13] = [
         english: "Character Sight Range",
         backing: Backing::Config,
     },
+    // Steps `graphics.water.reflection`, which
+    // `map::water_options::apply_water_reflection_option` carries into the
+    // high tier's reflection blend while the game runs. High tier only, which
+    // is what `Requirement::HighWater` says.
     DetailRow {
         id: 4,
         key: "UIIT_STT_WATER_REFLECTION",
@@ -1891,13 +1901,13 @@ mod tests {
     /// accident of nobody adding a condition: a row that quietly grew one
     /// would start claiming an effect it does not have.
     #[test]
-    fn only_shadow_detail_carries_a_condition() {
+    fn only_shadow_detail_and_water_reflection_carry_a_condition() {
         let conditional: Vec<u16> = DETAIL_ROWS
             .iter()
             .filter(|row| config_row(row.id).is_some_and(|def| def.requires != Requirement::Always))
             .map(|row| row.id)
             .collect();
-        assert_eq!(conditional, vec![1]);
+        assert_eq!(conditional, vec![1, 4]);
     }
 
     /// Supersampling has to be reachable from the window, or "let me have the
