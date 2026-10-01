@@ -1,41 +1,55 @@
-//! Alchemy box window — the classic shell and its two pages, Equip Enhance and
-//! Attribute Grant.
+//! Alchemy box window — the shell the client loads, and its three pages.
 //!
-//! Idea: the vanilla alchemy box is a 376-wide window whose shell
-//! (`ginterface.txt:842-863`, `GDR_ALCHEMYBOX` id 44, `Rect="595,262,376,152"`)
-//! hosts its pages at `y=150`. The shell declares exactly two of them, both at
-//! the same rect `0,150,376,192`: `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM`
-//! (`ifalchemybox.txt`, id 23, art `alcm_window_allowance.ddj`) and
-//! `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` (id 22, art
-//! `alcm_window_reinforcement.ddj`). Composed extent is therefore `376x342`;
-//! our content space is that minus the vanilla 42px title strip
-//! (`GDR_ALCHEMYBOX_DRAG` `10,0,355,42`), which the shared `game_window`
-//! chrome's caption band replaces — leaving the page art at its native 376x192
-//! with no rescale (both DDJs measure 376x192 in their DDS header).
+//! **Which description this is built from, and how that was decided.** The
+//! client loads `resinfo/ifnewalchemybox.txt`; it does **not** load
+//! `ifalchemybox.txt`, which an earlier version of this file used. The test
+//! below pins the numbers that differ, so the two cannot be confused again.
 //!
-//! **The two page bodies are the same layout, and that is a data fact.**
-//! `ifalchemyenchant.txt` and `ifalchemyreinforce.txt` are 149 lines each and
-//! are identical once the `GDR_AB_ENCHANT_` / `GDR_AB_REINFORCE_` name prefix
-//! is substituted: same seven controls, same ids 30/38..42/50, same rects, same
-//! button text. So the layout constants below are shared by both pages.
+//! The shell is 376 wide and hosts its pages at `y=150`. It declares **three**
+//! of them, each with its own art and height:
+//! `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` (id 22, `0,150,376,228`,
+//! `alcm_window_quick mastery.ddj`), `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM`
+//! (id 23, `0,150,376,192`, `alcm_window_allowance.ddj`) and
+//! `GDR_ALCHEMYBOX_ELEMENT_MANUFACTURING` (id 21, `0,150,376,228`,
+//! `alcm_window_experiment.ddj`). Every one of the three rect heights equals its
+//! art's own DDS height. Composed extent is `150 + 228 = 378`; our content space
+//! is that minus the 42-unit title strip (`GDR_ALCHEMYBOX_DRAG` `10,0,355,42`),
+//! which the shared `game_window` chrome's caption band replaces.
+//!
+//! **The window plate carries a parchment tablet, and that is why the shipped
+//! font colour is black.** The shell's image set is `interface/frame/mframe_alc_`,
+//! whose eight parts are seven 4x4 stubs and one real image: `mframe_alc_right_up.ddj`
+//! at 376x376, i.e. the whole plate in one picture. Decoding it shows a bright
+//! tablet at rows **93..139** — where the shell puts `GDR_ALCHEMYBOX_PML_TEXT`
+//! (`39,97,300,48`, `FontColor="255,0,0,0"`). The description is dark text on
+//! parchment, not light text on a fill tile. Measured on the same decode: rows
+//! **296..375 are fully transparent** (all 1880 blocks in that band are the
+//! DXT1 alpha form with both colours zero), so the drawn plate is 376x296 and
+//! the page art covers its lower half.
 //!
 //! Slots hold *references* to inventory slots (model.rs); nothing is sent to
 //! the server, because the fuse opcode map in `docs/re/systems/alchemy.md` is
 //! `[S]`-inferred rather than captured. The Fuse button is therefore drawn in
 //! its vanilla disabled state.
 //!
-//! **The page selector is ours in position and the data's in substance:** no
-//! resinfo tree declares a tab or a button for the pages — `ifalchemybox.txt`
-//! carries six controls and none of them selects a page (positive control on
-//! the same read: that file *does* declare `GDR_ALCHEMYBOX_CLOSE` and
-//! `GDR_ALCHEMYBOX_DRAG`). What the archive ships instead is one 20x24 gem lamp
-//! per page in an on/off pair (`interface/alchemy/alcm_lamp_enchant_{on,off}.ddj`,
-//! `alcm_lamp_reinforcement_{on,off}.ddj`) plus one caption string per page host
-//! (`textuisystem.txt:771` `UIIT_STT_ALCHEMYBOX_REINFORCE_ITEM` = *"Equip
-//! Enhance"*, `:773` `..._ENCHANT_MAGIC_PARAM` = *"Att.Grant"*). So the lamps
-//! and the words are the original's; only the row's rect is our choice, taken
-//! in the shell's one empty band — below the caption band, above the
-//! description block at `39,89,300,48`.
+//! **The page selector is ours in position and the data's in substance:** the
+//! shell carries seven controls — three page hosts, the text block, the close
+//! button, the drag area and the title — and **none of them selects a page**
+//! (positive control on the same read: the same file *does* declare
+//! `GDR_ALCHEMYBOX_CLOSE` and `GDR_ALCHEMYBOX_DRAG`). What the archive ships
+//! instead is one 20x24 gem lamp per page in an on/off pair — `alcm_lamp_enchant`,
+//! `alcm_lamp_reinforcement` and `alcm_lamp_element`, which are exactly these
+//! three pages — plus one caption string per page host (`textuisystem.txt:771`
+//! = *"Equip Enhance"*, `:773` = *"Att.Grant"*, `:772` = *"Elementation"*). So the
+//! lamps and the words are the original's; only the row's rect is our choice,
+//! taken in the shell's one empty band — below the caption band, above the
+//! description block at `39,97,300,48`.
+//!
+//! **One measured difference left open on purpose:** the parchment tablet in the
+//! plate spans rows 93..139, while the text block is declared at 97..145 — four
+//! units apart. The offset is not rounded away here, because an unexplained
+//! difference that is written down is a finding, and one that is smoothed over is
+//! a later bug.
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
@@ -51,7 +65,9 @@ use packets::Packet;
 use crate::assets::textdata::itemdata::ItemDataRow;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
-use crate::plugins::hud::alchemy::model::{AlchemyPage, AlchemyState, EQUIP_SLOT, STONE_SLOTS};
+use crate::plugins::hud::alchemy::model::{
+    AlchemyPage, AlchemyState, EQUIP_SLOT, STONE_SLOTS, TALLEST_HOST_H,
+};
 use crate::plugins::hud::alchemy::probability::{
     is_elixir, is_lucky_powder, is_magic_stone, reinforce_chance, ReinforceChance,
 };
@@ -65,33 +81,51 @@ use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
 
-/// `GDR_ALCHEMYBOX_DRAG` (`ifalchemybox.txt`) is `10,0,355,42`: the top 42
-/// units of the vanilla window are its title strip.
+/// `GDR_ALCHEMYBOX_DRAG` is `10,0,355,42`: the top 42 units of the window are
+/// its title strip.
 const TITLE_STRIP: f32 = 42.0;
-/// Shell `Rect="595,262,376,152"` + the page host at `0,150,376,192`.
+/// Shell width, and the page host's own `y`.
 const WINDOW_W: f32 = 376.0;
-const COMPOSED_H: f32 = 150.0 + PAGE_RECT.3;
-/// Content space = the composed window minus the vanilla title strip.
+const PAGE_TOP: f32 = 150.0;
+/// The window is composed around the **tallest** page, so switching pages does
+/// not resize it. 228 is the reinforce and element host height, which is also
+/// those arts' own DDS height.
+const COMPOSED_H: f32 = PAGE_TOP + TALLEST_HOST_H;
+/// Content space = the composed window minus the title strip.
 const CONTENT_W: f32 = WINDOW_W;
 const CONTENT_H: f32 = COMPOSED_H - TITLE_STRIP;
 
-/// Vanilla control rects rebased into content space (`y - TITLE_STRIP`; the
-/// page host sits at `x=0`, so page-local `x` needs no shift).
-/// `GDR_ALCHEMYBOX_PML_TEXT` `39,89,300,48`.
-const PML_RECT: (f32, f32, f32, f32) = (39.0, 89.0 - TITLE_STRIP, 300.0, 48.0);
-/// The page host both pages share: `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM`
-/// `0,150,376,192` and `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` `0,150,376,192`
-/// (`ifalchemybox.txt`).
-const PAGE_RECT: (f32, f32, f32, f32) = (0.0, 150.0 - TITLE_STRIP, 376.0, 192.0);
-/// `GDR_AB_ENCHANT_SLOT_EQUIP` / `GDR_AB_REINFORCE_SLOT_EQUIP` `59,56,32,32`,
-/// page-local (the two page files are identical, module doc).
-const EQUIP_RECT: (f32, f32, f32, f32) = (59.0, PAGE_RECT.1 + 56.0, SLOT, SLOT);
-/// `_SLOT_01..04` `164/212/260/308,56,32,32`, page-local, in both page files.
+/// Control rects rebased into content space (`y - TITLE_STRIP`; the page host
+/// sits at `x=0`, so page-local `x` needs no shift).
+/// `GDR_ALCHEMYBOX_PML_TEXT` `39,97,300,48`.
+const PML_RECT: (f32, f32, f32, f32) = (39.0, 97.0 - TITLE_STRIP, 300.0, 48.0);
+/// Origin of the page host all three pages share. Its **height** is the page's
+/// own ([`AlchemyPage::host_height`]), so this carries only the origin and the
+/// tallest extent.
+const PAGE_RECT: (f32, f32, f32, f32) = (0.0, PAGE_TOP - TITLE_STRIP, 376.0, 228.0);
+
+/// The window plate: `interface/frame/mframe_alc_` has seven 4x4 stubs and one
+/// real image, `mframe_alc_right_up.ddj` at 376x376 — the whole plate in one
+/// picture. Its drawn content is only **376x296**; rows 296..375 are fully
+/// transparent, so the plate is placed by that height and not by the file's.
+const PLATE_DDJ: &str = "media://interface/frame/mframe_alc_right_up.ddj";
+const PLATE_DRAWN_H: f32 = 296.0;
+/// The plate includes the title strip, which the chrome's caption band replaces,
+/// so the strip is cropped off and the rest is placed at the content origin.
+fn plate_crop() -> Rect {
+    Rect::new(0.0, TITLE_STRIP, WINDOW_W, PLATE_DRAWN_H)
+}
+const PLATE_RECT: (f32, f32, f32, f32) = (0.0, 0.0, WINDOW_W, PLATE_DRAWN_H - TITLE_STRIP);
+/// `GDR_AB_REINFORCE_SLOT_EQUIP` `58,74,32,32`, page-local
+/// (`ifnewalchemyreinforce.txt`, the body the loaded shell's reinforce host uses).
+const EQUIP_RECT: (f32, f32, f32, f32) = (58.0, PAGE_RECT.1 + 74.0, SLOT, SLOT);
+/// `_SLOT_01..04` `164/212/260/308,74,32,32`, page-local, pitch 48.
 const STONE_XS: [f32; STONE_SLOTS] = [164.0, 212.0, 260.0, 308.0];
-const STONE_Y: f32 = PAGE_RECT.1 + 56.0;
-/// `_BUTTON_PROCESS` `132,143,112,28`, page-local, in both page files — the
-/// art (`alcm_button.ddj`) is exactly 112x28.
-const BUTTON_RECT: (f32, f32, f32, f32) = (132.0, PAGE_RECT.1 + 143.0, 112.0, 28.0);
+const STONE_Y: f32 = PAGE_RECT.1 + 74.0;
+/// `_BUTTON_PROCESS` `136,178,0,0` page-local, on `alcm_button_01.ddj`. The rect's
+/// `0,0` extent means "take the size from the art", and that art measures
+/// **104x28** — eight units narrower than the one this file used before.
+const BUTTON_RECT: (f32, f32, f32, f32) = (136.0, PAGE_RECT.1 + 178.0, 104.0, 28.0);
 const SLOT: f32 = 32.0;
 /// **Ours, not vanilla's** — the success-chance line (see `probability.rs`), and
 /// it belongs to the **Equip Enhance** page, the one whose ladder it reads.
@@ -99,10 +133,15 @@ const SLOT: f32 = 32.0;
 /// the deco, five slots and the button (positive control on the same read: the
 /// file *does* declare a `CIFDecoratedStatic`, so a text-capable control is a
 /// thing it could have carried). The rect is therefore a reasoned choice: the
-/// page's only empty band, between the slot row (`56 + 32 = 88`) and the Fuse
-/// button (`y = 143`), left-aligned with the first stone slot (`x = 164`) so it
+/// page's only empty band, between the slot row (`74 + 32 = 106`) and the Fuse
+/// button (`y = 178`), left-aligned with the first stone slot (`x = 164`) so it
 /// reads as belonging to the material row it is computed from.
-const CHANCE_RECT: (f32, f32, f32, f32) = (164.0, PAGE_RECT.1 + 104.0, 200.0, 14.0);
+///
+/// **It is an addition, not a restoration.** The original shows no success chance
+/// anywhere in this window — not with equipment and a matching elixir in the
+/// slots, and not after the button is pressed. The number is the data's; showing
+/// it is ours.
+const CHANCE_RECT: (f32, f32, f32, f32) = (164.0, PAGE_RECT.1 + 120.0, 200.0, 14.0);
 
 /// Page-selector row — **our rect, the data's art and words** (module doc).
 /// The lamp extent is the DDJ's own: all six `alcm_lamp_*_{on,off}.ddj` measure
@@ -120,10 +159,13 @@ const SELECTOR_PITCH: f32 = (CONTENT_W - 2.0 * SELECTOR_ORIGIN.0) / AlchemyPage:
 const SELECTOR_LABEL: (f32, f32, f32) = (4.0, SELECTOR_PITCH - LAMP.0 - 4.0 - 6.0, 12.0);
 /// 32x32 in its DDS header — the exact slot extent.
 const SLOT_DDJ: &str = "media://interface/alchemy/alcm_slot_closed.ddj";
-const BUTTON_DISABLED_DDJ: &str = "media://interface/alchemy/alcm_button_disable.ddj";
-/// `alcm_button.ddj` is the enabled face of `_BUTTON_PROCESS`; the descriptor
-/// gives the control exactly 112x28, which is the art's own size.
-const BUTTON_DDJ: &str = "media://interface/alchemy/alcm_button.ddj";
+/// The face of `_BUTTON_PROCESS`, named by that control's own `DDJ` field, and
+/// **the only face this button ever wears**. The archive does ship an
+/// `alcm_button_01_disable.ddj`, but the original does not use it for an empty
+/// page: with every slot empty the caption is drawn in full brightness and the
+/// button still answers a press. A greyed-out face for "nothing placed yet" was
+/// this file's own invention and is gone.
+const BUTTON_DDJ: &str = "media://interface/alchemy/alcm_button_01.ddj";
 
 /// `UIIT_MSG_REINFORCERR_NO_ITEM_LOADED` (`textuisystem.txt:2143`) — the
 /// archive's own answer to a fuse press with an incomplete page. It is also the
@@ -139,32 +181,39 @@ const FUSE_UNAVAILABLE: (&str, &str) = (
     "You are not under the state to use alchemy.",
 );
 
-/// The page's own 376x192 backdrop, named by its host control's `DDJ` field in
-/// `ifalchemybox.txt`.
+/// The page's own backdrop, named by its host control's `DDJ` field. Each one's
+/// DDS height equals its host rect's height (228 / 192 / 228).
 fn page_art(page: AlchemyPage) -> &'static str {
     match page {
-        AlchemyPage::EquipEnhance => "media://interface/alchemy/alcm_window_reinforcement.ddj",
+        AlchemyPage::EquipEnhance => "media://interface/alchemy/alcm_window_quick mastery.ddj",
         AlchemyPage::AttGrant => "media://interface/alchemy/alcm_window_allowance.ddj",
+        AlchemyPage::Elementation => "media://interface/alchemy/alcm_window_experiment.ddj",
     }
 }
 
 /// The selector lamp for a page. The `_on`/`_off` pair is the archive's own
-/// active/inactive art, and the stem names the page it belongs to.
+/// active/inactive art, and the stem names the page it belongs to. The archive
+/// ships four such pairs; three of them are these three pages, which is how they
+/// were identified as the page selector.
 fn page_lamp(page: AlchemyPage, active: bool) -> String {
     let stem = match page {
         AlchemyPage::EquipEnhance => "alcm_lamp_reinforcement",
         AlchemyPage::AttGrant => "alcm_lamp_enchant",
+        AlchemyPage::Elementation => "alcm_lamp_element",
     };
     let state = if active { "on" } else { "off" };
     format!("media://interface/alchemy/{stem}_{state}.ddj")
 }
 
 /// The caption string the archive ships for the page's host control, keyed by
-/// that control's own name (`textuisystem.txt:771` / `:773`).
+/// that control's own name (`textuisystem.txt:771` / `:773` / `:772`). Two of the
+/// three keys carry their control's name word for word; the reinforce host is
+/// `_EQUIPMENT` while its key is `_ITEM`, which is the one break and stays `[S]`.
 fn page_caption(page: AlchemyPage) -> (&'static str, &'static str) {
     match page {
         AlchemyPage::EquipEnhance => ("UIIT_STT_ALCHEMYBOX_REINFORCE_ITEM", "Equip Enhance"),
         AlchemyPage::AttGrant => ("UIIT_STT_ALCHEMYBOX_ENCHANT_MAGIC_PARAM", "Att.Grant"),
+        AlchemyPage::Elementation => ("UIIT_STT_ALCHEMYBOX_ELEMENT_MANUFACTURING", "Elementation"),
     }
 }
 
@@ -184,6 +233,10 @@ fn page_description(page: AlchemyPage) -> (&'static str, &'static str) {
             "UIIT_STT_ALCHEMYBOX_REINFORCE_ATTR_TEXT",
             "Att.Grant: using specific alchemy items will grant attributes or change basic \
              stats of your equipment.",
+        ),
+        AlchemyPage::Elementation => (
+            "UIIT_STT_ALCHEMYBOX_MATERIAL_PROCESSING_TEXT",
+            "Material Processing: this is alchemy that will disjoint or fuse an item.",
         ),
     }
 }
@@ -269,18 +322,27 @@ fn selector_rects(nth: usize) -> (LayoutRect, LayoutRect) {
     )
 }
 
-/// `GDR_AB_ENCHANT_BUTTON_PROCESS` `FontColor="255,255,245,218"` (resinfo
-/// COLOR is A,R,G,B), dimmed to 55% because the button is disabled.
-const BUTTON_TEXT_COLOR: Color = Color::srgb_u8(140, 135, 120);
+/// `_BUTTON_PROCESS` `FontColor="255,255,245,218"` (resinfo COLOR is A,R,G,B) —
+/// the button's caption, undimmed, because the button is never disabled.
+const BUTTON_TEXT_COLOR: Color = Color::srgb_u8(255, 245, 218);
+/// An unselected page's caption, dimmed from [`CAPTION_ACTIVE_COLOR`]. This dimming
+/// is **ours** — the selector row itself is ours — and it is the only place in this
+/// window where a dimmed text colour means anything.
+const CAPTION_IDLE_COLOR: Color = Color::srgb_u8(140, 135, 120);
 /// The selected page's caption is drawn in the window title's own colour
-/// (`GDR_ALCHEMYBOX_TITLE` `FontColor="255,239,218,164"`, `ifalchemybox.txt`);
-/// the unselected one reuses the dimmed [`BUTTON_TEXT_COLOR`], so "dim = not
-/// active" reads the same way twice.
+/// (`GDR_ALCHEMYBOX_TITLE` `FontColor="255,239,218,164"`, the same in both shells);
+/// the unselected one uses the dimmed [`CAPTION_IDLE_COLOR`].
 const CAPTION_ACTIVE_COLOR: Color = Color::srgb_u8(239, 218, 164);
-/// `GDR_ALCHEMYBOX_PML_TEXT` has no `FontColor` worth reading (`255,0,0,0`,
-/// i.e. black, is the resinfo default for a PML control whose runs carry their
-/// own colours); the body text is drawn in the HUD's off-white.
-const PML_TEXT_COLOR: Color = Color::srgb_u8(230, 226, 214);
+/// `GDR_ALCHEMYBOX_PML_TEXT` carries `FontColor="255,0,0,0"` — **black**, and that
+/// is not a resinfo default to be ignored: the window plate puts a bright
+/// parchment tablet exactly under this control, so the description is dark text
+/// on parchment. Drawing it off-white on a fill tile was the reason it looked
+/// wrong.
+const PML_TEXT_COLOR: Color = Color::srgb_u8(24, 20, 14);
+/// The chance line does **not** sit on the parchment — it sits on the page art,
+/// which is dark. So it keeps the HUD's off-white and must not follow
+/// [`PML_TEXT_COLOR`]: the two differ because their backgrounds differ.
+const PAGE_TEXT_COLOR: Color = Color::srgb_u8(230, 226, 214);
 
 /// Default position: the registry's `595,262` on the vanilla 1024x768 screen,
 /// expressed as our right/top anchor — `1024 - (595 + 376) = 53`.
@@ -378,9 +440,30 @@ pub fn sync_alchemy_window(
     let chance = inventory.and_then(|inventory| slot_chance(&state, inventory, &item_data));
 
     commands.entity(window.content).with_children(|content| {
-        // the page's own 376x192 backdrop, at its native extent
+        // The window plate, with its title strip cropped off. It carries the
+        // parchment tablet the description sits on, which is why that text is
+        // dark. Drawn first, so the page art covers its lower half the way the
+        // shell stacks them.
         content.spawn((
-            abs_node(PAGE_RECT, s),
+            abs_node(PLATE_RECT, s),
+            ImageNode {
+                image: asset_server.load(PLATE_DDJ),
+                image_mode: NodeImageMode::Stretch,
+                rect: Some(plate_crop()),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+
+        // the page's own backdrop, at its native extent — 228 or 192 tall
+        let page_rect = (
+            PAGE_RECT.0,
+            PAGE_RECT.1,
+            PAGE_RECT.2,
+            state.page.host_height(),
+        );
+        content.spawn((
+            abs_node(page_rect, s),
             ImageNode {
                 image: asset_server.load(page_art(state.page)),
                 image_mode: NodeImageMode::Stretch,
@@ -415,7 +498,7 @@ pub fn sync_alchemy_window(
                 TextColor(if active {
                     CAPTION_ACTIVE_COLOR
                 } else {
-                    BUTTON_TEXT_COLOR
+                    CAPTION_IDLE_COLOR
                 }),
                 TextLayout::justify(Justify::Left),
                 abs_node(label_rect, s),
@@ -440,6 +523,13 @@ pub fn sync_alchemy_window(
             abs_node(PML_RECT, s),
             Pickable::IGNORE,
         ));
+
+        // The element page has no slots and no button of its own here: its
+        // action has no opcode, so it shows its art and its description and
+        // nothing that pretends to work.
+        if !state.page.can_act() {
+            return;
+        }
 
         // the five item slots (equipment + four stones)
         for index in 0..=STONE_SLOTS {
@@ -486,27 +576,23 @@ pub fn sync_alchemy_window(
                     font_size: FontSize::Px(8.5 * s),
                     ..default()
                 },
-                TextColor(PML_TEXT_COLOR),
+                TextColor(PAGE_TEXT_COLOR),
                 TextLayout::justify(Justify::Left),
                 abs_node(CHANCE_RECT, s),
                 Pickable::IGNORE,
             ));
         }
 
-        // Fuse — the vanilla disabled face while the page cannot make a request
-        // (no equipment, no material) or while one is already out.
-        let ready = state.fuse_slots().is_some() && !state.pending;
+        // Fuse — one face, always pressable. The original does not grey this
+        // button out for an empty page, so neither does this: a press with
+        // nothing placed answers with the archive's own refusal line instead.
         content
             .spawn((
                 AlchemyFuseButton,
                 Hovered::default(),
                 abs_node(BUTTON_RECT, s),
                 ImageNode {
-                    image: asset_server.load(if ready {
-                        BUTTON_DDJ
-                    } else {
-                        BUTTON_DISABLED_DDJ
-                    }),
+                    image: asset_server.load(BUTTON_DDJ),
                     image_mode: NodeImageMode::Stretch,
                     ..default()
                 },
@@ -582,6 +668,11 @@ fn on_fuse_button(
             let stone_type = stone_type_in_page(&state, inventories.single().ok(), &item_data);
             AlchemyStoneRequest::fuse(stone_type, slots).map(Packet::from)
         }
+        // No opcode carries this page's action, so it draws no button at all and
+        // a press cannot reach here. Leaving the arm as a silent return keeps the
+        // decision in one place — the page's own `can_act` — instead of a second
+        // copy of it, and says nothing to the player about slots.
+        AlchemyPage::Elementation => return,
     };
     // unreachable while fuse_slots() enforces the same minimum, and it stays
     // checked because the two limits must not drift apart
@@ -730,43 +821,130 @@ mod test {
     /// it (the #310 lesson: derive it from `game_window`, never hand-tune).
     const ORIGIN_Y: f32 = game_window::CONTENT_TOP;
 
-    /// The composed classic window is the shell's 152-tall registry rect with
-    /// the page host at `y=150`: `150 + 192 = 342`. Our content is that minus
-    /// the 42-unit title strip the chrome's caption band replaces.
+    /// The composed window is the page host's `y=150` plus the tallest page:
+    /// `150 + 228 = 378`. Our content is that minus the 42-unit title strip the
+    /// chrome's caption band replaces.
     #[test]
-    fn alchemy_content_is_the_vanilla_window_minus_its_title_strip() {
-        assert_eq!((CONTENT_W, CONTENT_H), (376.0, 300.0));
+    fn alchemy_content_is_the_window_minus_its_title_strip() {
+        assert_eq!((CONTENT_W, CONTENT_H), (376.0, 336.0));
         assert_eq!(COMPOSED_H - TITLE_STRIP, CONTENT_H);
-        // the page fills the content space exactly, bottom-aligned
+        // the tallest page fills the content space exactly, bottom-aligned
         assert_eq!(PAGE_RECT.1 + PAGE_RECT.3, CONTENT_H);
+        // and no page is taller than the window is built for
+        for page in AlchemyPage::ALL {
+            assert!(page.host_height() <= PAGE_RECT.3);
+            assert!(PAGE_RECT.1 + page.host_height() <= CONTENT_H);
+        }
+        assert_eq!(TALLEST_HOST_H, PAGE_RECT.3);
     }
 
-    /// Vanilla rects, rebased. Window-space controls lose the title strip;
+    /// The numbers that separate the loaded description from the one this file
+    /// used to read. Pinned as a pair so a future edit cannot drift back: the
+    /// shell we build from puts the text block at `y=97` and gives the reinforce
+    /// and element pages `228`, where the other file had `89` and `192`.
+    #[test]
+    fn the_shell_numbers_are_the_loaded_descriptions_not_the_other_files() {
+        assert_eq!(PML_RECT.1, 97.0 - TITLE_STRIP, "text block at y=97, not 89");
+        assert_eq!(AlchemyPage::EquipEnhance.host_height(), 228.0);
+        assert_eq!(AlchemyPage::Elementation.host_height(), 228.0);
+        assert_eq!(
+            AlchemyPage::AttGrant.host_height(),
+            192.0,
+            "the enchant page alone is 192"
+        );
+        // three pages, not two
+        assert_eq!(AlchemyPage::ALL.len(), 3);
+        // the reinforce page's art is the one the loaded shell names
+        assert!(page_art(AlchemyPage::EquipEnhance).ends_with("alcm_window_quick mastery.ddj"));
+    }
+
+    /// The plate is placed by its **drawn** height, not by the file's: the bottom
+    /// 80 rows of the 376x376 image are fully transparent. The title strip is
+    /// cropped off because the chrome's caption band replaces it, so the crop and
+    /// the placement must account for exactly that strip and nothing else.
+    #[test]
+    fn the_window_plate_is_cropped_by_the_title_strip_only() {
+        let crop = plate_crop();
+        assert_eq!(crop.min.y, TITLE_STRIP);
+        assert_eq!(crop.max.y, PLATE_DRAWN_H);
+        assert_eq!((crop.min.x, crop.max.x), (0.0, WINDOW_W));
+        // what is drawn is exactly what was cropped
+        assert_eq!(PLATE_RECT.3, crop.height());
+        assert_eq!(PLATE_RECT.2, crop.width());
+        // the parchment tablet sits inside the drawn band, where the text goes
+        assert!(PML_RECT.1 >= 0.0 && PML_RECT.1 + PML_RECT.3 <= PLATE_RECT.3);
+    }
+
+    /// The button wears **one** face and is always pressable: the original does not
+    /// grey it out for an empty page, and its caption is the undimmed shipped
+    /// colour. The only dimmed text in this window is an unselected page caption,
+    /// and that row is ours to begin with.
+    #[test]
+    fn the_fuse_button_has_no_disabled_face() {
+        assert!(BUTTON_DDJ.ends_with("alcm_button_01.ddj"), "{BUTTON_DDJ}");
+        assert!(
+            !BUTTON_DDJ.contains("disable"),
+            "no disabled face is referenced at all"
+        );
+        // the caption is the shipped FontColor, not a dimmed derivation of it
+        assert_eq!(BUTTON_TEXT_COLOR, Color::srgb_u8(255, 245, 218));
+        assert_ne!(BUTTON_TEXT_COLOR, CAPTION_IDLE_COLOR);
+        let lum = |c: Color| {
+            let s = c.to_srgba();
+            s.red + s.green + s.blue
+        };
+        assert!(lum(BUTTON_TEXT_COLOR) > lum(CAPTION_IDLE_COLOR));
+    }
+
+    /// The element page is shown and cannot act, and the two text colours differ
+    /// because their backgrounds do: the description is dark on parchment, the
+    /// chance line light on the page art.
+    #[test]
+    fn the_element_page_is_shown_but_cannot_act() {
+        assert!(!AlchemyPage::Elementation.can_act());
+        assert!(AlchemyPage::EquipEnhance.can_act() && AlchemyPage::AttGrant.can_act());
+        assert_ne!(PML_TEXT_COLOR, PAGE_TEXT_COLOR);
+        let lum = |c: Color| {
+            let s = c.to_srgba();
+            s.red + s.green + s.blue
+        };
+        assert!(
+            lum(PML_TEXT_COLOR) < lum(PAGE_TEXT_COLOR),
+            "dark on parchment"
+        );
+    }
+
+    /// Declared rects, rebased. Window-space controls lose the title strip;
     /// page-local controls gain the page host's `y=150` and then lose it too.
     #[test]
-    fn alchemy_rects_are_the_vanilla_rects_minus_the_title_strip() {
-        // (vanilla y in window space, ours) — ifalchemybox.txt
-        // GDR_ALCHEMYBOX_PML_TEXT (39,89), GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM
-        // (0,150); ifalchemyenchant.txt page-local GDR_AB_ENCHANT_SLOT_EQUIP
-        // (59,56), _SLOT_01 (164,56), _SLOT_04 (308,56),
-        // _BUTTON_PROCESS (132,143).
+    fn the_rects_are_the_declared_rects_minus_the_title_strip() {
+        // (y in window space, ours). Shell: `GDR_ALCHEMYBOX_PML_TEXT` (39,97),
+        // page host (0,150). Page body, from the reinforce description the
+        // loaded shell uses: `_SLOT_EQUIP` (58,74), `_SLOT_01` (164,74),
+        // `_SLOT_04` (308,74), `_BUTTON_PROCESS` (136,178).
         let cases = [
-            (89.0, PML_RECT.1),
+            (97.0, PML_RECT.1),
             (150.0, PAGE_RECT.1),
-            (150.0 + 56.0, slot_rect(EQUIP_SLOT).1),
-            (150.0 + 56.0, slot_rect(1).1),
-            (150.0 + 143.0, BUTTON_RECT.1),
+            (150.0 + 74.0, slot_rect(EQUIP_SLOT).1),
+            (150.0 + 74.0, slot_rect(1).1),
+            (150.0 + 178.0, BUTTON_RECT.1),
         ];
-        for (vanilla_y, ours) in cases {
-            assert_eq!(ours, vanilla_y - TITLE_STRIP, "y of vanilla {vanilla_y}");
+        for (declared_y, ours) in cases {
+            assert_eq!(ours, declared_y - TITLE_STRIP, "y of declared {declared_y}");
         }
-        assert_eq!(slot_rect(EQUIP_SLOT).0, 59.0);
+        assert_eq!(slot_rect(EQUIP_SLOT).0, 58.0);
         assert_eq!(slot_rect(1).0, 164.0);
         assert_eq!(slot_rect(STONE_SLOTS).0, 308.0);
-        // every slot is the vanilla 32x32
+        // every slot is 32x32, and the stone row's pitch is 48
         for index in 0..=STONE_SLOTS {
             assert_eq!((slot_rect(index).2, slot_rect(index).3), (SLOT, SLOT));
         }
+        assert_eq!(slot_rect(2).0 - slot_rect(1).0, 48.0);
+        // the button is the art's own 104x28, not the other family's 112x28
+        assert_eq!((BUTTON_RECT.2, BUTTON_RECT.3), (104.0, 28.0));
+        // and the chance line still fits between the slot row and the button
+        assert!(CHANCE_RECT.1 >= slot_rect(1).1 + SLOT);
+        assert!(CHANCE_RECT.1 + CHANCE_RECT.3 <= BUTTON_RECT.1);
     }
 
     /// Rows mirroring `probability.rs`'s own fixtures, so the tests below prove
@@ -1002,8 +1180,8 @@ mod test {
     fn the_page_selector_has_one_entry_per_page_above_the_description() {
         assert_eq!(
             AlchemyPage::ALL.len(),
-            2,
-            "ifalchemybox.txt hosts two pages"
+            3,
+            "the loaded shell hosts three pages"
         );
         let mut previous_right = 0.0_f32;
         for (nth, _) in AlchemyPage::ALL.into_iter().enumerate() {
@@ -1060,7 +1238,7 @@ mod test {
             "two pages share a string: {keys:?}"
         );
         // the host control's own DDJ field, per page
-        assert!(page_art(AlchemyPage::EquipEnhance).ends_with("alcm_window_reinforcement.ddj"));
+        assert!(page_art(AlchemyPage::EquipEnhance).ends_with("alcm_window_quick mastery.ddj"));
         assert!(page_art(AlchemyPage::AttGrant).ends_with("alcm_window_allowance.ddj"));
     }
 
@@ -1072,7 +1250,7 @@ mod test {
     fn alchemy_chrome_wraps_the_vanilla_interior() {
         assert_eq!(
             game_window::outer_size((CONTENT_W, CONTENT_H)),
-            (400.0, 352.0)
+            (400.0, 388.0)
         );
         assert_eq!(ORIGIN_Y, 36.0);
     }
