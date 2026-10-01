@@ -41,8 +41,14 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
+use packets::agent::character_data::ItemTypeData;
+
+use crate::assets::textdata::itemdata::ItemDataRow;
 use crate::assets::FontAssets;
 use crate::plugins::hud::alchemy::model::{AlchemyPage, AlchemyState, EQUIP_SLOT, STONE_SLOTS};
+use crate::plugins::hud::alchemy::probability::{
+    is_elixir, is_lucky_powder, reinforce_chance, ReinforceChance,
+};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::DragGhost;
@@ -79,6 +85,16 @@ const STONE_Y: f32 = PAGE_RECT.1 + 56.0;
 /// art (`alcm_button.ddj`) is exactly 112x28.
 const BUTTON_RECT: (f32, f32, f32, f32) = (132.0, PAGE_RECT.1 + 143.0, 112.0, 28.0);
 const SLOT: f32 = 32.0;
+/// **Ours, not vanilla's** — the success-chance line (see `probability.rs`), and
+/// it belongs to the **Equip Enhance** page, the one whose ladder it reads.
+/// Neither page body declares a text control for it: their seven controls are
+/// the deco, five slots and the button (positive control on the same read: the
+/// file *does* declare a `CIFDecoratedStatic`, so a text-capable control is a
+/// thing it could have carried). The rect is therefore a reasoned choice: the
+/// page's only empty band, between the slot row (`56 + 32 = 88`) and the Fuse
+/// button (`y = 143`), left-aligned with the first stone slot (`x = 164`) so it
+/// reads as belonging to the material row it is computed from.
+const CHANCE_RECT: (f32, f32, f32, f32) = (164.0, PAGE_RECT.1 + 104.0, 200.0, 14.0);
 
 /// Page-selector row — **our rect, the data's art and words** (module doc).
 /// The lamp extent is the DDJ's own: all six `alcm_lamp_*_{on,off}.ddj` measure
@@ -144,6 +160,69 @@ fn page_description(page: AlchemyPage) -> (&'static str, &'static str) {
             "Att.Grant: using specific alchemy items will grant attributes or change basic \
              stats of your equipment.",
         ),
+    }
+}
+
+/// The chance the itemdata states for the equipment in the equip slot together
+/// with whatever elixir (and Lucky Powder) sits in the four stone slots.
+fn slot_chance(
+    state: &AlchemyState,
+    inventory: &Inventory,
+    item_data: &ClientItemData,
+) -> Option<ReinforceChance> {
+    let row_of = |page_slot: usize| {
+        let item = inventory.get(state.slot(page_slot)?)?;
+        item_data.get(&(item.ref_id as i32))
+    };
+    let equip_item = inventory.get(state.slot(EQUIP_SLOT)?)?;
+    let equip = item_data.get(&(equip_item.ref_id as i32))?;
+    // the current enhancement level is the equipment body's own opt_level;
+    // anything that is not equipment on the wire cannot be reinforced
+    let ItemTypeData::Equipment(equipment) = &equip_item.data else {
+        return None;
+    };
+    let stones: Vec<_> = (1..=STONE_SLOTS).filter_map(row_of).collect();
+    page_chance(state.page, equip, equipment.opt_level, &stones)
+}
+
+/// The success ladder is the **Equip Enhance** page's own subject — it is the
+/// page whose materials are equipment + elixir (+ Lucky Powder) and whose
+/// outcome is a `+n` step (`UIIT_STT_ALCHEMYBOX_REINFORCE_TEXT`,
+/// `textuisystem.txt:779`). The Att.Grant page fuses attribute stones into magic
+/// options instead (`:781`, and `UIIT_MSG_ALCHEMY_APPEND_ATTR` `:786` is its
+/// result line), which the elixir ladder says nothing about — so that page shows
+/// no chance line at all rather than a number that means nothing there.
+///
+/// Within the page the slots are not typed in vanilla either — both page bodies
+/// give all four stone slots the same `CIFSlotWithHelp` prototype — so the elixir
+/// is found by its type ids, not by position, exactly as the shipped
+/// slot-mismatch line implies (`UIIT_MSG_REINFORCERR_IS_NOT_REINFORCE_STUFF`,
+/// `textuisystem.txt:2141`).
+fn page_chance(
+    page: AlchemyPage,
+    equip: &ItemDataRow,
+    opt_level: u8,
+    stones: &[&ItemDataRow],
+) -> Option<ReinforceChance> {
+    if page != AlchemyPage::EquipEnhance {
+        return None;
+    }
+    let elixir = stones.iter().copied().find(|row| is_elixir(row))?;
+    let powder = stones.iter().copied().find(|row| is_lucky_powder(row));
+    reinforce_chance(equip, opt_level, elixir, powder)
+}
+
+/// `Probability: 25 %`, or `Probability: 25 % + 50 %` with a matched Lucky
+/// Powder. The label is the shipped `UIIT_STT_PROBABILITY`
+/// (`textuisystem.txt:1932` = *"Probability"*); the archive ships **no** key that
+/// formats a success percentage, so the composition is ours. The powder's points
+/// stay a second figure because whether the server adds or multiplies them is
+/// unresolved.
+fn chance_line(ui_strings: &ClientUiStrings, chance: ReinforceChance) -> String {
+    let label = ui_strings.get_or("UIIT_STT_PROBABILITY", "Probability");
+    match chance.powder_bonus {
+        Some(bonus) => format!("{label}: {} % + {bonus} %", chance.percent),
+        None => format!("{label}: {} %", chance.percent),
     }
 }
 
@@ -267,6 +346,7 @@ pub fn sync_alchemy_window(
             .get(&(item.ref_id as i32))
             .and_then(|row| row.icon_path())
     };
+    let chance = inventory.and_then(|inventory| slot_chance(&state, inventory, &item_data));
 
     commands.entity(window.content).with_children(|content| {
         // the page's own 376x192 backdrop, at its native extent
@@ -365,6 +445,23 @@ pub fn sync_alchemy_window(
                     Pickable::IGNORE,
                 ));
             });
+        }
+
+        // The success chance the itemdata states for what is in the slots. No
+        // line at all when the data does not answer — never a `0 %`.
+        if let Some(chance) = chance {
+            content.spawn((
+                Text::new(chance_line(&ui_strings, chance)),
+                TextFont {
+                    font: fonts.two.clone().into(),
+                    font_size: FontSize::Px(8.5 * s),
+                    ..default()
+                },
+                TextColor(PML_TEXT_COLOR),
+                TextLayout::justify(Justify::Left),
+                abs_node(CHANCE_RECT, s),
+                Pickable::IGNORE,
+            ));
         }
 
         // Fuse — drawn in the vanilla disabled state: the action needs the
@@ -554,6 +651,155 @@ mod test {
         // every slot is the vanilla 32x32
         for index in 0..=STONE_SLOTS {
             assert_eq!((slot_rect(index).2, slot_rect(index).3), (SLOT, SLOT));
+        }
+    }
+
+    /// Rows mirroring `probability.rs`'s own fixtures, so the tests below prove
+    /// the page gate and the line's composition, not the arithmetic.
+    mod fixture {
+        use super::*;
+
+        fn row(tid: (u32, u32, u32, u32), params: (i64, [i64; 3])) -> ItemDataRow {
+            let mut fields = vec![String::from("0"); 161];
+            for (index, value) in [(9, tid.0), (10, tid.1), (11, tid.2), (12, tid.3)] {
+                fields[index] = value.to_string();
+            }
+            fields[118] = params.0.to_string();
+            for (block, value) in params.1.into_iter().enumerate() {
+                fields[120 + block * 2] = value.to_string();
+            }
+            ItemDataRow(fields)
+        }
+
+        /// `ITEM_ETC_ARCHEMY_REINFORCE_RECIPE_WEAPON_A`, id 3675 — weapon gate,
+        /// ladder `25,20,15,10 | 10,10,10,10 | 10,5,5,5`.
+        pub fn elixir_weapon_a() -> ItemDataRow {
+            row(
+                (3, 3, 10, 1),
+                (100663296, [420744970, 168430090, 168101125]),
+            )
+        }
+
+        /// `ITEM_ETC_ARCHEMY_REINFORCE_PROB_UP_A_01`, id 3683 — degree 1.
+        pub fn powder_degree_1() -> ItemDataRow {
+            row((3, 3, 10, 2), (1, [840832008, 134678022, 101057538]))
+        }
+
+        /// Equipment of `tid3`, with `ItemClass` -> degree (col 61).
+        pub fn equipment(tid3: u32, item_class: u32) -> ItemDataRow {
+            let mut fields = vec![String::from("0"); 161];
+            for (index, value) in [(9, 3), (10, 1), (11, tid3), (12, 2)] {
+                fields[index] = value.to_string();
+            }
+            fields[61] = item_class.to_string();
+            ItemDataRow(fields)
+        }
+    }
+
+    /// The chance line is the shipped label plus the data's own number, and
+    /// nothing else — no invented sentence. With the table absent (as here)
+    /// `get_or` falls back to the English of `textuisystem.txt:1932`.
+    #[test]
+    fn the_chance_line_is_a_shipped_label_plus_the_data_value() {
+        let strings = ClientUiStrings::default();
+        assert_eq!(
+            chance_line(
+                &strings,
+                ReinforceChance {
+                    percent: 25,
+                    powder_bonus: None,
+                }
+            ),
+            "Probability: 25 %"
+        );
+        // a matched Lucky Powder's points stay their own figure
+        assert_eq!(
+            chance_line(
+                &strings,
+                ReinforceChance {
+                    percent: 25,
+                    powder_bonus: Some(50),
+                }
+            ),
+            "Probability: 25 % + 50 %"
+        );
+    }
+
+    /// Our own control: the chance line lives in the page's empty band between
+    /// the slot row and the Fuse button, and overlaps neither.
+    #[test]
+    fn the_chance_line_sits_between_the_slots_and_the_button() {
+        let slots_bottom = slot_rect(1).1 + slot_rect(1).3;
+        assert!(CHANCE_RECT.1 >= slots_bottom, "below the slot row");
+        assert!(
+            CHANCE_RECT.1 + CHANCE_RECT.3 <= BUTTON_RECT.1,
+            "above the Fuse button"
+        );
+        // and inside the page, aligned with the first stone slot
+        assert!(CHANCE_RECT.0 + CHANCE_RECT.2 <= PAGE_RECT.2);
+        assert_eq!(CHANCE_RECT.0, STONE_XS[0]);
+    }
+
+    /// The success chance belongs to the Equip Enhance page: identical slot
+    /// contents produce a line there and no line at all on Att.Grant.
+    #[test]
+    fn the_chance_line_belongs_to_the_equip_enhance_page() {
+        let sword = fixture::equipment(6, 1);
+        let elixir = fixture::elixir_weapon_a();
+        let stones = [&elixir];
+        assert_eq!(
+            page_chance(AlchemyPage::EquipEnhance, &sword, 0, &stones),
+            Some(ReinforceChance {
+                percent: 25,
+                powder_bonus: None,
+            })
+        );
+        // the Att.Grant page's outcome is not a +n step, so no line
+        assert_eq!(page_chance(AlchemyPage::AttGrant, &sword, 0, &stones), None);
+    }
+
+    /// No matching material means **no line** — not a "0 %". The equipment
+    /// alone, or equipment plus a non-elixir stone, says nothing.
+    #[test]
+    fn a_page_without_an_elixir_shows_no_line_at_all() {
+        let sword = fixture::equipment(6, 1);
+        assert_eq!(page_chance(AlchemyPage::EquipEnhance, &sword, 0, &[]), None);
+        let powder = fixture::powder_degree_1();
+        assert_eq!(
+            page_chance(AlchemyPage::EquipEnhance, &sword, 0, &[&powder]),
+            None,
+            "Lucky Powder on its own is not a chance"
+        );
+        // and an elixir whose ladder is exhausted stays silent as well
+        let elixir = fixture::elixir_weapon_a();
+        assert_eq!(
+            page_chance(AlchemyPage::EquipEnhance, &sword, 12, &[&elixir]),
+            None
+        );
+    }
+
+    /// Vanilla gives all four stone slots the same prototype, so the elixir is
+    /// found by its type ids and not by its position: a powder in the first
+    /// slot must not shadow an elixir in the second.
+    #[test]
+    fn the_elixir_is_found_by_its_type_not_by_its_slot() {
+        let sword = fixture::equipment(6, 1);
+        let elixir = fixture::elixir_weapon_a();
+        let powder = fixture::powder_degree_1();
+        let expected = Some(ReinforceChance {
+            percent: 25,
+            powder_bonus: Some(50),
+        });
+        for stones in [
+            vec![&elixir, &powder],
+            vec![&powder, &elixir],
+            vec![&powder, &powder, &elixir],
+        ] {
+            assert_eq!(
+                page_chance(AlchemyPage::EquipEnhance, &sword, 0, &stones),
+                expected,
+                "the elixir is the row, not the slot index"
+            );
         }
     }
 
