@@ -47,6 +47,10 @@ pub const REINFORCE_LADDER_LEN: usize = 12;
 const TID_ELIXIR: (u32, u32, u32, u32) = (3, 3, 10, 1);
 /// TID of Lucky Powder (`3.3.10.2`, 24 rows).
 const TID_LUCKY_POWDER: (u32, u32, u32, u32) = (3, 3, 10, 2);
+/// TID of a magic stone (`3.3.11.1`, 176 rows). Its counterpart is the attribute
+/// stone (TID `3.3.11.2`, 168 rows), and the two are exactly the stone kinds the
+/// fuse request selects between.
+const TID_MAGIC_STONE: (u32, u32, u32, u32) = (3, 3, 11, 1);
 /// The three columns that hold the twelve ladder entries, in index order
 /// (`Desc` labels `"1,2,3,4"`, `"5,6,7,8"`, `"9,10,11,12"`).
 const LADDER_PARAMS: [usize; 3] = [2, 3, 4];
@@ -81,6 +85,12 @@ pub fn is_elixir(row: &ItemDataRow) -> bool {
 /// A Lucky Powder (TID `3.3.10.2`).
 pub fn is_lucky_powder(row: &ItemDataRow) -> bool {
     row.type_ids() == Some(TID_LUCKY_POWDER)
+}
+
+/// A magic stone (TID `3.3.11.1`) rather than an attribute stone — the one bit
+/// the stone fuse request needs from the material's row.
+pub fn is_magic_stone(row: &ItemDataRow) -> bool {
+    row.type_ids() == Some(TID_MAGIC_STONE)
 }
 
 /// The row's twelve ladder entries, or `None` when it carries none (an advanced

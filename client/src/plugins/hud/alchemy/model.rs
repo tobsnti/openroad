@@ -14,6 +14,8 @@
 
 use bevy::prelude::*;
 
+use packets::agent::alchemy::ALCHEMY_MIN_FUSE_SLOTS;
+
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::settings::keymap::KEY_ALCHEMY;
 use crate::plugins::settings::options::GameOptions;
@@ -67,6 +69,10 @@ pub struct AlchemyState {
     pub open: bool,
     /// The page host that is in front.
     pub page: AlchemyPage,
+    /// A fuse request is out. The button keeps its enabled face but refuses,
+    /// because sending the *same* slot references twice is what a double press
+    /// would do.
+    pub pending: bool,
     /// Inventory wire slots per page, indexed like the vanilla `CommandID`s:
     /// 0 = equipment, 1..=4 = the stone slots.
     slots: [[Option<u8>; STONE_SLOTS + 1]; AlchemyPage::ALL.len()],
@@ -111,6 +117,20 @@ impl AlchemyState {
     /// references, and it closes both pages at once).
     pub fn clear(&mut self) {
         self.slots = [[None; STONE_SLOTS + 1]; AlchemyPage::ALL.len()];
+        self.pending = false;
+    }
+
+    /// The slots a fuse request carries: the **equipment first**, then the
+    /// stones in `CommandID` order as the row reads. `None` when the page cannot
+    /// make a request at all — the box needs the equipment plus at least one
+    /// material, which is also the count below which the stone body would sit
+    /// one byte from the cancel form
+    /// (`packets::agent::alchemy::ALCHEMY_MIN_FUSE_SLOTS`).
+    pub fn fuse_slots(&self) -> Option<Vec<u8>> {
+        let equip = self.slot(EQUIP_SLOT)?;
+        let mut slots = vec![equip];
+        slots.extend((1..=STONE_SLOTS).filter_map(|index| self.slot(index)));
+        (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(slots)
     }
 }
 
@@ -188,6 +208,28 @@ mod test {
         state.clear();
         state.page = AlchemyPage::AttGrant;
         assert_eq!(state.slot(EQUIP_SLOT), None);
+    }
+
+    /// The wire order is the window order: equipment first, then the stones as
+    /// the row reads, and a page that cannot make a request yields nothing.
+    #[test]
+    fn the_fuse_list_leads_with_the_equipment() {
+        let mut state = AlchemyState::default();
+        assert_eq!(state.fuse_slots(), None, "an empty page sends nothing");
+        state.place(EQUIP_SLOT, 19);
+        assert_eq!(
+            state.fuse_slots(),
+            None,
+            "the equipment alone is not a fuse"
+        );
+        state.place(1, 15);
+        assert_eq!(state.fuse_slots(), Some(vec![19, 15]));
+        // a gap in the stone row does not reorder what is left
+        state.place(3, 16);
+        assert_eq!(state.fuse_slots(), Some(vec![19, 15, 16]));
+        // and without the equipment there is no request, however many stones
+        state.take(EQUIP_SLOT);
+        assert_eq!(state.fuse_slots(), None);
     }
 
     /// Out-of-range indices are ignored rather than panicking (the UI feeds

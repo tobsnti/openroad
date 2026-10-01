@@ -41,18 +41,26 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
+use packets::agent::alchemy::{
+    AlchemyReinforceRequest, AlchemyStoneRequest, ALCHEMY_TYPE_ATTRIBUTE_STONE,
+    ALCHEMY_TYPE_MAGIC_STONE,
+};
 use packets::agent::character_data::ItemTypeData;
+use packets::Packet;
 
 use crate::assets::textdata::itemdata::ItemDataRow;
 use crate::assets::FontAssets;
+use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::alchemy::model::{AlchemyPage, AlchemyState, EQUIP_SLOT, STONE_SLOTS};
 use crate::plugins::hud::alchemy::probability::{
-    is_elixir, is_lucky_powder, reinforce_chance, ReinforceChance,
+    is_elixir, is_lucky_powder, is_magic_stone, reinforce_chance, ReinforceChance,
 };
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::DragGhost;
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
@@ -113,6 +121,23 @@ const SELECTOR_LABEL: (f32, f32, f32) = (4.0, SELECTOR_PITCH - LAMP.0 - 4.0 - 6.
 /// 32x32 in its DDS header — the exact slot extent.
 const SLOT_DDJ: &str = "media://interface/alchemy/alcm_slot_closed.ddj";
 const BUTTON_DISABLED_DDJ: &str = "media://interface/alchemy/alcm_button_disable.ddj";
+/// `alcm_button.ddj` is the enabled face of `_BUTTON_PROCESS`; the descriptor
+/// gives the control exactly 112x28, which is the art's own size.
+const BUTTON_DDJ: &str = "media://interface/alchemy/alcm_button.ddj";
+
+/// `UIIT_MSG_REINFORCERR_NO_ITEM_LOADED` (`textuisystem.txt:2143`) — the
+/// archive's own answer to a fuse press with an incomplete page. It is also the
+/// guard that keeps a one-slot request off the wire (see `on_fuse_button`).
+const FUSE_INCOMPLETE: (&str, &str) = (
+    "UIIT_MSG_REINFORCERR_NO_ITEM_LOADED",
+    "Cannot reinforce without the specified item.",
+);
+/// `UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY` (`:2149`) — the archive's "not right
+/// now", used when there is no agent connection to send on.
+const FUSE_UNAVAILABLE: (&str, &str) = (
+    "UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY",
+    "You are not under the state to use alchemy.",
+);
 
 /// The page's own 376x192 backdrop, named by its host control's `DDJ` field in
 /// `ifalchemybox.txt`.
@@ -275,6 +300,10 @@ pub struct AlchemyClosing;
 pub struct AlchemySlotCell {
     pub index: usize,
 }
+
+/// The Fuse button.
+#[derive(Component)]
+pub struct AlchemyFuseButton;
 
 /// A page-selector lamp.
 #[derive(Component)]
@@ -464,19 +493,25 @@ pub fn sync_alchemy_window(
             ));
         }
 
-        // Fuse — drawn in the vanilla disabled state: the action needs the
-        // 0x7150 request, and that opcode map is inferred, not captured
-        // (docs/re/systems/alchemy.md), so this client does not send it.
+        // Fuse — the vanilla disabled face while the page cannot make a request
+        // (no equipment, no material) or while one is already out.
+        let ready = state.fuse_slots().is_some() && !state.pending;
         content
             .spawn((
+                AlchemyFuseButton,
+                Hovered::default(),
                 abs_node(BUTTON_RECT, s),
                 ImageNode {
-                    image: asset_server.load(BUTTON_DISABLED_DDJ),
+                    image: asset_server.load(if ready {
+                        BUTTON_DDJ
+                    } else {
+                        BUTTON_DISABLED_DDJ
+                    }),
                     image_mode: NodeImageMode::Stretch,
                     ..default()
                 },
-                Pickable::IGNORE,
             ))
+            .observe(on_fuse_button)
             .with_children(|button| {
                 button.spawn((
                     Text::new(
@@ -510,6 +545,86 @@ fn slot_rect(index: usize) -> (f32, f32, f32, f32) {
         EQUIP_RECT
     } else {
         (STONE_XS[index - 1], STONE_Y, SLOT, SLOT)
+    }
+}
+
+/// A Fuse press: send the page's own opcode — `0x7150` on Equip Enhance,
+/// `0x7151` on Att.Grant — and then wait. Nothing is predicted: the slots stay
+/// where the player put them and the bag is untouched, because no answer to
+/// either opcode is wired yet.
+///
+/// Two refusals, both with the archive's own line:
+/// - fewer than two slots filled — `UIIT_MSG_REINFORCERR_NO_ITEM_LOADED`. This is
+///   not politeness, it is the wire guard: the page cannot express such a fuse,
+///   and on the stone opcode the body would sit one byte from a cancel
+///   (`packets::agent::alchemy::ALCHEMY_MIN_FUSE_SLOTS`).
+/// - no agent connection — `UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY`.
+fn on_fuse_button(
+    press: On<Pointer<Press>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    inventories: Query<&Inventory, With<Player>>,
+    item_data: Res<ClientItemData>,
+    ui_strings: Res<ClientUiStrings>,
+    mut state: ResMut<AlchemyState>,
+    mut history: ResMut<ChatHistory>,
+) {
+    if press.event.button != PointerButton::Primary || state.pending {
+        return;
+    }
+    let Some(slots) = state.fuse_slots() else {
+        let (key, fallback) = FUSE_INCOMPLETE;
+        history.push(ChatLine::system(ui_strings.get_or(key, fallback)));
+        return;
+    };
+    let packet = match state.page {
+        AlchemyPage::EquipEnhance => AlchemyReinforceRequest::fuse(slots).map(Packet::from),
+        AlchemyPage::AttGrant => {
+            let stone_type = stone_type_in_page(&state, inventories.single().ok(), &item_data);
+            AlchemyStoneRequest::fuse(stone_type, slots).map(Packet::from)
+        }
+    };
+    // unreachable while fuse_slots() enforces the same minimum, and it stays
+    // checked because the two limits must not drift apart
+    let Some(packet) = packet else {
+        let (key, fallback) = FUSE_INCOMPLETE;
+        history.push(ChatLine::system(ui_strings.get_or(key, fallback)));
+        return;
+    };
+    let Ok(connection) = conn.single() else {
+        let (key, fallback) = FUSE_UNAVAILABLE;
+        history.push(ChatLine::system(ui_strings.get_or(key, fallback)));
+        return;
+    };
+    if let Err(e) = connection.get_sender().send(packet.into()) {
+        error!("alchemy: failed to send the fuse request: {}", e.0);
+        return;
+    }
+    state.pending = true;
+}
+
+/// Which stone kind the Att.Grant page is holding, read off the material's own
+/// itemdata row rather than offered as a choice: a magic stone row gives the
+/// magic kind, anything else the attribute kind. The attribute kind is the
+/// fallback because it is the page's own subject — the page grants attributes,
+/// and the magic stone is the narrower, positively identified case.
+fn stone_type_in_page(
+    state: &AlchemyState,
+    inventory: Option<&Inventory>,
+    item_data: &ClientItemData,
+) -> u8 {
+    stone_type_of((1..=STONE_SLOTS).filter_map(|index| {
+        let item = inventory?.get(state.slot(index)?)?;
+        item_data.get(&(item.ref_id as i32))
+    }))
+}
+
+/// The kind byte for a set of material rows — the decidable half of
+/// [`stone_type_in_page`], kept separate so it can be checked without a world.
+fn stone_type_of<'a>(rows: impl Iterator<Item = &'a ItemDataRow>) -> u8 {
+    if rows.into_iter().any(is_magic_stone) {
+        ALCHEMY_TYPE_MAGIC_STONE
+    } else {
+        ALCHEMY_TYPE_ATTRIBUTE_STONE
     }
 }
 
@@ -685,6 +800,11 @@ mod test {
             row((3, 3, 10, 2), (1, [840832008, 134678022, 101057538]))
         }
 
+        /// `ITEM_ETC_ARCHEMY_MAGICSTONE_STR_01`, id 6679 — TID `3.3.11.1`.
+        pub fn magic_stone() -> ItemDataRow {
+            row((3, 3, 11, 1), (0, [0, 0, 0]))
+        }
+
         /// Equipment of `tid3`, with `ItemClass` -> degree (col 61).
         pub fn equipment(tid3: u32, item_class: u32) -> ItemDataRow {
             let mut fields = vec![String::from("0"); 161];
@@ -775,6 +895,78 @@ mod test {
         assert_eq!(
             page_chance(AlchemyPage::EquipEnhance, &sword, 12, &[&elixir]),
             None
+        );
+    }
+
+    /// Both fuse refusals are the archive's own lines, not invented sentences.
+    #[test]
+    fn both_fuse_refusals_are_shipped_lines() {
+        let strings = ClientUiStrings::default();
+        for (key, fallback) in [FUSE_INCOMPLETE, FUSE_UNAVAILABLE] {
+            assert!(
+                key.starts_with("UIIT_MSG_REINFORCERR_"),
+                "{key} is a shipped key"
+            );
+            // with the table absent the fallback is the shipped English
+            assert_eq!(strings.get_or(key, fallback), fallback);
+            assert!(fallback.ends_with('.'), "{key} reads as a sentence");
+        }
+        assert_ne!(FUSE_INCOMPLETE.0, FUSE_UNAVAILABLE.0);
+    }
+
+    /// The page's slots reach the wire unchanged and in the window's own order:
+    /// equipment first, then the stones as the row reads.
+    #[test]
+    fn the_pages_slots_reach_the_wire_unchanged() {
+        let mut state = AlchemyState::default();
+        state.place(EQUIP_SLOT, 19);
+        state.place(1, 15);
+        let slots = state.fuse_slots().unwrap();
+        assert_eq!(slots, vec![19, 15]);
+
+        let elixir: bytes::Bytes = AlchemyReinforceRequest::fuse(slots.clone()).unwrap().into();
+        assert_eq!(&elixir[3..], &[19, 15], "the slots go out unchanged");
+        let stone: bytes::Bytes = AlchemyStoneRequest::fuse(ALCHEMY_TYPE_MAGIC_STONE, slots)
+            .unwrap()
+            .into();
+        assert_eq!(&stone[3..], &[19, 15]);
+        assert_eq!(stone[1], ALCHEMY_TYPE_MAGIC_STONE);
+    }
+
+    /// A page with only one item never becomes a request — the limit lives in the
+    /// model and in the constructor, and the two must agree.
+    #[test]
+    fn a_page_with_one_item_never_becomes_a_request() {
+        let mut state = AlchemyState::default();
+        state.place(EQUIP_SLOT, 19);
+        assert_eq!(state.fuse_slots(), None);
+        assert!(AlchemyReinforceRequest::fuse(vec![19]).is_none());
+        assert!(AlchemyStoneRequest::fuse(ALCHEMY_TYPE_MAGIC_STONE, vec![19]).is_none());
+    }
+
+    /// The stone kind comes from the material's row, not from a player choice,
+    /// and the magic kind is the positively identified case.
+    #[test]
+    fn the_stone_kind_is_read_off_the_material_row() {
+        let magic = fixture::magic_stone();
+        let elixir = fixture::elixir_weapon_a();
+        assert_eq!(
+            stone_type_of([&magic].into_iter()),
+            ALCHEMY_TYPE_MAGIC_STONE
+        );
+        assert_eq!(
+            stone_type_of([&elixir, &magic].into_iter()),
+            ALCHEMY_TYPE_MAGIC_STONE,
+            "one magic stone anywhere in the row decides it"
+        );
+        assert_eq!(
+            stone_type_of([&elixir].into_iter()),
+            ALCHEMY_TYPE_ATTRIBUTE_STONE
+        );
+        assert_eq!(
+            stone_type_of(std::iter::empty()),
+            ALCHEMY_TYPE_ATTRIBUTE_STONE,
+            "an empty row falls to the page's own subject"
         );
     }
 
