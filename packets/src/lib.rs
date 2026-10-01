@@ -535,13 +535,17 @@ packets! {
     // u8[] slots}` -> `0xB157 {u8 result, if result == 2 u16 code}` is the one
     // published body, and `0x7150`/`0x7151` carry the box's own fuse body
     // `{u8 tag, u8 selector, u8 count, slots}`.
-    // Their ANSWERS are deliberately absent: nothing has been seen to answer
-    // either opcode, so `0xB150`/`0xB151` stay unwired rather than guessed.
-    // Manufacture+disjoin 0x7155/0xB155, socket 0x716A/0xB16A, the abort
-    // 0x3156 and the six unnamed neighbours have no recorded layout in any
-    // source and stay unwired too, listed in docs/net-alchemy.md (#757).
+    // Their acks `0xB150`/`0xB151` are wired too, but ONLY their refusal arm has
+    // wire evidence — the success and breakdown arms are read off the client
+    // that answers them, which is why the presenter diffs the item instead of
+    // trusting a delta field. Manufacture+disjoin 0x7155/0xB155, socket
+    // 0x716A/0xB16A, the abort 0x3156 and the six unnamed neighbours have no
+    // recorded layout in any source and stay unwired, listed in
+    // docs/net-alchemy.md (#757).
     0x7150 => AlchemyReinforceRequest,
+    0xB150 => AlchemyReinforceResponse,
     0x7151 => AlchemyStoneRequest,
+    0xB151 => AlchemyStoneResponse,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 
