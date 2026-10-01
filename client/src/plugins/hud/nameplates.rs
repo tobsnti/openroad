@@ -127,10 +127,7 @@ fn plate_toggle(kind: RemoteEntity) -> Option<u16> {
 /// corresponding button").
 ///
 /// This is the *additional* mode, not the only one: a drop under the cursor is
-/// always labelled. `KEY_VIEW_DROP_ITEM` ships with **no** default binding
-/// (`OptionSet.csv` declares none), so making the bulk key the sole path left
-/// drop names unreachable out of the box — hovering a drop showed nothing at
-/// all until the player went and bound a key.
+/// always labelled (`update_nameplates` ORs the two).
 ///
 /// Typing in chat must not reveal the pile, hence the `input_open` guard the
 /// six other keyed HUD modules use.
@@ -595,24 +592,33 @@ mod tests {
     /// The key these tests bind. **Not a modifier**: `keycode_to_vk`
     /// (`settings/keymap.rs`) is a Win32 VK table that carries no
     /// Alt/Shift/Ctrl entry at all, so `bind_key(_, KeyCode::AltLeft)` returns
-    /// `false` and stores nothing — an earlier draft of these tests asserted
-    /// on exactly that and went red. Whether the original binds 3012 to a
-    /// modifier is UNKNOWN (`OptionSet.csv` gives id 3012 no default at all);
-    /// binding modifiers at all is a keymap-table gap, not a nameplate one.
+    /// `false` and stores nothing. Binding modifiers at all is a keymap-table
+    /// gap, not a nameplate one.
     const HELD: KeyCode = KeyCode::F5;
 
-    /// Unbound by default (`OptionSet.csv` gives id 3012 no default key), so a
-    /// stock client never shows the *bulk* pile read.
+    /// Bound to `Z` out of the box (`SROptionSet.dat` id 3012 = `0x5A`;
+    /// `OptionSet.csv` alone declares no default), so the
+    /// plates appear while `Z` is held and stay hidden under any other key.
     ///
-    /// It does still label the drop under the cursor — that path does not go
-    /// through this function (`update_nameplates` ORs it in), which is the
-    /// point: making the unbound bulk key the only path is what left hover
-    /// silent on a stock client.
+    /// The bulk read is the *additional* mode either way: the drop under the
+    /// cursor is labelled without any key, through the other half of
+    /// `update_nameplates`.
     #[test]
-    fn the_bulk_pile_read_stays_off_while_the_action_is_unbound() {
+    fn drop_item_names_follow_the_shipped_z_binding() {
         let options = GameOptions::default();
-        assert_eq!(options.key_for(KEY_VIEW_DROP_ITEM), None);
+        assert_eq!(options.key_for(KEY_VIEW_DROP_ITEM), Some(KeyCode::KeyZ));
+        assert!(drop_item_names_held(
+            &pressed(KeyCode::KeyZ),
+            &options,
+            false
+        ));
+        // negative control: any other key held is not the binding
         assert!(!drop_item_names_held(&pressed(HELD), &options, false));
+        assert!(!drop_item_names_held(
+            &ButtonInput::default(),
+            &options,
+            false
+        ));
     }
 
     /// The whole point of #600: it is the HELD key, not the cursor, and it is
