@@ -385,13 +385,18 @@ pub fn plain_text(pml: &str) -> String {
             break;
         };
         out.push_str(&rest[..open]);
-        if rest[open + 1..open + len]
-            .trim_end_matches('/')
-            .eq_ignore_ascii_case("br")
-        {
+        let tag = rest[open + 1..open + len].trim_end_matches('/');
+        let tail = &rest[open + len + 1..];
+        if tag.eq_ignore_ascii_case("br") {
+            out.push('\n');
+        } else if tag.eq_ignore_ascii_case("/sml2") && !tail.trim().is_empty() {
+            // `</sml2>` closes a size run, and the next run starts a new line.
+            // Only when text actually follows: of the 91 shipped rows that carry
+            // the tag, 90 END with it, so an unconditional break would append a
+            // trailing newline to all ninety.
             out.push('\n');
         }
-        rest = &rest[open + len + 1..];
+        rest = tail;
     }
     out.push_str(rest);
     out
@@ -1042,6 +1047,26 @@ mod tests {
     fn plain_text_passes_through_unterminated_markup() {
         assert_eq!(plain_text("unterminated <tag"), "unterminated <tag");
         assert_eq!(plain_text("a<br/>b<BR>c"), "a\nb\nc");
+    }
+
+    /// `</sml2>` ends a size run, so a run that is followed by more text starts a
+    /// new line. The row below is the shipped `UIIT_STT_ALCHEMYBOX_REINFORCE_TEXT`
+    /// shortened to its two runs — the one row in the corpus where the tag is not
+    /// the last thing on the line.
+    #[test]
+    fn plain_text_breaks_a_closing_size_run_only_when_text_follows() {
+        assert_eq!(
+            plain_text("<sml2>combined with + options.</sml2>Warning: all used items"),
+            "combined with + options.\nWarning: all used items"
+        );
+        // 90 of the 91 shipped rows end with the tag: no trailing newline there
+        assert_eq!(plain_text("<sml2>a single run</sml2>"), "a single run");
+        assert_eq!(
+            plain_text("<sml2>trailing space</sml2>  "),
+            "trailing space  "
+        );
+        // the opening tag never breaks, and an unknown tag still just vanishes
+        assert_eq!(plain_text("<sml2>a<font color=\"x\">b</font></sml2>"), "ab");
     }
 
     /// The two `UI / SND_BUTTON_CLICK` rows verbatim from the user's
