@@ -23,6 +23,8 @@
 use bevy::prelude::Message;
 use bytes::Bytes;
 
+use crate::agent::character_data::{InventoryItem, ItemClassResolver};
+
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;
 use sro_macro::SerializationError;
@@ -254,10 +256,254 @@ impl TryFrom<Bytes> for AlchemyStoneRequest {
     }
 }
 
+/// What the ack says happened to the item, off its two discriminator bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlchemyOutcome {
+    /// `A != 0`: the record that follows *replaces* the item — success.
+    Success,
+    /// `A == 0`, `C != 0`: no item follows, the item is gone.
+    Breakdown,
+    /// `A == 0`, `C == 0`: the record that follows is the *same* item, mutated —
+    /// the fuse failed.
+    Failure,
+}
+
+/// `AlchemyAction` in the ack's second byte: the fuse was cancelled, or it ran.
+/// Any other value ends the packet.
+pub const ALCHEMY_ACTION_CANCEL_ACK: u8 = 1;
+/// … or it ran, and only then does an item-delivery block follow.
+pub const ALCHEMY_ACTION_FUSE_ACK: u8 = 2;
+
+/// 0xB150 — server → client ack for [`AlchemyReinforceRequest`].
+///
+/// ```text
+/// u8 result (1 ok / 2 error)
+///   result == 2 : u16 errorCode
+///   result == 1 : u8 action (1 cancel / 2 fuse)
+///     action == 2 : u8 A, u8 slot
+///       A == 0 : u8 C ; C == 0 -> <ITEM RECORD>
+///       A != 0 :          <ITEM RECORD>
+/// ```
+/// **Only the refusal arm has ever been seen on the wire**; the rest of this
+/// layout is read off the client that answers it, so the success and breakdown
+/// arms are unconfirmed. The ack carries **no** level delta and **no**
+/// durability delta — a caller recomputes both by diffing against the item that
+/// was in the slot.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct AlchemyReinforceResponse {
+    pub result: u8,
+    /// Only on `result == 2`. Unnamed on purpose: the error-code table is not in
+    /// our data, so the number stays a number. One value is known — see
+    /// [`ALCHEMY_ERROR_STONE_FAILED`].
+    pub error_code: Option<u16>,
+    /// Only on `result == 1`.
+    pub action: Option<u8>,
+    /// Only on a fuse: what happened, and which bag slot it happened to.
+    pub outcome: Option<(AlchemyOutcome, u8)>,
+    /// The unparsed item record, if one follows. Decode with [`Self::item`].
+    pub item_tail: Bytes,
+}
+
+/// The one error code with a known meaning: "the stone did not take", which the
+/// original answers with the ordinary failure line rather than a code.
+pub const ALCHEMY_ERROR_STONE_FAILED: u16 = 0x5423;
+
+impl AlchemyReinforceResponse {
+    pub fn is_success(&self) -> bool {
+        self.result != ALCHEMY_RESULT_ERROR
+    }
+
+    /// The mutated item, parsed by the one item parser this workspace has. The
+    /// record's own leading byte is the inventory slot the ack already named, so
+    /// it is prepended the way the pickup path does it.
+    pub fn item(&self, resolver: &impl ItemClassResolver) -> Option<InventoryItem> {
+        let (_, slot) = self.outcome?;
+        if self.item_tail.is_empty() {
+            return None;
+        }
+        let mut buf = Vec::with_capacity(self.item_tail.len() + 1);
+        buf.push(slot);
+        buf.extend_from_slice(&self.item_tail);
+        InventoryItem::read_with(&mut std::io::Cursor::new(buf.as_slice()), resolver).ok()
+    }
+}
+
+/// Shared body reader for the two fuse acks. `has_breakdown_flag` is the one
+/// difference between them: `0xB150` reads a "no item follows" byte on the
+/// `A == 0` branch, `0xB151` does not — it always has a record, so a stone
+/// attach cannot destroy the item.
+fn read_fuse_ack(
+    value: Bytes,
+    has_breakdown_flag: bool,
+) -> Result<AlchemyReinforceResponse, SerializationError> {
+    let mut out = AlchemyReinforceResponse {
+        result: *value.first().ok_or_else(short_packet)?,
+        error_code: None,
+        action: None,
+        outcome: None,
+        item_tail: Bytes::new(),
+    };
+    if out.result == ALCHEMY_RESULT_ERROR {
+        if value.len() < 3 {
+            return Err(short_packet());
+        }
+        out.error_code = Some(u16::from_le_bytes([value[1], value[2]]));
+        return Ok(out);
+    }
+    let Some(&action) = value.get(1) else {
+        return Ok(out);
+    };
+    out.action = Some(action);
+    if action != ALCHEMY_ACTION_FUSE_ACK {
+        // cancel, and every unknown action, end the packet
+        return Ok(out);
+    }
+    if value.len() < 4 {
+        return Err(short_packet());
+    }
+    let delivery = value[2];
+    let slot = value[3];
+    let mut rest = value.slice(4..);
+    let outcome = if delivery != 0 {
+        AlchemyOutcome::Success
+    } else if has_breakdown_flag {
+        let (&flag, _) = rest.split_first().ok_or_else(short_packet)?;
+        rest = rest.slice(1..);
+        if flag != 0 {
+            AlchemyOutcome::Breakdown
+        } else {
+            AlchemyOutcome::Failure
+        }
+    } else {
+        AlchemyOutcome::Failure
+    };
+    out.outcome = Some((outcome, slot));
+    out.item_tail = if outcome == AlchemyOutcome::Breakdown {
+        Bytes::new()
+    } else {
+        rest
+    };
+    Ok(out)
+}
+
+impl TryFrom<Bytes> for AlchemyReinforceResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        read_fuse_ack(value, true)
+    }
+}
+
+/// 0xB151 — server → client ack for [`AlchemyStoneRequest`]. Same body as
+/// [`AlchemyReinforceResponse`] minus the breakdown flag.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct AlchemyStoneResponse(pub AlchemyReinforceResponse);
+
+impl TryFrom<Bytes> for AlchemyStoneResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        read_fuse_ack(value, false).map(Self)
+    }
+}
+
+/// Server → client only. The macro wants both directions for every registered
+/// opcode; building this ack is not a thing a client does.
+impl From<AlchemyStoneResponse> for Bytes {
+    fn from(_: AlchemyStoneResponse) -> Self {
+        unreachable!("0xB151 is server -> client only")
+    }
+}
+
+/// Server → client only, same reason.
+impl From<AlchemyReinforceResponse> for Bytes {
+    fn from(_: AlchemyReinforceResponse) -> Self {
+        unreachable!("0xB150 is server -> client only")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
+
+    /// The ack classifies by its two discriminators, not by the item that
+    /// follows. Both bodies are built here from the layout, because only the
+    /// refusal arm has ever been seen on the wire.
+    #[test]
+    fn the_reinforce_ack_classifies_by_a_and_c_not_by_the_item() {
+        // A != 0 -> success, and a record follows
+        let ok = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x01, 0x0D, 0xAA, 0xBB,
+        ]))
+        .unwrap();
+        assert_eq!(ok.outcome, Some((AlchemyOutcome::Success, 0x0D)));
+        assert_eq!(ok.item_tail.as_ref(), &[0xAA, 0xBB]);
+
+        // A == 0, C != 0 -> breakdown, and NO record follows
+        let gone =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x02, 0x00, 0x0D, 0x01]))
+                .unwrap();
+        assert_eq!(gone.outcome, Some((AlchemyOutcome::Breakdown, 0x0D)));
+        assert!(gone.item_tail.is_empty());
+
+        // A == 0, C == 0 -> failure, the same item comes back mutated
+        let failed = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x00, 0x0D, 0x00, 0xAA,
+        ]))
+        .unwrap();
+        assert_eq!(failed.outcome, Some((AlchemyOutcome::Failure, 0x0D)));
+        assert_eq!(failed.item_tail.as_ref(), &[0xAA]);
+    }
+
+    /// The refusal arm is the only one with wire evidence: `result == 2` then a
+    /// little-endian code, and nothing after it.
+    #[test]
+    fn the_refusal_arm_carries_a_code_and_stops() {
+        let refused =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x13, 0x54])).unwrap();
+        assert!(!refused.is_success());
+        assert_eq!(refused.error_code, Some(0x5413));
+        assert_eq!(refused.action, None);
+        assert_eq!(refused.outcome, None);
+        // the one code with a known meaning
+        let stone =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x23, 0x54])).unwrap();
+        assert_eq!(stone.error_code, Some(ALCHEMY_ERROR_STONE_FAILED));
+        // a refusal without its code is not a refusal we can read
+        assert!(AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x13])).is_err());
+    }
+
+    /// A cancel ack ends after the action byte, and carries no outcome at all.
+    #[test]
+    fn the_cancel_ack_stops_after_its_action_byte() {
+        let cancelled =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x01])).unwrap();
+        assert!(cancelled.is_success());
+        assert_eq!(cancelled.action, Some(ALCHEMY_ACTION_CANCEL_ACK));
+        assert_eq!(cancelled.outcome, None);
+        assert!(cancelled.item_tail.is_empty());
+        // an unknown action is read as "ends here" rather than guessed at
+        let unknown =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x09])).unwrap();
+        assert_eq!(unknown.outcome, None);
+    }
+
+    /// The stone ack has no breakdown flag: on `A == 0` the record starts
+    /// immediately, so the same bytes mean different things on the two opcodes.
+    #[test]
+    fn the_stone_ack_has_no_breakdown_flag() {
+        let bytes = &[0x01, 0x02, 0x00, 0x0D, 0x01, 0xAA];
+        let stone = AlchemyStoneResponse::try_from(Bytes::from_static(bytes)).unwrap();
+        assert_eq!(stone.0.outcome, Some((AlchemyOutcome::Failure, 0x0D)));
+        assert_eq!(
+            stone.0.item_tail.as_ref(),
+            &[0x01, 0xAA],
+            "no flag is eaten"
+        );
+
+        let reinforce = AlchemyReinforceResponse::try_from(Bytes::from_static(bytes)).unwrap();
+        assert_eq!(reinforce.outcome, Some((AlchemyOutcome::Breakdown, 0x0D)));
+        assert_ne!(stone.0.outcome, reinforce.outcome);
+    }
 
     /// The stone fuse is the **five-byte** form: tag, the stone kind, the count,
     /// then the slots with the equipment leading. Four bytes without the tag
