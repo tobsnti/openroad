@@ -1,6 +1,7 @@
 pub mod enchant;
 pub mod grant;
 pub mod model;
+pub mod probability;
 pub mod ui;
 
 use bevy::prelude::*;
