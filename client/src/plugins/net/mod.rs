@@ -5,6 +5,7 @@ pub mod gateway;
 pub mod guild;
 pub mod inventory;
 pub mod packet_dump;
+pub mod packet_send;
 pub mod party;
 pub mod plugin;
 pub mod stall;

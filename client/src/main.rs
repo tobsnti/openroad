@@ -236,10 +236,18 @@ fn main() {
                 // `openroad/diagnostics` dumps the whole DiagnosticsStore
                 // (incl. the world_counts/* entity categories) over BRP —
                 // brp_extras only exposes FPS/frame-time.
-                RemotePlugin::default().with_method_main(
-                    "openroad/diagnostics",
-                    plugins::diagnostics::brp_all_diagnostics,
-                ),
+                RemotePlugin::default()
+                    .with_method_main(
+                        "openroad/diagnostics",
+                        plugins::diagnostics::brp_all_diagnostics,
+                    )
+                    // One hand-built frame to the agent server. It goes through
+                    // the normal outbound queue, so every server-side check
+                    // still applies; the two login opcodes are refused.
+                    .with_method_main(
+                        "openroad/packet_send",
+                        plugins::net::packet_send::brp_packet_send,
+                    ),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
                 // (`WgpuSettingsPriority::Functionality`), so on Vulkan and DX12

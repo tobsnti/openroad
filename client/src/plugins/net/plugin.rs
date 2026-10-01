@@ -328,7 +328,7 @@ pub struct OutboundEncryption;
 /// Opcodes whose outbound body contains the account password in clear text:
 /// the gateway login `0x6102` and the agent login `0x6103` (`packets/src/lib.rs`,
 /// `docs/net-login-gateway.md`).
-fn carries_credentials(opcode: u16) -> bool {
+pub(crate) fn carries_credentials(opcode: u16) -> bool {
     matches!(opcode, 0x6102 | 0x6103)
 }
 
