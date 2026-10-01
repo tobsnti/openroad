@@ -530,14 +530,18 @@ packets! {
     0x3255 => GuildStorageDataChunk,
     0x3254 => GuildStorageDataEnd,
 
-    // Alchemy — dismantle only (agent/alchemy.rs, docs/net-alchemy.md).
-    // Twenty opcodes in this block, ONE published body: `0x7157 {u8 count,
-    // u8[] slots}` -> `0xB157 {u8 result, if result == 2 u16 code}`
-    // (docs/re/systems/alchemy.md:44). Elixir 0x7150/0xB150, stone
-    // 0x7151/0xB151, manufacture+disjoin 0x7155/0xB155, socket 0x716A/0xB16A,
-    // the abort 0x3156 and the six unnamed neighbours have NO recorded layout
-    // in any source, so they stay unwired and are listed with their handler
-    // VAs in docs/net-alchemy.md rather than guessed at (#757).
+    // Alchemy — dismantle plus the two fuse requests (agent/alchemy.rs,
+    // docs/net-alchemy.md). Twenty opcodes in this block; `0x7157 {u8 count,
+    // u8[] slots}` -> `0xB157 {u8 result, if result == 2 u16 code}` is the one
+    // published body, and `0x7150`/`0x7151` carry the box's own fuse body
+    // `{u8 tag, u8 selector, u8 count, slots}`.
+    // Their ANSWERS are deliberately absent: nothing has been seen to answer
+    // either opcode, so `0xB150`/`0xB151` stay unwired rather than guessed.
+    // Manufacture+disjoin 0x7155/0xB155, socket 0x716A/0xB16A, the abort
+    // 0x3156 and the six unnamed neighbours have no recorded layout in any
+    // source and stay unwired too, listed in docs/net-alchemy.md (#757).
+    0x7150 => AlchemyReinforceRequest,
+    0x7151 => AlchemyStoneRequest,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 
