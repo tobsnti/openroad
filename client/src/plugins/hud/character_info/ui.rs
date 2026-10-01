@@ -812,6 +812,8 @@ pub fn refresh_character_info(
 mod test {
     use super::*;
 
+    use packets::agent::prelude::CharacterStatsUpdate;
+
     /// The shared shell's content origin — what the layout constants above are
     /// rebased on. Derived from `game_window`'s own exports so a change there
     /// cannot silently desync this window again (#310).
@@ -857,6 +859,107 @@ mod test {
         assert_eq!(
             game_window::outer_size((CONTENT_W, CONTENT_H)),
             (364.0, 356.0)
+        );
+    }
+
+    /// A full stat sheet with the one field a test cares about.
+    fn sheet(strength: u16) -> CharacterStatsUpdate {
+        CharacterStatsUpdate {
+            phys_attack_min: 0,
+            phys_attack_max: 0,
+            mag_attack_min: 0,
+            mag_attack_max: 0,
+            phys_defense: 0,
+            mag_defense: 0,
+            hit_rate: 0,
+            parry_rate: 0,
+            max_hp: 0,
+            max_mp: 0,
+            strength,
+            intelligence: 0,
+        }
+    }
+
+    /// The window's values come from the 0x303D sheet, so an arriving sheet has
+    /// to reach [`PlayerStats`] **and** turn the repaint condition on. Both
+    /// halves matter: the sheet alone would sit in a resource nobody reads
+    /// again, and a repaint alone would redraw the old numbers.
+    ///
+    /// The quiet frame in the middle is the part that gives the test teeth —
+    /// without it an always-true condition would pass.
+    #[test]
+    fn an_arriving_stat_sheet_lands_and_asks_for_a_repaint() {
+        #[derive(Resource, Default)]
+        struct Repainted(bool);
+
+        let mut app = App::new();
+        app.add_message::<CharacterStatsUpdate>()
+            .init_resource::<PlayerStats>()
+            .init_resource::<PlayerVitals>()
+            .init_resource::<PlayerProgress>()
+            .init_resource::<Repainted>()
+            .add_systems(
+                Update,
+                (
+                    crate::plugins::hud::character_info::model::on_stats_update,
+                    (|mut repainted: ResMut<Repainted>| repainted.0 = true)
+                        .run_if(character_info_needs_refresh),
+                )
+                    .chain(),
+            );
+
+        app.update(); // the frame every resource is new in
+        app.world_mut().resource_mut::<Repainted>().0 = false;
+        app.update();
+        assert!(
+            !app.world().resource::<Repainted>().0,
+            "an idle frame must not repaint the window"
+        );
+
+        app.world_mut().write_message(sheet(76));
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<PlayerStats>()
+                .sheet
+                .as_ref()
+                .map(|s| s.strength),
+            Some(76),
+            "0x303D must replace the stat sheet"
+        );
+        assert!(
+            app.world().resource::<Repainted>().0,
+            "a new stat sheet must trigger the window repaint"
+        );
+    }
+
+    /// Spending is gated on the wallet, and the gate is silent: with no points
+    /// the handlers return before sending and the button carries the vanilla
+    /// `_disable` art. Source-level, because the repaint system needs the whole
+    /// asset stack; what it pins is that the three places stay in agreement.
+    #[test]
+    fn an_empty_wallet_blocks_the_plus_buttons() {
+        // Only the code above the test module counts: the patterns below are
+        // literals in this file too, so searching the whole source would count
+        // the assertions themselves.
+        let src = include_str!("ui.rs");
+        let code = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source before tests");
+        assert_eq!(
+            code.matches("if stats.stat_points == 0").count(),
+            2,
+            "both + handlers must return early on an empty wallet"
+        );
+        assert!(
+            code.contains("let enabled = stats.stat_points > 0;"),
+            "the button's enabled state must be read from the wallet"
+        );
+        assert!(
+            code.contains("com_plus_button_disable"),
+            "a blocked button must show the vanilla disabled art"
         );
     }
 }
