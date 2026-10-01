@@ -20,6 +20,7 @@ use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::gateway::plugin::GatewayPlugin;
 use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::packet_dump::PacketDump;
+use crate::plugins::net::packet_tap::{Direction, PacketTap};
 
 #[derive(Resource)]
 pub struct KeepAliveTimer {
@@ -258,7 +259,12 @@ fn receive_packets(
     mut commands: Commands,
     mut packets: MessageWriter<Packet>,
     mut dump: Option<ResMut<PacketDump>>,
+    mut tap: Option<ResMut<PacketTap>>,
+    time: Res<Time>,
 ) {
+    // One read per system run rather than per frame recorded: the tap only
+    // needs to order frames against each other.
+    let now_secs = time.elapsed_secs_f64();
     for (entity, mut conn) in query.iter_mut() {
         let stream = conn.stream.clone();
         let Ok(mut stream) = stream.lock() else {
@@ -286,6 +292,9 @@ fn receive_packets(
                         } => {
                             if let Some(dump) = dump.as_mut() {
                                 dump.dump(opcode, &data, encrypted);
+                            }
+                            if let Some(tap) = tap.as_mut() {
+                                tap.record(now_secs, Direction::In, opcode, &data, encrypted);
                             }
                             dispatch_packet(Packet::deserialize(opcode, data), &mut packets);
                             consumed += n;
@@ -328,7 +337,7 @@ pub struct OutboundEncryption;
 /// Opcodes whose outbound body contains the account password in clear text:
 /// the gateway login `0x6102` and the agent login `0x6103` (`packets/src/lib.rs`,
 /// `docs/net-login-gateway.md`).
-fn carries_credentials(opcode: u16) -> bool {
+pub(crate) fn carries_credentials(opcode: u16) -> bool {
     matches!(opcode, 0x6102 | 0x6103)
 }
 
@@ -359,8 +368,11 @@ fn send_packets(
     mut query: Query<(Entity, &mut SilkroadConnection)>,
     mut commands: Commands,
     mut dump: Option<ResMut<PacketDump>>,
+    mut tap: Option<ResMut<PacketTap>>,
+    time: Res<Time>,
     encrypt_outbound: Option<Res<OutboundEncryption>>,
 ) {
+    let now_secs = time.elapsed_secs_f64();
     for (entity, conn) in query.iter_mut() {
         if conn.o_receiver.is_empty() {
             continue;
@@ -383,6 +395,17 @@ fn send_packets(
                         dump.dump_sent(*opcode, data)
                     }
                     // continuation chunks carry no opcode of their own
+                    SilkroadFrame::MassivePayload { .. } => {}
+                }
+            }
+            // Same point, same reason: taken before `serialize`, so the
+            // recorded body is plaintext even with outbound encryption on.
+            if let Some(tap) = tap.as_mut() {
+                match &frame {
+                    SilkroadFrame::Packet { opcode, data, .. }
+                    | SilkroadFrame::MassiveHeader { opcode, data, .. } => {
+                        tap.record(now_secs, Direction::Out, *opcode, data, false)
+                    }
                     SilkroadFrame::MassivePayload { .. } => {}
                 }
             }
