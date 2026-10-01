@@ -29,23 +29,13 @@
 
 use crate::assets::textdata::itemdata::ItemDataRow;
 
-/// RefItemData `Param1` column (the first of the 20 `(Param<N>, Param<N>_Desc)`
-/// pairs at fields 118..157; `itemdata::ItemdataFields::Param1` names the same
-/// index).
-const PARAM1_FIELD: usize = 118;
-
-/// `Param<n>` (1-based) as the raw authored integer: `Param<n>` is field
-/// `118 + 2*(n - 1)`. Lives here until `ItemDataRow` grows the accessor.
-fn param_of(row: &ItemDataRow, n: usize) -> Option<i64> {
-    let index = PARAM1_FIELD + 2 * n.checked_sub(1)?;
-    row.0.get(index)?.trim().parse().ok()
-}
-
 /// `Param<n>` as the big-endian byte view of the signed int: the alchemy rows
-/// pack four values into one column. A `-1` column is empty, not
+/// pack four values into one column. The column itself is read by
+/// [`ItemDataRow::param`], which owns the `118 + 2*(n - 1)` arithmetic; this is
+/// the byte view its own doc comment points at. A `-1` column is empty, not
 /// `[255,255,255,255]`, so callers check the raw value first.
 fn param_bytes_of(row: &ItemDataRow, n: usize) -> Option<[u8; 4]> {
-    Some(i32::try_from(param_of(row, n)?).ok()?.to_be_bytes())
+    Some(i32::try_from(row.param(n)?).ok()?.to_be_bytes())
 }
 
 /// The ladder is twelve entries long, so +12 is the last reachable step: three
@@ -98,7 +88,7 @@ pub fn is_lucky_powder(row: &ItemDataRow) -> bool {
 fn ladder(row: &ItemDataRow) -> Option<[u8; REINFORCE_LADDER_LEN]> {
     let mut out = [0u8; REINFORCE_LADDER_LEN];
     for (block, param) in LADDER_PARAMS.into_iter().enumerate() {
-        if param_of(row, param)? < 0 {
+        if row.param(param)? < 0 {
             return None;
         }
         let bytes = param_bytes_of(row, param)?;
@@ -120,7 +110,7 @@ fn ladder_entry(row: &ItemDataRow, opt_level: u8) -> Option<u32> {
 fn type_gate(row: &ItemDataRow) -> Vec<u32> {
     let mut gate = Vec::new();
     for param in TYPE_GATE_PARAMS {
-        if param_of(row, param).unwrap_or(-1) < 0 {
+        if row.param(param).unwrap_or(-1) < 0 {
             continue;
         }
         let Some(bytes) = param_bytes_of(row, param) else {
@@ -170,7 +160,7 @@ fn powder_bonus(equip: &ItemDataRow, opt_level: u8, powder: &ItemDataRow) -> Opt
         return None;
     }
     let degree = i64::from(equip.degree()?);
-    if param_of(powder, 1)? != degree {
+    if powder.param(1)? != degree {
         return None;
     }
     ladder_entry(powder, opt_level)
