@@ -38,14 +38,19 @@
 //! `CNIFMiniConfirm` dialog (`res_ui/nifenchantalchemymsgbox.2dt`, root id 172),
 //! which the doc reads as shared and therefore not alchemy-local.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
-use crate::assets::twodt::{Jmxv2dtType, JMXV2DT};
+use crate::assets::twodt::{Jmxv2dtEntry, Jmxv2dtType, JMXV2DT};
 use crate::assets::FontAssets;
+use crate::plugins::hud::inventory::model::InventoryState;
+use crate::plugins::hud::inventory::ui::DragGhost;
 use crate::plugins::hud::scale::hud_scale;
-use crate::plugins::textdata::ClientUiStrings;
+use crate::plugins::net::inventory::Inventory;
+use crate::plugins::player::Player;
+use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
 use crate::scenes::SceneState;
 
 const DESCRIPTOR: &str = "media://res_ui/nifenchantwnd.2dt";
@@ -59,6 +64,33 @@ const CAPTION_FONT: f32 = 9.0;
 const PANE_TYPE1_ID: i32 = 12;
 /// `CNIFAlchemySubWndType2`'s `Id` — the pane Disjoint and Dismantle raise.
 const PANE_TYPE2_ID: i32 = 28;
+
+/// The descriptor class name of each pane. **The pane lookup needs the class name
+/// as well as the id**, because ids are unique only among siblings: record 16 of
+/// this file is `id 28, parent 12, CIFSlotWithHelpEx` and record 26 is
+/// `id 28, parent 5, CNIFAlchemySubWndType2`. A search by id alone finds the slot,
+/// because it comes first.
+///
+/// Each pane is matched against **its own** class, not against the set of both:
+/// "one of the two pane classes" would still accept a Type1 record carrying
+/// Type2's id. That the two ids differ in this file makes the weaker rule work by
+/// luck, and this window has already cost us one record that was right by
+/// coincidence.
+const PANE_CLASS_TYPE1: &str = "CNIFAlchemySubWndType1";
+const PANE_CLASS_TYPE2: &str = "CNIFAlchemySubWndType2";
+
+/// The class name every live slot in both panes carries. The 48x48
+/// `alcm_slot_open` pictures are **not** slots: in both panes they form a
+/// different grid from the live controls (pitch 78 against 48, and rows that do
+/// not line up), while in the socket window of the same file each live 32x32 slot
+/// sits centred in its 48x48 picture. So the pictures are stale authoring and are
+/// not drawn; the live controls are the truth.
+const SLOT_CONTROL: &str = "CIFSlotWithHelpEx";
+/// The closed-slot picture, 32x32 in its DDS header — the exact slot extent.
+const SLOT_ART: &str = "media://interface/alchemy/alcm_slot_closed.ddj";
+/// The most slots any pane of this window declares as drawable: the one-to-many
+/// pane's 4x2 grid. The ninth declared slot is outside the window and not drawn.
+pub const PANE_SLOTS: usize = 8;
 
 /// The two pane layouts the four verbs share.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -86,10 +118,21 @@ impl AlchemyPane {
             Self::OneToMany => PANE_TYPE2_ID,
         }
     }
+
+    /// The descriptor class this pane is declared with.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Self::ItemPlusStones => PANE_CLASS_TYPE1,
+            Self::OneToMany => PANE_CLASS_TYPE2,
+        }
+    }
 }
 
-/// The four alchemy verbs, in the descriptor's left-to-right tab order
-/// (x = 430, 515, 600, 685 — 80 wide at pitch 85, a uniform 5 px gap).
+/// The four alchemy verbs, in the descriptor's left-to-right tab order. Local x
+/// (the space this file lays out in) is **17 / 102 / 187 / 272**, each 80x24 at
+/// local y=47 — pitch 85, a uniform 5-unit gap. The descriptor's own values are
+/// absolute, 430/515/600/685; they are deliberately not quoted as the layout
+/// numbers, because they are relative to a different origin.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AlchemyVerb {
     Disjoint,
@@ -120,8 +163,16 @@ impl AlchemyVerb {
         Self::ALL.into_iter().find(|verb| verb.string_key() == key)
     }
 
-    /// The pane this verb works in — **read from the descriptor's `ContentId`**,
-    /// which is why four verbs need only two pane layouts.
+    /// The pane this verb works in, which is why four verbs need only two pane
+    /// layouts.
+    ///
+    /// **The descriptor does not state which tab raises which pane** — it carries
+    /// no link between the two. What settles it is the cell count each verb shows:
+    /// Disjoint and Dismantle have **eight** cells in a 4x2 grid, Manufacture and
+    /// Strengthening **five** (one set apart plus four in a row), and those are
+    /// exactly the two panes' own counts. The mapping is therefore not a reading of
+    /// `ContentId`, and saying so matters: a correct mapping with a wrong reason
+    /// beside it would invite the next reader to trust the wrong one.
     pub fn pane(self) -> AlchemyPane {
         match self {
             Self::Disjoint | Self::Dismantle => AlchemyPane::OneToMany,
@@ -135,6 +186,10 @@ pub struct EnchantState {
     pub open: bool,
     /// The active tab. The `_on`/`_off` art suffixes say nothing about this.
     pub verb: AlchemyVerb,
+    /// Inventory wire slots placed in the pane's cells, indexed in the pane's own
+    /// reading order. A cell holds a *reference*: the window does not move items,
+    /// and the bag only changes when the server says so.
+    slots: [Option<u8>; PANE_SLOTS],
 }
 
 impl Default for EnchantState {
@@ -143,7 +198,42 @@ impl Default for EnchantState {
             open: false,
             // Leftmost tab; the descriptor authors no initial selection.
             verb: AlchemyVerb::Disjoint,
+            slots: [None; PANE_SLOTS],
         }
+    }
+}
+
+impl EnchantState {
+    /// The inventory wire slot shown in cell `index`.
+    pub fn slot(&self, index: usize) -> Option<u8> {
+        self.slots.get(index).copied().flatten()
+    }
+
+    /// Put an inventory item into cell `index`. One item cannot sit in two cells,
+    /// so placing it again moves it rather than duplicating it — the cells are
+    /// references, and two references to one item would let the player act on it
+    /// twice.
+    pub fn place(&mut self, index: usize, inventory_slot: u8) {
+        if index >= self.slots.len() {
+            return;
+        }
+        for slot in self.slots.iter_mut() {
+            if *slot == Some(inventory_slot) {
+                *slot = None;
+            }
+        }
+        self.slots[index] = Some(inventory_slot);
+    }
+
+    /// Empty cell `index`, returning what was in it.
+    pub fn take(&mut self, index: usize) -> Option<u8> {
+        self.slots.get_mut(index).and_then(Option::take)
+    }
+
+    /// Drop every placement. A tab switch does this: the two panes have different
+    /// cell counts, so a reference to cell 7 means nothing on a five-cell pane.
+    pub fn clear_slots(&mut self) {
+        self.slots = [None; PANE_SLOTS];
     }
 }
 
@@ -155,6 +245,12 @@ pub struct EnchantWindow;
 
 #[derive(Component, Clone, Copy)]
 struct EnchantTab(AlchemyVerb);
+
+/// A pane slot, indexed in the pane's own reading order (see [`pane_slots`]).
+#[derive(Component)]
+pub struct EnchantSlotCell {
+    pub index: usize,
+}
 
 /// `frame\mframe_alc_right_up.ddj` -> a media-relative asset path.
 fn art_path(background: &str) -> String {
@@ -170,6 +266,66 @@ fn art_path(background: &str) -> String {
 fn order_by_x<T>(mut items: Vec<(f32, T)>) -> Vec<T> {
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
     items.into_iter().map(|(_, item)| item).collect()
+}
+
+/// The pane entry for `pane`, found by **id and class name**. See
+/// [`PANE_CLASS_TYPE1`] for why the id alone is not enough.
+fn pane_entry(descriptor: &JMXV2DT, pane: AlchemyPane) -> Option<&Jmxv2dtEntry> {
+    descriptor
+        .entries()
+        .iter()
+        .find(|entry| pane_matches(entry.id() as i32, entry.name(), pane))
+}
+
+/// Whether a descriptor record **is** the pane: its id and its class must both
+/// agree. Separated out so the trap can be pinned by a test without building a
+/// descriptor.
+fn pane_matches(entry_id: i32, entry_name: &str, pane: AlchemyPane) -> bool {
+    entry_id == pane.content_id() && entry_name == pane.class_name()
+}
+
+/// The pane's live slot rects, in the order a player reads them.
+///
+/// Two rules, both of which change the result:
+/// - **Reading order (y, then x), never record order.** This file stores the
+///   upper row of the 4x2 grid as ids 66,67,68,**65** and the lower as
+///   62,63,64,**69**; trusting the file order builds the cells transposed, and it
+///   does not show while they are empty.
+/// - **A slot whose local rect falls outside the window's content is not drawn.**
+///   The one-to-many pane declares nine slots and the ninth sits at local
+///   `(-26,145)`, left of the window; the original draws nothing there. The rule
+///   is stated by position rather than by id, so it also holds if another
+///   descriptor repeats the pattern.
+fn pane_slots(descriptor: &JMXV2DT, pane_id: u32, content: Vec2) -> Vec<Rect> {
+    drawable_in_reading_order(
+        descriptor
+            .children_of(pane_id)
+            .filter(|entry| entry.name() == SLOT_CONTROL)
+            .map(|entry| descriptor.local_rect(entry))
+            .collect(),
+        content,
+    )
+}
+
+/// The two rules as one pure step, so both can be checked without building a
+/// descriptor: drop what lies outside the content, then sort by y and then x.
+fn drawable_in_reading_order(slots: Vec<Rect>, content: Vec2) -> Vec<Rect> {
+    let mut slots: Vec<Rect> = slots
+        .into_iter()
+        .filter(|rect| {
+            rect.min.x >= 0.0
+                && rect.min.y >= 0.0
+                && rect.max.x <= content.x
+                && rect.max.y <= content.y
+        })
+        .collect();
+    slots.sort_by(|a, b| {
+        a.min
+            .y
+            .total_cmp(&b.min.y)
+            .then(a.min.x.total_cmp(&b.min.x))
+    });
+    slots
 }
 
 fn load_descriptor(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -204,9 +360,11 @@ fn rebuild_enchant_window(
     asset_server: Res<AssetServer>,
     fonts: Res<FontAssets>,
     ui_strings: Res<ClientUiStrings>,
+    item_data: Res<ClientItemData>,
     descriptors: Res<Assets<JMXV2DT>>,
     handle: Option<Res<EnchantDescriptor>>,
     state: Res<EnchantState>,
+    inventories: Query<&Inventory, With<Player>>,
     windows: Query<Entity, With<EnchantWindow>>,
     cameras: Query<Entity, With<Camera2d>>,
 ) {
@@ -314,16 +472,11 @@ fn rebuild_enchant_window(
     // The active pane, raised by the active tab's `ContentId`. Its siblings stay
     // unspawned rather than hidden — the two panes share a rect, so drawing both
     // would draw one on top of the other.
-    let pane_id = state.verb.pane().content_id();
-    let Some(pane) = descriptor
-        .entries()
-        .iter()
-        .find(|entry| entry.id() as i32 == pane_id)
-    else {
+    let Some(pane) = pane_entry(descriptor, state.verb.pane()) else {
         return;
     };
     for entry in descriptor.children_of(pane.id()) {
-        if entry.background().is_empty() {
+        if entry.background().is_empty() || entry.name() == SLOT_CONTROL {
             continue;
         }
         commands.entity(window).with_child((
@@ -332,6 +485,110 @@ fn rebuild_enchant_window(
             Pickable::IGNORE,
         ));
     }
+
+    // The pane's live slots, drawn last so an item icon sits above the backdrop.
+    // A filled cell shows the icon of the item it refers to: a cell that takes an
+    // item but displays nothing leaves the player guessing what they placed.
+    let inventory = inventories.single().ok();
+    let icon_of = |cell: usize| -> Option<String> {
+        let wire = state.slot(cell)?;
+        let item = inventory?.get(wire)?;
+        item_data
+            .get(&(item.ref_id as i32))
+            .and_then(|row| row.icon_path())
+    };
+    for (index, rect) in pane_slots(descriptor, pane.id(), size)
+        .into_iter()
+        .enumerate()
+    {
+        let cell = commands
+            .spawn((
+                EnchantSlotCell { index },
+                Hovered::default(),
+                node(rect),
+                image(SLOT_ART),
+            ))
+            .observe(on_slot_press)
+            .id();
+        if let Some(icon) = icon_of(index) {
+            commands.entity(cell).with_child((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                image(&icon),
+                Pickable::IGNORE,
+            ));
+        }
+        commands.entity(window).add_child(cell);
+    }
+}
+
+/// Press on a filled cell takes the item back out; the placement is only a
+/// reference, so nothing is sent. A press while carrying belongs to
+/// [`place_drop_on_enchant`], so a drop is not double-handled.
+fn on_slot_press(
+    press: On<Pointer<Press>>,
+    cells: Query<&EnchantSlotCell>,
+    inv_state: Res<InventoryState>,
+    mut state: ResMut<EnchantState>,
+) {
+    if press.event.button != PointerButton::Primary || inv_state.drag.is_some() {
+        return;
+    }
+    let Ok(cell) = cells.get(press.entity) else {
+        return;
+    };
+    state.take(cell.index);
+}
+
+/// Dropping a carried inventory item on a cell places it there. The carry and its
+/// ghost are consumed here, so no inventory move goes out for this drop.
+pub fn place_drop_on_enchant(
+    buttons: Res<ButtonInput<MouseButton>>,
+    cells: Query<(&EnchantSlotCell, &Hovered)>,
+    ghosts: Query<Entity, With<DragGhost>>,
+    mut inv_state: ResMut<InventoryState>,
+    mut state: ResMut<EnchantState>,
+    mut commands: Commands,
+) {
+    if !buttons.just_released(MouseButton::Left) {
+        return;
+    }
+    let Some(drag) = inv_state.drag else {
+        return;
+    };
+    let Some((cell, _)) = cells.iter().find(|(_, hovered)| hovered.get()) else {
+        return;
+    };
+    state.place(cell.index, drag);
+    inv_state.drag = None;
+    for ghost in ghosts.iter() {
+        commands.entity(ghost).despawn();
+    }
+}
+
+/// Whether a tab switch just happened, i.e. whether the cells must be released.
+///
+/// Its own function so the rule can be checked without a world. **The first
+/// observation is not a switch**: on the frame the watcher first runs there is no
+/// previous verb, and releasing there would be a release nobody asked for.
+fn tab_switched(last: Option<AlchemyVerb>, now: AlchemyVerb) -> bool {
+    matches!(last, Some(previous) if previous != now)
+}
+
+/// A tab switch empties the cells: the two panes have different cell counts, so a
+/// reference to the eighth cell means nothing on a five-cell pane.
+fn clear_slots_on_tab_change(
+    mut state: ResMut<EnchantState>,
+    mut last: Local<Option<AlchemyVerb>>,
+) {
+    if tab_switched(*last, state.verb) {
+        state.clear_slots();
+    }
+    *last = Some(state.verb);
 }
 
 fn cleanup_enchant_window(
@@ -354,7 +611,15 @@ impl Plugin for EnchantPlugin {
             .add_systems(OnExit(SceneState::GameWorld), cleanup_enchant_window)
             .add_systems(
                 Update,
-                rebuild_enchant_window.run_if(in_state(SceneState::GameWorld)),
+                (
+                    // The tab watcher runs before the rebuild, so a switch clears
+                    // the cells in the same frame the new pane is drawn.
+                    clear_slots_on_tab_change,
+                    rebuild_enchant_window,
+                    place_drop_on_enchant,
+                )
+                    .chain()
+                    .run_if(in_state(SceneState::GameWorld)),
             );
     }
 }
@@ -363,9 +628,10 @@ impl Plugin for EnchantPlugin {
 mod test {
     use super::*;
 
-    /// The window's central finding: four verbs, two panes, and the split is the
-    /// descriptor's `ContentId` — 28 for Disjoint/Dismantle, 12 for
-    /// Manufacture/Strengthen.
+    /// Four verbs, two panes. The split does **not** come out of the descriptor:
+    /// Disjoint and Dismantle show eight cells, Manufacture and Strengthening
+    /// five, and those are the two panes' own counts. `from_content_id` only names
+    /// a pane; it does not decide which tab raises it.
     #[test]
     fn four_verbs_run_over_two_panes() {
         let panes: Vec<AlchemyPane> = AlchemyVerb::ALL.iter().map(|verb| verb.pane()).collect();
@@ -380,7 +646,7 @@ mod test {
         );
         assert_eq!(AlchemyVerb::Disjoint.pane().content_id(), 28);
         assert_eq!(AlchemyVerb::Manufacture.pane().content_id(), 12);
-        // and the mapping is read back out of a ContentId, not hardcoded per tab
+        // a pane can be named from its id, which is a different statement
         assert_eq!(
             AlchemyPane::from_content_id(12),
             Some(AlchemyPane::ItemPlusStones)
@@ -392,6 +658,163 @@ mod test {
         // an unknown ContentId renders nothing rather than a guessed pane
         assert_eq!(AlchemyPane::from_content_id(0), None);
         assert_eq!(AlchemyPane::from_content_id(-1), None);
+    }
+
+    /// **The trap, pinned.** Ids in this descriptor are unique only among
+    /// siblings: record 16 is `id 28, parent 12, CIFSlotWithHelpEx` and record 26
+    /// is `id 28, parent 5, CNIFAlchemySubWndType2`. Record 16 comes first, so a
+    /// search by id alone finds the **slot**. This test fails if the class check
+    /// is ever dropped as a simplification.
+    #[test]
+    fn a_pane_lookup_by_id_alone_would_find_a_slot() {
+        // the id both records share
+        assert_eq!(AlchemyPane::OneToMany.content_id(), 28);
+        // the slot is refused, the pane is accepted — same id, different class
+        assert!(!pane_matches(28, SLOT_CONTROL, AlchemyPane::OneToMany));
+        assert!(pane_matches(
+            28,
+            "CNIFAlchemySubWndType2",
+            AlchemyPane::OneToMany
+        ));
+        // and the other pane is not accepted under the wrong id
+        assert!(!pane_matches(
+            28,
+            "CNIFAlchemySubWndType1",
+            AlchemyPane::OneToMany
+        ));
+        assert!(pane_matches(
+            12,
+            "CNIFAlchemySubWndType1",
+            AlchemyPane::ItemPlusStones
+        ));
+        // each pane carries its own class, and neither of them is a slot
+        assert_ne!(
+            AlchemyPane::ItemPlusStones.class_name(),
+            AlchemyPane::OneToMany.class_name()
+        );
+        for pane in [AlchemyPane::ItemPlusStones, AlchemyPane::OneToMany] {
+            assert_ne!(pane.class_name(), SLOT_CONTROL);
+        }
+    }
+
+    /// Reading order is y then x, never record order: the one-to-many pane stores
+    /// its upper row as ids 66,67,68,**65** and its lower as 62,63,64,**69**.
+    /// Trusting the file order builds the cells transposed, and that does not show
+    /// while they are empty.
+    #[test]
+    fn the_cells_are_read_row_by_row_not_in_record_order() {
+        let cell = |x: f32, y: f32| Rect::new(x, y, x + 32.0, y + 32.0);
+        // the pane's eight drawable slots, in the descriptor's own record order
+        let record_order = vec![
+            cell(96.0, 247.0),  // 62
+            cell(144.0, 247.0), // 63
+            cell(192.0, 247.0), // 64
+            cell(240.0, 199.0), // 65  <- upper row, stored last of its row
+            cell(96.0, 199.0),  // 66
+            cell(144.0, 199.0), // 67
+            cell(192.0, 199.0), // 68
+            cell(240.0, 247.0), // 69
+        ];
+        let ordered = drawable_in_reading_order(record_order, Vec2::new(372.0, 371.0));
+        let xy: Vec<(f32, f32)> = ordered.iter().map(|r| (r.min.x, r.min.y)).collect();
+        assert_eq!(
+            xy,
+            vec![
+                (96.0, 199.0),
+                (144.0, 199.0),
+                (192.0, 199.0),
+                (240.0, 199.0),
+                (96.0, 247.0),
+                (144.0, 247.0),
+                (192.0, 247.0),
+                (240.0, 247.0),
+            ]
+        );
+        assert_eq!(ordered.len(), PANE_SLOTS);
+    }
+
+    /// A slot outside the window's content is not drawn. The one-to-many pane
+    /// declares **nine**, and the ninth sits at local `(-26,145)` — left of the
+    /// window, where the original draws nothing. The rule is by position, not by
+    /// id, so it also holds if another descriptor repeats the pattern.
+    #[test]
+    fn a_slot_outside_the_content_is_not_drawn() {
+        let cell = |x: f32, y: f32| Rect::new(x, y, x + 32.0, y + 32.0);
+        let content = Vec2::new(372.0, 371.0);
+        let declared = vec![cell(-26.0, 145.0), cell(96.0, 199.0), cell(144.0, 199.0)];
+        let drawn = drawable_in_reading_order(declared, content);
+        assert_eq!(drawn.len(), 2, "the negative-x slot is dropped");
+        assert!(drawn.iter().all(|r| r.min.x >= 0.0));
+        // every side is checked, not just the left one
+        for outside in [
+            cell(-1.0, 100.0),
+            cell(100.0, -1.0),
+            cell(content.x - 10.0, 100.0),
+            cell(100.0, content.y - 10.0),
+        ] {
+            assert!(
+                drawable_in_reading_order(vec![outside], content).is_empty(),
+                "{outside:?} should not be drawn"
+            );
+        }
+        // and the five-cell pane's own slots all sit inside
+        let five = vec![
+            cell(54.0, 222.0),
+            cell(160.0, 223.0),
+            cell(208.0, 223.0),
+            cell(256.0, 223.0),
+            cell(304.0, 223.0),
+        ];
+        assert_eq!(drawable_in_reading_order(five, content).len(), 5);
+    }
+
+    /// The tab-switch rule itself, which the system above only applies: a switch
+    /// releases the cells, the **first** observation does not (there is no previous
+    /// tab then, and clearing would be a release nobody asked for), and staying on
+    /// the same tab does not either.
+    #[test]
+    fn only_a_real_tab_switch_releases_the_cells() {
+        assert!(!tab_switched(None, AlchemyVerb::Disjoint), "first sight");
+        assert!(
+            !tab_switched(Some(AlchemyVerb::Disjoint), AlchemyVerb::Disjoint),
+            "same tab"
+        );
+        assert!(tab_switched(
+            Some(AlchemyVerb::Disjoint),
+            AlchemyVerb::Dismantle
+        ));
+        // every pair of different verbs counts, not just neighbouring ones
+        for from in AlchemyVerb::ALL {
+            for to in AlchemyVerb::ALL {
+                assert_eq!(
+                    tab_switched(Some(from), to),
+                    from != to,
+                    "{from:?} -> {to:?}"
+                );
+            }
+        }
+    }
+
+    /// Cells hold inventory references, one item in at most one cell, and a tab
+    /// switch empties them — a reference to the eighth cell means nothing on a
+    /// five-cell pane.
+    #[test]
+    fn the_cells_hold_references_and_a_tab_switch_clears_them() {
+        let mut state = EnchantState::default();
+        state.place(0, 13);
+        state.place(3, 20);
+        assert_eq!((state.slot(0), state.slot(3)), (Some(13), Some(20)));
+        // the same bag slot cannot sit in two cells
+        state.place(5, 13);
+        assert_eq!((state.slot(0), state.slot(5)), (None, Some(13)));
+        assert_eq!(state.take(5), Some(13));
+        assert_eq!(state.slot(5), None);
+        // out of range is ignored rather than panicking
+        state.place(PANE_SLOTS, 7);
+        assert_eq!(state.slot(PANE_SLOTS), None);
+        // a tab switch releases every cell
+        state.clear_slots();
+        assert!((0..PANE_SLOTS).all(|i| state.slot(i).is_none()));
     }
 
     /// Tabs are identified by their caption key, and every verb has its own.
