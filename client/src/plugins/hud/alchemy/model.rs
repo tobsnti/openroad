@@ -29,17 +29,19 @@ pub const STONE_SLOTS: usize = 4;
 /// (id 30 at `59,56,32,32`, `CommandID` 0).
 pub const EQUIP_SLOT: usize = 0;
 
-/// The two pages the classic shell hosts, one control each at the *same* rect
-/// `0,150,376,192`: `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM` (`CIFAlchemyEnchantMagic`,
-/// id 23) and `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` (`CIFAlchemyReinforce`,
-/// id 22) in `resinfo/ifalchemybox.txt`. Sharing the rect is what makes this a
-/// page *selection* rather than two windows.
+/// The three pages the shell hosts, one control each at `0,150,376,h`, in
+/// `resinfo/ifnewalchemybox.txt` — the description this client loads:
+/// `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM` (`CIFAlchemyEnchantMagic`, id 23),
+/// `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` (`CIFAlchemyReinforce`, id 22) and
+/// `GDR_ALCHEMYBOX_ELEMENT_MANUFACTURING` (`CIFAlchemyProcess`, id 21). They
+/// share an origin, which is what makes this a page *selection* rather than
+/// three windows.
 ///
-/// Default = `EquipEnhance`, from the file's own order: `ifalchemybox.txt`
-/// lists the reinforce host *after* the enchant host, and later in that file
-/// means further front — its last three entries are `CLOSE`, `DRAG` and
-/// `TITLE`, which are unambiguously on top of the pages. `[S]`: this is the
-/// file's own order, not a statement about what the original draws first.
+/// Default = `EquipEnhance`, from the file's own order: the reinforce host is
+/// listed *after* the enchant host, and later in that file means further front —
+/// its last three entries are `CLOSE`, `DRAG` and `TITLE`, which are
+/// unambiguously on top of the pages. `[S]`: this is the file's own order, not a
+/// statement about what the original draws first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AlchemyPage {
     /// `GDR_ALCHEMYBOX_REINFORCE_EQUIPMENT` — equipment plus elixir.
@@ -47,17 +49,48 @@ pub enum AlchemyPage {
     EquipEnhance,
     /// `GDR_ALCHEMYBOX_ENCHANT_MAGIC_PARAM` — equipment plus stone.
     AttGrant,
+    /// `GDR_ALCHEMYBOX_ELEMENT_MANUFACTURING` — the shell's third page.
+    ///
+    /// It is **shown but cannot act**: its request would be the manufacture
+    /// opcode, and nothing has ever been seen to carry or answer it, so this page
+    /// draws its art and its own description and offers no button. A page that
+    /// pretends to act would be worse than one that plainly does not.
+    Elementation,
 }
 
+/// The tallest page host, which is what the window is composed around so that
+/// switching pages cannot resize it.
+pub const TALLEST_HOST_H: f32 = 228.0;
+
 impl AlchemyPage {
-    /// Selector order, left to right: the file's own order of the two hosts.
-    pub const ALL: [AlchemyPage; 2] = [AlchemyPage::EquipEnhance, AlchemyPage::AttGrant];
+    /// Selector order, left to right: the file's own order of the three hosts.
+    pub const ALL: [AlchemyPage; 3] = [
+        AlchemyPage::EquipEnhance,
+        AlchemyPage::AttGrant,
+        AlchemyPage::Elementation,
+    ];
+
+    /// Height of the page host, which is also its art's own DDS height:
+    /// 228 for the reinforce and element pages, 192 for the enchant page.
+    pub fn host_height(self) -> f32 {
+        match self {
+            AlchemyPage::AttGrant => 192.0,
+            AlchemyPage::EquipEnhance | AlchemyPage::Elementation => 228.0,
+        }
+    }
+
+    /// Whether the page can form a request at all. The element page cannot:
+    /// no opcode carries its action.
+    pub fn can_act(self) -> bool {
+        !matches!(self, AlchemyPage::Elementation)
+    }
 
     /// Index into the per-page slot array.
     fn index(self) -> usize {
         match self {
             AlchemyPage::EquipEnhance => 0,
             AlchemyPage::AttGrant => 1,
+            AlchemyPage::Elementation => 2,
         }
     }
 }
