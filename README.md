@@ -125,3 +125,33 @@ window is preserved by that scale; the numbers in the captions are measured **af
   `original-loading-1280x720.png` is otherwise untouched.
 * **1024x576 was tried and dropped:** the login fields took no keyboard input at that size (the
   `LIST` button in the same dialog did fire). Cause unknown; that is why the 16:9 evidence is 1280x720.
+
+## Added later the same day: what `fork/main` does with the ART at 16:9
+
+The tile captions above compare the gold bar. The background art needs the same treatment, measured
+the same way in all three frames: non-black columns (luminance > 24, columns where more than half of
+the band's rows are non-black) and the margin colour, in the same relative row band
+(44.4 % .. 77.8 % of the height — below the dev panels, above the gold bar).
+
+| frame | non-black columns | left margin (mean RGB, max, share > 12) | right margin |
+|---|---|---|---|
+| **original** 1280x720 (box 160..1120) | **162 .. 1119** | **(0.00, 0.00, 0.00), max 0, 0.0000** | **(0.00, 0.00, 0.00), max 0, 0.0000** |
+| **before** `fork/main` 1600x900 (box 200..1400) | **0 .. 1599** | (83.52, 41.10, 15.07), **max 255**, 0.5242 | (104.25, 72.88, 41.12), **max 255**, 0.5903 |
+| after (this PR) 1600x900 | 0 .. 1599 | (67.52, 31.30, 8.72), **max 101**, 0.9584 | (72.86, 49.65, 23.51), **max 103**, 0.9952 |
+| before, other art | 0 .. 1599 | (69.13, 58.29, 42.59), **max 255**, 0.6438 | (97.96, 79.18, 68.96), max 250, 0.6295 |
+| after, other art | 0 .. 1599 | (44.69, 34.98, 25.60), **max 71**, 0.9740 | (61.19, 47.87, 41.66), max 79, 1.0000 |
+
+**`fork/main` stretches the art to both window edges** (`0..1599`, sharp art at full brightness in
+the margin, max 255), where the original puts **exactly nothing** (max 0). **So the art half of this
+PR is a real restoration**: it takes the art out of the stretch and back into the same centred 4:3
+box the original uses. What stays different from the original is the **fill** of the margin — a
+dimmed blur (max 101/103) instead of black (max 0) — and the same two numbers show that too.
+The second art pair gives the same picture (before max 255, after max 71/79).
+
+Complete, per layer:
+
+| layer | original | `fork/main` | this PR | verdict |
+|---|---|---|---|---|
+| art, placement | contain, 4:3 box | **stretched to the window** | contain, 4:3 box | **restoration** |
+| art, margin | **pure black** (max 0) | — (no margin) | dimmed blur (max 101) | **deliberate deviation** |
+| chrome (bar, caption) | **stretched to the window** | **stretched, pixel-identical to the original** | moved into the 4:3 box | **change, not a restoration** |
