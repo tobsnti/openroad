@@ -237,15 +237,28 @@ fn main() {
             "diagnostics tier on: BRP at http://127.0.0.1:{} (override with BRP_EXTRAS_PORT)",
             std::env::var("BRP_EXTRAS_PORT").unwrap_or_else(|_| "15702".into())
         );
+        // The frame buffer `openroad/packet_tail` reads. It exists only in
+        // this tier, which is why both network systems take it as an option
+        // and a run without the tier pays one check per frame.
+        app.init_resource::<plugins::net::packet_tap::PacketTap>();
         app.add_plugins(
             (
                 // `openroad/diagnostics` dumps the whole DiagnosticsStore
                 // (incl. the world_counts/* entity categories) over BRP —
                 // brp_extras only exposes FPS/frame-time.
-                RemotePlugin::default().with_method_main(
-                    "openroad/diagnostics",
-                    plugins::diagnostics::brp_all_diagnostics,
-                ),
+                RemotePlugin::default()
+                    .with_method_main(
+                        "openroad/diagnostics",
+                        plugins::diagnostics::brp_all_diagnostics,
+                    )
+                    // The last frames of both directions, filtered by opcode
+                    // or direction. Answering "what did the server reply to
+                    // that" otherwise means stopping the client and reading
+                    // the on-disk dump in two directions at once.
+                    .with_method_main(
+                        "openroad/packet_tail",
+                        plugins::net::packet_tap::brp_packet_tail,
+                    ),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
                 // (`WgpuSettingsPriority::Functionality`), so on Vulkan and DX12
