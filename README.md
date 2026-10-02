@@ -54,3 +54,74 @@ Vertically nothing moves: the box is as tall as the window, so `973/1200` stays 
   only the horizontal changes.
 * The dev panels (FPS graph, EnvironmentSettings, TimeOfDay) are in both frames. They come from
   the shared `config.yaml` and are not part of the change.
+
+---
+
+# Added 2026-10-02: the ORIGINAL client, measured — `panel-original-before-after.png`
+
+The three new `original-*.png` files and `panel-original-before-after.png` come from the user's own
+original client, so the pair above becomes **original / before / after**.
+
+## Which client, and how the frames were taken
+
+* `C:\SRO\Evolin\sro_client.exe`, 11 485 184 B, sha256
+  `5A4A865EF1E111B4922ADCB173B96C1D268404730FE304B15564B7AD3FCDAE8F`. The PE carries **no version
+  resource** (every field empty); the client prints `Ver 1.208` on its login screen and sends
+  `module "SR_Client", version 208` in its patch check. We call this protocol family *1.188*; the
+  **binary calls itself 208**. It is **one** client, not "the original" in general.
+* Server behind it: our own local skrillax stack through a decrypting MITM proxy, i.e. the frames
+  are a real world entry, not a mock.
+* **Window, not fullscreen.** The client area was measured with `GetClientRect`/`ClientToScreen`
+  (not derived from the outer window size): **1280x720** for the 16:9 frames, **800x600** for the
+  4:3 one. Window grab, **1:1, nothing scaled**. The files here are cropped to the client area only.
+* These are the **world-entry** loading screen. **This client has no startup loading screen** —
+  it goes straight from launch to the intro fly-through and the login dialog.
+
+## What the original does, counted with the same rule as above
+Gold = `R>120, G>90, B < G-20`, columns with more than 5 hits, in the frame's row band.
+
+| client area | gold bar columns | as a percentage of the window | background art | margins |
+|---|---|---|---|---|
+| 800x600 (4:3) | `123 .. 676` | `15.38 % .. 84.50 %` | full width `0..799` | — |
+| **1280x720 (16:9)** | **`197 .. 1080`** | **`15.39 % .. 84.38 %`** | **`160 .. 1119`** = exactly `design_fit_rect(1280,720,contain)` | **pure black, mean RGB `(0.00, 0.00, 0.00)`, maximum 0** |
+
+Two independent elements give the same answer: the caption `NOW LOADING...` sits at
+`17.12 % .. 32.12 %` of the window at 4:3 and `17.03 % .. 32.19 %` at 16:9.
+
+**So the original splits the screen into two layers with two different rules:**
+
+1. **The background art keeps the centred 4:3 box** — the same box this PR introduces, to the pixel.
+2. **The margins beside it are pure black**, not a blurred copy.
+3. **The chrome (frame, gauge, caption) scales with the WINDOW**, not with the 4:3 box.
+
+Measured in the panel, all three tiles at 1280x720 with the same rule:
+
+| tile | gold bar columns | width |
+|---|---|---|
+| original | **197 .. 1080** | 884 px |
+| before (`fork/main`) | **197 .. 1080** | 884 px |
+| after (this PR) | `308 .. 970` | 663 px |
+
+`before` and the original are **identical to the pixel** for the chrome.
+
+## How to read the panel
+Each tile is 1280x720, rows 320..680, with one magenta rectangle drawn in — the centred 4:3 box
+`x 160..1120` — and nothing else. The original tile is native 1280x720; the before/after tiles are
+the 1600x900 frames above scaled to 1280x720 (Lanczos). Both are 16:9, so every percentage of the
+window is preserved by that scale; the numbers in the captions are measured **after** scaling.
+
+## What these new images do **not** show
+
+* **No reference for the startup path.** The original has no startup loading screen, and this PR
+  touches both surfaces (`game_scene.rs`). Only the world-entry surface has an original to compare to.
+* **One client, one art file.** Both original runs drew the same background art. The statement
+  "art inside the 4:3 box" rests on the **geometry** (margins exactly 160 px wide = `design_fit_rect`,
+  colour exactly `(0,0,0)`), not on the picture's content.
+* **The dev panels** (FPS graph, EnvironmentSettings, TimeOfDay) are in the before/after tiles and
+  not in the original tile — they are ours, not part of the comparison. The panel crop (rows
+  320..680) leaves them out.
+* The bottom 26 rows of the original client area carry the Windows taskbar in the raw grab
+  (720 + title bar + taskbar do not fit on a 768 px screen). They are outside the panel crop, and
+  `original-loading-1280x720.png` is otherwise untouched.
+* **1024x576 was tried and dropped:** the login fields took no keyboard input at that size (the
+  `LIST` button in the same dialog did fire). Cause unknown; that is why the 16:9 evidence is 1280x720.
