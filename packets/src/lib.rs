@@ -546,15 +546,32 @@ packets! {
     0x3255 => GuildStorageDataChunk,
     0x3254 => GuildStorageDataEnd,
 
-    // Alchemy — the request that runs an operation on the laid-out slots, and
-    // dismantle (agent/alchemy.rs, docs/net-alchemy.md). Twenty opcodes in this
-    // block, ONE published body: `0x7157 {u8 count, u8[] slots}` ->
-    // `0xB157 {u8 result, if result == 2 u16 code}`; 0x7155 is typed from the
-    // bodies the original client sends on it, its answer 0xB155 is not.
-    // Elixir 0x7150/0xB150, stone 0x7151/0xB151, socket 0x716A/0xB16A, the
-    // abort 0x3156 and the six unnamed neighbours have NO recorded layout in
-    // any source, so they stay unwired and are listed with their handler VAs
-    // in docs/net-alchemy.md rather than guessed at.
+    // Alchemy — TWO windows, and that is why two sets of opcodes are wired
+    // here (agent/alchemy.rs, docs/net-alchemy.md). Twenty opcodes in the
+    // block; the measured frames (2026-10-01) are:
+    //
+    // * Alchemy box, the `Fuse` button: `0x7150` body `02 03 02 0d 14` (elixir,
+    //   bag slots 13 and 20) and `0x7151` body `02 04 02 13 0f`, i.e.
+    //   `{u8 tag, u8 selector, u8 count, slots}`. The acks `0xB150`/`0xB151`
+    //   are wired too, but ONLY their refusal arm has wire evidence — the
+    //   success and breakdown arms are read off the client that answers them,
+    //   which is why the presenter diffs the item instead of trusting a delta.
+    // * Four-tab window: `0x7155` body `02 01 01 1b` (4 bytes, Disjoint, bag
+    //   slot 27); Manufacture sends the SAME opcode with 8 bytes. Its answer
+    //   `0xB155` has no recorded layout. `Fuse` does not exist in that window
+    //   at all (its buttons are Disjoint / Dismantle / Manufacture /
+    //   Strengthen), so the `AlchemyFuseRequest` name below is wrong for what
+    //   it was measured doing and is renamed separately.
+    // * `0x7157 {u8 count, u8[] slots}` -> `0xB157 {u8 result, if result == 2
+    //   u16 code}`, body `01 0d` (Dismantle, bag slot 13) — the published one.
+    //
+    // Socket 0x716A/0xB16A, the abort 0x3156 and the six unnamed neighbours
+    // have no recorded layout in any source and stay unwired, listed with
+    // their handler VAs in docs/net-alchemy.md (#757) rather than guessed at.
+    0x7150 => AlchemyReinforceRequest,
+    0xB150 => AlchemyReinforceResponse,
+    0x7151 => AlchemyStoneRequest,
+    0xB151 => AlchemyStoneResponse,
     0x7155 => AlchemyFuseRequest,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
