@@ -51,3 +51,30 @@ mode is **not** black — it is the brightest of the three, 1.64x brighter than
 `vanilla-2-baked.png`. Reading `base_color * ambient * exposure` and concluding "ambient only, so
 dark" would have been wrong. The difference between the two rows is one constant:
 `ambient_brightness: 3000` (vanilla) against `pbr_ambient_brightness: 100` (pbr).
+
+---
+
+## After the change (same client, same camera, same window)
+
+The client in `after-*.png` is built from this PR's branch, with
+`assets/shaders/terrain_splat.wgsl` taken from the same tree — so these frames test the shader
+edit itself, which `cargo test` cannot: a broken WGSL branch only shows up at runtime.
+No naga/shader error in the client log; the client renders.
+
+| `render_mode` | panel value | mean before | mean after |
+|---|---|---|---|
+| vanilla | 0 dynamic | 60.40 | **60.41** |
+| vanilla | 1 (was flat_baked) | 63.04 | **38.44** |
+| vanilla | 2 baked | 38.44 | 38.50 |
+| pbr | 0 dynamic | 86.20 | **86.19** |
+| pbr | 1 (was flat_baked) | **21.49** | **62.82** |
+| pbr | 2 baked | 62.84 | 62.88 |
+
+Panel value 1 now reads as baked: 38.44 against 38.50 in vanilla and 62.82 against 62.88 in pbr —
+0.16 % and 0.10 % apart, i.e. frame noise. The black cell is gone: `pbr` + 1 went from 21.49 with
+95.5 % of the window below luminance 32 to 62.82 with 0.04 % below it.
+
+Positive control, so the equality above is a result and not a dead measurement: `dynamic` is
+unchanged (60.40 -> 60.41, 86.20 -> 86.19) and still clearly apart from baked in the same frames
+(60.41 vs 38.50 = 1.57x, 86.19 vs 62.88 = 1.37x). The shader still branches, and the window still
+separates the modes it is supposed to separate.
