@@ -13,7 +13,7 @@
 //! bodies is the one defect the whole RE program exists to avoid (ADR-0009).
 //!
 //! One of those nineteen is typed here anyway, and for a reason that does not
-//! weaken the rule: the fuse request has three bodies the original client sends
+//! weaken the rule: the 0x7155 request has three bodies the original client sends
 //! on it, all of which end on their last slot. Its answer stays unwired.
 //!
 //! When those layouts do arrive, the ack shape is already decided by the item
@@ -52,19 +52,32 @@ impl AlchemyDismantleRequest {
     }
 }
 
-/// [`AlchemyFuseRequest::Close`]: the window went away with an operation open.
-pub const ALCHEMY_FUSE_OP_CLOSE: u8 = 1;
-/// [`AlchemyFuseRequest::Slots`]: the operation names the slots it works on.
-pub const ALCHEMY_FUSE_OP_SLOTS: u8 = 2;
+/// [`Alchemy7155Request::Close`]: the window went away with an operation open.
+pub const ALCHEMY_7155_OP_CLOSE: u8 = 1;
+/// [`Alchemy7155Request::Slots`]: the operation names the slots it works on.
+pub const ALCHEMY_7155_OP_SLOTS: u8 = 2;
 
 /// 0x7155 — client → server: run an alchemy operation on the slots laid out in
 /// the window, or drop one that is open.
+///
+/// **Named after the opcode, not after a verb, because it carries two.** The
+/// frames measured on 2026-10-01 come from the four-tab window, whose buttons
+/// are *Disjoint*, *Dismantle*, *Manufacture* and *Strengthen*:
+///
+/// * *Disjoint* sends 4 bytes, `02 01 01 1b` (one slot, bag slot 27).
+/// * *Manufacture* sends the **same opcode** with 8 bytes.
+///
+/// *Fuse* does not appear in that window at all — it is the alchemy box's
+/// button, and that one sends `0x7150`/`0x7151` with a different body. The
+/// earlier name `AlchemyFuseRequest` therefore described something this
+/// opcode never did; a verb in the name would have to be wrong for one of the
+/// two operations, so the opcode is the name.
 ///
 /// A leading `u8` picks the operation. A body that does not end on the last
 /// slot, and an operation this type does not know, are kept whole rather than
 /// half-read.
 #[derive(Message, Clone, Debug, PartialEq)]
-pub enum AlchemyFuseRequest {
+pub enum Alchemy7155Request {
     /// The slots the operation works on, as inventory slot indices.
     Slots {
         /// One byte ahead of the slot count. Its two known values go with the
@@ -79,7 +92,7 @@ pub enum AlchemyFuseRequest {
     Unknown { raw: Bytes },
 }
 
-impl TryFrom<Bytes> for AlchemyFuseRequest {
+impl TryFrom<Bytes> for Alchemy7155Request {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
         // Without the leading byte there is no operation to keep.
@@ -91,32 +104,32 @@ impl TryFrom<Bytes> for AlchemyFuseRequest {
         })?;
         let body = &value[1..];
         match (op, body) {
-            (ALCHEMY_FUSE_OP_CLOSE, []) => Ok(AlchemyFuseRequest::Close),
-            (ALCHEMY_FUSE_OP_SLOTS, [unknown, count, slots @ ..])
+            (ALCHEMY_7155_OP_CLOSE, []) => Ok(Alchemy7155Request::Close),
+            (ALCHEMY_7155_OP_SLOTS, [unknown, count, slots @ ..])
                 if slots.len() == *count as usize =>
             {
-                Ok(AlchemyFuseRequest::Slots {
+                Ok(Alchemy7155Request::Slots {
                     unknown: *unknown,
                     slots: slots.to_vec(),
                 })
             }
-            _ => Ok(AlchemyFuseRequest::Unknown { raw: value }),
+            _ => Ok(Alchemy7155Request::Unknown { raw: value }),
         }
     }
 }
 
-impl From<AlchemyFuseRequest> for Bytes {
-    fn from(p: AlchemyFuseRequest) -> Self {
+impl From<Alchemy7155Request> for Bytes {
+    fn from(p: Alchemy7155Request) -> Self {
         let mut buf = BytesMut::new();
         match p {
-            AlchemyFuseRequest::Slots { unknown, slots } => {
-                buf.put_u8(ALCHEMY_FUSE_OP_SLOTS);
+            Alchemy7155Request::Slots { unknown, slots } => {
+                buf.put_u8(ALCHEMY_7155_OP_SLOTS);
                 buf.put_u8(unknown);
                 buf.put_u8(slots.len() as u8);
                 buf.put_slice(&slots);
             }
-            AlchemyFuseRequest::Close => buf.put_u8(ALCHEMY_FUSE_OP_CLOSE),
-            AlchemyFuseRequest::Unknown { raw } => return raw,
+            Alchemy7155Request::Close => buf.put_u8(ALCHEMY_7155_OP_CLOSE),
+            Alchemy7155Request::Unknown { raw } => return raw,
         }
         buf.freeze()
     }
@@ -187,12 +200,12 @@ mod tests {
     /// The three bodies the original client sends on 0x7155: one slot, five
     /// slots, and the close.
     #[test]
-    fn fuse_request_reads_the_slot_and_close_bodies() {
+    fn the_7155_request_reads_the_slot_and_close_bodies() {
         let wire = Bytes::from_static(&[0x02, 0x01, 0x01, 0x1B]);
-        let decoded = AlchemyFuseRequest::try_from(wire.clone()).unwrap();
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
         assert_eq!(
             decoded,
-            AlchemyFuseRequest::Slots {
+            Alchemy7155Request::Slots {
                 unknown: 0x01,
                 slots: vec![27],
             }
@@ -201,10 +214,10 @@ mod tests {
         assert_eq!(back, wire);
 
         let wire = Bytes::from_static(&[0x02, 0x02, 0x05, 0x12, 0x13, 0x17, 0x18, 0x19]);
-        let decoded = AlchemyFuseRequest::try_from(wire.clone()).unwrap();
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
         assert_eq!(
             decoded,
-            AlchemyFuseRequest::Slots {
+            Alchemy7155Request::Slots {
                 unknown: 0x02,
                 slots: vec![18, 19, 23, 24, 25],
             }
@@ -213,8 +226,8 @@ mod tests {
         assert_eq!(back, wire);
 
         let wire = Bytes::from_static(&[0x01]);
-        let decoded = AlchemyFuseRequest::try_from(wire.clone()).unwrap();
-        assert_eq!(decoded, AlchemyFuseRequest::Close);
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded, Alchemy7155Request::Close);
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
     }
@@ -222,7 +235,7 @@ mod tests {
     /// A count that does not match the slots that follow is worth less than the
     /// bytes it came in as, so it keeps them.
     #[test]
-    fn fuse_request_keeps_a_body_it_cannot_close() {
+    fn the_7155_request_keeps_a_body_it_cannot_close() {
         for body in [
             // one slot short of the count
             &[0x02, 0x01, 0x02, 0x1B][..],
@@ -234,13 +247,13 @@ mod tests {
             &[0x03, 0x01, 0x01, 0x1B][..],
         ] {
             let wire = Bytes::copy_from_slice(body);
-            let decoded = AlchemyFuseRequest::try_from(wire.clone()).unwrap();
-            assert_eq!(decoded, AlchemyFuseRequest::Unknown { raw: wire.clone() });
+            let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+            assert_eq!(decoded, Alchemy7155Request::Unknown { raw: wire.clone() });
             let back: Bytes = decoded.into();
             assert_eq!(back, wire);
         }
         // Without the leading byte there is not even an operation to keep.
-        assert!(AlchemyFuseRequest::try_from(Bytes::new()).is_err());
+        assert!(Alchemy7155Request::try_from(Bytes::new()).is_err());
     }
 
     /// `{u8 result, if result == 2 u16 errorCode}` — success is one byte, a

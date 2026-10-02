@@ -539,7 +539,7 @@ packets! {
     // abort 0x3156 and the six unnamed neighbours have NO recorded layout in
     // any source, so they stay unwired and are listed with their handler VAs
     // in docs/net-alchemy.md rather than guessed at.
-    0x7155 => AlchemyFuseRequest,
+    0x7155 => Alchemy7155Request,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 

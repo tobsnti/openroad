@@ -252,7 +252,7 @@ Landed with `feat/ui-windows` (PR #81): NPC dialog, teleporter, storage, repair.
 | `0x34D2` | BArenaOperation | S→C | wired | Battle Arena scheduler broadcast; tagged union, body length varies per op; ops `02/03/05/0D/0E` capture-verified from `packet_dump/0x34d2.log`, the rest and the `0xFF` sub-stream spec-derived |
 | `0x703E` | ItemRepairRequest | C→S | wired |  |
 | `0xB03E` | ItemRepairResponse | S→C | wired |  |
-| `0x7155` | AlchemyFuseRequest | C→S | wired | runs the operation laid out in the alchemy window: `u8` op, 2 = `{u8 [U], u8 count, u8[count] slots}`, 1 = the window closed on an open operation; any other op, and a body that does not end on the last slot, is kept whole |
+| `0x7155` | Alchemy7155Request | C→S | wired | **four-tab window**, *Disjoint* and *Manufacture* — the opcode carries two verbs, which is why the type is named after it and not after one of them. `u8` op, 2 = `{u8 [U], u8 count, u8[count] slots}`, 1 = the window closed on an open operation; any other op, and a body that does not end on the last slot, is kept whole. Measured 2026-10-01: Disjoint `02 01 01 1b` (4 B, bag slot 27), Manufacture the same opcode with 8 B. *Fuse* is the alchemy box's button and sends `0x7150`/`0x7151` instead |
 | `0x7157` | AlchemyDismantleRequest | C→S | wired | alchemy dismantle, `{u8 SlotCount, u8[] Slots}` — the family's **only** published body |
 | `0xB157` | AlchemyDismantleResponse | S→C | wired | `{u8 result, if result == 2 u16 errorCode}`; the error-code table is a dead page, so the code stays unnamed |
 
