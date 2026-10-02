@@ -6,7 +6,6 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{Layer, RenderLayers};
 use bevy::camera::{ClearColorConfig, Hdr, ImageRenderTarget, RenderTarget};
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
-use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;

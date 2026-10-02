@@ -17,7 +17,6 @@ use crate::plugins::effects::{
     EffectsEnabled, LeafEmitPolicy,
 };
 use crate::plugins::map::terrain::rendering;
-use bevy::pbr::MeshMaterial3d;
 
 /// The effect-runtime knobs `on_settings_changed` drives, bundled to stay
 /// under the system-parameter arity limit.
