@@ -19,7 +19,8 @@
 
 use clap::{App, AppSettings, Arg, SubCommand};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `brp_extras/send_keys` refuses anything longer; failing here names the
 /// limit instead of spending a round trip on it.
@@ -181,6 +182,286 @@ fn query_request(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// `mark`: one folder per moment. Screenshot, the last frames, the UI rects and
+// what the client is running, collected in one go so a report is evidence
+// instead of a description.
+// ---------------------------------------------------------------------------
+
+/// Folder name for a mark taken at `unix_secs`, e.g. `mark-1790870000`.
+/// Seconds, not milliseconds: two marks inside one second are rare, and a name
+/// a person can read and type is worth more than that collision.
+fn mark_dir_name(unix_secs: u64) -> String {
+    format!("mark-{unix_secs}")
+}
+
+/// The screenshot path handed to the client must be **absolute**.
+///
+/// `brp_extras/screenshot` resolves a relative path in the *client's* working
+/// directory, which is where the game was started, not where this command runs.
+/// A relative `--out` would scatter PNGs next to the client while the mark
+/// folder stays empty — and the folder would look like the screenshot failed.
+fn absolute_screenshot_path(dir: &Path, file: &str) -> PathBuf {
+    let joined = dir.join(file);
+    if joined.is_absolute() {
+        joined
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(joined)
+    }
+}
+
+/// What this mark knows about the build it was taken against.
+///
+/// A folder of evidence that does not say which build produced it cannot be
+/// read later: the same screenshot means different things on two commits. The
+/// client is asked first (`openroad/build_info`); when it cannot say, the
+/// field stays `null` **and carries the reason**, `mark` prints a warning, and
+/// two weaker answers are recorded next to it — never *as* it:
+///
+/// * `stated` — what the operator passed on the command line.
+/// * `tool_tree` — the commit of the tree this command ran in. That is **not
+///   proof** of what the client is running; it is a hint for the common case
+///   where the game was started from the same checkout, and it is labelled so
+///   nobody reads it as the answer.
+fn build_block(
+    client: Option<&Value>,
+    client_error: Option<&str>,
+    stated: Option<&str>,
+    tool_tree: Option<&str>,
+    server: Option<&str>,
+) -> Value {
+    json!({
+        "client": client.cloned().unwrap_or(Value::Null),
+        "client_unknown_reason": match (client, client_error) {
+            (Some(_), _) => Value::Null,
+            (None, Some(reason)) => Value::String(reason.to_string()),
+            (None, None) => Value::String("the client did not answer openroad/build_info".into()),
+        },
+        "stated": stated.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null),
+        "tool_tree": tool_tree.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null),
+        "tool_tree_note": "the checkout this command ran in, not proof of what the client runs",
+        "server": server.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null),
+    })
+}
+
+/// `git rev-parse --short HEAD` plus a `-dirty` marker, or `None` when this is
+/// not a git tree. Shelling out keeps the tool free of a git dependency.
+fn tool_tree_commit() -> Option<String> {
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !head.status.success() {
+        return None;
+    }
+    let mut commit = String::from_utf8(head.stdout).ok()?.trim().to_string();
+    if commit.is_empty() {
+        return None;
+    }
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .is_some_and(|out| !out.stdout.is_empty());
+    if dirty {
+        commit.push_str("-dirty");
+    }
+    Some(commit)
+}
+
+/// True when the mark cannot name the client build — the one case where the
+/// command says so out loud instead of writing a quiet `null`.
+fn build_is_unknown(build: &Value) -> bool {
+    build.get("client").map(Value::is_null).unwrap_or(true)
+}
+
+/// The index written as `mark.json`. Pure so its shape is tested without a
+/// client: a mark that lists a file it did not write is worse than no mark.
+#[allow(clippy::too_many_arguments)]
+fn mark_index(
+    unix_secs: u64,
+    iso: &str,
+    note: Option<&str>,
+    build: Value,
+    files: Vec<(&str, bool, Option<String>)>,
+    frame_count: usize,
+    node_count: usize,
+) -> Value {
+    let files: Vec<Value> = files
+        .into_iter()
+        .map(|(name, ok, error)| {
+            json!({
+                "file": name,
+                "written": ok,
+                // A step that failed keeps its line and says why, so a reader
+                // sees "no screenshot because X", not an absent entry.
+                "error": error.map(Value::String).unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    json!({
+        "mark": mark_dir_name(unix_secs),
+        "taken_at_unix": unix_secs,
+        "taken_at": iso,
+        "note": note.map(|n| Value::String(n.to_string())).unwrap_or(Value::Null),
+        "build": build,
+        "counts": { "frames": frame_count, "ui_nodes": node_count },
+        "files": files,
+    })
+}
+
+/// Seconds since the epoch, for the folder name and the index.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// RFC3339-ish stamp without pulling in a date crate: the client's own logs
+/// use UTC, and a mark is read next to them.
+fn iso_from_unix(unix_secs: u64) -> String {
+    // Days since epoch -> civil date, the usual algorithm (Howard Hinnant's
+    // `civil_from_days`), so the stamp needs no dependency.
+    let days = (unix_secs / 86_400) as i64;
+    let secs_of_day = unix_secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60
+    )
+}
+
+fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), String> {
+    let path = dir.join(name);
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// Collect one moment. Every step is allowed to fail on its own: a mark with
+/// three of four pieces is still evidence, as long as it says which piece is
+/// missing and why.
+#[allow(clippy::too_many_arguments)]
+fn cmd_mark(
+    brp: &Brp,
+    out_root: &str,
+    note: Option<&str>,
+    packets: u64,
+    stated_build: Option<&str>,
+    server_build: Option<&str>,
+) -> Result<(), String> {
+    let unix_secs = unix_now();
+    let dir = Path::new(out_root).join(mark_dir_name(unix_secs));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+
+    let mut files: Vec<(&str, bool, Option<String>)> = Vec::new();
+    let mut frame_count = 0usize;
+    let mut node_count = 0usize;
+
+    // The build first: if the rest fails, the one thing that must be in the
+    // folder is which client it was taken against.
+    let (client_build, client_error) = match brp.call("openroad/build_info", None) {
+        Ok(value) => (Some(value), None),
+        Err(message) => (None, Some(message)),
+    };
+    let build = build_block(
+        client_build.as_ref(),
+        client_error.as_deref(),
+        stated_build,
+        tool_tree_commit().as_deref(),
+        server_build,
+    );
+
+    match brp.call("openroad/packet_tail", Some(json!({ "limit": packets }))) {
+        Ok(value) => {
+            frame_count = value
+                .get("frames")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let result = write_json(&dir, "packets.json", &value);
+            files.push(("packets.json", result.is_ok(), result.err()));
+        }
+        Err(message) => files.push(("packets.json", false, Some(message))),
+    }
+
+    match brp.call("openroad/ui_rects", None) {
+        Ok(value) => {
+            node_count = value
+                .get("nodes")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let result = write_json(&dir, "ui_rects.json", &value);
+            files.push(("ui_rects.json", result.is_ok(), result.err()));
+        }
+        Err(message) => files.push(("ui_rects.json", false, Some(message))),
+    }
+
+    match brp.call("openroad/diagnostics", None) {
+        Ok(value) => {
+            let result = write_json(&dir, "diagnostics.json", &value);
+            files.push(("diagnostics.json", result.is_ok(), result.err()));
+        }
+        Err(message) => files.push(("diagnostics.json", false, Some(message))),
+    }
+
+    let shot = absolute_screenshot_path(&dir, "shot.png");
+    match brp.call(
+        "brp_extras/screenshot",
+        Some(json!({ "path": shot.display().to_string() })),
+    ) {
+        Ok(_) => files.push(("shot.png", true, None)),
+        Err(message) => files.push(("shot.png", false, Some(message))),
+    }
+
+    let index = mark_index(
+        unix_secs,
+        &iso_from_unix(unix_secs),
+        note,
+        build,
+        files,
+        frame_count,
+        node_count,
+    );
+    write_json(&dir, "mark.json", &index)?;
+
+    println!("{}", dir.display());
+    for entry in index["files"].as_array().into_iter().flatten() {
+        let name = entry["file"].as_str().unwrap_or("?");
+        match entry["error"].as_str() {
+            None => println!("  {name}"),
+            Some(error) => println!("  {name}  MISSING: {error}"),
+        }
+    }
+    println!("  frames {frame_count} · ui nodes {node_count}");
+    if build_is_unknown(&index["build"]) {
+        // Loud on purpose: this is the gap that makes a folder of evidence
+        // unreadable a day later.
+        eprintln!(
+            "warning: this mark does not name the client build ({}). \
+             Evidence that cannot be tied to a build is hard to use later.",
+            index["build"]["client_unknown_reason"]
+                .as_str()
+                .unwrap_or("unknown")
+        );
+    }
+    Ok(())
+}
+
 fn print_result(result: &Value) {
     println!(
         "{}",
@@ -284,6 +565,42 @@ fn main() {
                 .arg(Arg::with_name("without").long("without").takes_value(true)),
         )
         .subcommand(
+            SubCommand::with_name("mark")
+                .about("Collect one moment into a folder: build, screenshot, last frames, UI rects")
+                .arg(
+                    Arg::with_name("out")
+                        .long("out")
+                        .takes_value(true)
+                        .default_value("marks")
+                        .help("Folder to create the mark in"),
+                )
+                .arg(
+                    Arg::with_name("note")
+                        .long("note")
+                        .takes_value(true)
+                        .help("What you saw, in your own words"),
+                )
+                .arg(
+                    Arg::with_name("packets")
+                        .long("packets")
+                        .takes_value(true)
+                        .default_value("50")
+                        .help("How many recent frames to keep"),
+                )
+                .arg(
+                    Arg::with_name("client-build")
+                        .long("client-build")
+                        .takes_value(true)
+                        .help("Client commit, when you know it and the client cannot say"),
+                )
+                .arg(
+                    Arg::with_name("server-build")
+                        .long("server-build")
+                        .takes_value(true)
+                        .help("Server commit, when you know it: a mark that cannot name its build is hard to read later"),
+                ),
+        )
+        .subcommand(
             SubCommand::with_name("shutdown")
                 .about("End the client cleanly, so a probe leaves no process behind"),
         )
@@ -312,6 +629,25 @@ fn main() {
         raw.parse()
             .unwrap_or_else(|_| exit_with(&format!("not a number: {raw}")))
     };
+
+    // `mark` is not one request but several, so it runs here and returns.
+    if let ("mark", Some(m)) = matches.subcommand() {
+        let raw = m.value_of("packets").unwrap();
+        let packets: u64 = raw
+            .parse()
+            .unwrap_or_else(|_| exit_with(&format!("invalid --packets: {raw}")));
+        match cmd_mark(
+            &brp,
+            m.value_of("out").unwrap(),
+            m.value_of("note"),
+            packets,
+            m.value_of("client-build"),
+            m.value_of("server-build"),
+        ) {
+            Ok(()) => return,
+            Err(message) => exit_with(&message),
+        }
+    }
 
     let request: Result<(&str, Option<Value>), String> = match matches.subcommand() {
         ("screenshot", Some(m)) => {
@@ -467,6 +803,122 @@ mod tests {
         );
         assert!(type_path_list(None).is_empty());
         assert!(type_path_list(Some(" , ")).is_empty());
+    }
+
+    /// Two marks must not be able to collide in a way a person cannot see, and
+    /// the name has to be typable.
+    #[test]
+    fn a_mark_folder_is_named_after_its_second() {
+        assert_eq!(mark_dir_name(0), "mark-0");
+        assert_eq!(mark_dir_name(1_790_870_000), "mark-1790870000");
+    }
+
+    /// The trap this command would otherwise walk into: `brp_extras/screenshot`
+    /// resolves a relative path in the CLIENT's working directory, so a
+    /// relative mark folder would leave the PNG next to the game and the mark
+    /// folder empty.
+    #[test]
+    fn a_screenshot_path_is_made_absolute_before_it_is_sent() {
+        let absolute = absolute_screenshot_path(Path::new("/tmp/marks/mark-1"), "shot.png");
+        assert_eq!(absolute, PathBuf::from("/tmp/marks/mark-1/shot.png"));
+        let relative = absolute_screenshot_path(Path::new("marks/mark-1"), "shot.png");
+        assert!(
+            relative.is_absolute(),
+            "a relative folder must still produce an absolute path: {}",
+            relative.display()
+        );
+        assert!(relative.ends_with("marks/mark-1/shot.png"));
+    }
+
+    /// A folder of evidence that cannot name its build is the failure this
+    /// field exists for, so the reason is carried instead of a bare `null` —
+    /// and the two weaker answers sit beside it, never in its place.
+    #[test]
+    fn an_unknown_client_build_keeps_its_reason_and_its_weaker_answers() {
+        let unknown = build_block(
+            None,
+            Some("connection refused"),
+            None,
+            Some("abc1234"),
+            None,
+        );
+        assert!(build_is_unknown(&unknown));
+        assert_eq!(unknown["client"], Value::Null);
+        assert_eq!(
+            unknown["client_unknown_reason"],
+            json!("connection refused")
+        );
+        // The tree commit must NOT be promoted into `client`: it says what was
+        // checked out here, not what the running client was built from.
+        assert_eq!(unknown["tool_tree"], json!("abc1234"));
+        assert!(unknown["tool_tree_note"]
+            .as_str()
+            .unwrap()
+            .contains("not proof"));
+
+        let stated = build_block(None, None, Some("deadbee"), None, None);
+        assert!(
+            build_is_unknown(&stated),
+            "an operator's word is recorded, but it does not make the build known"
+        );
+        assert_eq!(stated["stated"], json!("deadbee"));
+
+        let known = build_block(
+            Some(&json!({ "commit": "0f1a037" })),
+            None,
+            None,
+            Some("abc1234"),
+            Some("srv-abc"),
+        );
+        assert!(!build_is_unknown(&known));
+        assert_eq!(known["client"]["commit"], json!("0f1a037"));
+        assert_eq!(known["client_unknown_reason"], Value::Null);
+        assert_eq!(known["server"], json!("srv-abc"));
+    }
+
+    /// A step that failed keeps its line and says why: an absent entry would
+    /// read as "not attempted", which is a different thing.
+    #[test]
+    fn the_index_lists_failed_steps_with_their_reason() {
+        let index = mark_index(
+            1_790_870_000,
+            "2026-10-02T09:13:20Z",
+            Some("the group window is empty"),
+            build_block(
+                Some(&json!({ "commit": "abc1234" })),
+                None,
+                None,
+                None,
+                None,
+            ),
+            vec![
+                ("packets.json", true, None),
+                ("shot.png", false, Some("BRP error: no window".to_string())),
+            ],
+            12,
+            37,
+        );
+        assert_eq!(index["mark"], json!("mark-1790870000"));
+        assert_eq!(index["note"], json!("the group window is empty"));
+        assert_eq!(index["counts"]["frames"], json!(12));
+        assert_eq!(index["counts"]["ui_nodes"], json!(37));
+        let files = index["files"].as_array().expect("files is a list");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["written"], json!(true));
+        assert_eq!(files[0]["error"], Value::Null);
+        assert_eq!(files[1]["written"], json!(false));
+        assert_eq!(files[1]["error"], json!("BRP error: no window"));
+    }
+
+    /// The stamp is read next to the client's own UTC logs, so it must be the
+    /// same instant and in the same shape. Checked against known dates.
+    #[test]
+    fn the_timestamp_is_utc_and_matches_known_instants() {
+        assert_eq!(iso_from_unix(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_from_unix(1_000_000_000), "2001-09-09T01:46:40Z");
+        // A leap day, where a wrong civil-date conversion slips by a day.
+        assert_eq!(iso_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(iso_from_unix(1_790_870_000), "2026-10-02T09:13:20Z");
     }
 
     #[test]
