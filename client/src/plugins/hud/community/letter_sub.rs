@@ -23,13 +23,12 @@
 //!   is sender + body. Nothing here adds either.
 //! * **Read/unread state is UNKNOWN**: no control for it exists anywhere in
 //!   the mail trees, so no badge, bold row or colour swap is invented.
-//! * **Send is inert.** `0x7309 MailSendRequest` is in the `packets!` macro,
-//!   but `packets/src/agent/mail.rs` states it is spec-derived and *not*
-//!   capture-verified, and its response `0xB309` is unwired pending
-//!   `packet_dump/0xb309.log`. Firing an unverified request at a real server
-//!   with no response path is worse than a button that does nothing, so Send
-//!   is drawn and does nothing until that dump exists. Delete is inert for the
-//!   same reason. Reply, Cancel and Close are pure UI and do work.
+//! * **Send is inert.** `0x7309 MailSendRequest` is in the `packets!` macro and
+//!   its body is settled — a recipient and a text — but its response `0xB309`
+//!   is unwired. Firing a request at a real server with no response path is
+//!   worse than a button that does nothing, so Send is drawn and does nothing
+//!   until that half exists. Delete is inert for the same reason. Reply, Cancel
+//!   and Close are pure UI and do work.
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
