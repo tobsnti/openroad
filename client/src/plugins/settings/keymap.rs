@@ -159,7 +159,16 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
     KeyAction {
         id: 3009,
         name: "KeyBerserkerMode",
-        // SROptionSet.dat id 3009 = 0x09
+        // SROptionSet.dat id 3009 = 0x09 — and the behaviour behind that byte
+        // was measured rather than read off a label.
+        // Behaviour (2026-10-02, Evolin build `Ver 1.208`, proxy capture): with
+        // a full hwan gauge, pressing TAB in the world sends `c2s 0x70A7` with
+        // the single action byte `01` — three presses, three frames; with the
+        // gauge at 0 the same three presses send nothing. The binary agrees:
+        // `sro_client.exe@0x778ac0` is the handler for key code `0x09` (TAB),
+        // it gates on `cmp byte [character+0x886], 5` and its only call is the
+        // 0x70A7 builder at `0x81e690`. `textuisystem.txt` prints no letter for
+        // this action, so the client's own behaviour is the evidence.
         default_key: Some(KeyCode::Tab),
     },
     KeyAction {
@@ -340,6 +349,10 @@ pub const KEY_COS_FOLLOW: u16 = 3019;
 pub const KEY_COS_ATTACK: u16 = 3020;
 /// Offensive/defensive toggle.
 pub const KEY_COS_AI_TYPE: u16 = 3021;
+/// Enter berserk/hwan — the original's TAB. Consumed by
+/// `hud::player_mini_info::berserk_hotkey`, which sends the same `0x70A7` the
+/// ring button sends and applies the original's own gate (a full gauge).
+pub const KEY_BERSERKER_MODE: u16 = 3009;
 
 /// Win32 VK code ↔ [`KeyCode`]. One table, both directions, so they cannot drift.
 ///
@@ -824,6 +837,19 @@ mod tests {
         for id in [3029u16, 3030, 3031, 3032, 3034, 3035] {
             assert_eq!(opts.key_for(id), None, "{id} is 0 in SROptionSet.dat");
         }
+    }
+
+    /// The berserk key's default is the one that is also confirmed by
+    /// *behaviour*, not only by the option byte: the original client sends
+    /// `c2s 0x70A7 01` when TAB is pressed with a full gauge (measured
+    /// 2026-10-02 through a capturing proxy, three presses -> three frames),
+    /// and `sro_client.exe@0x778ac0` — the handler for key code `0x09` — is
+    /// what calls the 0x70A7 builder. Pinned so a later "no evidence for this
+    /// one" sweep does not silently unbind it.
+    #[test]
+    fn the_berserk_key_defaults_to_the_original_s_tab() {
+        let opts = GameOptions::default();
+        assert_eq!(opts.key_for(KEY_BERSERKER_MODE), Some(KeyCode::Tab));
     }
 
     /// Eleven defaults that come from the option stream alone, each against the
