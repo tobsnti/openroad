@@ -882,7 +882,7 @@ mod tests {
     fn the_index_lists_failed_steps_with_their_reason() {
         let index = mark_index(
             1_790_870_000,
-            "2026-10-02T09:13:20Z",
+            "2026-10-01T15:53:20Z",
             Some("the group window is empty"),
             build_block(
                 Some(&json!({ "commit": "abc1234" })),
@@ -918,7 +918,11 @@ mod tests {
         assert_eq!(iso_from_unix(1_000_000_000), "2001-09-09T01:46:40Z");
         // A leap day, where a wrong civil-date conversion slips by a day.
         assert_eq!(iso_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
-        assert_eq!(iso_from_unix(1_790_870_000), "2026-10-02T09:13:20Z");
+        // Checked against an independent implementation rather than written
+        // from memory: the first version of this line said 2026-10-02T09:13:20Z,
+        // which is what a hand conversion produces when it drifts by a day and
+        // a few hours. The test caught the expectation, not the function.
+        assert_eq!(iso_from_unix(1_790_870_000), "2026-10-01T15:53:20Z");
     }
 
     #[test]
