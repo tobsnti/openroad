@@ -78,3 +78,21 @@ Positive control, so the equality above is a result and not a dead measurement: 
 unchanged (60.40 -> 60.41, 86.20 -> 86.19) and still clearly apart from baked in the same frames
 (60.41 vs 38.50 = 1.57x, 86.19 vs 62.88 = 1.37x). The shader still branches, and the window still
 separates the modes it is supposed to separate.
+
+---
+
+## The panel in the pull request
+
+`panel-pbr-flat-baked.png` is a crop of two of the frames above — `pbr-1-flat_baked.png` over
+`after-pbr-1-was_flat_baked.png`, box `x 0..1290, y 410..900` — with a label bar and one magenta
+rectangle drawn in. The rectangle is the measured window `x 480..960, y 420..620`. Nothing else is
+drawn, and the uncropped frames stay in this branch next to it. The crop leaves out the right part
+of the frame because the FPS/diagnostics overlay is open in the before run only; comparing two
+differently covered halves would not be a before/after.
+
+**Correction to "no player body" in *What was measured* above.** The player does stand in that
+window: his bounding box is `x 767..825, y 458..571` of the full frame. In the before frame 1.72 %
+of the window's pixels are brighter than luminance 100 and 4.48 % are above 32 — that is him, and
+it is why the before cell reads 95.5 % below 32 and not ~100 %. The ground numbers are unaffected:
+the medians (18.50 before, 61.57 after) are ground pixels either way, and both runs contain the
+same player in the same place, so the before/after difference is the terrain's.
