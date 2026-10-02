@@ -428,6 +428,13 @@ fn main() {
                     .with_method_main(
                         "openroad/packet_send",
                         plugins::net::packet_send::brp_packet_send,
+                    )
+                    // Which build this is. Evidence taken from a running game
+                    // is unreadable later unless it names its build, and a
+                    // tool outside the process can only guess at it.
+                    .with_method_main(
+                        "openroad/build_info",
+                        plugins::dev::build_info::brp_build_info,
                     ),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
