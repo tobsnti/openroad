@@ -70,7 +70,7 @@ fn spawn_preview(
         .spawn_scene(chrome::footer(&assets))
         .insert(UiTargetCamera(camera));
     commands
-        .spawn_scene(chrome::info_text())
+        .spawn_scene(chrome::info_text(&fonts))
         .insert(UiTargetCamera(camera));
     // `PREVIEW_DELETING=1` previews the deletion-pending variant, where the
     // original swaps Start/Delete for Restore + Cancel (#202). That state is
