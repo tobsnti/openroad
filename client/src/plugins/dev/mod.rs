@@ -173,21 +173,21 @@ impl Plugin for DevPlugin {
             // Both of these are bare-letter hotkey plugins: lighting adjusts
             // on E/T/U/I/P, the glass ball spawns on its own key.
             app.add_plugins((LightingPlugin, GlassballPlugin));
-            // app.add_systems(
-            //     Update,
-            //     (
-            // toggle_wireframe,
-            // draw_debug_lines_for_aabb,
-            // draw_debug_lines_for_nav_mesh,
-            // draw_object_nav_meshes,
-            // draw_object_global_edges,
-            // draw_nav_location,
-            // log_nav_diagnostics,
-            // warn_when_inside_solid_ground,
-            // dump_nav_snapshot,
-            // draw_nav_cursor_hit,
-            // ),
-            // );
+            app.add_systems(
+                Update,
+                (
+                    toggle_wireframe,
+                    draw_debug_lines_for_aabb,
+                    draw_debug_lines_for_nav_mesh,
+                    draw_object_nav_meshes,
+                    draw_object_global_edges,
+                    draw_nav_location,
+                    log_nav_diagnostics,
+                    warn_when_inside_solid_ground,
+                    dump_nav_snapshot,
+                    draw_nav_cursor_hit,
+                ),
+            );
         }
     }
 }
@@ -294,6 +294,97 @@ fn switch_mode(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// This file's source up to the test module, so the literals below cannot
+    /// match themselves.
+    fn source() -> &'static str {
+        include_str!("mod.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first part")
+    }
+
+    /// Lines of `text` that are not comments.
+    fn live_lines(text: &str) -> impl Iterator<Item = &str> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+    }
+
+    /// A dev system that is only *defined* does nothing: it has to be in an
+    /// `add_systems`/`add_plugins` list to run, and commenting that list out
+    /// leaves a tree that still compiles, still looks complete and draws
+    /// nothing. The debug draws and the screenshot harness are the tools a
+    /// question about geometry or about a missing screen is answered with, so
+    /// their registration is pinned here by the exact list entry.
+    #[test]
+    fn the_debug_draws_and_the_screenshot_harness_are_registered() {
+        let source = source();
+        let entries = [
+            "toggle_wireframe,",
+            "draw_debug_lines_for_aabb,",
+            "draw_debug_lines_for_nav_mesh,",
+            "draw_object_nav_meshes,",
+            "draw_object_global_edges,",
+            "draw_nav_location,",
+            "log_nav_diagnostics,",
+            "warn_when_inside_solid_ground,",
+            "dump_nav_snapshot,",
+            "draw_nav_cursor_hit,",
+            "WireframePlugin::default(),",
+            "auto_screenshot::AutoScreenshotPlugin,",
+        ];
+        for entry in entries {
+            assert!(
+                live_lines(source).any(|line| line == entry),
+                "`{entry}` is not registered in dev/mod.rs: it is defined, so \
+                 it compiles, but nothing runs it"
+            );
+        }
+    }
+
+    /// The comment above the unconditional block states a property of the
+    /// code, and the code is what decides. Those two drifted apart once
+    /// already — the comment kept saying "unconditional" over a registration
+    /// that was not there — which is worse than no comment: a reader stops
+    /// looking.
+    #[test]
+    fn the_unconditional_claim_matches_the_registration() {
+        let source = source();
+        let claim = source
+            .find("they stay unconditional")
+            .expect("the unconditional claim is in dev/mod.rs");
+        let gate = source
+            .find("if dev_tools_enabled(")
+            .expect("the dev_tools gate is in dev/mod.rs");
+        let unconditional = &source[claim..gate];
+        for entry in [
+            "WireframePlugin::default(),",
+            "auto_screenshot::AutoScreenshotPlugin,",
+        ] {
+            assert!(
+                live_lines(unconditional).any(|line| line == entry),
+                "dev/mod.rs claims `{entry}` stays unconditional, but it is \
+                 not registered before the dev_tools gate"
+            );
+        }
+    }
+
+    /// The measurement tier is what `make perf` reads and what the BRP dump
+    /// serves; without this plugin the dump is empty and every number taken
+    /// through it describes nothing. `AnimationCullingPlugin` is deliberately
+    /// not part of this check: it changes what the game does, not what it
+    /// reports, and belongs to a measurement of its own.
+    #[test]
+    fn the_measurement_tier_is_registered_in_main() {
+        let main_rs = include_str!("../../main.rs");
+        assert!(
+            live_lines(main_rs).any(|line| line == "plugins::diagnostics::DiagnosticsPlugin,"),
+            "main.rs does not register DiagnosticsPlugin: the frame-time, \
+             entity-count and cache-count diagnostics are then absent and \
+             `openroad/diagnostics` serves an empty dump"
+        );
+    }
 
     /// The key-driven dev systems must be opt-in: they read bare letters in
     /// `Update`, and five of them are vanilla HUD shortcuts

@@ -159,7 +159,7 @@ fn main() {
             },
             TweeningPlugin,
             scenes::SceneManagerPlugin,
-            // plugins::diagnostics::DiagnosticsPlugin,
+            plugins::diagnostics::DiagnosticsPlugin,
             plugins::net::plugin::NetworkPlugin,
             (
                 plugins::system_window::SystemWindowPlugin,
