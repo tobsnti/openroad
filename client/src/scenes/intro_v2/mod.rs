@@ -32,6 +32,7 @@ pub mod character_select;
 pub mod chrome;
 pub mod dev_fast_login;
 pub mod fade;
+pub mod lobby_sit;
 pub mod login_form;
 pub mod model;
 pub mod net;
@@ -135,6 +136,11 @@ impl Plugin for IntroV2ScenePlugin {
                 LoadingStateConfig::new(SceneState::Loading).load_collection::<IntroV2Assets>(),
             )
             .init_resource::<server_select::SelectedShardV2>()
+            .init_resource::<lobby_sit::LobbyDeletionMemory>()
+            .init_resource::<server_select::ShardListScroll>()
+            // What the create screen's camera frames on: the body that is
+            // actually on stage (`character_create::measure_create_figure`).
+            .init_resource::<character_create::CreateFigureMetrics>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
                 (
@@ -227,6 +233,10 @@ impl Plugin for IntroV2ScenePlugin {
                 (
                     character_select::on_char_selection_action_response,
                     character_select::tag_pickable_meshes,
+                    // The hovered/selected figure's name over its head — a
+                    // deliberate improvement, the original leaves these
+                    // authored plates dead (see the system).
+                    character_select::update_character_name_plate,
                     character_select::update_hover_highlight.run_if(not(resource_exists::<
                         character_select::SelectedCharacterV2,
                     >)),
@@ -243,7 +253,14 @@ impl Plugin for IntroV2ScenePlugin {
                         .chain()
                         .run_if(resource_removed::<character_select::SelectedCharacterV2>),
                     character_select::on_character_delete_response,
+                    // A delete-scheduled figure sits in the line-up, folds down
+                    // on Delete and gets up on Restore (see `lobby_sit`).
+                    lobby_sit::begin_lobby_sit,
+                    lobby_sit::drive_lobby_sit,
                     character_select::on_character_join_response,
+                    // The countdown ticks from the single remainder `0xB007`
+                    // sends; without it the display stands at the clicked value.
+                    character_select::tick_deletion_countdown,
                 )
                     .run_if(in_state(IntroV2State::CharacterList)),
             )
@@ -267,7 +284,6 @@ impl Plugin for IntroV2ScenePlugin {
                 OnExit(IntroV2State::CharacterList),
                 (
                     character_select::despawn_characters,
-                    character_select::disconnect_from_agent_server,
                     despawn_cinematic_camera::<CinematicCamera2>,
                     enable_camera::<CinematicCamera>,
                     // the world origin moved to the char-select anchor on enter, so
@@ -341,7 +357,6 @@ impl Plugin for IntroV2ScenePlugin {
                     region_select::clear_region_confirm,
                     race_stage::despawn_race_board_props,
                     region_select::despawn_region_select,
-                    despawn_cinematic_camera::<CinematicCamera2>,
                 ),
             )
             // Board -> creation is a move on one stage, so the camera survives
@@ -803,26 +818,6 @@ fn start_background_audio(
     ));
 }
 
-/// Applies the audio options to the playing background music
-/// ([`crate::plugins::settings::live`]).
-///
-/// The volume slider and the BGM checkbox take effect on the track that is
-/// already playing; sound effects need no apply system because every one-shot
-/// reads `fx_playback()` at the moment it is spawned.
-fn apply_background_music_options(
-    options: Res<GameOptions>,
-    mut sinks: Query<&mut AudioSink, With<BackgroundMusicV2>>,
-) {
-    for mut sink in sinks.iter_mut() {
-        sink.set_volume(options.audio.bgm_gain());
-        if options.audio.bgm_enabled {
-            sink.play();
-        } else {
-            sink.pause();
-        }
-    }
-}
-
 /// Turns the **literal** two-character `\\n` that textdata rows carry into a
 /// real newline; a Bevy `Text` node renders the backslash literally.
 /// Deliberately not folded into `ClientUiStrings::get_or`: that accessor is used
@@ -916,9 +911,146 @@ pub(super) fn play_error_sound(
     }
 }
 
+/// Applies the audio options to the playing background music
+/// ([`crate::plugins::settings::live`]).
+///
+/// The volume slider and the BGM checkbox take effect on the track that is
+/// already playing; sound effects need no apply system because every one-shot
+/// reads `fx_playback()` at the moment it is spawned.
+fn apply_background_music_options(
+    options: Res<GameOptions>,
+    mut sinks: Query<&mut AudioSink, With<BackgroundMusicV2>>,
+) {
+    for mut sink in sinks.iter_mut() {
+        sink.set_volume(options.audio.bgm_gain());
+        if options.audio.bgm_enabled {
+            sink.play();
+        } else {
+            sink.pause();
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Which arms carry the `(S<code>)` suffix and which do not is part of the
+    /// table; the 0x0419 case pins the bare out-of-range form so nobody
+    /// "fixes" it into an invented sentence.
+    #[test]
+    fn a_lobby_error_renders_the_shipped_row_and_only_the_original_suffix() {
+        let strings = crate::plugins::textdata::ClientUiStrings::default();
+
+        // silent arm: no message at all
+        assert_eq!(lobby_error_line(0x0401, &strings), None);
+        // appending arm, code rendered in decimal like the `%d`
+        assert_eq!(
+            lobby_error_line(0x0415, &strings).as_deref(),
+            Some("Login failed(S1045)")
+        );
+        // plain arm, no suffix
+        assert_eq!(
+            lobby_error_line(0x0410, &strings).as_deref(),
+            Some("This ID already exists.")
+        );
+        // in-range hole -> the generic row, which *is* an appending arm
+        assert_eq!(
+            lobby_error_line(0x0402, &strings).as_deref(),
+            Some("Failed to connect to server.(S1026)")
+        );
+        // out of range: the empty key, so nothing but the suffix
+        assert_eq!(
+            lobby_error_line(0x0419, &strings).as_deref(),
+            Some("(S1049)")
+        );
+    }
+
+    /// The create screen's two answers (`CheckName`, `Create`) are two of the
+    /// four callers of the shared table. One hard-coded row each — "This ID
+    /// already exists." for every name refusal, "Failed to create a character."
+    /// for every create refusal — would report the wrong reason for the rows
+    /// the original really shows there: `0x0404` "Select a Weapon." and `0x0405`
+    /// "A maximum of %d characters can be created." Pinned per code, plus the
+    /// two arms that must keep the caller's own row: no code at all, and the
+    /// silent `0x0401`.
+    #[test]
+    fn the_create_screen_answers_render_the_shipped_row_for_their_code() {
+        let strings = crate::plugins::textdata::ClientUiStrings::default();
+        let check_name = |code| {
+            lobby_error_line_or(
+                code,
+                &strings,
+                "UIO_MSG_ERROR_ID",
+                "This ID already exists.",
+            )
+        };
+        let create = |code| {
+            lobby_error_line_or(
+                code,
+                &strings,
+                "UIO_SMERR_FAILED_TO_CREATE_CHARACTER",
+                "Failed to create a character. Please try to connect again.",
+            )
+        };
+
+        assert_eq!(create(Some(0x0404)), "Select a Weapon.");
+        assert_eq!(
+            create(Some(0x0405)),
+            "A maximum of %d characters can be created."
+        );
+        assert_eq!(check_name(Some(0x0410)), "This ID already exists.");
+        assert_eq!(check_name(Some(0x040d)), "Invalid character name.");
+        // no code on the wire, and the code the dispatcher swallows: the
+        // caller's own row stays
+        assert_eq!(check_name(None), "This ID already exists.");
+        assert_eq!(
+            create(Some(0x0401)),
+            "Failed to create a character. Please try to connect again."
+        );
+    }
+
+    #[test]
+    fn the_intro_text_sizes_are_the_unscaled_font_ladder() {
+        assert_eq!(intro_font_px(0), 12.0);
+        assert_eq!(intro_font_px(2), 16.0, "every caption/button on the intro");
+        assert_eq!(intro_font_px(4), 20.0);
+    }
+
+    /// A data index the binary has no slot for must not panic, and must land on
+    /// slot 0 — see [`intro_font_px`]: the ladder is 9/8/12/11/15 pt, so an
+    /// out-of-range index is not "a bigger font", and the only three
+    /// out-of-range sites in the whole resinfo data (`FontIndex=7`,
+    /// `ifchatbubblewindow.txt:12,31,50`) sit among 104 chat controls that are
+    /// all slot 0.
+    #[test]
+    fn an_out_of_range_font_index_falls_back_to_slot_zero() {
+        assert_eq!(intro_font_px(7), FONT_INDEX_PX[0]);
+        assert_eq!(intro_font_px(7), 12.0);
+        assert_ne!(
+            intro_font_px(7),
+            intro_font_px(4),
+            "an unknown slot must not be read as the biggest one"
+        );
+        // the ladder is genuinely unordered, which is the reason for the rule
+        const { assert!(FONT_INDEX_PX[1] < FONT_INDEX_PX[0]) };
+        const { assert!(FONT_INDEX_PX[3] < FONT_INDEX_PX[2]) };
+    }
+
+    #[test]
+    fn a_literal_backslash_n_becomes_a_line_break() {
+        assert_eq!(unescape_newlines("a\\nb"), "a\nb");
+        assert_eq!(unescape_newlines("plain"), "plain");
+    }
+
+    #[test]
+    fn placeholders_are_filled_in_order_and_extras_survive() {
+        assert_eq!(
+            fill_placeholders("failed %d out of %d", &[1, 6]),
+            "failed 1 out of 6"
+        );
+        assert_eq!(fill_placeholders("%d and %d", &[3]), "3 and %d");
+    }
 
     /// #645, ownership half: character creation lives *inside* the intro scene.
     /// The state graph is what makes creation share the char-select stage,
