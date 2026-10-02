@@ -38,6 +38,8 @@ use sro_macro::SerializationError;
 use sro_macro::Serialize;
 use sro_macro_derive::*;
 
+use super::ingame::ServerTime;
+
 /// Wire class of an inventory item, selecting its sub-record shape (mirrors
 /// go-sro's `WriteInventoryItem` branches over the itemdata `TypeID2..4`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,7 +65,9 @@ pub trait ItemClassResolver {
 /// `WriteCharDataToPacket`, preceded by the 4-byte server time).
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, PartialEq)]
 pub struct CharacterStats {
-    pub server_time: u32,
+    /// The 4-byte head is the server's packed wall clock, not a counter or a
+    /// tick: the same `u32` layout [`ServerTime`] (0x34BE) already carries.
+    pub server_time: ServerTime,
     pub ref_id: u32,
     pub scale: u8,
     pub level: u8,
@@ -1122,6 +1126,31 @@ fn read_tail_spawn(
 mod test {
     use super::*;
     use std::collections::HashMap;
+
+    /// The record's 4-byte head is the packed wall clock, not a counter: the
+    /// sample `0xBC82765A` reads as 2026-09-29 04:08:47 through the same bit
+    /// layout `ServerTime` (0x34BE) uses. A plain `u32` would have hidden that.
+    #[test]
+    fn the_stats_head_is_the_packed_server_clock() {
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(&0xBC82765Au32.to_le_bytes());
+        b.extend_from_slice(&1919u32.to_le_bytes()); // ref id
+        b.resize(64, 0); // the rest of the fixed block
+        let mut cursor = Cursor::new(b.as_slice());
+        let stats = CharacterStats::read_from(&mut cursor).unwrap();
+        assert_eq!(
+            (
+                stats.server_time.year(),
+                stats.server_time.month(),
+                stats.server_time.day(),
+                stats.server_time.hour(),
+                stats.server_time.minute(),
+                stats.server_time.second()
+            ),
+            (2026, 9, 29, 4, 8, 47)
+        );
+        assert_eq!(stats.ref_id, 1919);
+    }
 
     #[test]
     fn movement_dest_coords_are_short_in_overworld() {
