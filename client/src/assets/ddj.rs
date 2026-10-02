@@ -124,6 +124,11 @@ impl JMXVDDJ {
             {
                 self.decoded_image(usages, srgb)
             }
+            // BC2 carries a DXT1 color block plus 16 explicit 4-bit alpha
+            // values. It is decoded here, like BC1 with alpha, because these
+            // containers describe their block-compressed payload with neither
+            // `DDSD_LINEARSIZE` nor a linear size.
+            Some(D3DFormat::DXT3) => self.decoded_image(usages, srgb),
             Some(_f) => {
                 // Everything else (the DXTn family) goes to the GPU compressed.
                 // A format bevy cannot decode is logged and skipped — never a
@@ -162,10 +167,15 @@ impl JMXVDDJ {
             _ if palette => 1,
             _ => 2,
         };
-        let bc1 = format == Some(D3DFormat::DXT1);
+        // Bytes per 4x4 block for the block-compressed formats decoded here.
+        let block_bytes = match format {
+            Some(D3DFormat::DXT1) => Some(8usize),
+            Some(D3DFormat::DXT3) => Some(16usize),
+            _ => None,
+        };
         // Uncompressed mip rows are tightly packed in these DDJ paths. Reject
         // padded mip-0 layouts instead of misreading their row padding as texels.
-        if !bc1
+        if block_bytes.is_none()
             && self
                 .dds
                 .header
@@ -178,11 +188,11 @@ impl JMXVDDJ {
         let mut decoded = Vec::new();
         for level in 0..levels {
             let (w, h) = ((width >> level).max(1), (height >> level).max(1));
-            let len = if bc1 {
+            let len = if let Some(block) = block_bytes {
                 (w as usize)
                     .div_ceil(4)
                     .checked_mul((h as usize).div_ceil(4))?
-                    .checked_mul(8)?
+                    .checked_mul(block)?
             } else {
                 (w as usize).checked_mul(h as usize)?.checked_mul(bpp)?
             };
@@ -195,6 +205,7 @@ impl JMXVDDJ {
                     p8_to_rgba8(&plane, w, h)?
                 }
                 Some(D3DFormat::DXT1) => decode_dxt1_rgba8(bytes, w, h),
+                Some(D3DFormat::DXT3) => decode_dxt3_rgba8(bytes, w, h),
                 Some(D3DFormat::A1R5G5B5) => a1r5g5b5_to_rgba8(bytes),
                 Some(D3DFormat::R5G6B5) => r5g6b5_to_rgba8(bytes),
                 Some(D3DFormat::X8R8G8B8) => x8r8g8b8_to_rgba8(bytes),
@@ -515,12 +526,11 @@ fn dxt1_has_alpha(data: &[u8], width: u32, height: u32) -> bool {
     })
 }
 
-/// CPU-decode a DXT1/BC1 mip-0 payload to RGBA8, honoring the 1-bit alpha:
-/// punch-through blocks (`color0 <= color1`) make their 4th index fully
-/// transparent. This preserves the historical cutout workaround (e.g. gold
-/// coin drops) while native BC1 is revalidated on the affected assets and
-/// backends; one-bit alpha is supported by the format itself.
-pub fn decode_dxt1_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+/// The RGB half of a BC1/BC2 block: the four-entry color palette and the
+/// packed 2-bit texel indices. `punch_through` is BC1's `color0 <= color1`
+/// mode, in which the fourth palette entry is transparent black; BC2 always
+/// stores its alpha separately and never uses it.
+fn bc_color_block(block: &[u8], punch_through: bool) -> ([[u8; 4]; 4], u32) {
     let expand = |c: u16| -> [u8; 3] {
         let r = ((c >> 11) & 0x1f) as u32;
         let g = ((c >> 5) & 0x3f) as u32;
@@ -531,6 +541,53 @@ pub fn decode_dxt1_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
             (b * 255 / 31) as u8,
         ]
     };
+    let c0 = u16::from_le_bytes([block[0], block[1]]);
+    let c1 = u16::from_le_bytes([block[2], block[3]]);
+    let idx = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    let (e0, e1) = (expand(c0), expand(c1));
+    let lerp =
+        |a: u8, b: u8, num: u32, den: u32| ((a as u32 * (den - num) + b as u32 * num) / den) as u8;
+    let punch = punch_through && c0 <= c1;
+    // palette[3] is transparent in punch-through mode
+    let palette: [[u8; 4]; 4] = if punch {
+        [
+            [e0[0], e0[1], e0[2], 255],
+            [e1[0], e1[1], e1[2], 255],
+            [
+                lerp(e0[0], e1[0], 1, 2),
+                lerp(e0[1], e1[1], 1, 2),
+                lerp(e0[2], e1[2], 1, 2),
+                255,
+            ],
+            [0, 0, 0, 0],
+        ]
+    } else {
+        [
+            [e0[0], e0[1], e0[2], 255],
+            [e1[0], e1[1], e1[2], 255],
+            [
+                lerp(e0[0], e1[0], 1, 3),
+                lerp(e0[1], e1[1], 1, 3),
+                lerp(e0[2], e1[2], 1, 3),
+                255,
+            ],
+            [
+                lerp(e0[0], e1[0], 2, 3),
+                lerp(e0[1], e1[1], 2, 3),
+                lerp(e0[2], e1[2], 2, 3),
+                255,
+            ],
+        ]
+    };
+    (palette, idx)
+}
+
+/// CPU-decode a DXT1/BC1 mip payload to RGBA8, honoring the 1-bit alpha:
+/// punch-through blocks (`color0 <= color1`) make their 4th index fully
+/// transparent. This preserves the historical cutout workaround (e.g. gold
+/// coin drops) while native BC1 is revalidated on the affected assets and
+/// backends; one-bit alpha is supported by the format itself.
+pub fn decode_dxt1_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
     let mut out = vec![0u8; w * h * 4];
     let bw = width.div_ceil(4) as usize;
@@ -541,51 +598,46 @@ pub fn decode_dxt1_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
             let Some(block) = data.get(off..off + 8) else {
                 continue;
             };
-            let c0 = u16::from_le_bytes([block[0], block[1]]);
-            let c1 = u16::from_le_bytes([block[2], block[3]]);
-            let idx = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
-            let (e0, e1) = (expand(c0), expand(c1));
-            let lerp = |a: u8, b: u8, num: u32, den: u32| {
-                ((a as u32 * (den - num) + b as u32 * num) / den) as u8
-            };
-            let punch = c0 <= c1;
-            // palette[3] is transparent in punch-through mode
-            let palette: [[u8; 4]; 4] = if punch {
-                [
-                    [e0[0], e0[1], e0[2], 255],
-                    [e1[0], e1[1], e1[2], 255],
-                    [
-                        lerp(e0[0], e1[0], 1, 2),
-                        lerp(e0[1], e1[1], 1, 2),
-                        lerp(e0[2], e1[2], 1, 2),
-                        255,
-                    ],
-                    [0, 0, 0, 0],
-                ]
-            } else {
-                [
-                    [e0[0], e0[1], e0[2], 255],
-                    [e1[0], e1[1], e1[2], 255],
-                    [
-                        lerp(e0[0], e1[0], 1, 3),
-                        lerp(e0[1], e1[1], 1, 3),
-                        lerp(e0[2], e1[2], 1, 3),
-                        255,
-                    ],
-                    [
-                        lerp(e0[0], e1[0], 2, 3),
-                        lerp(e0[1], e1[1], 2, 3),
-                        lerp(e0[2], e1[2], 2, 3),
-                        255,
-                    ],
-                ]
-            };
+            let (palette, idx) = bc_color_block(block, true);
             for t in 0..16 {
                 let ci = ((idx >> (t * 2)) & 3) as usize;
                 let (px, py) = (bx * 4 + t % 4, by * 4 + t / 4);
                 if px < w && py < h {
                     let o = (py * w + px) * 4;
                     out[o..o + 4].copy_from_slice(&palette[ci]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// CPU-decode a DXT3/BC2 mip payload to RGBA8. Each 16-byte block is 8 bytes
+/// of explicit 4-bit alpha (texel 0 in the low nibble of the first byte)
+/// followed by an 8-byte BC1 color block, which BC2 always reads in
+/// four-color mode. The 4-bit alpha expands by nibble replication, so 0xF
+/// reaches 255 exactly.
+pub fn decode_dxt3_rgba8(data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let bw = width.div_ceil(4) as usize;
+    let bh = height.div_ceil(4) as usize;
+    for by in 0..bh {
+        for bx in 0..bw {
+            let off = (by * bw + bx) * 16;
+            let Some(block) = data.get(off..off + 16) else {
+                continue;
+            };
+            let alpha = u64::from_le_bytes(block[..8].try_into().expect("8 bytes"));
+            let (palette, idx) = bc_color_block(&block[8..], false);
+            for t in 0..16 {
+                let ci = ((idx >> (t * 2)) & 3) as usize;
+                let a = ((alpha >> (t * 4)) & 0xF) as u8;
+                let (px, py) = (bx * 4 + t % 4, by * 4 + t / 4);
+                if px < w && py < h {
+                    let o = (py * w + px) * 4;
+                    out[o..o + 3].copy_from_slice(&palette[ci][..3]);
+                    out[o + 3] = a * 17;
                 }
             }
         }
@@ -1160,6 +1212,50 @@ mod tests {
             rgba.chunks(4).all(|px| px[3] == 255),
             "opaque-mode texels must stay opaque"
         );
+    }
+
+    /// A hand-resolved BC2 block: the first 8 bytes are 4-bit alpha (texel
+    /// `t` carries nibble `t`, so alpha is `17 * t`), the last 8 are a BC1
+    /// color block from red (0xF800) to blue (0x001F) with indices 0, 1, 2, 3
+    /// in the first row. Both halves must land in the right place: reading
+    /// the block the other way round yields different texels.
+    #[test]
+    fn dxt3_block_decodes_alpha_and_color_halves() {
+        let block = [
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, // 4-bit alpha
+            0x00, 0xF8, 0x1F, 0x00, 0xE4, 0x00, 0x00, 0x00, // BC1 color
+        ];
+        let rgba = decode_dxt3_rgba8(&block, 4, 4);
+        assert_eq!(&rgba[0..4], &[255, 0, 0, 0]);
+        assert_eq!(&rgba[4..8], &[0, 0, 255, 17]);
+        assert_eq!(&rgba[8..12], &[170, 0, 85, 34]);
+        assert_eq!(&rgba[12..16], &[85, 0, 170, 51]);
+        // the remaining texels keep index 0 and count the alpha nibble up
+        assert_eq!(&rgba[16..20], &[255, 0, 0, 68]);
+        assert_eq!(&rgba[60..64], &[255, 0, 0, 255]);
+    }
+
+    /// The same block through the loader: BC2 must reach `decoded_image`,
+    /// and its mip stride is 16 bytes per 4x4 block, not BC1's 8.
+    #[test]
+    fn dxt3_is_decoded_with_a_sixteen_byte_block_stride() {
+        let mut source = synthetic_ddj(D3DFormat::DXT3, 2);
+        let level0 = [
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x00, 0xF8, 0x1F, 0x00, 0xE4, 0x00,
+            0x00, 0x00,
+        ];
+        let level1 = [0xFF; 16];
+        source.dds.data = [level0, level1].concat();
+        let image = source.to_image(true).unwrap();
+        assert_eq!(image.texture_descriptor.mip_level_count, 2);
+        let data = image.data.unwrap();
+        // 4x4 + 2x2 texels
+        assert_eq!(data.len(), (16 + 4) * 4);
+        assert_eq!(&data[0..4], &[255, 0, 0, 0]);
+        assert_eq!(&data[4..8], &[0, 0, 255, 17]);
+        // a truncated second level is rejected rather than half-decoded
+        source.dds.data.pop();
+        assert!(source.to_image(true).is_none());
     }
 
     /// `Media/res_ui/nifenchantwnd.ddj` carries a `.ddj` extension but is a
