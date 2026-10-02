@@ -116,6 +116,10 @@ struct DetailRow {
     english: &'static str,
     /// Whether a real feature backs this row today.
     backing: Backing,
+    /// How many steps the original's own value list offers for this row.
+    /// Measured at the original client, one row at a time; the cell holds the
+    /// zero-based index into that list.
+    steps: u8,
 }
 
 /// Whether a control can actually change anything in this client.
@@ -140,60 +144,70 @@ const DETAIL_ROWS: [DetailRow; 13] = [
         key: "UIIT_STT_SHADOW_DETAIL",
         english: "Shadow Detail",
         backing: Backing::Live,
+        steps: 3,
     },
     DetailRow {
         id: 2,
         key: "UIIT_STT_SCENERY_SIGHT_RANGE",
         english: "Background Sight Range",
         backing: Backing::Missing,
+        steps: 5,
     },
     DetailRow {
         id: 3,
         key: "UIIT_STT_CHAR_SIGHT_RANGE",
         english: "Character Sight Range",
         backing: Backing::Missing,
+        steps: 5,
     },
     DetailRow {
         id: 4,
         key: "UIIT_STT_WATER_REFLECTION",
         english: "Water Reflection",
         backing: Backing::Missing,
+        steps: 2,
     },
     DetailRow {
         id: 5,
         key: "UIIT_STT_WATER_DETAIL",
         english: "Water Detail",
         backing: Backing::Missing,
+        steps: 3,
     },
     DetailRow {
         id: 6,
         key: "UIIT_STT_METAL_DETAIL",
         english: "Metallic Sheen",
         backing: Backing::Missing,
+        steps: 2,
     },
     DetailRow {
         id: 7,
         key: "UIIT_STT_LIGHT_EFFECT",
         english: "Light Effect",
         backing: Backing::Missing,
+        steps: 2,
     },
     DetailRow {
         id: 8,
         key: "UIIT_STT_FILTERING",
         english: "Texture Filtering",
         backing: Backing::Missing,
+        steps: 2,
     },
     DetailRow {
         id: 9,
         key: "UIIT_STT_TEXTER_DETAIL",
         english: "Texture Detail",
         backing: Backing::Missing,
+        steps: 3,
     },
     DetailRow {
         id: 10,
         key: "UIIT_STT_LENS_FLAIR",
         english: "Lens Flare",
         backing: Backing::Missing,
+        steps: 2,
     },
     // The one quality row this client can actually honour: `Bloom` is
     // insert/removed on the window cameras (see `apply_bloom_option`).
@@ -202,12 +216,14 @@ const DETAIL_ROWS: [DetailRow; 13] = [
         key: "UIIT_STT_BLOOM_EFFECT",
         english: "Bloom Effect",
         backing: Backing::Live,
+        steps: 2,
     },
     DetailRow {
         id: 12,
         key: "UIIT_STT_DYNAMIC_ANIMATION",
         english: "Dynamic Animation",
         backing: Backing::Missing,
+        steps: 2,
     },
     DetailRow {
         id: 13,
@@ -218,6 +234,7 @@ const DETAIL_ROWS: [DetailRow; 13] = [
         // whole effect schedule and hides the wrappers. Read as a toggle,
         // not a graded ramp — see that module's ADR-0009 note.
         backing: Backing::Live,
+        steps: 3,
     },
 ];
 
@@ -689,6 +706,7 @@ fn spawn_detail_row(
     ));
     if live {
         entity.insert((Button, Hovered::default(), Pickable::default()));
+        let steps = row.steps;
         entity.observe(
             move |_activate: On<Activate>,
                   panes: Query<&VideoPane>,
@@ -698,8 +716,7 @@ fn spawn_detail_row(
                     GraphicProfileTab::One => &mut options.video.graphic1,
                     GraphicProfileTab::Two => &mut options.video.graphic2,
                 };
-                let current = bank.quality.get(&id).copied().unwrap_or(1);
-                bank.quality.insert(id, u16::from(current == 0));
+                bank.set_quality_step(id, next_quality_step(bank.quality_step(id), steps));
             },
         );
     }
@@ -739,17 +756,31 @@ fn spawn_detail_row(
     });
 }
 
+/// The next step of a row's cycle, wrapping at the end of the original's
+/// list. A row with no steps would divide by zero, so it stays put.
+fn next_quality_step(current: u8, steps: u8) -> u8 {
+    if steps == 0 {
+        return current;
+    }
+    (current + 1) % steps
+}
+
 /// What a row shows. Backed rows render their state; unbacked ones say so
 /// instead of borrowing a value word from the original's vocabulary.
+///
+/// A two-step row reads Off/On. A row with more steps shows its index and the
+/// last one — the original has words for those steps, but no textuisystem key
+/// is identified for them, and a hardcoded English word would be a guess.
 fn row_value_text(row: &DetailRow, options: &GameOptions, profile: GraphicProfileTab) -> String {
     let bank = match profile {
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    let value = bank.quality.get(&row.id).copied().unwrap_or_default();
+    let step = bank.quality_step(row.id);
     match row.backing {
-        Backing::Live => if value == 0 { "Off" } else { "On" }.to_string(),
-        Backing::Missing => format!("{value} (no effect yet)"),
+        Backing::Live if row.steps <= 2 => if step == 0 { "Off" } else { "On" }.to_string(),
+        Backing::Live => format!("{step} / {}", row.steps.saturating_sub(1)),
+        Backing::Missing => format!("{step} (no effect yet)"),
     }
 }
 
@@ -1020,7 +1051,7 @@ pub(crate) fn apply_bloom_option(
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    let on = bank.quality.get(&BLOOM_ID).copied().unwrap_or(1) != 0;
+    let on = bank.quality_step(BLOOM_ID) != 0;
 
     for (entity, target) in cameras.iter() {
         if !matches!(target, RenderTarget::Window(_)) {
@@ -1183,12 +1214,47 @@ mod tests {
                     "{} must be marked unbacked, got {text:?}",
                     row.english
                 ),
-                Backing::Live => assert!(
+                Backing::Live if row.steps <= 2 => assert!(
                     text == "On" || text == "Off",
                     "{} is wired and must show its state, got {text:?}",
                     row.english
                 ),
+                Backing::Live => assert!(
+                    text == format!("{} / {}", 1, row.steps - 1),
+                    "{} is wired and must show its step, got {text:?}",
+                    row.english
+                ),
             }
+        }
+    }
+
+    /// The click cycles through the original's own list length instead of
+    /// flipping 0/1, so a three-step row can reach its last step.
+    #[test]
+    fn the_click_cycles_every_step_of_the_rows_own_list() {
+        assert_eq!(next_quality_step(0, 2), 1);
+        assert_eq!(next_quality_step(1, 2), 0);
+        assert_eq!(next_quality_step(0, 3), 1);
+        assert_eq!(next_quality_step(1, 3), 2);
+        assert_eq!(next_quality_step(2, 3), 0);
+        // A step past the end of the list (a hand-edited file) still wraps
+        // into range rather than sticking.
+        assert_eq!(next_quality_step(9, 3), 1);
+        // No list, no movement — and no division by zero.
+        assert_eq!(next_quality_step(1, 0), 1);
+    }
+
+    /// Every row carries the step count measured at the original. A zero here
+    /// would silently freeze that row's click.
+    #[test]
+    fn every_row_declares_a_step_count() {
+        for row in &DETAIL_ROWS {
+            assert!(
+                row.steps >= 2,
+                "{} declares {} steps",
+                row.english,
+                row.steps
+            );
         }
     }
 

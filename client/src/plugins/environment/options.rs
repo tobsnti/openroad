@@ -15,21 +15,12 @@
 //! original has no dynamic shadows either. The query below is filtered on
 //! that marker, so in vanilla this row changes nothing and must not claim to.
 //!
-//! Deliberately NOT invented (ADR-0009): the row's *value space*. The
-//! `SROptionSet` cell is a `u16` and the name says "degree", so a graded
-//! scale is conceivable, but nothing states what the steps would mean. This
-//! reads `!= 0` as on, exactly like the Bloom and Effect Quality rows, and a
-//! graded scale stays an UNKNOWN rather than a guessed ramp.
-//!
-//! One concrete UNKNOWN worth naming, because it decides how the cell should
-//! be read: a shipped `SROptionSet.dat` does **not** carry a plain 0/1 here.
-//! Its two bytes read `00 01` for this row (little-endian `0x0100`), `00 00`
-//! for Water Reflection and `01 02` for Effect Quality. Whether that is one
-//! number or a `(chosen, maximum)` pair is not established, so neither byte
-//! is singled out: any non-zero cell is on, which is the only reading that
-//! adds no assumption. The pane's own click writes a clean 0/1 back
-//! (`options_video::spawn_detail_row`), so this only concerns an imported
-//! file.
+//! The row is a **three-step** control in the original, not a toggle
+//! (`GraphicProfile::quality_step` reads the step index). Our Sun has one
+//! shadow switch, so step 0 is off and steps 1 and 2 are both on: the
+//! original's middle step is **not distinguished**, and what it draws there is
+//! UNKNOWN. That is stated rather than approximated with an invented
+//! half-shadow.
 //!
 //! [`RenderMode::Pbr`]: crate::plugins::config::graphics::RenderMode::Pbr
 
@@ -43,14 +34,19 @@ use super::{PbrModeActive, Sun};
 /// Id of the "Shadow Detail" row within a profile bank (`DETAIL_ROWS`).
 pub const SHADOW_DETAIL_ID: u16 = 1;
 
-/// Reads the row out of the active graphic profile. `None` (row never
-/// written) means on: the original ships the detail rows enabled.
-pub fn shadow_detail_on(options: &GameOptions, profile: GraphicProfileTab) -> bool {
+/// The row's step index in the active graphic profile.
+pub fn shadow_detail_step(options: &GameOptions, profile: GraphicProfileTab) -> u8 {
     let bank = match profile {
         GraphicProfileTab::One => &options.video.graphic1,
         GraphicProfileTab::Two => &options.video.graphic2,
     };
-    bank.quality.get(&SHADOW_DETAIL_ID).copied().unwrap_or(1) != 0
+    bank.quality_step(SHADOW_DETAIL_ID)
+}
+
+/// Whether the Sun should cast at this step. Step 0 is the original's
+/// "Nothing"; 1 and 2 both mean shadows here (see the module doc).
+pub fn shadow_detail_on(options: &GameOptions, profile: GraphicProfileTab) -> bool {
+    shadow_detail_step(options, profile) != 0
 }
 
 /// Applies the Shadow Detail row to the Sun's shadow maps.
@@ -82,14 +78,14 @@ pub fn apply_shadow_detail_option(
 mod tests {
     use super::*;
 
-    fn options_with(profile_two: bool, value: u16) -> GameOptions {
+    fn options_with(profile_two: bool, value: u8) -> GameOptions {
         let mut options = GameOptions::default();
         let bank = if profile_two {
             &mut options.video.graphic2
         } else {
             &mut options.video.graphic1
         };
-        bank.quality.insert(SHADOW_DETAIL_ID, value);
+        bank.set_quality_step(SHADOW_DETAIL_ID, value);
         options
     }
 
@@ -101,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_is_off_and_every_other_value_is_on() {
+    fn step_zero_is_off_and_the_two_shadow_steps_are_both_on() {
         assert!(!shadow_detail_on(
             &options_with(false, 0),
             GraphicProfileTab::One
@@ -110,12 +106,40 @@ mod tests {
             &options_with(false, 1),
             GraphicProfileTab::One
         ));
-        // "degree of shadow details" is a u16 cell; while the value space is
-        // unknown, any non-zero step means on (see the module doc).
+        // The original's middle step is not distinguished here: our Sun has
+        // one shadow switch (see the module doc).
         assert!(shadow_detail_on(
             &options_with(false, 2),
             GraphicProfileTab::One
         ));
+    }
+
+    /// A cell written by the original carries the step index in **both**
+    /// bytes, so the whole `u16` reads 0x0202 for the last step. Reading the
+    /// cell as a number instead of a step would call that 514.
+    #[test]
+    fn a_cell_written_by_the_original_reads_as_its_step() {
+        let mut options = GameOptions::default();
+        options
+            .video
+            .graphic1
+            .quality
+            .insert(SHADOW_DETAIL_ID, 0x0202);
+        assert_eq!(shadow_detail_step(&options, GraphicProfileTab::One), 2);
+        options
+            .video
+            .graphic1
+            .quality
+            .insert(SHADOW_DETAIL_ID, 0x0000);
+        assert_eq!(shadow_detail_step(&options, GraphicProfileTab::One), 0);
+        // And an install that was never written keeps the high byte from the
+        // shipped file (`00 01`), which must not be mistaken for a step.
+        options
+            .video
+            .graphic1
+            .quality
+            .insert(SHADOW_DETAIL_ID, 0x0100);
+        assert_eq!(shadow_detail_step(&options, GraphicProfileTab::One), 0);
     }
 
     #[test]
@@ -162,8 +186,7 @@ mod tests {
             .resource_mut::<GameOptions>()
             .video
             .graphic1
-            .quality
-            .insert(SHADOW_DETAIL_ID, 0);
+            .set_quality_step(SHADOW_DETAIL_ID, 0);
         app.update();
         assert!(!shadows(&app, sun));
 
@@ -171,8 +194,7 @@ mod tests {
             .resource_mut::<GameOptions>()
             .video
             .graphic1
-            .quality
-            .insert(SHADOW_DETAIL_ID, 1);
+            .set_quality_step(SHADOW_DETAIL_ID, 1);
         app.update();
         assert!(shadows(&app, sun));
     }
@@ -187,8 +209,7 @@ mod tests {
             .resource_mut::<GameOptions>()
             .video
             .graphic1
-            .quality
-            .insert(SHADOW_DETAIL_ID, 0);
+            .set_quality_step(SHADOW_DETAIL_ID, 0);
         app.update();
         assert!(
             shadows(&app, sun),
