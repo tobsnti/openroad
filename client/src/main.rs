@@ -265,7 +265,10 @@ fn main() {
                     .with_method_main(
                         "openroad/packet_send",
                         plugins::net::packet_send::brp_packet_send,
-                    ),
+                    )
+                    // Where the UI actually sits, to compare against the rects
+                    // a `.2dt` descriptor authored.
+                    .with_method_main("openroad/ui_rects", plugins::dev::ui_rects::brp_ui_rects),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
                 // (`WgpuSettingsPriority::Functionality`), so on Vulkan and DX12

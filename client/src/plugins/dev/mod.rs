@@ -35,6 +35,9 @@ mod gm_commands;
 mod player_config;
 pub mod render_debug;
 mod teleport;
+/// Measured UI rects for `openroad/ui_rects`. Registered from `main.rs` with
+/// the measurement tier, not with the key-driven dev tooling.
+pub mod ui_rects;
 
 #[derive(Resource)]
 pub struct DevConfig {
