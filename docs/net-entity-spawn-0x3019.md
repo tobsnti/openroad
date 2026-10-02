@@ -234,25 +234,24 @@ Identical to the NPC record, plus a trailing per-instance rarity byte:
 
 ```text
 ref_id:u32
+[itemdata TID (3,3,9,*): owner_name:string]
 [equipment item: opt_level:u8]  |  [gold item: amount:u32]  |  [other: nothing]
 unique_id:u32
 position (16 B)
 owner_flag:u8, [owner_flag != 0: owner_jid:u32]
 rarity:u8
-drop_source:u8, dropper_uid:u32
 ```
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | +0x00 | ref_id | u32 | itemdata ref |
-| +0x04 | opt_level **or** amount | u8 / u32 | present only for equipment (`u8`) or gold (`u32`); absent otherwise. ► |
+| +0x04 | [TID (3,3,9,\*)] owner_name | string | quest/event items only — see below ► |
+| — | opt_level **or** amount | u8 / u32 | present only for equipment (`u8`) or gold (`u32`); absent otherwise |
 | — | unique_id | u32 | |
 | — | position | 16 B | no movement/state block for a drop |
 | — | owner_flag | u8 | 0 = free-for-all pickup |
 | — | [owner_flag ≠ 0] owner_jid | u32 | reserving player's job/char id |
-| — | rarity | u8 | item rarity |
-| — | drop_source | u8 | how it dropped |
-| — | dropper_uid | u32 | uid of the entity that dropped it |
+| — | rarity | u8 | item rarity — **the record ends here** |
 
 Only gold's `amount` is surfaced (`SpawnKind::Item { amount }`); the drop-source
 tail (`rarity, drop_source, dropper_uid`) is present on **every** dropped item,
