@@ -560,8 +560,8 @@ packets! {
     //   slot 27); Manufacture sends the SAME opcode with 8 bytes. Its answer
     //   `0xB155` has no recorded layout. `Fuse` does not exist in that window
     //   at all (its buttons are Disjoint / Dismantle / Manufacture /
-    //   Strengthen), so the `AlchemyFuseRequest` name below is wrong for what
-    //   it was measured doing and is renamed separately.
+    //   Strengthen), which is why the type is named after the opcode: a verb
+    //   in the name would have to be wrong for one of the two operations.
     // * `0x7157 {u8 count, u8[] slots}` -> `0xB157 {u8 result, if result == 2
     //   u16 code}`, body `01 0d` (Dismantle, bag slot 13) — the published one.
     //
@@ -572,7 +572,7 @@ packets! {
     0xB150 => AlchemyReinforceResponse,
     0x7151 => AlchemyStoneRequest,
     0xB151 => AlchemyStoneResponse,
-    0x7155 => AlchemyFuseRequest,
+    0x7155 => Alchemy7155Request,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 
