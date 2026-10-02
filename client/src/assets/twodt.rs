@@ -9,7 +9,6 @@ use bytes::{Buf, Bytes};
 use num_enum::TryFromPrimitive;
 use thiserror::Error;
 
-use crate::assets::{Argb8888, Str128, Str256, Str64};
 use crate::util::buf_ext::BufExt;
 
 #[derive(Debug, TypePath, Asset)]
@@ -90,7 +89,11 @@ impl JMXV2DT {
         }
     }
 
-    fn from_bytes(bytes: &[u8]) -> JMXV2DT {
+    /// Parse a descriptor out of raw file bytes.
+    ///
+    /// Public because `tools/src/bin/twodt_dump` prints these files, and the
+    /// printer must not hold a second copy of the entry layout.
+    pub fn from_bytes(bytes: &[u8]) -> JMXV2DT {
         let mut bytes = Bytes::copy_from_slice(bytes);
         // let entry_count:u32 = u32::from_ne_bytes(bytes[0..4].try_into().expect("i failed"));
         let entry_count = bytes.get_u32_le();
@@ -117,12 +120,15 @@ impl JMXV2DT {
 #[derive(Debug)]
 pub struct Jmxv2dtEntry {
     // 972 bits
-    name: Str64,
-    image: Str256,
-    background: Str256,
-    text: Str128,
-    description: Str64,
-    prototype: Str64,
+    // Fixed-width CP949 fields: 64, 256, 256, 128, 64, 64 bytes. The widths
+    // live in the `get_fixed_size_string` calls below, which are what the
+    // reader actually consumes.
+    name: String,
+    image: String,
+    background: String,
+    text: String,
+    description: String,
+    prototype: String,
     //  placeholder (lorem ipsum)
     /// Raw `NewInterfaceType`. Kept raw because the corpus is user data: an
     /// unknown value must not abort the load (it used to `expect`), and a
@@ -133,7 +139,8 @@ pub struct Jmxv2dtEntry {
     grand_parent_id: u32,
     unk_02: u32,
     unk_03: u32,
-    color: Argb8888,
+    /// `ARGB_8888`, see [`Jmxv2dtEntry::color`].
+    color: u32,
     client_rectangle_x: u32,
     client_rectangle_y: u32,
     client_rectangle_width: u32,

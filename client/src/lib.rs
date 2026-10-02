@@ -42,4 +42,8 @@ pub mod assets {
     /// `dungeon_scan` for the dungeoninfo table + string decoder).
     pub mod textdata;
     pub mod tile_tint;
+    /// Window descriptors. Needed by `tools/src/bin/twodt_dump`, which prints
+    /// a `.2dt`'s ids, parents and rects — the printer and the client must not
+    /// hold two copies of the entry layout.
+    pub mod twodt;
 }
