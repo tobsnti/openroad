@@ -120,6 +120,19 @@ make perf attribute SECS=3               # per-subsystem frame-cost table (see b
   frame-*pacing* signal `avg`/`smoothed` can't give you; see
   `client/src/plugins/diagnostics.rs:frame_time_max_window_system`. Also on
   the in-game corner panel as `frame max`.
+- `frame_time/low_1pct`, `frame_time/low_0_1pct`, `frame_time/jitter_ms`,
+  `frame_time/stutter_rate` — frame-*pacing* metrics, as distinct from the
+  frame-*rate* metrics above. Each catches something `max_window` can't:
+  `low_1pct`/`low_0_1pct` are the mean of the slowest 1%/0.1% of frames over a
+  longer, independent ~3600-sample history (the standard "1% low"/"0.1% low"
+  read from GPU review tooling) — read together with `frame_time.avg`, the gap
+  between them says whether bad frames are common or a one-off, which a bare
+  max can't distinguish. `jitter_ms` is the mean absolute delta between
+  *consecutive* frames, so it catches an alternating fast/slow pattern that has
+  an unremarkable max and percentile (percentiles only see magnitude, never
+  sequence). `stutter_rate` is frames/second exceeding 2x the current smoothed
+  average — a rate rather than a raw count, so it reads the same regardless of
+  how full the history buffer is. See `frame_pacing_system` in the same file.
 - `world_counts/*` — per-category entity counters (terrain blocks/tiles, map
   objects, mesh parts, effects, particles, bones, …) plus load/gating gauges:
   `loading_compounds`, `loading_resources` (in-flight object loads),

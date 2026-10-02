@@ -38,6 +38,7 @@ pub mod game_scene;
 pub mod intro_v2;
 pub mod loading_screen;
 mod testing;
+pub mod world_debug_scene;
 pub mod world_scene;
 
 #[derive(States, Reflect, Default, Debug, Hash, PartialEq, Eq, Clone, Copy)]
@@ -55,6 +56,13 @@ pub enum SceneState {
     /// against — it is a debug scene, and the type should say so. The
     /// `world` startup token stays as it is, so `make run world` is unchanged.
     WorldSandbox,
+    /// `SCENE=world_debug`: terrain and a fly camera, nothing else — no map
+    /// objects, no player, no animations/effects, no skybox, no fog. Exists
+    /// because `RenderDebugSettings` toggles only hide already-spawned
+    /// entities (their owning systems keep streaming/culling regardless), so
+    /// they cannot give a real rendering-floor number the way an actually
+    /// minimal scene can. See `scenes::world_debug_scene`.
+    WorldDebug,
     /// The in-game scene entered from character selection: holds the actual
     /// selected character and owns the post-join networking. Distinct from the
     /// [`SceneState::WorldSandbox`] dev scene (fly cam + hardcoded player) and
@@ -132,7 +140,14 @@ impl Plugin for SceneManagerPlugin {
                 EquipmentsScenePlugin,
                 ParticleTestingScenePlugin,
                 SkillsScenePlugin,
-                DungeonsScenePlugin,
+                // Paired rather than appended as a 16th top-level entry:
+                // Bevy's `Plugins` tuple impl tops out at 15, and this tuple
+                // is already there (see the arity note on similar pairings
+                // elsewhere in this file/`main.rs`).
+                (
+                    DungeonsScenePlugin,
+                    world_debug_scene::WorldDebugScenePlugin,
+                ),
                 ProgressPlugin::<SceneState>::new()
                     // Note: To set the scene you want to start with, change it here
                     .with_state_transition(SceneState::Loading, start_scene),
@@ -179,6 +194,7 @@ fn detect_start_scene(scene_from_config: &String, scene_from_env: Option<String>
     };
     match scene.as_str() {
         "world" => SceneState::WorldSandbox,
+        "world_debug" => SceneState::WorldDebug,
         "game" => SceneState::GameWorld,
         "animations" => SceneState::AnimationTesting,
         "ui_testing" => SceneState::UiTesting,

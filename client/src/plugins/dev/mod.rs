@@ -1,4 +1,5 @@
 use bevy::app::App;
+use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
 use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
@@ -134,6 +135,12 @@ impl Plugin for DevPlugin {
             // See `RenderControlsPlugin` for the full rationale; only the
             // inspector half is dev-only.
             .add_plugins(RenderControlsPlugin)
+            // Bevy's own minimal FPS overlay (a plain text node + frame-time
+            // graph, no egui). Unconditional and outside the `dev_tools_enabled`
+            // gate below on purpose: it's the low-overhead reading used to tell
+            // whether the heavier egui inspectors are themselves the frame-time
+            // bottleneck, so it has to keep working with `dev_tools: false`.
+            .add_plugins(FpsOverlayPlugin::default())
             // .add_plugins(DebugLinesPlugin::with_depth_test(true))
             //
             // `WireframePlugin` and the auto-screenshot harness carry no UI and
@@ -166,21 +173,21 @@ impl Plugin for DevPlugin {
             // Both of these are bare-letter hotkey plugins: lighting adjusts
             // on E/T/U/I/P, the glass ball spawns on its own key.
             app.add_plugins((LightingPlugin, GlassballPlugin));
-            app.add_systems(
-                Update,
-                (
-                    toggle_wireframe,
-                    draw_debug_lines_for_aabb,
-                    draw_debug_lines_for_nav_mesh,
-                    draw_object_nav_meshes,
-                    draw_object_global_edges,
-                    draw_nav_location,
-                    log_nav_diagnostics,
-                    warn_when_inside_solid_ground,
-                    dump_nav_snapshot,
-                    draw_nav_cursor_hit,
-                ),
-            );
+            // app.add_systems(
+            //     Update,
+            //     (
+            // toggle_wireframe,
+            // draw_debug_lines_for_aabb,
+            // draw_debug_lines_for_nav_mesh,
+            // draw_object_nav_meshes,
+            // draw_object_global_edges,
+            // draw_nav_location,
+            // log_nav_diagnostics,
+            // warn_when_inside_solid_ground,
+            // dump_nav_snapshot,
+            // draw_nav_cursor_hit,
+            // ),
+            // );
         }
     }
 }

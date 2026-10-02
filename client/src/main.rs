@@ -65,6 +65,21 @@ fn main() {
         return;
     }
 
+    // `world_debug` is a renderer-floor benchmark, not a normal game scene.
+    // Starting it through SceneManagerPlugin still registers the rest of the
+    // client and merely leaves most of it idle, which makes it unable to answer
+    // how much frame time terrain itself costs.  Give this one scene its own
+    // minimal application instead.
+    let scene_override = env::var("SCENE").ok();
+    let run_terrain_benchmark = scene_override
+        .as_deref()
+        .is_some_and(|scene| scene.eq_ignore_ascii_case("world_debug"))
+        || (scene_override.is_none() && config.scenes.startup.eq_ignore_ascii_case("world_debug"));
+    if run_terrain_benchmark {
+        scenes::world_debug_scene::run_terrain_benchmark(config, assets_dir);
+        return;
+    }
+
     let dev_tools = config.dev_tools;
     let diagnostics = config.diagnostics_enabled();
 
@@ -144,7 +159,7 @@ fn main() {
             },
             TweeningPlugin,
             scenes::SceneManagerPlugin,
-            plugins::diagnostics::DiagnosticsPlugin,
+            // plugins::diagnostics::DiagnosticsPlugin,
             plugins::net::plugin::NetworkPlugin,
             (
                 plugins::system_window::SystemWindowPlugin,
@@ -173,7 +188,7 @@ fn main() {
             TextdataPlugin,
             DynamicResourceLoaderPlugin,
             plugins::effects::EffectsPlugin,
-            plugins::animation_culling::AnimationCullingPlugin,
+            // plugins::animation_culling::AnimationCullingPlugin,
             // animation-keyed SFX from the .bsr mod palette (Sound ModData)
             // Nested as one element (the `Plugins` tuple impl tops out at 15):
             // both halves are effect sound, one from the model palette, one

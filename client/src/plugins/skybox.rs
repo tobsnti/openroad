@@ -15,8 +15,12 @@ use bevy::shader::ShaderRef;
 
 pub struct SkyboxPlugin;
 
+/// `pub(crate)` rather than private: `scenes::world_debug_scene` despawns
+/// these by marker, since skybox spawn is keyed on `GameState::Game` (see
+/// `SkyboxPlugin::build`), not on scene — there is no `OnEnter` hook to skip
+/// it at the source for one scene alone.
 #[derive(Component)]
-struct Skybox;
+pub(crate) struct Skybox;
 
 /// Extra offset applied on top of the camera position by `follow_active_camera` —
 /// the cloud discs float this far above the camera.

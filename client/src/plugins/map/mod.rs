@@ -7,9 +7,9 @@ use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
 use bevy_asset_loader::prelude::{ConfigureLoadingState, LoadingStateAppExt, LoadingStateConfig};
 
-use crate::assets::m::block_splat_material::{
-    TerrainAmbientRatioPlugin, TerrainBlockSplatMaterial,
-};
+use crate::assets::m::block_splat_material::TerrainAmbientRatioPlugin;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
 use crate::plugins::map::assets::{MapsAssets, TileAssets};
 use crate::plugins::map::objects::*;
 use crate::plugins::map::terrain::{
@@ -45,8 +45,12 @@ impl Plugin for MapPlugin {
                     .load_collection::<MapsAssets>(),
             );
 
-        app.add_plugins(MaterialPlugin::<TerrainBlockSplatMaterial>::default())
-            .add_plugins(TerrainAmbientRatioPlugin)
+        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+        app.add_plugins(MaterialPlugin::<TerrainBlockSplatMaterial>::default());
+        #[cfg(feature = "terrain_hand_rolled_pipeline")]
+        app.add_plugins(terrain::render::TerrainRenderPipelinePlugin);
+
+        app.add_plugins(TerrainAmbientRatioPlugin)
             .add_plugins(MaterialPlugin::<HighQualityWaterMaterial>::default())
             .add_plugins(MaterialPlugin::<water_material::LowQualityWaterMaterial>::default())
             .add_plugins(crate::plugins::skybox::SkyboxPlugin)
@@ -71,7 +75,15 @@ impl Plugin for MapPlugin {
                     // on completed regions when a neighbour unloads, and the pass
                     // is what consumes that (#571).
                     rearm_object_passes_on_region_unload,
-                    load_terrain_objects_system.run_if(any_with_component::<TerrainLoadState>),
+                    // `world_debug` wants terrain with no map objects at all,
+                    // not just hidden ones (see `SceneState::WorldDebug`'s
+                    // doc comment) — skipping this system means the region
+                    // never advances past `TerrainLoadState::LoadedMeshes`,
+                    // which is fine: the unload pass below evicts regions by
+                    // distance alone, never by load state.
+                    load_terrain_objects_system
+                        .run_if(any_with_component::<TerrainLoadState>)
+                        .run_if(not(in_state(SceneState::WorldDebug))),
                     load_compound_system.run_if(any_with_component::<LoadingCompound>),
                     load_resources_system.run_if(any_with_component::<LoadingResources>),
                 )

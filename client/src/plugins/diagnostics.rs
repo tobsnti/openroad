@@ -1,4 +1,3 @@
-use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
 use crate::assets::m::TerrainBlock;
 use crate::assets::o2::MapObject;
 use crate::commands::{Bone, MeshGroup, SpawnedFromResource};
@@ -21,13 +20,16 @@ use bevy::diagnostic::{
 };
 use bevy::ecs::entity::Entities;
 use bevy::mesh::Mesh3d;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::remote::BrpResult;
 use bevy::render::render_phase::{
     BinnedPhaseItem, SortedPhaseItem, ViewBinnedRenderPhases, ViewSortedRenderPhases,
 };
+use bevy::render::renderer::RenderAdapterInfo;
 use bevy::render::{Render, RenderApp, RenderSystems};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -100,6 +102,21 @@ pub const TERRAIN_BUILDING_COUNT: DiagnosticPath =
 pub const FRAME_TIME_MAX_WINDOW: DiagnosticPath =
     DiagnosticPath::const_new("frame_time/max_window");
 
+// Frame-*pacing* metrics, as distinct from frame-*rate* metrics: these ask
+// whether frames are consistent, not how many there are per second.
+// `max_window` (above) is the single worst frame in the short ~120-sample
+// window `avg`/`smoothed` already use; these three read a longer, independent
+// history (see `FRAME_PACING_HISTORY_LEN`) and each catches something the
+// others can't: `low_1pct`/`low_0_1pct` say whether bad frames are common or
+// a one-off (a bare max can't distinguish those), and `jitter_ms` looks at
+// *sequence* rather than magnitude, so it catches an alternating fast/slow
+// pattern that has a perfectly ordinary max and percentile.
+pub const FRAME_TIME_LOW_1PCT: DiagnosticPath = DiagnosticPath::const_new("frame_time/low_1pct");
+pub const FRAME_TIME_LOW_01PCT: DiagnosticPath = DiagnosticPath::const_new("frame_time/low_0_1pct");
+pub const FRAME_TIME_JITTER: DiagnosticPath = DiagnosticPath::const_new("frame_time/jitter_ms");
+pub const FRAME_TIME_STUTTER_RATE: DiagnosticPath =
+    DiagnosticPath::const_new("frame_time/stutter_rate");
+
 pub const SRO_MESH_CACHE: DiagnosticPath = DiagnosticPath::const_new("cache_counts/sro_meshes");
 pub const SRO_BIND_POSE_CACHE: DiagnosticPath =
     DiagnosticPath::const_new("cache_counts/sro_bind_poses");
@@ -128,6 +145,12 @@ impl Plugin for DiagnosticsPlugin {
             .register_diagnostic(Diagnostic::new(OTHER_COUNT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(TERRAIN_BUILDING_COUNT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(FRAME_TIME_MAX_WINDOW).with_smoothing_factor(0.0))
+            .register_diagnostic(Diagnostic::new(FRAME_TIME_LOW_1PCT).with_smoothing_factor(0.0))
+            .register_diagnostic(Diagnostic::new(FRAME_TIME_LOW_01PCT).with_smoothing_factor(0.0))
+            .register_diagnostic(Diagnostic::new(FRAME_TIME_JITTER).with_smoothing_factor(0.0))
+            .register_diagnostic(
+                Diagnostic::new(FRAME_TIME_STUTTER_RATE).with_smoothing_factor(0.0),
+            )
             .register_diagnostic(Diagnostic::new(SRO_MESH_CACHE).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(SRO_BIND_POSE_CACHE).with_smoothing_factor(0.0))
             .register_diagnostic(
@@ -156,6 +179,7 @@ impl Plugin for DiagnosticsPlugin {
                     other_count_system,
                     terrain_building_count_system,
                     frame_time_max_window_system,
+                    frame_pacing_system,
                 ),
             );
 
@@ -165,7 +189,7 @@ impl Plugin for DiagnosticsPlugin {
         // rather than one tier's material type — `graphics.water.quality: low`
         // swaps the material, and keying on the HQ type made the row read 0
         // (and miscounted the planes as `mesh parts`) in that tier.
-        track::<MeshMaterial3d<TerrainBlockSplatMaterial>>(app, TERRAIN_BLOCK_COUNT);
+        track::<TerrainGroundMarker>(app, TERRAIN_BLOCK_COUNT);
         track::<TerrainBlock>(app, TERRAIN_TILE_COUNT);
         track::<MapObject>(app, MAP_OBJECT_COUNT);
         track::<CompoundPart>(app, COMPOUND_PART_COUNT);
@@ -204,11 +228,21 @@ fn track<C: Component>(app: &mut App, path: DiagnosticPath) {
 /// bulk of a loaded region's entities, several per `MapObject`).
 type MeshPartFilter = (
     With<Mesh3d>,
-    Without<MeshMaterial3d<TerrainBlockSplatMaterial>>,
+    Without<TerrainGroundMarker>,
     Without<WaterPlane>,
     Without<EffectNode>,
     Without<FoliageBlock>,
 );
+
+/// The component that marks a terrain ground-group entity, whichever draw path is active — see
+/// `client::assets::m::block_splat_material::REGION_TILE_SLOT_COUNT`'s doc comment for the two
+/// paths. Kept as one alias so callers (here, and `dev::render_debug`) don't need their own
+/// `#[cfg]` branches just to say "is this terrain".
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+pub(crate) type TerrainGroundMarker =
+    MeshMaterial3d<crate::assets::m::block_splat_material::TerrainBlockSplatMaterial>;
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+pub(crate) type TerrainGroundMarker = crate::assets::m::block_splat_material::TerrainGroundTextures;
 
 fn mesh_part_count_system(mut diagnostics: Diagnostics, parts: Query<(), MeshPartFilter>) {
     diagnostics.add_measurement(&MESH_PART_COUNT, || parts.iter().len() as f64);
@@ -225,7 +259,7 @@ fn mesh_part_count_system(mut diagnostics: Diagnostics, parts: Query<(), MeshPar
 fn other_count_system(
     mut diagnostics: Diagnostics,
     entities: &Entities,
-    terrain: Query<(), With<MeshMaterial3d<TerrainBlockSplatMaterial>>>,
+    terrain: Query<(), With<TerrainGroundMarker>>,
     tiles: Query<(), With<TerrainBlock>>,
     objects: Query<(), With<MapObject>>,
     compound_parts: Query<(), With<CompoundPart>>,
@@ -282,6 +316,81 @@ fn frame_time_max_window_system(store: Res<DiagnosticsStore>, mut diagnostics: D
     diagnostics.add_measurement(&FRAME_TIME_MAX_WINDOW, || max);
 }
 
+/// How many samples `frame_pacing_system` keeps, independent of
+/// `FrameTimeDiagnosticsPlugin`'s own 120-sample history. 1%/0.1% need
+/// materially more history than that to mean anything -- 120 samples' worst
+/// 0.1% is a single point, not a percentile. ~60s at 60 fps (more at lower
+/// fps, since this is a sample count, not a time window).
+const FRAME_PACING_HISTORY_LEN: usize = 3600;
+
+/// Frame-pacing-consistency metrics: [`FRAME_TIME_LOW_1PCT`],
+/// [`FRAME_TIME_LOW_01PCT`], [`FRAME_TIME_JITTER`], [`FRAME_TIME_STUTTER_RATE`].
+///
+/// Keeps its own rolling history in a `Local` rather than reading
+/// `FrameTimeDiagnosticsPlugin`'s store history (unlike
+/// `frame_time_max_window_system`): that history is deliberately short (the
+/// window `avg`/`smoothed` are computed from), and percentiles need a longer
+/// one to be meaningful -- see [`FRAME_PACING_HISTORY_LEN`].
+fn frame_pacing_system(
+    store: Res<DiagnosticsStore>,
+    mut diagnostics: Diagnostics,
+    mut history: Local<VecDeque<f64>>,
+) {
+    let Some(frame_time) = store.get(&FrameTimeDiagnosticsPlugin::FRAME_TIME) else {
+        return;
+    };
+    let Some(latest) = frame_time.value() else {
+        return;
+    };
+
+    history.push_back(latest);
+    if history.len() > FRAME_PACING_HISTORY_LEN {
+        history.pop_front();
+    }
+    // Fewer than two samples: no adjacent pair to diff yet.
+    if history.len() < 2 {
+        return;
+    }
+
+    // Jitter reads the deque in temporal order -- it has to run before the
+    // percentiles below sort a copy of it, since sorting destroys the
+    // sequence this is measuring.
+    let jitter = history
+        .iter()
+        .zip(history.iter().skip(1))
+        .map(|(a, b)| (b - a).abs())
+        .sum::<f64>()
+        / (history.len() - 1) as f64;
+    diagnostics.add_measurement(&FRAME_TIME_JITTER, || jitter);
+
+    let mut sorted: Vec<f64> = history.iter().copied().collect();
+    sorted.sort_by(f64::total_cmp);
+    let n = sorted.len();
+    // "1% low"/"0.1% low": the mean of the slowest slice, not the percentile
+    // point itself -- the standard frame-pacing convention (GPU review sites,
+    // frame-time analyzers), and more robust than a single point estimate
+    // when the slice is only a handful of samples.
+    let mean_of_slowest = |fraction: usize| {
+        let count = (n / fraction).max(1);
+        sorted[n - count..].iter().sum::<f64>() / count as f64
+    };
+    diagnostics.add_measurement(&FRAME_TIME_LOW_1PCT, || mean_of_slowest(100));
+    diagnostics.add_measurement(&FRAME_TIME_LOW_01PCT, || mean_of_slowest(1000));
+
+    // Stutter rate needs a reference to call a frame "slow" against; the
+    // window's own smoothed average is the same baseline `max_window` reads
+    // itself against on the panel. Skipped (not zeroed) until it exists so an
+    // early empty average can't masquerade as "no stutters".
+    if let Some(avg) = frame_time.smoothed() {
+        let threshold = avg * 2.0;
+        let stutters = history.iter().filter(|&&v| v > threshold).count();
+        let window_secs = sorted.iter().sum::<f64>() / 1000.0;
+        if window_secs > f64::EPSILON {
+            diagnostics.add_measurement(&FRAME_TIME_STUTTER_RATE, || stutters as f64 / window_secs);
+        }
+    }
+}
+
 /// The caches are `Option<Res<..>>` because test scenes without `MapPlugin` /
 /// `EffectsPlugin` lack them — their diagnostics simply stay empty there.
 fn cache_count_system(
@@ -328,10 +437,24 @@ fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     config: Res<crate::plugins::config::ClientConfig>,
+    adapter_info: Option<Res<RenderAdapterInfo>>,
 ) {
     if !config.diagnostics_enabled() {
         return;
     }
+    // The configured `PresentMode` is a request, not a fact (see
+    // `config::window::PresentModeConfig`), and the backend itself is a known
+    // pacing variable -- bevyengine/bevy#18898 reports Vulkan-vs-DX12
+    // frame-pacing differences on the same hardware on Windows. `Option` because
+    // a headless/test app without a render sub-app has no adapter to report.
+    //
+    // Merged here on purpose: the config gate (integ) decides *whether* the
+    // panel exists, the backend line (main) reports *what* is drawing it. The
+    // line now only appears when the tier is on, which is where it is read.
+    if let Some(info) = adapter_info {
+        info!("render backend: {:?} ({})", info.backend, info.name);
+    }
+
     commands
         .spawn((
             RenderLayers::layer(CameraLayers::Debug.into()),
@@ -550,6 +673,29 @@ fn stats_text_update_system(
         .and_then(|d| d.value())
     {
         lines.push_str(&format!("{:<16}{max:>6.1}ms\n", "frame max"));
+    }
+    // Pacing-consistency rows: see the `frame_time/*` doc comment on
+    // `FRAME_TIME_LOW_1PCT` for what each catches that the others don't.
+    if let Some(v) = diagnostics
+        .get(&FRAME_TIME_LOW_1PCT)
+        .and_then(|d| d.value())
+    {
+        lines.push_str(&format!("{:<16}{v:>6.1}ms\n", "1% low"));
+    }
+    if let Some(v) = diagnostics
+        .get(&FRAME_TIME_LOW_01PCT)
+        .and_then(|d| d.value())
+    {
+        lines.push_str(&format!("{:<16}{v:>6.1}ms\n", "0.1% low"));
+    }
+    if let Some(v) = diagnostics.get(&FRAME_TIME_JITTER).and_then(|d| d.value()) {
+        lines.push_str(&format!("{:<16}{v:>6.2}ms\n", "jitter"));
+    }
+    if let Some(v) = diagnostics
+        .get(&FRAME_TIME_STUTTER_RATE)
+        .and_then(|d| d.value())
+    {
+        lines.push_str(&format!("{:<16}{v:>6.2}/s\n", "stutters"));
     }
     // Net entity drift over the diagnostic's history window (~120 frames).
     // Steady-state churn (spawn N / despawn N per second) is invisible here —

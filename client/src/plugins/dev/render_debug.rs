@@ -9,7 +9,6 @@ use bevy_inspector_egui::prelude::ReflectInspectorOptions;
 use bevy_inspector_egui::quick::ResourceInspectorPlugin;
 use bevy_inspector_egui::InspectorOptions;
 
-use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
 use crate::assets::o2::MapObject;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::effects::material::SroEffectMaterial;
@@ -343,7 +342,7 @@ fn on_settings_changed(
     mut terrain_query: Query<
         (Entity, &mut Visibility),
         (
-            With<MeshMaterial3d<TerrainBlockSplatMaterial>>,
+            With<crate::plugins::diagnostics::TerrainGroundMarker>,
             Without<MapObject>,
         ),
     >,
@@ -356,7 +355,7 @@ fn on_settings_changed(
         (
             With<EffectInstance>,
             Without<MapObject>,
-            Without<MeshMaterial3d<TerrainBlockSplatMaterial>>,
+            Without<crate::plugins::diagnostics::TerrainGroundMarker>,
         ),
     >,
     mut effect_params: EffectDebugParams,
@@ -380,7 +379,13 @@ fn on_settings_changed(
     >,
     all_entities: Query<Entity, Without<IsResource>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut terrain_materials: ResMut<Assets<TerrainBlockSplatMaterial>>,
+    // Not wired up under the hand-rolled pipeline yet (first pass, opaque-only —
+    // TerrainGroundTextures::backface_culling exists per-region but nothing here live-toggles
+    // it): this system is already at Bevy's 16-parameter ceiling, so adding the query that would
+    // need needs its own pass rather than swapping this param's type in place.
+    #[cfg(not(feature = "terrain_hand_rolled_pipeline"))] mut terrain_materials: ResMut<
+        Assets<crate::assets::m::block_splat_material::TerrainBlockSplatMaterial>,
+    >,
     camera_query: Query<Entity, With<Camera>>,
     main_cameras: Query<(Entity, &RenderTarget), With<Camera3d>>,
     ui_camera: Query<Entity, With<Camera2d>>,
@@ -476,6 +481,7 @@ fn on_settings_changed(
                 None
             };
         }
+        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
         for (_, material) in terrain_materials.iter_mut() {
             material.backface_culling = settings.backface_culling;
         }

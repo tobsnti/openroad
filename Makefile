@@ -1,7 +1,7 @@
 .PHONY: help
 .PHONY: install-deps setup
 .PHONY: check-deps check-env
-.PHONY: run watch launcher intro intro_v2 world animations ui_testing asset-loading asset_loading skills dungeons netcheck
+.PHONY: run watch launcher intro intro_v2 world world_debug animations ui_testing asset-loading asset_loading skills dungeons netcheck
 
 .PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data deny ci clean
 .PHONY: pk2 pk2-list pk2-unpack list unpack bsr2glb
@@ -43,6 +43,8 @@ help:
 	@echo "  run launcher    Run launcher (GUI)"
 	@echo "  run intro       Run client with SCENE=intro_v2 (the current intro)"
 	@echo "  run world       Run client with SCENE=world"
+	@echo "  run world_debug Run client with SCENE=world_debug (terrain + fly cam only, no"
+	@echo "                  objects/animations/effects/skybox/fog -- rendering floor test)"
 	@echo "  run asset-loading Run client with SCENE=asset_loading"
 	@echo "  run skills      Run client with SCENE=skills (offline skill-system test scene)"
 	@echo "  run dungeons    Run client with SCENE=dungeons (offline dungeon test scene)"
@@ -199,7 +201,7 @@ run:
 		"") set -a; [ ! -f .env ] || . ./.env; set +a; cargo run -p client $(CARGO_PROFILE_FLAG) ;; \
 		launcher) set -a; [ ! -f .env ] || . ./.env; set +a; SRO_PATH="$${SRO_PATH:-.}" cargo run -p launcher $(CARGO_PROFILE_FLAG) ;; \
 		intro|intro_v2) set -a; [ ! -f .env ] || . ./.env; set +a; SCENE=intro_v2 cargo run -p client $(CARGO_PROFILE_FLAG) ;; \
-		world|animations|ui_testing|asset_loading|skills|dungeons) set -a; [ ! -f .env ] || . ./.env; set +a; SCENE=$(RUN_TARGET) cargo run -p client $(CARGO_PROFILE_FLAG) ;; \
+		world|world_debug|animations|ui_testing|asset_loading|skills|dungeons) set -a; [ ! -f .env ] || . ./.env; set +a; SCENE=$(RUN_TARGET) cargo run -p client $(CARGO_PROFILE_FLAG) ;; \
 		asset-loading) set -a; [ ! -f .env ] || . ./.env; set +a; SCENE=asset_loading cargo run -p client $(CARGO_PROFILE_FLAG) ;; \
 		wsl) \
 			echo "'run wsl' runs on the Windows side, not in WSL: the 'wsl' names the"; \
@@ -215,7 +217,7 @@ run:
 	esac
 endif
 
-launcher intro intro_v2 world animations ui_testing asset-loading asset_loading skills dungeons wsl:
+launcher intro intro_v2 world world_debug animations ui_testing asset-loading asset_loading skills dungeons wsl:
 	@:
 
 # Headless net-check client: drives the full login->join roundtrip with no
@@ -228,7 +230,7 @@ watch:
 		"") SCENE=$(SCENE) cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
 		launcher) set -a; [ ! -f .env ] || . ./.env; set +a; SRO_PATH="$${SRO_PATH:-.}" cargo watch -w launcher -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p launcher" ;; \
 		intro|intro_v2) SCENE=intro_v2 cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
-		world|animations|ui_testing|asset_loading|skills|dungeons) SCENE=$(RUN_TARGET) cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
+		world|world_debug|animations|ui_testing|asset_loading|skills|dungeons) SCENE=$(RUN_TARGET) cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
 		asset-loading) SCENE=asset_loading cargo watch -w client -w bevy_pk2 -w packets -w sro_macro -w sro_macro_derive -w tools -i assets -i target -x "run -p client" ;; \
 		*) echo "Unknown watch target: $(RUN_TARGET)"; exit 2 ;; \
 	esac

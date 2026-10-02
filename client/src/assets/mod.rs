@@ -23,6 +23,7 @@ use crate::assets::efp::loader::EfpLoader;
 use crate::assets::efp::JMXVEFF;
 use crate::assets::ifo::IFOAsset;
 use crate::assets::intro_scene::IntroScene;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
 use crate::assets::m::loader::MLoader;
 use crate::assets::m::JMXVMAPM;
@@ -149,9 +150,10 @@ impl Plugin for SroAssetStructsPlugin {
             .init_asset_loader::<InterfaceTextLoader>()
             .init_asset::<JMXVBMT>()
             .init_asset::<SroMaterial>()
-            .init_asset_loader::<BmtLoader>()
-            .init_asset::<TerrainBlockSplatMaterial>()
-            .init_asset::<JMXVBAN>()
+            .init_asset_loader::<BmtLoader>();
+        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+        app.init_asset::<TerrainBlockSplatMaterial>();
+        app.init_asset::<JMXVBAN>()
             .init_asset_loader::<BanLoader>()
             .init_asset::<JMXVBSK>()
             .init_asset_loader::<BskLoader>()

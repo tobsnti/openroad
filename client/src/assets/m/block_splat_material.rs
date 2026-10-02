@@ -1,59 +1,122 @@
-use std::num::NonZeroU32;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use std::collections::HashSet;
 
-use bevy::asset::RenderAssetUsages;
-use bevy::asset::{Asset, Assets};
-use bevy::ecs::system::SystemParam;
-use bevy::log::warn_once;
-use bevy::mesh::MeshVertexBufferLayoutRef;
-use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
-use bevy::prelude::default;
+use bevy::asset::{Assets, RenderAssetUsages};
 use bevy::prelude::{
-    error, info, not, resource_exists, warn, AlphaMode, App, AssetServer, Commands, DetectChanges,
-    Handle, Image, IntoScheduleConfigs, Material, Plugin, PreUpdate, Res, ResMut, Resource,
-    Startup, Update,
+    error, info, not, resource_exists, warn, App, AssetServer, Commands, Component, DetectChanges,
+    Handle, Image, IntoScheduleConfigs, Plugin, PreUpdate, Res, ResMut, Resource, Startup, Update,
 };
-use bevy::reflect::TypePath;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
-use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
-    AddressMode, AsBindGroup, AsBindGroupError, BindGroupEntry, BindGroupLayout,
-    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer,
-    BufferBindingType, BufferInitDescriptor, BufferUsages, Extent3d, Face, FilterMode,
-    MipmapFilterMode, PipelineCache, PreparedBindGroup, RenderPipelineDescriptor,
-    SamplerBindingType, SamplerDescriptor, ShaderStages, SpecializedMeshPipelineError,
-    TextureDimension, TextureFormat, TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
+    Buffer, BufferInitDescriptor, BufferUsages, Extent3d, TextureDimension, TextureFormat,
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::settings::WgpuFeatures;
-use bevy::render::texture::{FallbackImage, GpuImage};
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
-use bevy::shader::ShaderRef;
 
 use crate::assets::ifo::IFOAsset;
 use crate::assets::m::TerrainBlock;
 use crate::plugins::map::assets::TileAssets;
 
-/// Size of the ground-tile binding array. `JMXVMAPM` packs a vertex's tile id into 10 bits
+// Only the Material-based draw path (the default) needs bevy's Material/AsBindGroup machinery —
+// the hand-rolled pipeline (`plugins::map::terrain::render`, feature
+// `terrain_hand_rolled_pipeline`) builds its bind groups by hand from `RenderDevice` directly.
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::asset::Asset;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::ecs::system::SystemParam;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::log::warn_once;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::mesh::MeshVertexBufferLayoutRef;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::prelude::{default, AlphaMode, Material};
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::reflect::TypePath;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::render::render_asset::RenderAssets;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::render::render_resource::{
+    AddressMode, AsBindGroup, AsBindGroupError, BindGroupEntry, BindGroupLayout,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType,
+    BufferBindingType, Face, FilterMode, MipmapFilterMode, PipelineCache, PreparedBindGroup,
+    RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages,
+    SpecializedMeshPipelineError, TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
+};
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::render::texture::{FallbackImage, GpuImage};
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use bevy::shader::ShaderRef;
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use std::num::NonZeroU32;
+
+/// Size of [`TerrainTileAtlas`]'s CPU-side registry, mapping every tile id the map format can
+/// express to its texture handle. `JMXVMAPM` packs a vertex's tile id into 10 bits
 /// (`assets/m/mod.rs`: `flags & 0b0000_0011_1111_1111`), so 1024 covers the entire id space by
-/// construction and a tile id can index the array *directly* — no per-group remapping, and
-/// therefore nothing to overflow. The shipped `tile2d.ifo` defines 719 ids (dense 0..718), of
-/// which 685 are referenced by some region (Map.pk2 census 2026-08-08).
+/// construction. The shipped `tile2d.ifo` defines 719 ids (dense 0..718), of which 685 are
+/// referenced by some region (Map.pk2 census 2026-08-08).
+///
+/// This is *not* the size of the GPU-bound `tile_atlas` binding array any more — see
+/// [`REGION_TILE_SLOT_COUNT`]. This registry stays global because it's cheap (a `Vec` of
+/// handles, no GPU resources) and every region needs to resolve its own tile ids against it.
 pub const TILE_SLOT_COUNT: u32 = 1024;
 
+/// Size of the *per-region* `tile_atlas` binding array actually bound to the GPU (see
+/// [`TerrainBlockSplatMaterial::used_tiles`]).
+///
+/// Global, direct 10-bit-id indexing (`TILE_SLOT_COUNT` = 1024 slots bound per region,
+/// regardless of how many of those textures that region's own ground actually uses) was the
+/// previous design — see git history / `docs/perf-remote.md` for why it was replaced: every
+/// region's bind group ended up referencing all ~719 globally-defined textures, ~700 of which
+/// it could never sample. This trades that for a hard cap: a region's tile ids are remapped to
+/// a compact, region-local index (0..`REGION_TILE_SLOT_COUNT`) baked into `tile_map` by
+/// `pack_tile_map`, and the bind group only needs `REGION_TILE_SLOT_COUNT` slots, not 1024.
+///
+/// 64 is not a guess: a 2026-08-08 census of the shipped map data (see the doc comment on
+/// [`TILE_SLOT_COUNT`]) found a real region using 38 distinct tiles — the worst case on record.
+/// 64 leaves that comfortable headroom rather than sitting right at the documented max. A region
+/// that somehow exceeds it degrades loudly instead of silently: `TerrainBlockSplatMaterial::from`
+/// logs a `warn!` and the overflow tiles render as whichever tile lands in the last slot, rather
+/// than corrupting the bind group or panicking.
+///
+/// **Not done, and deliberately out of scope here**: every region still gets its *own* bind
+/// group (just a 64-slot one now instead of a 1024-slot one) — this does not eliminate
+/// per-region bind-group duplication itself, only shrink it. A true single bind group shared by
+/// every region (binding the atlas + samplers + `TerrainAmbientRatioBuffer`/
+/// `TerrainRenderParamsBuffer` exactly once, globally) is not reachable through `Material`:
+/// Bevy 0.19's "bindless" material support is shaped for a handful of *named* per-material
+/// textures with slab-level dedup, not one shared array (and slab capacity is platform-capped as
+/// low as 64 resources on macOS/iOS); `Material`'s draw-command chain
+/// (view/mesh/material bind groups only) is fixed by a blanket `impl<M: Material> for
+/// MeshMaterial3d<M>` inside `bevy_pbr` itself, with no supported extension point for a 4th,
+/// globally-bound group. The only route that actually shares one bind group globally is dropping
+/// `Material`/`MaterialPlugin` for terrain and hand-rolling a `SpecializedMeshPipeline` + custom
+/// `RenderCommand`/`DrawFunctions` registration from scratch — real precedent is
+/// `bevy_pbr::wireframe` (its own pipeline, draw command tuple, and a bind group sourced from a
+/// per-frame-prepared `Resource` instead of per-material). That's real, buildable, moderate-to-
+/// large new code (order of a few hundred lines: extract/specialize/queue/prepare systems
+/// modeled on `bevy_pbr::material`'s own, trimmed to this one material), but it also means
+/// terrain loses shadow-casting, prepass and deferred-pass support — which `Material` currently
+/// provides for free and which `config.yaml` has switched on (`shadows.enabled: true`, and
+/// terrain does cast/receive shadows today) — unless those are separately reimplemented too.
+#[cfg_attr(feature = "terrain_hand_rolled_pipeline", allow(dead_code))]
+pub const REGION_TILE_SLOT_COUNT: u32 = 64;
+
 /// Vertices per block edge, and blocks per region edge — the `tile_map` packing below.
-const BLOCK_VERTS: usize = 17;
-const REGION_BLOCKS_PER_SIDE: usize = 6;
+pub(crate) const BLOCK_VERTS: usize = 17;
+pub(crate) const REGION_BLOCKS_PER_SIDE: usize = 6;
 /// `tile_map` is one 102x102 texture per region: 6 blocks of 17 vertices per axis, with each
 /// block keeping its own duplicated edge vertices so a fragment never gathers across a block
 /// boundary (see the header comment in `terrain_splat.wgsl`).
-const TILE_MAP_SIZE: usize = REGION_BLOCKS_PER_SIDE * BLOCK_VERTS;
+pub(crate) const TILE_MAP_SIZE: usize = REGION_BLOCKS_PER_SIDE * BLOCK_VERTS;
 
-/// Every ground tile texture in the game, indexed by the map's 10-bit tile id.
-///
-/// This is what lets terrain share one texture binding across every draw: the old design gave
-/// each merge group its own array of just the tiles that group used, so the tile id had to be
-/// remapped to a group-local index, which in turn forced the one-hot weight encoding and a hard
-/// cap on tiles per group. Indexing globally removes all three.
+/// Every ground tile texture in the game, indexed by the map's 10-bit tile id — the CPU-side
+/// registry a region's [`TerrainBlockSplatMaterial::used_tiles`] resolves against to find each
+/// tile's real texture handle. Not bound to the GPU directly (see
+/// [`REGION_TILE_SLOT_COUNT`]) — each region's bind group only carries the handles for the
+/// handful of ids it actually references.
 ///
 /// The handles are the same assets `TileAssets` already loads (the whole `map://tile2d` folder),
 /// so populating this costs no extra memory or load time — it only gives them an id-ordered home.
@@ -73,10 +136,12 @@ impl TerrainTileAtlas {
     }
 }
 
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 #[derive(TypePath, Asset, Default, Debug, Clone)]
 pub struct TerrainBlockSplatMaterial {
-    /// Per-vertex tile choice for one region, as a 102x102 `Rg16Uint` image: `r` = tile id
-    /// (indexes [`TerrainTileAtlas`] directly), `g` = splat scale code. Texel
+    /// Per-vertex tile choice for one region, as a 102x102 `Rg16Uint` image: `r` = this
+    /// region's *local* tile index (position in [`used_tiles`](Self::used_tiles), not the raw
+    /// map tile id — see [`REGION_TILE_SLOT_COUNT`]), `g` = splat scale code. Texel
     /// `(block_col * 17 + i, block_row * 17 + j)` is that block's vertex `(i, j)`.
     ///
     /// The shader gathers the 4 texels around a fragment and blends them by their bilinear
@@ -91,6 +156,175 @@ pub struct TerrainBlockSplatMaterial {
     /// albedo in `terrain_splat.wgsl`, adding SRO's static baked sun/shadow on top of the dynamic
     /// lighting. Regions without a `.t` get a shared 1×1 white handle, making the multiply a no-op.
     pub lightmap: Handle<Image>,
+
+    /// Distinct tile ids this region's own vertices reference — sorted, deduped, and capped at
+    /// [`REGION_TILE_SLOT_COUNT`]. Position in this `Vec` *is* the local index `tile_map` bakes
+    /// into its `r` channel (see [`TerrainBlockSplatMaterial::tile_map`]) and the slot
+    /// `as_bind_group` fills in the GPU-bound `tile_atlas` array — so this is what makes the
+    /// per-region binding array small instead of the full ~719-entry global registry. A region
+    /// needing more than `REGION_TILE_SLOT_COUNT` distinct tiles (none on record as of the
+    /// 2026-08-08 census — see [`REGION_TILE_SLOT_COUNT`]) has its overflow ids dropped here and
+    /// `pack_tile_map` clamps their texels to the last slot instead of producing an out-of-range
+    /// index.
+    pub used_tiles: Vec<u16>,
+}
+
+/// Per-region ground textures for the hand-rolled render pipeline
+/// (`client/src/plugins/map/terrain/render/`, feature `terrain_hand_rolled_pipeline`) — the
+/// counterpart to [`TerrainBlockSplatMaterial`] for that path.
+///
+/// A plain `Component`, not an `Asset`: unlike a normal material, these textures are never
+/// shared/deduplicated across users (each region's `tile_map`/`lightmap` are already unique), so
+/// the `Handle<Self>`/`Assets<T>` indirection `TerrainBlockSplatMaterial` needs would be pure
+/// overhead here. Extracted into the render world by
+/// `plugins::map::terrain::render::extract_terrain_ground_textures`.
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+#[derive(Component, Clone, Default)]
+pub struct TerrainGroundTextures {
+    /// Per-vertex tile choice for one region, as a 102x102 `Rg16Uint` image — same layout as
+    /// [`TerrainBlockSplatMaterial::tile_map`], except `r` is always the map's raw 10-bit tile
+    /// id (see `pack_tile_map_raw`): the hand-rolled pipeline binds the tile atlas exactly once,
+    /// globally, so there is no per-region size pressure to remap ids down to a small local
+    /// index the way the `Material`-based path needs.
+    pub tile_map: Handle<Image>,
+    pub backface_culling: bool,
+    /// Baked terrain lightmap — see [`TerrainBlockSplatMaterial::lightmap`].
+    pub lightmap: Handle<Image>,
+}
+
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+impl TerrainGroundTextures {
+    /// Builds the per-region textures for one region's merged 6x6 block grid. Same role as
+    /// `TerrainBlockSplatMaterial::from`, minus the local-index remap: see the type's own doc
+    /// comment for why the hand-rolled pipeline doesn't need it.
+    pub(crate) fn from(
+        blocks: &[(&TerrainBlock, f32, f32)],
+        lightmap: Handle<Image>,
+        image_assets: &mut ResMut<Assets<Image>>,
+    ) -> Self {
+        let tile_map = image_assets.add(Image::new(
+            Extent3d {
+                width: TILE_MAP_SIZE as u32,
+                height: TILE_MAP_SIZE as u32,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            pack_tile_map_raw(blocks),
+            TextureFormat::Rg16Uint,
+            RenderAssetUsages::RENDER_WORLD,
+        ));
+
+        Self {
+            tile_map,
+            backface_culling: true,
+            lightmap,
+        }
+    }
+}
+
+/// Packs a region's per-vertex tile choices the same way as [`pack_tile_map`], except `r` is the
+/// vertex's raw map tile id directly — no local-index remap, since the hand-rolled pipeline's
+/// `tile_atlas` is bound once, globally, at the map format's full 1024-id size (see
+/// `REGION_TILE_SLOT_COUNT`'s doc comment for why the `Material`-based path needs the remap and
+/// this one doesn't).
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+fn pack_tile_map_raw(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
+    let mut buf = vec![0u8; TILE_MAP_SIZE * TILE_MAP_SIZE * 4];
+    for (block, _, _) in blocks {
+        let (bx, bz) = (block.x as usize, block.z as usize);
+        debug_assert!(bx < REGION_BLOCKS_PER_SIDE && bz < REGION_BLOCKS_PER_SIDE);
+        for z in 0..BLOCK_VERTS {
+            for x in 0..BLOCK_VERTS {
+                let v = &block.vertices[z * BLOCK_VERTS + x];
+                let texel = (bz * BLOCK_VERTS + z) * TILE_MAP_SIZE + (bx * BLOCK_VERTS + x);
+                let o = texel * 4;
+                buf[o..o + 2].copy_from_slice(&v.texture_id.to_le_bytes());
+                buf[o + 2..o + 4].copy_from_slice(&(v.splat_scale as u16).to_le_bytes());
+            }
+        }
+    }
+    buf
+}
+
+/// Exercises `pack_tile_map_raw`'s raw-id packing (the hand-rolled pipeline's path — no local
+/// remap, see `REGION_TILE_SLOT_COUNT`'s doc comment). Mirrors the shape of `pack_tile_map`'s own
+/// tests below, minus the remap-specific ones (used_tiles/overflow-clamp), which don't apply here.
+#[cfg(all(test, feature = "terrain_hand_rolled_pipeline"))]
+mod raw_pack_tests {
+    use super::*;
+    use crate::assets::m::{MapVertex, WaterType};
+    use bevy::camera::primitives::Aabb;
+    use bevy::math::Vec3;
+
+    fn block(bx: i32, bz: i32, tile_at: impl Fn(usize, usize) -> (u16, u8)) -> TerrainBlock {
+        let mut vertices = Vec::with_capacity(BLOCK_VERTS * BLOCK_VERTS);
+        for z in 0..BLOCK_VERTS {
+            for x in 0..BLOCK_VERTS {
+                let (texture_id, splat_scale) = tile_at(x, z);
+                vertices.push(MapVertex {
+                    x: x as i32,
+                    z: z as i32,
+                    height: 0.0,
+                    texture_id,
+                    brightness: 0,
+                    splat_scale,
+                    splat_offset: 0,
+                });
+            }
+        }
+        TerrainBlock {
+            x: bx,
+            z: bz,
+            flag: 0,
+            environment_id: 0,
+            water_type: WaterType::None,
+            vertices,
+            tiles: Vec::new(),
+            aabb: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
+        }
+    }
+
+    fn texel(buf: &[u8], u: usize, v: usize) -> (u16, u16) {
+        let o = (v * TILE_MAP_SIZE + u) * 4;
+        (
+            u16::from_le_bytes([buf[o], buf[o + 1]]),
+            u16::from_le_bytes([buf[o + 2], buf[o + 3]]),
+        )
+    }
+
+    /// A block lands at its own grid position, and vertex (x, z) at texel
+    /// (bx * 17 + x, bz * 17 + z) — same addressing as `pack_tile_map`, just with the raw map
+    /// tile id instead of a remapped local index.
+    #[test]
+    fn packs_blocks_at_their_grid_position_with_raw_ids() {
+        let b = block(2, 3, |x, z| ((z * BLOCK_VERTS + x) as u16, 8));
+        let buf = pack_tile_map_raw(&[(&b, 0.0, 0.0)]);
+
+        assert_eq!(texel(&buf, 2 * 17, 3 * 17), (0, 8), "vertex (0,0)");
+        assert_eq!(texel(&buf, 2 * 17 + 5, 3 * 17), (5, 8), "vertex (5,0)");
+        assert_eq!(texel(&buf, 2 * 17, 3 * 17 + 5), (5 * 17, 8), "vertex (0,5)");
+        assert_eq!(
+            texel(&buf, 2 * 17 + 16, 3 * 17 + 16),
+            ((16 * 17 + 16) as u16, 8),
+            "vertex (16,16)"
+        );
+        assert_eq!(
+            texel(&buf, 0, 0),
+            (0, 0),
+            "a different block's area is untouched"
+        );
+    }
+
+    /// Neighbouring blocks keep their own duplicated edge vertices, same as `pack_tile_map`.
+    #[test]
+    fn adjacent_blocks_keep_separate_edge_vertices() {
+        let left = block(0, 0, |_, _| (11, 16));
+        let right = block(1, 0, |_, _| (22, 32));
+        let buf = pack_tile_map_raw(&[(&left, 0.0, 0.0), (&right, 320.0, 0.0)]);
+
+        assert_eq!(texel(&buf, 16, 0), (11, 16), "left block's last vertex");
+        assert_eq!(texel(&buf, 17, 0), (22, 32), "right block's first vertex");
+    }
 }
 
 /// Per-channel ratio of SRO's terrain ambient to the global (object) ambient light,
@@ -252,6 +486,10 @@ pub struct TerrainAmbientRatioPlugin;
 
 impl Plugin for TerrainAmbientRatioPlugin {
     fn build(&self, app: &mut App) {
+        // Works around a leak specific to the Material-based path's CreateBindGroupDirectly
+        // bind group (see TerrainAmbientRatio's doc comment) — the hand-rolled pipeline never
+        // goes through that allocator at all, so it has nothing to work around here.
+        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
         super::tile_residency::register(app);
         app.init_resource::<TerrainAmbientRatio>()
             .init_resource::<TerrainRenderParams>()
@@ -359,13 +597,15 @@ fn init_terrain_lightmap_fallback(mut commands: Commands, mut images: ResMut<Ass
 }
 
 /// The gather in `terrain_splat.wgsl` indexes `tile_atlas` with per-fragment data, so it needs
-/// non-uniform indexing of a sampled-texture binding array, and the array needs `TILE_SLOT_COUNT`
-/// elements per stage. Both are device capabilities bevy *detects* rather than guarantees — its
-/// own light-probe code falls back when they are missing (`bevy_pbr::light_probe`) — so say so
-/// loudly at startup rather than leaving mis-rendered ground to debug.
+/// non-uniform indexing of a sampled-texture binding array, and the array needs
+/// `REGION_TILE_SLOT_COUNT` elements per stage. Both are device capabilities bevy *detects*
+/// rather than guarantees — its own light-probe code falls back when they are missing
+/// (`bevy_pbr::light_probe`) — so say so loudly at startup rather than leaving mis-rendered
+/// ground to debug.
 ///
 /// On Metal both hold whenever Argument Buffers Tier 2 is available (which reports 1,000,000
-/// binding-array elements); the pre-Tier-2 tiers cap out at 96 and cannot host this atlas.
+/// binding-array elements); the pre-Tier-2 tiers cap out at 96 — comfortably above
+/// `REGION_TILE_SLOT_COUNT` (64), unlike the previous 1024-slot global design this replaced.
 fn check_tile_atlas_support(render_device: Res<RenderDevice>) {
     let missing = WgpuFeatures::TEXTURE_BINDING_ARRAY
         | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
@@ -376,13 +616,21 @@ fn check_tile_atlas_support(render_device: Res<RenderDevice>) {
              texture binding array and terrain will not render correctly without it"
         );
     }
+    // The hand-rolled pipeline binds the atlas once, globally, at the map format's full 1024-id
+    // size (no per-region remap — see REGION_TILE_SLOT_COUNT's doc comment); the Material-based
+    // path binds a region-local remapped copy sized REGION_TILE_SLOT_COUNT instead.
+    #[cfg(feature = "terrain_hand_rolled_pipeline")]
+    let needed = TILE_SLOT_COUNT;
+    #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+    let needed = REGION_TILE_SLOT_COUNT;
+
     let limit = render_device
         .limits()
         .max_binding_array_elements_per_shader_stage;
-    if limit < TILE_SLOT_COUNT {
+    if limit < needed {
         error!(
             "GPU allows {limit} binding-array elements per shader stage; the ground-tile atlas \
-             needs {TILE_SLOT_COUNT}"
+             needs {needed}"
         );
     }
 }
@@ -432,6 +680,7 @@ fn write_terrain_ambient_ratio(
     }
 }
 
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl Material for TerrainBlockSplatMaterial {
     fn vertex_shader() -> ShaderRef {
         "shaders/terrain_splat.wgsl".into()
@@ -461,6 +710,7 @@ impl Material for TerrainBlockSplatMaterial {
     }
 }
 
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl AsBindGroup for TerrainBlockSplatMaterial {
     type Data = bool;
     type Param = (
@@ -480,7 +730,7 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
     }
 
     // `tile_atlas` needs a genuine WGPU texture binding array (`BindingResource::TextureViewArray`,
-    // sized `TILE_SLOT_COUNT`), which `OwnedBindingResource`/`UnpreparedBindGroup` has no
+    // sized `REGION_TILE_SLOT_COUNT`), which `OwnedBindingResource`/`UnpreparedBindGroup` has no
     // variant for. Returning `CreateBindGroupDirectly` here routes the framework to
     // `as_bind_group()` below instead, which is allowed to build the raw wgpu bind group itself.
     fn unprepared_bind_group(
@@ -534,16 +784,19 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
             return Err(AsBindGroupError::RetryNextUpdate);
         };
 
-        // Slots the atlas has no texture for (undefined tile ids) bind the fallback image, so the
-        // array is always fully populated even though `tile2d.ifo` only defines 719 of the 1024
-        // ids the map format can express. A tile whose image is still loading also falls back
-        // rather than stalling the whole region — every terrain draw shares this one array, so
-        // retrying until all 719 have landed would hold up the first region indefinitely.
+        // `texture_views[local_index]` for `local_index` = position of a tile id in
+        // `self.used_tiles` — the same local index `pack_tile_map` baked into `tile_map`'s `r`
+        // channel, so a fragment's lookup and this array line up by construction. Only
+        // `REGION_TILE_SLOT_COUNT` slots exist at all (not the ~719-entry global registry), and a
+        // tile whose image is still loading falls back rather than stalling the region.
         let fallback_view = &*fallback_image.d2.texture_view;
-        let mut texture_views = vec![fallback_view; TILE_SLOT_COUNT as usize];
-        for (slot, handle) in tile_atlas.slots.iter().enumerate() {
-            if let Some(image) = handle.as_ref().and_then(|h| image_assets.get(h)) {
-                texture_views[slot] = &*image.texture_view;
+        let mut texture_views = vec![fallback_view; REGION_TILE_SLOT_COUNT as usize];
+        for (local_index, &tile_id) in self.used_tiles.iter().enumerate() {
+            let Some(Some(handle)) = tile_atlas.slots.get(tile_id as usize) else {
+                continue;
+            };
+            if let Some(image) = image_assets.get(handle) {
+                texture_views[local_index] = &*image.texture_view;
             }
         }
 
@@ -646,7 +899,8 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
                 ty: BindingType::Sampler(SamplerBindingType::Filtering),
                 count: None,
             },
-            // 2: the global ground-tile atlas, indexed by tile id
+            // 2: this region's local ground-tile atlas, indexed by the region-local index
+            // `pack_tile_map` bakes into `tile_map` (see `TerrainBlockSplatMaterial::used_tiles`)
             BindGroupLayoutEntry {
                 binding: 2,
                 visibility: ShaderStages::FRAGMENT,
@@ -655,7 +909,7 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
                     sample_type: TextureSampleType::Float { filterable: true },
                     view_dimension: TextureViewDimension::D2,
                 },
-                count: NonZeroU32::new(TILE_SLOT_COUNT),
+                count: NonZeroU32::new(REGION_TILE_SLOT_COUNT),
             },
             // 3: repeat+aniso sampler (ground tiles)
             BindGroupLayoutEntry {
@@ -701,6 +955,7 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
     }
 }
 
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl TerrainBlockSplatMaterial {
     /// Builds the material for one region's merged 6x6 block grid. `blocks` is `(block, dx, dz)`
     /// in the same order and offset convention as `block_mesh::merge_block_meshes`; the tile map
@@ -711,6 +966,27 @@ impl TerrainBlockSplatMaterial {
         lightmap: Handle<Image>,
         image_assets: &mut ResMut<Assets<Image>>,
     ) -> Self {
+        let mut used_tiles: Vec<u16> = blocks
+            .iter()
+            .flat_map(|(block, _, _)| block.vertices.iter().map(|v| v.texture_id))
+            .collect::<HashSet<u16>>()
+            .into_iter()
+            .collect();
+        used_tiles.sort_unstable();
+        // See `REGION_TILE_SLOT_COUNT`'s doc comment: no region on record needs this, but a
+        // region that does gets a loud warning and clamped (wrong, not corrupt) overflow tiles
+        // rather than an out-of-range GPU index.
+        if used_tiles.len() > REGION_TILE_SLOT_COUNT as usize {
+            warn!(
+                "terrain region uses {} distinct ground tiles, above the {}-slot local atlas \
+                 cap; {} tile(s) will render as whichever tile lands in the last slot",
+                used_tiles.len(),
+                REGION_TILE_SLOT_COUNT,
+                used_tiles.len() - REGION_TILE_SLOT_COUNT as usize
+            );
+            used_tiles.truncate(REGION_TILE_SLOT_COUNT as usize);
+        }
+
         let tile_map = image_assets.add(Image::new(
             Extent3d {
                 width: TILE_MAP_SIZE as u32,
@@ -718,7 +994,7 @@ impl TerrainBlockSplatMaterial {
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
-            pack_tile_map(blocks),
+            pack_tile_map(blocks, &used_tiles),
             TextureFormat::Rg16Uint,
             RenderAssetUsages::RENDER_WORLD,
         ));
@@ -727,18 +1003,24 @@ impl TerrainBlockSplatMaterial {
             tile_map,
             lightmap,
             backface_culling: true,
+            used_tiles,
         }
     }
 }
 
 /// Packs a region's per-vertex tile choices into the `Rg16Uint` 102x102 layout described on
-/// [`TerrainBlockSplatMaterial::tile_map`]: `r` = tile id, `g` = splat scale code.
+/// [`TerrainBlockSplatMaterial::tile_map`]: `r` = this vertex's tile's *local* index (its
+/// position in `used_tiles`, not its raw map id — see [`REGION_TILE_SLOT_COUNT`]), `g` = splat
+/// scale code.
 ///
 /// Blocks are placed by their own `(x, z)` grid position, so this does not depend on the order
-/// `blocks` arrives in or on the mesh's vertex layout.
-fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
+/// `blocks` arrives in or on the mesh's vertex layout. `used_tiles` must be sorted (its own
+/// binary search relies on it) — `TerrainBlockSplatMaterial::from` guarantees this.
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)], used_tiles: &[u16]) -> Vec<u8> {
     // Every vertex of every block is written, so the zero fill never survives into a texel that
-    // the shader can reach — tile id 0 is a real tile, so a gap here would render as one.
+    // the shader can reach — local index 0 is a real (if possibly truncated-into) tile, so a gap
+    // here would render as one.
     let mut buf = vec![0u8; TILE_MAP_SIZE * TILE_MAP_SIZE * 4];
     for (block, _, _) in blocks {
         let (bx, bz) = (block.x as usize, block.z as usize);
@@ -746,9 +1028,16 @@ fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
         for z in 0..BLOCK_VERTS {
             for x in 0..BLOCK_VERTS {
                 let v = &block.vertices[z * BLOCK_VERTS + x];
+                // `Err` means this tile id was truncated out of `used_tiles` (the cap-overflow
+                // case `TerrainBlockSplatMaterial::from` already warned about) — clamp to the
+                // last real slot rather than baking an index `tile_atlas` was never sized for.
+                let local_index = used_tiles
+                    .binary_search(&v.texture_id)
+                    .unwrap_or(used_tiles.len().saturating_sub(1))
+                    as u16;
                 let texel = (bz * BLOCK_VERTS + z) * TILE_MAP_SIZE + (bx * BLOCK_VERTS + x);
                 let o = texel * 4;
-                buf[o..o + 2].copy_from_slice(&v.texture_id.to_le_bytes());
+                buf[o..o + 2].copy_from_slice(&local_index.to_le_bytes());
                 buf[o + 2..o + 4].copy_from_slice(&(v.splat_scale as u16).to_le_bytes());
             }
         }
@@ -756,7 +1045,10 @@ fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
     buf
 }
 
-#[cfg(test)]
+// Exercises `pack_tile_map`'s region-local remap, which only exists on the Material-based path
+// (see `REGION_TILE_SLOT_COUNT`'s doc comment) — `pack_tile_map_raw`'s raw-id packing is covered
+// separately, see below.
+#[cfg(all(test, not(feature = "terrain_hand_rolled_pipeline")))]
 mod tests {
     use super::*;
     use crate::assets::m::{MapVertex, WaterType};
@@ -799,20 +1091,56 @@ mod tests {
         )
     }
 
+    /// Mirrors `TerrainBlockSplatMaterial::from`'s own derivation (sorted, deduped, no cap —
+    /// these fixtures stay well under `REGION_TILE_SLOT_COUNT`), so tests can build the
+    /// `used_tiles` a real caller would pass to `pack_tile_map` without duplicating cap logic.
+    fn used_tiles_for(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u16> {
+        let mut used: Vec<u16> = blocks
+            .iter()
+            .flat_map(|(block, _, _)| block.vertices.iter().map(|v| v.texture_id))
+            .collect::<HashSet<u16>>()
+            .into_iter()
+            .collect();
+        used.sort_unstable();
+        used
+    }
+
     /// A block lands at its own grid position, and vertex (x, z) at texel
     /// (bx * 17 + x, bz * 17 + z) — the addressing `sample_splat` assumes.
     #[test]
     fn packs_blocks_at_their_grid_position() {
-        // tile id encodes the vertex so a transposed or mis-strided write is visible
-        let b = block(2, 3, |x, z| ((z * BLOCK_VERTS + x) as u16, 8));
-        let buf = pack_tile_map(&[(&b, 0.0, 0.0)]);
+        // tile id encodes the vertex (mod 50, to stay under REGION_TILE_SLOT_COUNT) so a
+        // transposed or mis-strided write is visible. 289 vertices mod 50 cycles through every
+        // residue 0..49, so `used_tiles` is exactly [0..49] and local index == raw id here —
+        // computed via `used_tiles_for` rather than assumed, so this doesn't silently rot if
+        // that stops being true.
+        let b = block(2, 3, |x, z| (((z * BLOCK_VERTS + x) as u16) % 50, 8));
+        let used_tiles = used_tiles_for(&[(&b, 0.0, 0.0)]);
+        let buf = pack_tile_map(&[(&b, 0.0, 0.0)], &used_tiles);
+        let local = |raw: u16| {
+            used_tiles
+                .binary_search(&raw)
+                .expect("raw id is in used_tiles")
+        };
 
-        assert_eq!(texel(&buf, 2 * 17, 3 * 17), (0, 8), "vertex (0,0)");
-        assert_eq!(texel(&buf, 2 * 17 + 5, 3 * 17), (5, 8), "vertex (5,0)");
-        assert_eq!(texel(&buf, 2 * 17, 3 * 17 + 5), (5 * 17, 8), "vertex (0,5)");
+        assert_eq!(
+            texel(&buf, 2 * 17, 3 * 17),
+            (local(0) as u16, 8),
+            "vertex (0,0)"
+        );
+        assert_eq!(
+            texel(&buf, 2 * 17 + 5, 3 * 17),
+            (local(5) as u16, 8),
+            "vertex (5,0)"
+        );
+        assert_eq!(
+            texel(&buf, 2 * 17, 3 * 17 + 5),
+            (local((5 * 17) % 50) as u16, 8),
+            "vertex (0,5)"
+        );
         assert_eq!(
             texel(&buf, 2 * 17 + 16, 3 * 17 + 16),
-            ((16 * 17 + 16) as u16, 8),
+            (local((16 * 17 + 16) % 50) as u16, 8),
             "vertex (16,16)"
         );
         // a different block's area is untouched by this one
@@ -826,14 +1154,29 @@ mod tests {
     fn adjacent_blocks_keep_separate_edge_vertices() {
         let left = block(0, 0, |_, _| (11, 16));
         let right = block(1, 0, |_, _| (22, 32));
-        let buf = pack_tile_map(&[(&left, 0.0, 0.0), (&right, 320.0, 0.0)]);
+        let blocks = [(&left, 0.0, 0.0), (&right, 320.0, 0.0)];
+        let used_tiles = used_tiles_for(&blocks);
+        let buf = pack_tile_map(&blocks, &used_tiles);
+        let local = |raw: u16| {
+            used_tiles
+                .binary_search(&raw)
+                .expect("raw id is in used_tiles")
+        };
 
-        assert_eq!(texel(&buf, 16, 0), (11, 16), "left block's last vertex");
-        assert_eq!(texel(&buf, 17, 0), (22, 32), "right block's first vertex");
+        assert_eq!(
+            texel(&buf, 16, 0),
+            (local(11) as u16, 16),
+            "left block's last vertex"
+        );
+        assert_eq!(
+            texel(&buf, 17, 0),
+            (local(22) as u16, 32),
+            "right block's first vertex"
+        );
     }
 
     /// The full 6x6 grid covers every texel of the 102x102 map, so no texel is left at the
-    /// zero fill (which would render as tile id 0 rather than the authored tile).
+    /// zero fill (which would render as local index 0 rather than the authored tile).
     #[test]
     fn full_region_leaves_no_unwritten_texels() {
         let blocks: Vec<TerrainBlock> = (0..REGION_BLOCKS_PER_SIDE as i32)
@@ -842,14 +1185,43 @@ mod tests {
             })
             .collect();
         let refs: Vec<(&TerrainBlock, f32, f32)> = blocks.iter().map(|b| (b, 0.0, 0.0)).collect();
-        let buf = pack_tile_map(&refs);
+        let used_tiles = used_tiles_for(&refs);
+        let buf = pack_tile_map(&refs, &used_tiles);
 
+        assert_eq!(
+            used_tiles,
+            vec![7],
+            "only one distinct tile in this fixture"
+        );
         assert_eq!(buf.len(), TILE_MAP_SIZE * TILE_MAP_SIZE * 4);
         for v in 0..TILE_MAP_SIZE {
             for u in 0..TILE_MAP_SIZE {
-                assert_eq!(texel(&buf, u, v), (7, 16), "texel ({u},{v}) unwritten");
+                assert_eq!(texel(&buf, u, v), (0, 16), "texel ({u},{v}) unwritten");
             }
         }
+    }
+
+    /// The cap-overflow case `TerrainBlockSplatMaterial::from` warns about and truncates
+    /// `used_tiles` for: a raw tile id `pack_tile_map` can't find clamps to the last slot
+    /// instead of baking a `tile_atlas` index the bind group was never sized for.
+    #[test]
+    fn tile_id_missing_from_used_tiles_clamps_to_the_last_slot() {
+        let b = block(0, 0, |x, _| if x == 0 { (999, 5) } else { (7, 5) });
+        // 999 deliberately absent (as a truncated-away id would be); 42 present but not used by
+        // any vertex here, so a clamp to it (rather than to 7's real slot) is unambiguous.
+        let used_tiles = [7u16, 42];
+        let buf = pack_tile_map(&[(&b, 0.0, 0.0)], &used_tiles);
+
+        assert_eq!(
+            texel(&buf, 0, 0),
+            (1, 5),
+            "missing id clamps to the last slot"
+        );
+        assert_eq!(
+            texel(&buf, 1, 0),
+            (0, 5),
+            "present id resolves to its own slot"
+        );
     }
 
     /// Tile ids are 10-bit by construction, so every id the map can express indexes the atlas.

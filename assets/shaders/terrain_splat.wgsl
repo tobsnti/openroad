@@ -101,35 +101,61 @@ fn vertex(
 // choices across the quad. This shader evaluates that directly: it reads the tile id at the 4
 // vertices surrounding the fragment and weights each by its bilinear factor.
 //
-// The previous design instead stored a ONE-HOT weight texture (one channel per tile used in the
-// group), sampled it bilinearly, and looped over every tile in the group accumulating
-// `weight * texture`. That is algebraically the same thing —
-//     sum_i ( sum_c w_c * [tile(c) == i] ) * tex_i  ==  sum_c w_c * tex_tile(c)
-// — but it cost one weight sample per tile per fragment (up to 38 in a texture-rich region,
-// Map.pk2 census 2026-08-08) and `ceil(tiles/4)` weight layers per block, and it capped the
-// group at however many one-hot channels the material could bind. The 4-corner gather has none
-// of those properties: 4 texel reads regardless of tile count, one `tile_map` layer per region,
-// and no cap at all.
+// The previous one-hot-weight-texture design (see git history) cost one weight sample per tile
+// per fragment and capped the group at however many one-hot channels the material could bind.
+// The 4-corner gather has neither property: 4 texel reads regardless of tile count, one
+// `tile_map` layer per region.
 //
 // `tile_map` packs the region's 6x6 blocks of 17x17 vertices into a single 102x102 texture:
 // texel (block_col*17 + i, block_row*17 + j) is that block's vertex (i, j). Blocks keep their
 // own duplicated edge vertices, so a fragment never gathers across a block boundary and the
-// per-block behaviour of the old layout is reproduced exactly. `.r` = tile id (indexes
-// `tile_atlas` directly), `.g` = splat scale code.
+// per-block behaviour of the old layout is reproduced exactly. `.g` = splat scale code always.
+// `.r` differs by draw path (see the two branches below): the `Material`-based path (default)
+// stores this region's *local* tile index (its position in
+// `TerrainBlockSplatMaterial::used_tiles`, capped at `REGION_TILE_SLOT_COUNT` because that path
+// binds one atlas copy PER region); the hand-rolled-pipeline path
+// (`client/src/plugins/map/terrain/render/`, feature `terrain_hand_rolled_pipeline`) binds the
+// atlas exactly ONCE, globally, so it has no per-region size pressure and `.r` is simply the
+// map's raw 10-bit tile id, indexing `tile_atlas` directly.
 const REGION_SIZE: f32 = 1920.0;      // 6 blocks * 320 units
 const BLOCK_SIZE: f32 = 320.0;
 const VERTEX_SPACING: f32 = 20.0;     // 17 vertices per block edge => 16 intervals of 20
 const BLOCK_VERTS: u32 = 17u;
 
+// Two bind-group layouts for the same bindings, chosen by which draw path is active
+// (`TerrainPipeline::specialize` pushes the `TERRAIN_HAND_ROLLED_PIPELINE` def; the stock
+// `Material`/`MaterialPlugin` path never does). Only the *shape* differs — groups vs. one group,
+// and the atlas size — every `var` name and all the fragment logic below is identical either way.
+#ifdef TERRAIN_HAND_ROLLED_PIPELINE
+// Per-region group: the two textures that are genuinely unique per region. Everything else this
+// shader reads is identical for every terrain draw and lives in the global group below instead —
+// see client/src/assets/m/block_splat_material.rs's REGION_TILE_SLOT_COUNT doc comment for why
+// that split needed a hand-rolled pipeline (Bevy's `Material` trait has no supported way to bind
+// an extra, globally-shared group).
+@group(3) @binding(0) var tile_map: texture_2d<u32>;
+@group(3) @binding(1) var lightmap_tex: texture_2d<f32>;
+
+// Global group: bound exactly once, shared by every terrain region's draw. `tile_atlas` covers
+// the map format's entire 10-bit id space (see `TILE_SLOT_COUNT` in block_splat_material.rs) —
+// no per-region cap needed since there is only ever one copy of this array, not one per region.
+@group(4) @binding(0) var clamp_sampler: sampler;
+@group(4) @binding(1) var tile_atlas: binding_array<texture_2d<f32>, 1024>;
+@group(4) @binding(2) var tile_sampler: sampler;
+@group(4) @binding(3) var<storage> ambient_ratio: vec4<f32>;
+@group(4) @binding(4) var<storage> terrain_params: array<vec4<f32>, 3>;
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var tile_map: texture_2d<u32>;
 // Clamp+filtering sampler, used for the lightmap (`tile_map` is only ever `textureLoad`ed).
 @group(#{MATERIAL_BIND_GROUP}) @binding(1)
 var clamp_sampler: sampler;
-// Every ground tile in the game, indexed DIRECTLY by the map's 10-bit tile id — no per-group
-// remapping, so this binding is identical for every terrain draw (see `TerrainTileAtlas`).
+// This region's own ground tiles only — up to REGION_TILE_SLOT_COUNT (block_splat_material.rs)
+// distinct textures, indexed by the *local* index `tile_map` carries (see the header comment
+// above), not the map's raw 10-bit tile id. Each region's bind group fills only as many of these
+// slots as it actually uses (`TerrainBlockSplatMaterial::used_tiles`); the rest are the shared
+// fallback texture.
 @group(#{MATERIAL_BIND_GROUP}) @binding(2)
-var tile_atlas: binding_array<texture_2d<f32>, 1024>;
+var tile_atlas: binding_array<texture_2d<f32>, 64>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3)
 var tile_sampler: sampler;
 // Per-channel ratio of SRO's terrain ambient to the global (object) ambient — one GPU
@@ -161,6 +187,7 @@ var lightmap_tex: texture_2d<f32>;
 //            occluded, sampled manually below so it works in every lighting mode.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6)
 var<storage> terrain_params: array<vec4<f32>, 3>;
+#endif
 
 @fragment
 fn fragment(
@@ -192,13 +219,18 @@ fn fragment(
     var color = sample_splat(region_x, region_z, dground_dx, dground_dy);
     // Modulate the ground albedo by the baked lightmap before lighting: shadowed ground stays dark
     // under any dynamic sun/ambient, adding SRO's static baked shadows as an albedo/occlusion layer.
-    // [2].z fades it out in PBR mode; mix keeps sample_lightmap in uniform control flow (it takes
-    // derivatives).
-    let lightmap = mix(
-        vec3(1.0),
-        sample_lightmap(region_x, region_z, dground_dx, dground_dy),
-        terrain_params[2].z,
-    );
+    // [2].z is lightmap_enabled as a hard 0.0/1.0 (never fractional — see
+    // `TerrainRenderParams::to_render_params`), off whenever `render_mode: pbr` is active. A real
+    // branch is safe here despite `sample_lightmap` calling `textureSampleGrad`: unlike an
+    // implicit-derivative `textureSample`, Grad takes its derivatives as explicit arguments
+    // (computed once above, in uniform control flow), so it carries none of WGSL's
+    // non-uniform-control-flow restriction — the same property `sample_splat`'s own fast path
+    // already relies on (see its comment). Skipping the call when disabled avoids a lightmap
+    // texture fetch on every terrain fragment whose result would otherwise just be discarded.
+    var lightmap = vec3(1.0);
+    if terrain_params[2].z > 0.0 {
+        lightmap = sample_lightmap(region_x, region_z, dground_dx, dground_dy);
+    }
     color = vec4(color.rgb * lightmap, color.a);
 
     // prepare pbr input
@@ -398,12 +430,20 @@ fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f3
     return color;
 }
 
-// `tile` is the map's raw 10-bit tile id, which indexes `tile_atlas` directly. The index varies
-// per fragment, so this relies on non-uniform indexing of a sampled-texture binding array
-// (`SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`) — `check_tile_atlas_support`
-// in block_splat_material.rs reports at startup if the device lacks it.
+// `tile` indexes `tile_atlas` directly — the region-local index (0..REGION_TILE_SLOT_COUNT,
+// baked into `tile_map` by `pack_tile_map`) on the `Material`-based path, or the map's raw
+// 10-bit id on the hand-rolled-pipeline path (see the header comment above `tile_map`'s
+// declaration). The index varies per fragment, so this relies on non-uniform indexing of a
+// sampled-texture binding array (`SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`)
+// — `check_tile_atlas_support` in block_splat_material.rs reports at startup if the device lacks
+// it. The `min` clamp is a defensive backstop only: both paths already guarantee every baked
+// index is in range.
 fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>, duv_dy: vec2<f32>) -> vec4<f32> {
+#ifdef TERRAIN_HAND_ROLLED_PIPELINE
     let tex = tile_atlas[min(tile, 1023u)];
+#else
+    let tex = tile_atlas[min(tile, 63u)];
+#endif
     let splat_scale = get_splat_scale(splat);
     // 16, not 4: one texture repeat spans `320 * splat_scale` world units (a 320-unit block
     // has 16 20-unit tiles), so splat_scale 1.0 => exactly one repeat per block (1x1), 0.25 =>

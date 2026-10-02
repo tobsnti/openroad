@@ -33,7 +33,7 @@ switch ($RunTarget) {
         $env:SCENE = "intro_v2"
         & cargo run -p client @cargoArgs
     }
-    { $_ -in @("world", "animations", "ui_testing", "asset_loading", "skills", "dungeons") } {
+    { $_ -in @("world", "world_debug", "animations", "ui_testing", "asset_loading", "skills", "dungeons") } {
         $env:SCENE = $RunTarget
         & cargo run -p client @cargoArgs
     }

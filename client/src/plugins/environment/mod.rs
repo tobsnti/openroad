@@ -45,7 +45,7 @@ use crate::plugins::skybox::{
     CloudMaterial, CloudMaterials, SkyGradientMaterial, SkyboxMaterial, SKY_COLOR_HEX,
 };
 use crate::plugins::world_origin::WorldOrigin;
-use crate::scenes::in_playable_world;
+use crate::scenes::{in_playable_world, SceneState};
 use crate::GameState;
 
 pub mod celestial;
@@ -519,9 +519,16 @@ impl Plugin for EnvironmentPlugin {
                     .run_if(in_state(GameState::Game))
                     // Inside a dungeon the per-block DOF fog/ambient replaces
                     // the ENVI region profiles (ADR-0008).
-                    .run_if(not(resource_exists::<
-                        crate::plugins::dungeon::ActiveDungeon,
-                    >)),
+                    .run_if(not(
+                        resource_exists::<crate::plugins::dungeon::ActiveDungeon>,
+                    ))
+                    // `world_debug` wants static, untinted lighting to isolate
+                    // terrain's own rendering cost — no day/night cycle, no
+                    // per-region ambient/fog/sky/water color shifts. Skipping
+                    // this chain entirely leaves everything at whatever
+                    // `map::setup_lighting`/the material defaults already set,
+                    // which is exactly the neutral baseline wanted.
+                    .run_if(not(in_state(SceneState::WorldDebug))),
             )
             // Condition order matters: `run_if` chains combine lazily left to
             // right, so `resource_changed`'s tick is only consumed while in
@@ -532,7 +539,11 @@ impl Plugin for EnvironmentPlugin {
                 Update,
                 apply_render_mode
                     .run_if(in_state(GameState::Game))
-                    .run_if(resource_changed::<EnvironmentSettings>),
+                    .run_if(resource_changed::<EnvironmentSettings>)
+                    // Same reasoning as the chain above: `world_debug` wants
+                    // the render mode `setup_lighting` already spawned the Sun
+                    // with, not a live-toggleable one.
+                    .run_if(not(in_state(SceneState::WorldDebug))),
             )
             // Outside both gates on purpose: the Video pane's Shadow Detail
             // row is read from `GameOptions`, not from `EnvironmentSettings`,

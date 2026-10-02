@@ -356,7 +356,7 @@ pub fn spawn_player_camera(
             Transform::from_translation(start),
             Fxaa::default(),
             main_view_render_settings(&config),
-            DepthPrepass,
+            // DepthPrepass,
             PlayerCamera::default(),
             GameCursorCamera::default(),
             // The ear of the game: animation sounds are emitted from their
@@ -383,7 +383,7 @@ pub fn spawn_player_camera(
             PROJECTION,
             Fxaa::default(),
             main_view_render_settings(&config),
-            DepthPrepass,
+            // DepthPrepass,
             DebugCamera,
             GameCursorCamera::default(),
             FreeCamera {
@@ -441,6 +441,79 @@ pub fn spawn_player_camera(
         });
 }
 
+/// Spawn only the free-fly [`DebugCamera`], made active unconditionally (no
+/// [`PlayerCamera`] pairing, so nothing for `switch_camera`/Tab to toggle to
+/// — `switch_camera`'s `Query::single_mut()` on `PlayerCamera` simply finds
+/// none and no-ops, which is correct here). For `SceneState::WorldDebug`:
+/// same render/reflection setup as `spawn_player_camera`'s fly half, minus
+/// the paired follow camera and its position-panel UI, since that scene
+/// wants nothing beyond terrain + a camera.
+pub fn spawn_fly_camera(
+    mut commands: Commands,
+    origin: Res<WorldOrigin>,
+    mut images: ResMut<Assets<Image>>,
+    config: Res<ClientConfig>,
+) {
+    let bloom = &config.graphics.bloom;
+    let start = origin.to_render(SpawnPoints::jangan());
+    let sky_reflections = sky_reflection_env_light(&mut images);
+
+    let fly_camera = commands
+        .spawn((
+            RenderLayers::layer(CameraLayers::Main.into()),
+            Name::from("FlyCamera"),
+            Camera3d::default(),
+            Camera {
+                order: 0,
+                is_active: true,
+                ..default()
+            },
+            Transform::from_translation(Vec3::new(start.x - 2.0, start.y + 2.5, start.z + 5.0))
+                .looking_at(start, Vec3::Y),
+            PROJECTION,
+            Fxaa::default(),
+            main_view_render_settings(&config),
+            // DepthPrepass,
+            DebugCamera,
+            GameCursorCamera::default(),
+            FreeCamera {
+                walk_speed: 50.0,
+                run_speed: 300.0,
+                ..default()
+            },
+            sky_reflections,
+        ))
+        .id();
+    attach_bloom(&mut commands, fly_camera, bloom);
+}
+
+/// Spawn the camera used by the process-level terrain benchmark.
+///
+/// This deliberately carries only the camera controller and the projection
+/// shared by the normal world camera.  Post-processing, reflection probes,
+/// cursor interaction and game-audio listener state belong to the full client,
+/// not to a terrain-rendering floor measurement.
+pub fn spawn_terrain_benchmark_camera(mut commands: Commands, origin: Res<WorldOrigin>) {
+    let start = origin.to_render(SpawnPoints::jangan());
+    commands.spawn((
+        Name::from("Terrain benchmark fly camera"),
+        Camera3d::default(),
+        Camera {
+            is_active: true,
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(start.x - 2.0, start.y + 2.5, start.z + 5.0))
+            .looking_at(start, Vec3::Y),
+        PROJECTION,
+        DebugCamera,
+        FreeCamera {
+            walk_speed: 50.0,
+            run_speed: 300.0,
+            ..default()
+        },
+    ));
+}
+
 /// Spawn the in-game scene's camera: only the third-person follow
 /// [`PlayerCamera`], made active unconditionally (no fly camera, so
 /// `switch_camera` — which is World-only — never toggles it off, regardless of
@@ -473,7 +546,7 @@ pub fn spawn_game_camera(
             Transform::from_translation(start),
             Fxaa::default(),
             main_view_render_settings(&config),
-            DepthPrepass,
+            // DepthPrepass,
             PlayerCamera::default(),
             GameCursorCamera::default(),
             // The ear of the game: animation sounds are emitted from their
@@ -514,7 +587,7 @@ pub fn spawn_cinematic_camera<T>(
             // the intro scenes render harbor water too — the high-quality water's
             // reflection raymarch needs the depth prepass (see the PlayerCamera
             // comment above for the Msaa caveat)
-            DepthPrepass,
+            // DepthPrepass,
             // metal on character-selection equipment reflects the sky probe
             sky_reflection_env_light(&mut images),
         ))
@@ -717,6 +790,21 @@ fn apply_render_scale(
     let logical = window_physical.as_vec2() / window_scale_factor;
 
     if let Some(mut state) = state {
+        // A scene change (intro -> character select -> world) despawns the old
+        // 3D camera and spawns a new one on the window. The blit keeps drawing
+        // the old camera's last frame over it — a frozen view hiding the new
+        // scene — unless the newcomer is taken onto the same image.
+        let late = retarget_window_cameras(
+            world_cameras.iter_mut().map(|(e, target, _)| (e, target)),
+            &state.image,
+            target_scale_factor,
+        );
+        for (entity, _, mut projection) in &mut world_cameras {
+            if late.contains(&entity) {
+                retarget_notify(&mut projection);
+                commands.entity(entity).insert(RenderScaled);
+            }
+        }
         if state.scale == scale
             && state.window_physical == window_physical
             && state.window_scale_factor == window_scale_factor
@@ -1433,6 +1521,58 @@ mod render_scale_tests {
 
         retarget_notify(&mut projection);
         assert!(projection.is_changed());
+    }
+
+    /// A scene change (intro -> character select -> world) replaces the 3D
+    /// camera after the target already exists. The steady-state path used to
+    /// return early, leaving the newcomer on the window underneath a blit still
+    /// showing the despawned camera's last frame: a frozen view with the new
+    /// scene's characters hidden behind it.
+    #[test]
+    fn a_camera_spawned_after_scaling_is_taken_too() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut config = ClientConfig::from_file(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../config.example")
+                .to_str()
+                .unwrap(),
+        )
+        .expect("config.example.yaml matches ClientConfig");
+        config.graphics.render_scale = RenderScale(0.5);
+
+        let mut world = World::new();
+        world.insert_resource(config);
+        world.init_resource::<Assets<Image>>();
+        let window = Window::default();
+        let window_physical = UVec2::new(window.physical_width(), window.physical_height());
+        world.spawn((window, bevy::window::PrimaryWindow));
+        let image = world
+            .resource_mut::<Assets<Image>>()
+            .add(render_scale_image(window_physical / 2, false));
+        let blit = world.spawn_empty().id();
+        world.insert_resource(RenderScaleState {
+            image: image.clone(),
+            blit,
+            window_physical,
+            window_scale_factor: 1.0,
+            scale: 0.5,
+        });
+        let late = world
+            .spawn((
+                Camera3d::default(),
+                RenderTarget::Window(bevy::window::WindowRef::Primary),
+                Projection::default(),
+            ))
+            .id();
+
+        world.run_system_once(apply_render_scale).unwrap();
+
+        match world.get::<RenderTarget>(late).unwrap() {
+            RenderTarget::Image(target) => assert_eq!(target.handle, image),
+            other => panic!("late camera left on {other:?}"),
+        }
+        assert!(world.get::<RenderScaled>(late).is_some());
     }
 
     /// Bloom requires `Hdr`, and an 8-bit target would clip exactly the

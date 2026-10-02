@@ -11,7 +11,11 @@ use bevy::prelude::Name;
 use bevy::prelude::*;
 
 use crate::assets::m::block_mesh::merge_block_meshes;
-use crate::assets::m::block_splat_material::{TerrainBlockSplatMaterial, TerrainLightmapFallback};
+#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+use crate::assets::m::block_splat_material::TerrainGroundTextures;
+use crate::assets::m::block_splat_material::TerrainLightmapFallback;
 use crate::assets::m::{TerrainBlock, WaterType, JMXVMAPM};
 use crate::assets::mfo::JMXVMFO;
 use crate::assets::nvm::JMXVNVM;
@@ -25,6 +29,8 @@ use crate::plugins::world_origin::WorldOrigin;
 use crate::util::mesh::needs_winding_reversal;
 use crate::util::region::RegionIdExt;
 
+#[cfg(feature = "terrain_hand_rolled_pipeline")]
+pub mod render;
 pub mod rendering;
 
 /// World-space size of one terrain region/tile (matches the .m/.o2/.nvm grid step).
@@ -103,6 +109,12 @@ const REGION_BLOCKS_PER_SIDE: i32 = 6;
 
 #[derive(Resource)]
 pub struct TerrainMesh(pub Handle<Mesh>);
+
+/// Marks the process-level terrain benchmark.  It keeps the exact terrain
+/// mesh and splat-material construction path, but skips child entities used
+/// only by the full client (picking/debug metadata and water surfaces).
+#[derive(Resource, Default)]
+pub struct TerrainOnlyBenchmark;
 
 /// Default/high graphics tier — see `water_hq_material.rs` for what it adds over plain
 /// transmissive glass. Plain water/ice surfaces otherwise use a flat `StandardMaterial`
@@ -454,18 +466,21 @@ pub fn load_terrain_system(
     )>,
     camera_query: Query<(&Transform, &Camera), (With<Camera3d>, Without<Terrain>)>,
     asset_server: Res<AssetServer>,
-    _terrain_mesh: Res<TerrainMesh>,
+    terrain_mesh: Option<Res<TerrainMesh>>,
     map_mesh_assets: Res<Assets<JMXVMAPM>>,
     lightmap_assets: Res<Assets<JMXVMAPT>>,
     lightmap_fallback: Res<TerrainLightmapFallback>,
     mut image_assets: ResMut<Assets<Image>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
-    mut terrain_block_material_assets: ResMut<Assets<TerrainBlockSplatMaterial>>,
+    #[cfg(not(feature = "terrain_hand_rolled_pipeline"))] mut terrain_block_material_assets: ResMut<
+        Assets<TerrainBlockSplatMaterial>,
+    >,
     // Exactly one water tier is inserted by `setup_terrain_mesh` (`graphics.water.quality`),
     // so both are optional and the spawn below picks whichever is present.
     water_material: Option<Res<WaterNormalMaterial>>,
     water_low_material: Option<Res<WaterLowMaterial>>,
-    ice_material: Res<WaterIceMaterial>,
+    ice_material: Option<Res<WaterIceMaterial>>,
+    terrain_only: Option<Res<TerrainOnlyBenchmark>>,
 ) {
     // No tile-index gate here any more: ground textures are resolved once, globally, by
     // `build_tile_atlas`, and a region's bind group simply retries until that atlas exists.
@@ -578,28 +593,39 @@ pub fn load_terrain_system(
                 needs_winding_reversal(&group_transform.to_matrix()),
             );
             let mesh = mesh_assets.add(mesh);
-            let material = TerrainBlockSplatMaterial::from(
-                &group_blocks,
-                lightmap
-                    .clone()
-                    .unwrap_or_else(|| lightmap_fallback.0.clone()),
-                &mut image_assets,
-            );
-            let material = terrain_block_material_assets.add(material);
             let group_aabb = merged_group_aabb(&group_blocks);
+            let region_lightmap = lightmap
+                .clone()
+                .unwrap_or_else(|| lightmap_fallback.0.clone());
 
             let Ok(mut entity) = commands.get_entity(terrain_entity) else {
                 continue;
             };
+            #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+            let ground_material = {
+                let material = TerrainBlockSplatMaterial::from(
+                    &group_blocks,
+                    region_lightmap,
+                    &mut image_assets,
+                );
+                MeshMaterial3d(terrain_block_material_assets.add(material))
+            };
+            #[cfg(feature = "terrain_hand_rolled_pipeline")]
+            let ground_material =
+                TerrainGroundTextures::from(&group_blocks, region_lightmap, &mut image_assets);
             entity.with_children(|terrain_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| {
-                terrain_entity.spawn((
+                let mut group_entity = terrain_entity.spawn((
                     Mesh3d(mesh),
-                    MeshMaterial3d(material),
+                    ground_material,
                     group_transform,
                     Visibility::default(),
                     group_aabb,
                     Name::from(format!("Ground group {}x{} ({})", gx, gz, terrain_name.as_str())),
-                )).with_children(|group_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| {
+                ));
+                if terrain_only.is_some() {
+                    return;
+                }
+                group_entity.with_children(|group_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| {
                     for (block, dx, dz) in &group_blocks {
                         group_entity.spawn((
                             Transform::from_xyz(*dx, 0.0, *dz),
@@ -620,9 +646,9 @@ pub fn load_terrain_system(
                                 // carries, so the mesh/transform/name are shared and only the
                                 // `MeshMaterial3d` component type changes.
                                 match (&water_material, &water_low_material) {
-                                    (Some(hq), _) => {
+                                    (Some(hq), _) if terrain_mesh.is_some() => {
                                         block_entity.spawn((
-                                            Mesh3d(_terrain_mesh.0.clone()),
+                                            Mesh3d(terrain_mesh.as_ref().unwrap().0.clone()),
                                             MeshMaterial3d(hq.0.clone()),
                                             transform,
                                             Visibility::default(),
@@ -630,9 +656,9 @@ pub fn load_terrain_system(
                                             name,
                                         ));
                                     }
-                                    (None, Some(low)) => {
+                                    (None, Some(low)) if terrain_mesh.is_some() => {
                                         block_entity.spawn((
-                                            Mesh3d(_terrain_mesh.0.clone()),
+                                            Mesh3d(terrain_mesh.as_ref().unwrap().0.clone()),
                                             MeshMaterial3d(low.0.clone()),
                                             transform,
                                             Visibility::default(),
@@ -641,12 +667,13 @@ pub fn load_terrain_system(
                                         ));
                                     }
                                     (None, None) => {}
+                                    _ => {}
                                 }
                             }
-                            WaterType::Ice(height) => {
+                            WaterType::Ice(height) if terrain_mesh.is_some() && ice_material.is_some() => {
                                 block_entity.spawn((
-                                    Mesh3d(_terrain_mesh.0.clone()),
-                                    MeshMaterial3d(ice_material.0.clone()),
+                                    Mesh3d(terrain_mesh.as_ref().unwrap().0.clone()),
+                                    MeshMaterial3d(ice_material.as_ref().unwrap().0.clone()),
                                     Transform::from_xyz(320.0, *height, 320.0)
                                         .with_scale(Vec3::new(-1.0, 1.0, -1.0)),
                                     Visibility::default(),
@@ -654,6 +681,7 @@ pub fn load_terrain_system(
                                     Name::from(format!("Ice {}x{} ({})", block.x, block.z, terrain_name.as_str())),
                                 ));
                             }
+                            WaterType::Ice(_) => {}
                         });
                     }
                 });

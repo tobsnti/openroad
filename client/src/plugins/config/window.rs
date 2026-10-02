@@ -59,6 +59,13 @@ impl WindowModeConfig {
 /// the only way to know which mode is live is to compare behaviour: at 75 Hz,
 /// `fifo` caps the frame at 13.33 ms and `immediate` does not.
 ///
+/// The backend matters here too, not just the mode: on Windows, Vulkan has an
+/// open frame-pacing/input-latency bug specific to vsync-based present modes
+/// that DX12 does not share, fixed by switching backend or to `AutoNoVsync`
+/// ([bevyengine/bevy#18898](https://github.com/bevyengine/bevy/issues/18898)).
+/// `client/src/plugins/diagnostics.rs`'s `setup` logs the actual backend in use
+/// (`RenderAdapterInfo`) at startup for exactly this reason.
+///
 /// Live-reconfigurable: bevy rebuilds the surface when this changes, so it can
 /// be swept without a restart (unlike [`WindowSettings::max_frame_latency`]).
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
