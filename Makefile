@@ -5,7 +5,7 @@
 
 .PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data deny ci clean
 .PHONY: pk2 pk2-list pk2-unpack list unpack bsr2glb
-.PHONY: perf snapshot sample fps get set attribute
+.PHONY: perf snapshot sample fps get set attribute brp-dev
 .PHONY: profile chrome tracy summary windows
 .PHONY: cutscene convert
 
@@ -81,6 +81,7 @@ help:
 	@echo "  perf fps        Print settled avg fps/frame time (SECS=3)"
 	@echo "  perf get/set    Read / set RenderDebugSettings (FIELD=render_effects VALUE=false)"
 	@echo "  perf attribute  Per-subsystem frame-cost table via off/on toggles (SECS=3)"
+	@echo "  brp-dev         Drive the running client over BRP (ARGS='screenshot --out shot.png')"
 	@echo "  profile chrome  Run with chrome-trace instrumentation (writes trace-<nanos>.json)"
 	@echo "  profile windows Cross-compile a chrome-trace client.exe (the one to use on WSL)"
 	@echo "  profile tracy   Run with Tracy instrumentation (live CPU + GPU zones)"
@@ -399,6 +400,11 @@ perf:
 
 snapshot sample fps get set attribute:
 	@:
+
+# BRP developer tooling against a running client: screenshot, input,
+# resources, queries, shutdown. Measurement stays in `make perf`.
+brp-dev:
+	@cargo run -q -p tools --bin brp_dev -- $(ARGS)
 
 # Per-system CPU profiling (docs/perf-remote.md). The feature is a build flag
 # rather than a commented-out line in client/Cargo.toml, so profiling never
