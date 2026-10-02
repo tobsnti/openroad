@@ -258,6 +258,13 @@ fn main() {
                     .with_method_main(
                         "openroad/packet_tail",
                         plugins::net::packet_tap::brp_packet_tail,
+                    )
+                    // One hand-built frame to the agent server. It goes through
+                    // the normal outbound queue, so every server-side check
+                    // still applies; the two login opcodes are refused.
+                    .with_method_main(
+                        "openroad/packet_send",
+                        plugins::net::packet_send::brp_packet_send,
                     ),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
