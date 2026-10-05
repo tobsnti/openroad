@@ -638,6 +638,13 @@ fn on_slot_click(
         return;
     };
     close_context_menus(&mut commands, &roots, &mut owner);
+    // Claim the popup. `close_context_menus` resets the arbiter to `None`, and
+    // `pick_quick_party_menu_row` only runs while *this* board owns it — so
+    // without this line the menu spawned but no pick ever fired, and the two
+    // wire verbs behind it (`0x7063` banish, `0x7061` leave) were unreachable
+    // from the board. The roster window's own menu sets its owner the same way
+    // (`party/ui.rs`).
+    *owner = ContextMenuOwner::QuickParty;
     state.context_member = row.member_id;
 
     // Kicking is the leader's privilege, and we can tell whether that is us:
