@@ -29,7 +29,7 @@ pub type SroNewInterface = JMXV2DT;
 /// to or re-based on its parent — 9 of the 42 files place at least one child at
 /// an x or y smaller than their root's. Local layout is `child.xy - root.xy`,
 /// which is a no-op for the roots authored at `(0,0)` and only those. See
-/// `docs/formats/2dt-newinterface.md`.
+/// `docs/formats/newinterface-2dt.md`.
 const ENTRY_SIZE: usize = 976;
 
 impl JMXV2DT {

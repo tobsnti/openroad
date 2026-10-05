@@ -39,7 +39,7 @@ enum ChardataFields {
     // RefObjCommon DescStrID128. On growth-pet ladder rows this holds the *next*
     // stage's code name (`COS_P_WOLF_001` → `COS_P_WOLF_002`, `xxx` at the top) —
     // the chain the 0x30C9 ModelChanged update walks. See
-    // docs/re/gamedata/textdata-characterdata.md §3.
+    // docs/formats/textdata-characterdata.md §3.
     DescStrId128 = 6,
     // TypeID1..4 (RefObjCommon schema, shared with itemdata): the character
     // family and its subtype. TID1 == 1 is the bionic/character family.
@@ -51,7 +51,7 @@ enum ChardataFields {
     Rarity = 15,
     // RefObjChar Speed1/Speed2: walk/run speed in world units per second
     // (players are 16/50; COS_C mounts run 90-150, COS_T transports 36-50).
-    // Column numbers per docs/re/gamedata/textdata-characterdata.md §3
+    // Column numbers per docs/formats/textdata-characterdata.md §3
     // (SR_Db2Media/Settings.cs:43-51).
     Speed1 = 46,
     Speed2 = 47,
@@ -67,7 +67,7 @@ enum ChardataFields {
     ResourcePath = 52,
     // RefObjCommon AssocFileIcon_128 — the object's own 32x32 UI icon, the
     // third of the `52-56 AssocFile{Obj,Drop,Icon,1,2}_128` run
-    // (docs/re/gamedata/textdata-characterdata.md §3, SR_Db2Media/Settings.cs).
+    // (docs/formats/textdata-characterdata.md §3, SR_Db2Media/Settings.cs).
     // Corpus-checked against the user's Media.pk2: 5,579 of the 5,587 COS rows
     // (TID 1/2/3/*) carry one, e.g. ref 6106 `COS_P_WOLF_001` ->
     // `cos\cos_p_wolf_01.ddj`. This is the only per-COS icon source there is —
@@ -90,7 +90,7 @@ enum ChardataFields {
     CanControl = 67,
     // RefObjChar Knockdown / KO_RecoverTime. These map 1:1 onto go-sro
     // `model/ref_char.go:13-36` (`… ExpToGive, Knockdown, KORecoveryTime, …`),
-    // per docs/re/gamedata/textdata-characterdata.md §3.
+    // per docs/formats/textdata-characterdata.md §3.
     //
     // Read for the knockdown animation's prone dwell: the wire says a hit
     // knocked its target down (the displacement arms of 0xB070/0xB071) but
@@ -256,7 +256,7 @@ impl CharacterDataRow {
     /// missing, zero, or reads as something other than a duration.
     ///
     /// **The column's unit is `[U]`.** It maps 1:1 onto go-sro's
-    /// `KORecoveryTime`, but `docs/re/gamedata/textdata-characterdata.md` calls
+    /// `KORecoveryTime`, but `docs/formats/textdata-characterdata.md` calls
     /// it a "knockdown flag" and no census of its values exists, so this cannot
     /// simply be trusted as milliseconds. Two guards make a wrong guess
     /// harmless rather than absurd:
