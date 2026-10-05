@@ -14,13 +14,19 @@ use bevy::prelude::*;
 /// Lift debug lines slightly above the terrain so they don't z-fight with it.
 const LINE_LIFT: f32 = 1.0;
 /// The three terrain layers draw the *same* lines: an internal edge is a quad
-/// cell's border, and a global edge is a cell border on a region seam. Drawn at
-/// one height they fight for the same pixels (#11), so each layer gets its own,
-/// in the order they should win: cells below, internal edges over them, global
+/// cell's border, and a global edge is a cell border on a region seam. Coplanar
+/// lines fight for the same pixels (#11), so each layer gets its own height, in
+/// the order they should win: cells below, internal edges over them, global
 /// edges on top.
+///
+/// The step is 1 cm because that is the smallest offset that is both reliably
+/// resolvable and invisible: Bevy's reverse-Z f32 depth separates far less than
+/// a centimetre at the distances this view is read at, while a quad cell is
+/// ~10 m across, so a centimetre does not read as a floating line. Larger
+/// steps do — a decimetre already lifts the yellow seam off the ground.
 const CELL_LIFT: f32 = LINE_LIFT;
-const INTERNAL_EDGE_LIFT: f32 = LINE_LIFT + 0.5;
-const GLOBAL_EDGE_LIFT: f32 = LINE_LIFT + 1.0;
+const INTERNAL_EDGE_LIFT: f32 = LINE_LIFT + 0.01;
+const GLOBAL_EDGE_LIFT: f32 = LINE_LIFT + 0.02;
 /// Max world-space length of one polyline segment; longer nav lines are subdivided
 /// at this step so they follow the terrain instead of clipping through hills.
 const SEGMENT_STEP: f32 = 40.0;
@@ -68,8 +74,7 @@ const PROBE_OVERSHOOT: f32 = 5.0;
 /// Yellow is the global edge here because that is what yellow already means in
 /// this file for objects ([`GLOBAL_EDGE_COLOR`]); the two views disagreed.
 pub fn draw_debug_lines_for_nav_mesh(
-    mut settings: ResMut<RenderDebugSettings>,
-    keys: Res<ButtonInput<KeyCode>>,
+    settings: Res<RenderDebugSettings>,
     mut gizmos: Gizmos,
     // InheritedVisibility, not ViewVisibility: a region root carries no mesh of
     // its own (its merge groups are children), so the render-side visibility
@@ -78,11 +83,10 @@ pub fn draw_debug_lines_for_nav_mesh(
     navmesh_query: Query<(&TerrainNavMeshData, &InheritedVisibility, &GlobalTransform)>,
     nav_meshes: Res<Assets<JMXVNVM>>,
 ) {
-    if keys.just_pressed(KeyCode::KeyT) {
-        let render_navmesh = !settings.render_navmesh;
-        settings.render_navmesh = render_navmesh;
-    }
-
+    // No hotkey here: `T` is read per frame by `dev/lighting.rs` (it adds
+    // illuminance while held), so a shared letter would move the sun every time
+    // someone toggled this view. The switch lives in the render-debug panel,
+    // which is where the other two nav views are switched as well.
     if !settings.render_navmesh {
         return;
     }

@@ -17,7 +17,6 @@ use crate::plugins::effects::{
     EffectsEnabled, LeafEmitPolicy,
 };
 use crate::plugins::map::terrain::rendering;
-use bevy::pbr::MeshMaterial3d;
 
 /// The effect-runtime knobs `on_settings_changed` drives, bundled to stay
 /// under the system-parameter arity limit.
@@ -355,9 +354,15 @@ fn on_water_settings_changed(
 /// keep streaming in while the switch is on. A mesh that arrives later has to
 /// be marked when it arrives, or the view keeps holes that look like the bug
 /// this replaces.
+#[allow(clippy::too_many_arguments)]
 fn on_object_wireframe(
     settings: Res<RenderDebugSettings>,
     mut commands: Commands,
+    // Last values this system actually applied, in the `AppliedToggles` spirit
+    // below: the panel rewrites the resource on every frame a slider is held,
+    // so `is_changed()` alone would walk every map object's subtree per frame
+    // (`docs/settings-live-apply.md` — an expensive apply diffs first).
+    mut applied: Local<Option<(bool, Color)>>,
     objects: Query<Entity, With<MapObject>>,
     new_meshes: Query<Entity, Added<Mesh3d>>,
     children: Query<&Children>,
@@ -365,9 +370,11 @@ fn on_object_wireframe(
     is_object: Query<(), With<MapObject>>,
     is_mesh: Query<(), With<Mesh3d>>,
 ) {
-    // Whole-world pass whenever a setting moved — including the colour, which
-    // is written even while the switch is off so flipping it on uses it.
-    if settings.is_changed() {
+    // Whole-world pass only when the switch or the colour really moved — the
+    // colour counts while the switch is off too, so flipping it on uses it.
+    let wanted = (settings.object_wireframe, settings.object_wireframe_color);
+    if *applied != Some(wanted) {
+        *applied = Some(wanted);
         for object in objects.iter() {
             for entity in children.iter_descendants(object) {
                 if !is_mesh.contains(entity) {
