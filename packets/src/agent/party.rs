@@ -277,10 +277,22 @@ impl PartyData {
 pub struct PartyUpdate {
     /// 1 dismissed · 2 joined · 3 left/kicked · 6 member update · 9 new master.
     pub update_type: u8,
+    /// Type 1's tail. Captured value is 11 in both frames we have; what it
+    /// selects is **[U]**. Read and reported rather than dropped, so the next
+    /// capture that shows a second value says so instead of being invisible.
+    #[sro_packet(when = "update_type == 1")]
+    pub dismiss_reason: Option<u16>,
     #[sro_packet(when = "update_type == 2")]
     pub joined: Option<PartyMemberCore>,
     #[sro_packet(when = "update_type == 3 || update_type == 6")]
     pub member_id: Option<u32>,
+    /// Type 3's tail, one byte. Captured as `0x01` in one departure and `0x02`
+    /// in another; **[U]** which is "left" and which is "kicked". What it is
+    /// *not* is an observer-relative "it was you" flag: both departures carry
+    /// the same byte to every observer, including the leaving player's own
+    /// session (three logs, timestamps within 10 ms).
+    #[sro_packet(when = "update_type == 3")]
+    pub removal_code: Option<u8>,
     /// Type 6's payload is the **same** mask record as everything else in this
     /// family — the original calls `FUN_00883620` here too. It used to be its
     /// own `PartyMemberUpdate` type testing `kind` for equality, which read
@@ -863,15 +875,48 @@ mod tests {
         assert!(decoded.member_update.is_none());
     }
 
-    /// Type 3 carries only the leaving member's id; type 6 adds the *same* mask
+    /// The real `0x3864` tails, from captured frames. Both used to be dropped:
+    /// type 1 read nothing after the type byte, and type 3 stopped after the id.
+    #[test]
+    fn the_update_tails_decode_and_survive_re_encoding() {
+        // 01 0b00 — the dismiss notice, tail 11 (meaning [U]).
+        let wire = Bytes::from_static(&[0x01, 0x0b, 0x00]);
+        let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded.update_type, 1);
+        assert_eq!(decoded.dismiss_reason, Some(11));
+        assert_eq!(decoded.member_id, None);
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire, "a dropped tail would shorten the frame");
+
+        // 03 05000000 01 and 03 04000000 02 — two captured departures, two
+        // different trailing bytes for the same update type.
+        for (body, id, code) in [
+            ([0x03, 0x05, 0x00, 0x00, 0x00, 0x01], 5u32, 1u8),
+            ([0x03, 0x04, 0x00, 0x00, 0x00, 0x02], 4, 2),
+        ] {
+            let wire = Bytes::from(body.to_vec());
+            let decoded = PartyUpdate::try_from(wire.clone()).unwrap();
+            assert_eq!(decoded.update_type, 3);
+            assert_eq!(decoded.member_id, Some(id));
+            assert_eq!(decoded.removal_code, Some(code));
+            let back: Bytes = decoded.into();
+            assert_eq!(back, wire);
+        }
+    }
+
+    /// Type 3 carries the leaving member's id and one trailing code byte; type 6
+    /// adds the *same* mask
     /// record every other party opcode uses — and no `unk_byte07`, a byte the
     /// original's reader never reads.
     #[test]
     fn party_update_reads_the_payload_its_type_selects() {
         let mut body: Vec<u8> = vec![3];
         body.extend(0xABCDu32.to_le_bytes());
+        body.push(0x02); // the trailing code byte — all five captured type 3
+                         // frames carry it
         let decoded = PartyUpdate::try_from(Bytes::from(body)).unwrap();
         assert_eq!(decoded.member_id, Some(0xABCD));
+        assert_eq!(decoded.removal_code, Some(0x02));
         assert!(decoded.member_update.is_none());
 
         let mut body: Vec<u8> = vec![6];
