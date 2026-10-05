@@ -389,7 +389,7 @@ packets! {
     0xB06B => PartyMatchDeleteResponse,
     0xB06C => PartyMatchListResponse,
     // The family remainder (#760): four of the five the seed never carried.
-    // 0xB067 stays unwired — its body is recorded nowhere (docs/net-party.md).
+    0xB067 => PartyJoinResponse,
     0x3068 => PartyDistribution,
     0xB060 => PartyCreateResponse,
     0xB062 => PartyInviteResponse,

@@ -35,8 +35,8 @@ use bevy::prelude::*;
 
 use packets::agent::ingame::PartyInviteRequest;
 use packets::agent::party::{
-    PartyCreateResponse, PartyCreationRequest, PartyData, PartyInviteResponse, PartyKickRequest,
-    PartyLeave, PartyMemberCore, PartySetup, PartyUpdate,
+    PartyCreateResponse, PartyCreationRequest, PartyData, PartyInviteResponse, PartyJoinResponse,
+    PartyKickRequest, PartyLeave, PartyMemberCore, PartySetup, PartyUpdate,
 };
 use packets::Packet;
 
@@ -58,6 +58,10 @@ pub struct PartyRoster {
     /// Every member the server listed, in wire order. The local player is one
     /// of them — 0x3065 sends the full party, not "the others".
     pub members: Vec<PartyMemberCore>,
+    /// Our own JID, as the join ack (`0xB067`) reports it. `None` until we have
+    /// joined a party once this session; the roster then uses it to tell "I
+    /// left" from "somebody else left", which `0x3864` type 3 does not say.
+    pub own_join_id: Option<u32>,
 }
 
 impl PartyRoster {
@@ -88,7 +92,8 @@ impl PartyRoster {
             .find(|m| m.member_id == Some(member_id))
     }
 
-    /// Clear everything — the party is gone.
+    /// Clear everything — the party is gone. `own_join_id` survives: it names
+    /// the player in this world session, not in this party.
     fn dismiss(&mut self) {
         self.members.clear();
         self.setup = PartySetup::default();
@@ -126,10 +131,19 @@ impl PartyRoster {
                     self.upsert(joined);
                 }
             }
-            // 3 — member left or was kicked.
+            // 3 — member left or was kicked. When the id is *ours*, the party
+            // is over for us: the server sends the same type 3 either way, so
+            // dropping ourselves from the roster would leave `is_active()`
+            // true, and `send_party_actions` reads exactly that to choose
+            // `0x7060` create over `0x7062` invite. The next invitation would
+            // go out as the wrong packet.
             3 => {
                 if let Some(member_id) = update.member_id {
-                    self.members.retain(|m| m.member_id != Some(member_id));
+                    if self.own_join_id == Some(member_id) {
+                        self.dismiss();
+                    } else {
+                        self.members.retain(|m| m.member_id != Some(member_id));
+                    }
                 }
             }
             // 6 — some member fields changed. The id is in the envelope, not in
@@ -366,6 +380,29 @@ pub fn on_party_create_response(
     }
 }
 
+/// 0xB067 — ack for our own 0x3080 "accept". Success carries our own JID, and
+/// that is the whole point of reading it: every later `0x3864` delta names
+/// members by JID, so without this the roster cannot tell our own departure
+/// from somebody else's.
+pub fn on_party_join_response(
+    mut reader: MessageReader<PartyJoinResponse>,
+    mut roster: ResMut<PartyRoster>,
+    mut history: Option<ResMut<ChatHistory>>,
+) {
+    for msg in reader.read() {
+        info!(
+            "party: 0xB067 join ack result={} own_join_id={:?} error={:?}",
+            msg.result, msg.own_join_id, msg.error_code
+        );
+        if let Some(own) = msg.own_join_id {
+            roster.own_join_id = Some(own);
+        }
+        if let Some(text) = ack_feedback("joining", msg.result, msg.error_code) {
+            report_ack(&mut history, text);
+        }
+    }
+}
+
 /// 0xB062 — ack for our own 0x7062.
 pub fn on_party_invite_response(
     mut reader: MessageReader<PartyInviteResponse>,
@@ -397,6 +434,7 @@ impl Plugin for PartyPlugin {
                     on_party_data,
                     on_party_update,
                     on_party_create_response,
+                    on_party_join_response,
                     on_party_invite_response,
                     send_party_actions,
                 )
@@ -510,6 +548,69 @@ pub(crate) mod tests {
         assert_eq!(roster.members.len(), 2);
         assert!(roster.is_leader(2));
         assert_eq!(roster.capacity(), 4, "EXP sharing was switched off");
+    }
+
+    /// The defect this slice is about: the server sends the *same* type 3 for
+    /// "you left" as for "somebody else left". Without knowing our own JID the
+    /// roster kept itself alive, `is_active()` stayed true, and the next
+    /// invitation would have gone out as `0x7062` instead of `0x7060`.
+    #[test]
+    fn leaving_the_party_myself_clears_the_roster() {
+        let mut roster = PartyRoster::default();
+        roster.own_join_id = Some(4);
+        roster.apply_data(&party_data(vec![
+            core(4, "Me", 25000),
+            core(2, "Bob", 25000),
+        ]));
+        assert!(roster.is_active());
+
+        // Somebody else leaving only prunes that member.
+        roster.apply_update(&PartyUpdate {
+            update_type: 3,
+            joined: None,
+            member_id: Some(2),
+            member_update: None,
+        });
+        assert!(roster.is_active(), "the party outlives another member");
+        assert_eq!(roster.members.len(), 1);
+
+        // Our own id in the same update type ends the party.
+        roster.apply_update(&PartyUpdate {
+            update_type: 3,
+            joined: None,
+            member_id: Some(4),
+            member_update: None,
+        });
+        assert!(
+            !roster.is_active(),
+            "we left — there is no party left to be in"
+        );
+        assert_eq!(roster.party_number, 0);
+        assert_eq!(roster.master_join_id, None);
+        assert_eq!(
+            roster.own_join_id,
+            Some(4),
+            "our JID belongs to the session, not to the party"
+        );
+    }
+
+    /// Counter-test: with no JID known, type 3 for any id must stay the old,
+    /// cautious behaviour — prune the member, keep the party.
+    #[test]
+    fn without_our_own_jid_a_departure_only_prunes() {
+        let mut roster = PartyRoster::default();
+        roster.apply_data(&party_data(vec![
+            core(4, "Me", 25000),
+            core(2, "Bob", 25000),
+        ]));
+        roster.apply_update(&PartyUpdate {
+            update_type: 3,
+            joined: None,
+            member_id: Some(4),
+            member_update: None,
+        });
+        assert!(roster.is_active());
+        assert_eq!(roster.members.len(), 1);
     }
 
     #[test]
@@ -700,9 +801,18 @@ pub(crate) mod tests {
     #[test]
     fn the_ack_systems_run_without_a_hud() {
         let mut app = App::new();
-        app.add_message::<PartyCreateResponse>()
+        app.init_resource::<PartyRoster>()
+            .add_message::<PartyCreateResponse>()
+            .add_message::<PartyJoinResponse>()
             .add_message::<PartyInviteResponse>()
-            .add_systems(Update, (on_party_create_response, on_party_invite_response));
+            .add_systems(
+                Update,
+                (
+                    on_party_create_response,
+                    on_party_join_response,
+                    on_party_invite_response,
+                ),
+            );
         assert!(
             !app.world().contains_resource::<ChatHistory>(),
             "this test is only meaningful without the HUD resource"
@@ -717,6 +827,11 @@ pub(crate) mod tests {
         app.world_mut().write_message(PartyInviteResponse {
             result: 2,
             error_code: Some(11276),
+        });
+        app.world_mut().write_message(PartyJoinResponse {
+            result: 2,
+            own_join_id: None,
+            error_code: Some(11280),
         });
         app.update();
     }

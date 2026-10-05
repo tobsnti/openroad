@@ -552,6 +552,24 @@ pub struct PartyInviteResponse {
     pub error_code: Option<u16>,
 }
 
+/// 0xB067 — ack for `0x3080` "I accept the invitation".
+///
+/// Same shape as `0xB060`, and for the same reason: `result` is a raw byte with
+/// two tails. The success tail is the **local player's own JID** — measured, in
+/// two independent sessions, as the id that every later `0x3864` delta uses for
+/// this client (bodies `01 04000000` and `01 05000000` from two accounts, and
+/// `02 102c` = error 11280 for the failure tail). That id is what the client
+/// otherwise has no way to learn, which is why the roster falls back to
+/// comparing names.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct PartyJoinResponse {
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
+    pub own_join_id: Option<u32>,
+    #[sro_packet(when = "result != 1")]
+    pub error_code: Option<u16>,
+}
+
 /// 0xB06D — ack for `0x706D` party-match join.
 ///
 /// Note the two tails are **both** `u16` and mean different things: on success
@@ -993,6 +1011,28 @@ mod tests {
     }
 
     /// 0xB062's success case is empty on purpose: the invitation itself is the
+    /// The two captured `0xB067` bodies, through the real type. Success carries
+    /// our own JID (`01 04000000`, and `01 05000000` from a second account);
+    /// failure carries a `u16` error code (`02 102c` = 11280).
+    #[test]
+    fn the_join_ack_carries_our_own_join_id() {
+        let decoded =
+            PartyJoinResponse::try_from(Bytes::from_static(&[1, 0x04, 0x00, 0x00, 0x00])).unwrap();
+        assert_eq!(decoded.result, 1);
+        assert_eq!(decoded.own_join_id, Some(4));
+        assert_eq!(decoded.error_code, None);
+
+        let wire = Bytes::from_static(&[2, 0x10, 0x2C]);
+        let decoded = PartyJoinResponse::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded.own_join_id, None);
+        assert_eq!(decoded.error_code, Some(11280));
+
+        // Re-encode: the tail must survive, or an error would be answered with
+        // a truncated frame.
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
     /// separate 0x3080 popup.
     #[test]
     fn the_invite_ack_is_empty_on_success() {
