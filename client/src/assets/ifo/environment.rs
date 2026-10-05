@@ -127,7 +127,7 @@ pub struct Environment {
     /// Also the tree depth.
     pub int0: i32,
     /// Depth for 68 nodes, but depth+1 for exactly 10 named leaves (Jangan,
-    /// Donwhang village, …). UNKNOWN (docs/re/formats/envi-jmxvenvi.md §9).
+    /// Donwhang village, …). UNKNOWN (docs/formats/envi-jmxvenvi.md §9).
     pub int1: i32,
 
     pub children: Vec<Environment>,
