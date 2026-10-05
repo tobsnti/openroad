@@ -15,3 +15,14 @@ pub const ENTRIES_PER_BLOCK: usize = BLOCK_SIZE / ENTRY_SIZE;
 /// archives' longest chain is far below this; it exists so a hostile or
 /// corrupt `next_chain` cannot spin forever even when every offset is unique.
 pub const MAX_CHAIN_BLOCKS: usize = 4096;
+/// Hard cap on how deep the directory tree may nest. `MAX_CHAIN_BLOCKS` cannot
+/// stand in for this: it counts blocks, while every level of nesting is a new
+/// stack frame, so a tree of unique offsets overflows the stack long before the
+/// block count is reached.
+///
+/// 64 is an order of magnitude above every archive we can measure: listing the
+/// shipped archives gives a deepest path of **4** levels in `Media.pk2`
+/// (19 821 entries) and **7** in `Data.pk2` (66 689 entries). A second,
+/// unrelated data set measures the same 4. So the cap cannot be reached by real
+/// data, and a hostile archive hits it 60 levels before the stack is in danger.
+pub const MAX_DIR_DEPTH: usize = 64;
