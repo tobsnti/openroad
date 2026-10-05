@@ -567,6 +567,8 @@ pub(crate) mod tests {
         // Somebody else leaving only prunes that member.
         roster.apply_update(&PartyUpdate {
             update_type: 3,
+            dismiss_reason: None,
+            removal_code: Some(0x02),
             joined: None,
             member_id: Some(2),
             member_update: None,
@@ -577,6 +579,8 @@ pub(crate) mod tests {
         // Our own id in the same update type ends the party.
         roster.apply_update(&PartyUpdate {
             update_type: 3,
+            dismiss_reason: None,
+            removal_code: Some(0x02),
             joined: None,
             member_id: Some(4),
             member_update: None,
@@ -605,6 +609,8 @@ pub(crate) mod tests {
         ]));
         roster.apply_update(&PartyUpdate {
             update_type: 3,
+            dismiss_reason: None,
+            removal_code: Some(0x02),
             joined: None,
             member_id: Some(4),
             member_update: None,
@@ -631,6 +637,8 @@ pub(crate) mod tests {
         // type 2 — joined.
         roster.apply_update(&PartyUpdate {
             update_type: 2,
+            dismiss_reason: None,
+            removal_code: None,
             joined: Some(core(2, "Bob", 25000)),
             member_id: None,
             member_update: None,
@@ -640,6 +648,8 @@ pub(crate) mod tests {
         // type 6 — a level-only delta.
         roster.apply_update(&PartyUpdate {
             update_type: 6,
+            dismiss_reason: None,
+            removal_code: None,
             joined: None,
             member_id: Some(2),
             member_update: Some(delta(PartyMemberMask::LEVEL, |r| r.level = Some(42))),
@@ -649,6 +659,8 @@ pub(crate) mod tests {
         // type 3 — left/kicked.
         roster.apply_update(&PartyUpdate {
             update_type: 3,
+            dismiss_reason: None,
+            removal_code: Some(0x02),
             joined: None,
             member_id: Some(2),
             member_update: None,
@@ -658,6 +670,8 @@ pub(crate) mod tests {
         // An unknown update type must not touch the roster.
         roster.apply_update(&PartyUpdate {
             update_type: 9,
+            dismiss_reason: None,
+            removal_code: None,
             joined: None,
             member_id: None,
             member_update: None,
@@ -667,6 +681,8 @@ pub(crate) mod tests {
         // type 1 — dismissed.
         roster.apply_update(&PartyUpdate {
             update_type: 1,
+            dismiss_reason: Some(11),
+            removal_code: None,
             joined: None,
             member_id: None,
             member_update: None,
@@ -688,6 +704,8 @@ pub(crate) mod tests {
 
         roster.apply_update(&PartyUpdate {
             update_type: 6,
+            dismiss_reason: None,
+            removal_code: None,
             joined: None,
             member_id: Some(1),
             member_update: Some(delta(PartyMemberMask::HP_MP, |r| r.hp_mp = Some(0x12))),
@@ -712,6 +730,8 @@ pub(crate) mod tests {
 
         roster.apply_update(&PartyUpdate {
             update_type: 6,
+            dismiss_reason: None,
+            removal_code: None,
             joined: None,
             member_id: Some(1),
             member_update: Some(delta(PartyMemberMask::POSITION, |r| {
