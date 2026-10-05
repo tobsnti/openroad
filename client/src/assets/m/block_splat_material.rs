@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 use bevy::asset::{Assets, RenderAssetUsages};
 use bevy::prelude::{
-    error, info, not, resource_exists, warn, App, AssetServer, Commands, Component, DetectChanges,
-    Handle, Image, IntoScheduleConfigs, Plugin, PreUpdate, Res, ResMut, Resource, Startup, Update,
+    error, info, not, resource_exists, warn, App, AssetServer, Commands, DetectChanges, Handle,
+    Image, IntoScheduleConfigs, Plugin, PreUpdate, Res, ResMut, Resource, Startup, Update,
 };
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_resource::{
