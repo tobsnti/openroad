@@ -372,19 +372,20 @@ captured body length. Details:
 |---|---|---|---|---|
 | `0x385F` | SiegeUpdate | S→C | experimental | sub 0 fortress list (capture-verified), sub 0x34 application-period end, everything else raw |
 
-## Party (wire only — no consumer yet, see EP-14 #96)
+## Party (wired — EP-14 #96)
 
-Spec-derived from the original client's parser/builder cross-checked against
-go-sro; **no `packet_dump/` sample exists for any of them**, so all are
-`experimental`. Byte layouts, per-field [V]/[S]/[U] tags and the resolving
-capture for each unknown: ; the
-family's remainder ledger (what the 171-entry seed never saw, and why `0xB067`
-is still unwired) is .
+Two statements that used to stand here were measured and are false: the family
+is **not** "wire only — no consumer yet" (20 of its 21 opcodes have a consumer,
+8077 lines and 103 tests behind them), and samples **do** exist — `packet_dump/`
+carries 265 party frames, among them 13x `0x3065`, 153x `0x3864` and 11x
+`0xB067`. Layouts stay spec-derived from the original client's parser/builder
+cross-checked against go-sro where no capture resolves a field; the status
+column below says per opcode which of the two it is.
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
 | `0x3065` | PartyData | S→C | wired | full roster; the header is `u8 presence mask` + `u32 number` + *conditional* `u32 master_jid`/`u8 setup` — resolved against a capture: go-sro's split is right and xBot's is wrong ( |
-| `0x3864` | PartyUpdate | S→C | experimental | delta; type 9 (new master) body unknown |
+| `0x3864` | PartyUpdate | S→C | wired | delta, 153 frames captured; type 3 for *our own* JID means we left (the roster dismisses itself, see `net/party.rs`); type 9 (new master) body unknown |
 | `0x306E` | PartyMatchJoinResponse | C→S | experimental | C→S despite the 0x3xxx range |
 | `0x7060` | PartyCreationRequest | C→S | experimental | `unique_id` invitee-vs-self is [U] |
 | `0x7061` | PartyLeave | C→S | experimental | empty body |
@@ -402,6 +403,7 @@ is still unwired) is .
 | `0xB060` | PartyCreateResponse | S→C | experimental | the **create** ack (not the invite ack — attribution corrected); JID on success, `u16` code on failure |
 | `0xB062` | PartyInviteResponse | S→C | experimental | the invite ack; empty on success, the invitation itself is `0x3080` |
 | `0xB06D` | PartyMatchJoinAck | S→C | experimental | branches on `result == 1`, not `== 2` — both tails are `u16` |
+| `0xB067` | PartyJoinResponse | S→C | wired | the join ack, 11 frames captured; same shape as `0xB060`, and its success tail is **our own JID** — the id every `0x3864` delta names us by |
 
 ## Quest marks (wire only — the quest system itself is #37)
 
