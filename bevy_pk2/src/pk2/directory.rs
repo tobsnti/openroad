@@ -8,7 +8,7 @@ use bevy::prelude::info;
 use bytes::Bytes;
 
 use crate::pk2::blowfish::Blowfish;
-use crate::pk2::constants::{HEADER_SIZE, MAX_CHAIN_BLOCKS};
+use crate::pk2::constants::{HEADER_SIZE, MAX_CHAIN_BLOCKS, MAX_DIR_DEPTH};
 use crate::pk2::entry::Entry;
 use crate::pk2::errors::Error;
 use crate::pk2::util::{read_block, CursorExt};
@@ -44,7 +44,7 @@ impl Directory {
     /// is skipped, and errors propagate instead of `unwrap`-ing.
     pub fn expand(&mut self, cursor: &mut Cursor<Bytes>, blowfish: &Blowfish) -> Result<(), Error> {
         let mut visited = HashSet::new();
-        self.expand_guarded(cursor, blowfish, &mut visited)
+        self.expand_guarded(cursor, blowfish, &mut visited, 0)
     }
 
     fn expand_guarded(
@@ -52,7 +52,11 @@ impl Directory {
         cursor: &mut Cursor<Bytes>,
         blowfish: &Blowfish,
         visited: &mut HashSet<u64>,
+        depth: usize,
     ) -> Result<(), Error> {
+        if depth >= MAX_DIR_DEPTH {
+            return Err(Error::DirectoryTooDeep(self.entry.position));
+        }
         if visited.len() >= MAX_CHAIN_BLOCKS {
             return Err(Error::ChainLoop(self.entry.position));
         }
@@ -78,7 +82,7 @@ impl Directory {
             .collect();
 
         for d in dirs.values_mut() {
-            d.expand_guarded(cursor, blowfish, visited)?;
+            d.expand_guarded(cursor, blowfish, visited, depth + 1)?;
         }
 
         self.directories.extend(dirs);
@@ -103,7 +107,7 @@ impl Directory {
     /// File-backed counterpart of [`Self::expand`], with the same cycle guard.
     pub fn expand_from_file(&mut self, file: &mut File, blowfish: &Blowfish) -> Result<(), Error> {
         let mut visited = HashSet::new();
-        self.expand_from_file_guarded(file, blowfish, &mut visited)
+        self.expand_from_file_guarded(file, blowfish, &mut visited, 0)
     }
 
     fn expand_from_file_guarded(
@@ -111,7 +115,11 @@ impl Directory {
         file: &mut File,
         blowfish: &Blowfish,
         visited: &mut HashSet<u64>,
+        depth: usize,
     ) -> Result<(), Error> {
+        if depth >= MAX_DIR_DEPTH {
+            return Err(Error::DirectoryTooDeep(self.entry.position));
+        }
         if visited.len() >= MAX_CHAIN_BLOCKS {
             return Err(Error::ChainLoop(self.entry.position));
         }
@@ -141,7 +149,7 @@ impl Directory {
             .collect();
 
         for d in dirs.values_mut() {
-            d.expand_from_file_guarded(file, blowfish, visited)?;
+            d.expand_from_file_guarded(file, blowfish, visited, depth + 1)?;
         }
 
         self.directories.extend(dirs);
@@ -221,5 +229,95 @@ impl Directory {
         }
 
         entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pk2::constants::{BLOCK_SIZE, ENTRY_SIZE};
+    use crate::pk2::key::Pk2Key;
+
+    /// A fixture key, not the real archive key: these tests encrypt and
+    /// decrypt with the same cipher, so any valid key exercises the walk.
+    fn test_cipher() -> Blowfish {
+        let key = Pk2Key::from_config("testkey", "00112233445566778899").unwrap();
+        Blowfish::from_key(&key).expect("fixture key is valid")
+    }
+
+    /// One 128-byte directory entry named `d`, whose subtree starts at `child`.
+    fn dir_entry_bytes(child: u64) -> [u8; ENTRY_SIZE] {
+        let mut e = [0u8; ENTRY_SIZE];
+        e[0] = 1; // EntryType::Dir
+        e[1] = b'd'; // a name, and not "." — both filters want that
+        e[106..114].copy_from_slice(&child.to_le_bytes()); // position
+        e
+    }
+
+    /// An encrypted block of empty entries: a leaf directory in a real archive
+    /// still points at a block, it just has nothing in it. Plain zero bytes
+    /// would not do — they decrypt to garbage and the chain pointer with them.
+    fn empty_block(blowfish: &Blowfish) -> Vec<u8> {
+        let mut buf = [0u8; BLOCK_SIZE];
+        blowfish.encrypt(&mut buf);
+        buf.to_vec()
+    }
+
+    /// One encrypted block holding that single directory entry.
+    fn dir_block(child: u64, blowfish: &Blowfish) -> Vec<u8> {
+        let mut buf = [0u8; BLOCK_SIZE];
+        buf[..ENTRY_SIZE].copy_from_slice(&dir_entry_bytes(child));
+        blowfish.encrypt(&mut buf);
+        buf.to_vec()
+    }
+
+    /// A tree nested deeper than `MAX_DIR_DEPTH` has to be an error rather
+    /// than a stack overflow. `MAX_CHAIN_BLOCKS` cannot catch it: every block
+    /// here has a unique offset, so the visited set never fills — but every
+    /// level is one more stack frame.
+    #[test]
+    fn a_tree_deeper_than_the_cap_is_rejected() {
+        let blowfish = test_cipher();
+        let levels = MAX_DIR_DEPTH + 2;
+        // Block 0 is the empty leaf the deepest level points back at, so the
+        // chain starts at block 1.
+        let mut bytes = empty_block(&blowfish);
+        for level in 1..=levels {
+            let child = if level == levels {
+                0
+            } else {
+                ((level + 1) * BLOCK_SIZE) as u64
+            };
+            bytes.extend_from_slice(&dir_block(child, &blowfish));
+        }
+        let mut cursor = Cursor::new(Bytes::from(bytes));
+        let mut root = Directory::from(Entry::from(&dir_entry_bytes(BLOCK_SIZE as u64)[..]));
+
+        assert!(matches!(
+            root.expand(&mut cursor, &blowfish),
+            Err(Error::DirectoryTooDeep(_))
+        ));
+    }
+
+    /// The counter-test: a tree shallower than the cap still expands. Without
+    /// it the guard above would also pass with the depth set to zero.
+    #[test]
+    fn a_tree_within_the_cap_still_expands() {
+        let blowfish = test_cipher();
+        let levels = 4; // the deepest shipped Media.pk2 nests 4 levels
+        let mut bytes = empty_block(&blowfish);
+        for level in 1..=levels {
+            let child = if level == levels {
+                0
+            } else {
+                ((level + 1) * BLOCK_SIZE) as u64
+            };
+            bytes.extend_from_slice(&dir_block(child, &blowfish));
+        }
+        let mut cursor = Cursor::new(Bytes::from(bytes));
+        let mut root = Directory::from(Entry::from(&dir_entry_bytes(BLOCK_SIZE as u64)[..]));
+
+        assert!(root.expand(&mut cursor, &blowfish).is_ok());
+        assert_eq!(root.directories.len(), 1);
     }
 }
