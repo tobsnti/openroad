@@ -392,10 +392,21 @@ pub fn update_chat_bubbles(
             }
             continue;
         };
-        node.left = Val::Px(px.x);
-        node.top = Val::Px(px.y);
-        node.width = Val::Px(width);
-        node.height = Val::Px(height);
+        // Compare before writing (like the nameplates): an unconditional write
+        // change-flags the Node every frame and re-runs UI layout even while
+        // speaker and camera stand still.
+        let (left, top, width, height) = (
+            Val::Px(px.x),
+            Val::Px(px.y),
+            Val::Px(width),
+            Val::Px(height),
+        );
+        if (node.left, node.top, node.width, node.height) != (left, top, width, height) {
+            node.left = left;
+            node.top = top;
+            node.width = width;
+            node.height = height;
+        }
         if *visibility != Visibility::Inherited {
             *visibility = Visibility::Inherited;
         }

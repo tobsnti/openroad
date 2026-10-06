@@ -8,8 +8,8 @@ use bevy::time::common_conditions::on_timer;
 use bevy_asset_loader::prelude::{ConfigureLoadingState, LoadingStateAppExt, LoadingStateConfig};
 
 use crate::assets::m::block_splat_material::TerrainAmbientRatioPlugin;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
+use crate::plugins::config::graphics::TerrainPipeline;
 use crate::plugins::map::assets::{MapsAssets, TileAssets};
 use crate::plugins::map::objects::*;
 use crate::plugins::map::terrain::{
@@ -37,6 +37,8 @@ impl Plugin for MapPlugin {
             .register_type::<TerrainLoadState>()
             .init_resource::<SroMeshes>()
             .init_resource::<SroBindPoses>()
+            .init_resource::<SroAnimationClips>()
+            .init_resource::<SroMaterialVariants>()
             .init_resource::<SpawnedMapObjects>()
             .init_resource::<objects::UnknownObjectIds>()
             .configure_loading_state(
@@ -45,10 +47,25 @@ impl Plugin for MapPlugin {
                     .load_collection::<MapsAssets>(),
             );
 
-        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-        app.add_plugins(MaterialPlugin::<TerrainBlockSplatMaterial>::default());
-        #[cfg(feature = "terrain_hand_rolled_pipeline")]
-        app.add_plugins(terrain::render::TerrainRenderPipelinePlugin);
+        // Terrain ground draw path, `graphics.terrain.pipeline`. A registration
+        // decision, so restart-only (SETTINGS_AUDIT `graphics`): the hand-rolled
+        // pipeline's RenderStartup builds a 1024-slot atlas layout, which is only
+        // created when chosen. The choice is fixed in a resource on both sides —
+        // `load_terrain_system` builds regions for it, and the render world's
+        // capability check validates the GPU limit it needs.
+        let terrain_pipeline = app
+            .world()
+            .get_resource::<crate::plugins::config::ClientConfig>()
+            .map(|config| config.graphics.terrain.pipeline)
+            .unwrap_or_default();
+        app.insert_resource(terrain_pipeline)
+            .add_plugins(MaterialPlugin::<TerrainBlockSplatMaterial>::default());
+        if terrain_pipeline == TerrainPipeline::HandRolled {
+            app.add_plugins(terrain::render::TerrainRenderPipelinePlugin);
+        }
+        if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render_app.insert_resource(terrain_pipeline);
+        }
 
         app.add_plugins(TerrainAmbientRatioPlugin)
             .add_plugins(MaterialPlugin::<HighQualityWaterMaterial>::default())

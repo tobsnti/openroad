@@ -20,6 +20,7 @@ use crate::plugins::dynamic_resource_loader::{
 };
 use crate::plugins::effects::spawn::DelayedEffect;
 use crate::plugins::hud::death::player_is_dead;
+use crate::plugins::map::objects::{SharedClips, SroAnimationClips};
 use crate::plugins::nav::{NavLocation, NavMeshRaycast, NavStep};
 use crate::plugins::net::character_info::MovementSpeed;
 use crate::plugins::net::entities::{NetworkEntities, RemoteEntity, RemoteMovement};
@@ -368,6 +369,9 @@ impl Plugin for PlayerPlugin {
             .init_resource::<PlayerConfig>()
             .init_resource::<PendingHitReactions>()
             .init_resource::<PendingKnockdowns>()
+            // also registered by MapPlugin; the clip-swapping systems below need it
+            // even in apps built without the map (test scenes)
+            .init_resource::<SroAnimationClips>()
             .add_message::<PlayerMoveOrder>()
             .add_systems(OnEnter(SceneState::WorldSandbox), setup_player)
             .add_systems(
@@ -839,11 +843,17 @@ fn build_movement_clip(
     skeleton: &JMXVBSK,
     idx: usize,
     ban_assets: &Assets<JMXVBAN>,
-    animation_clips: &mut Assets<AnimationClip>,
+    animation_clips: &mut SharedClips,
 ) -> Option<Handle<AnimationClip>> {
-    let ban = ban_assets.get(resource.animation.animations.get(idx)?)?;
-    let clip = ban.to_animation_clip(skeleton, &resource.object_info.name);
-    Some(animation_clips.add(clip))
+    let ban_handle = resource.animation.animations.get(idx)?;
+    let ban = ban_assets.get(ban_handle)?;
+    // Same cache key the spawn used (`SpawnResource::prepare_skeleton`), so this
+    // normally hands back the clip already built for the wrapper.
+    Some(animation_clips.get_or_build(
+        (ban_handle.id(), ban),
+        (resource.skeleton.as_ref()?.id(), skeleton),
+        &resource.object_info.name,
+    ))
 }
 
 /// The `wrapper_query` shared by [`update_character_animation`] and
@@ -887,7 +897,7 @@ fn drive_character_animation(
     sro_resources: &Assets<SroResource>,
     bsk_assets: &Assets<JMXVBSK>,
     ban_assets: &Assets<JMXVBAN>,
-    animation_clips: &mut Assets<AnimationClip>,
+    animation_clips: &mut SharedClips,
     animation_graphs: &mut Assets<AnimationGraph>,
     budget: &mut i32,
 ) {
@@ -1264,7 +1274,7 @@ fn update_character_animation(
     sro_resources: Res<Assets<SroResource>>,
     bsk_assets: Res<Assets<JMXVBSK>>,
     ban_assets: Res<Assets<JMXVBAN>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_clips: SharedClips,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     if let Ok((children, group, mounted, stunned, frozen)) = player_query.single() {
@@ -1399,7 +1409,7 @@ fn play_mounted_pose(
     sro_resources: Res<Assets<SroResource>>,
     bsk_assets: Res<Assets<JMXVBSK>>,
     ban_assets: Res<Assets<JMXVBAN>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_clips: SharedClips,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
     mut commands: Commands,
 ) {
@@ -1613,7 +1623,7 @@ fn play_skill_swings(
     sro_resources: Res<Assets<SroResource>>,
     bsk_assets: Res<Assets<JMXVBSK>>,
     ban_assets: Res<Assets<JMXVBAN>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_clips: SharedClips,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
     transforms: Query<&GlobalTransform>,
     mut popups: MessageWriter<DamagePopup>,
@@ -1760,7 +1770,12 @@ fn play_skill_swings(
             duration_secs = shot
                 .as_ref()
                 .and_then(|(node, _)| {
-                    clip_duration(*node, graph_handle, &animation_graphs, &animation_clips)
+                    clip_duration(
+                        *node,
+                        graph_handle,
+                        &animation_graphs,
+                        animation_clips.assets(),
+                    )
                 })
                 .unwrap_or(0.0);
             wrapper_entity = Some(entity);
@@ -1922,7 +1937,7 @@ fn add_skill_clip_to_graph(
     sro_resources: &Assets<SroResource>,
     bsk_assets: &Assets<JMXVBSK>,
     ban_assets: &Assets<JMXVBAN>,
-    animation_clips: &mut Assets<AnimationClip>,
+    animation_clips: &mut SharedClips,
     animation_graphs: &mut Assets<AnimationGraph>,
 ) -> Option<(AnimationNodeIndex, Vec<f32>)> {
     let resource = sro_resources.get(resource_handle)?;
@@ -1976,7 +1991,7 @@ fn resolve_or_add_clip(
     sro_resources: &Assets<SroResource>,
     bsk_assets: &Assets<JMXVBSK>,
     ban_assets: &Assets<JMXVBAN>,
-    animation_clips: &mut Assets<AnimationClip>,
+    animation_clips: &mut SharedClips,
     animation_graphs: &mut Assets<AnimationGraph>,
 ) -> Option<(AnimationNodeIndex, Vec<f32>)> {
     let mut library = libraries.get_mut(entity).ok()?;
@@ -2365,7 +2380,7 @@ fn play_knockdowns(
     sro_resources: Res<Assets<SroResource>>,
     bsk_assets: Res<Assets<JMXVBSK>>,
     ban_assets: Res<Assets<JMXVBAN>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_clips: SharedClips,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     for popup in popups.read() {
@@ -2455,7 +2470,7 @@ fn play_knockdowns(
                     prone,
                     &graph_handle,
                     &animation_graphs,
-                    &animation_clips,
+                    animation_clips.assets(),
                 ),
                 prone,
                 damage,

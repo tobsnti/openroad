@@ -34,9 +34,9 @@ pub struct SilkroadConnection {
 }
 
 impl SilkroadConnection {
-    /// Blocking connect + handshake. Kept for callers that already run off the
-    /// render loop (the headless net-check client, the agent-server handoff);
-    /// the render loop uses [`Self::connect_async`] instead.
+    /// Blocking connect + handshake. Kept for callers that run off the render
+    /// loop (the headless net-check client); the render loop — the gateway
+    /// connect and the agent-server handoff — uses [`Self::connect_async`].
     pub fn new(addr: &str) -> Result<SilkroadConnection, Error> {
         Self::establish(Self::resolve_addr(addr)?)
     }

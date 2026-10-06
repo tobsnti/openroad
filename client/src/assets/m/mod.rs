@@ -15,7 +15,6 @@ use crate::assets::read_str_and_jump;
 pub mod block_mesh;
 pub mod block_splat_material;
 pub mod loader;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 mod tile_residency;
 
 #[allow(dead_code)]

@@ -1071,6 +1071,48 @@ mod test {
         let _ = cos;
     }
 
+    /// The case the old per-frame poll existed for: a weapon that attaches
+    /// while the player is already in the saddle (equip while mounted, or an
+    /// attachment that resolves frames after boarding) must come in hidden.
+    #[test]
+    fn a_weapon_equipped_while_mounted_is_hidden() {
+        let (mut app, _cos, player) = riding_app();
+        app.add_systems(Update, riding::hide_held_items_while_mounted);
+
+        let wrapper = app.world_mut().spawn(Visibility::default()).id();
+        app.world_mut().entity_mut(player).add_child(wrapper);
+        let hand = app
+            .world_mut()
+            .spawn((
+                crate::commands::Bone,
+                Name::from("Bip01 L Hand"),
+                Visibility::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(wrapper).add_child(hand);
+
+        app.world_mut().write_message(CosCommand::Board(LOCAL_UID));
+        app.update();
+        app.update();
+        assert!(app.world().get::<RiderOf>(player).is_some(), "mounted");
+
+        // equip now, while riding
+        let shield = app
+            .world_mut()
+            .spawn((
+                crate::commands::SpawnedFromResource(Handle::default()),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut().entity_mut(hand).add_child(shield);
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(shield).copied(),
+            Some(Visibility::Hidden),
+            "a held item arriving mid-ride must be hidden too"
+        );
+    }
+
     #[test]
     fn unsummon_despawns_and_force_dismounts() {
         let (mut app, cos, player) = riding_app();

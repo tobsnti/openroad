@@ -1,9 +1,10 @@
 // https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/JMXVBMT
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 
-use bevy::asset::{io::Reader, Asset, AssetLoader, LoadContext};
+use bevy::asset::{io::Reader, Asset, AssetLoader, AssetServer, LoadContext};
 use bevy::color::LinearRgba;
 use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::{trace, AlphaMode, Color, Handle, Image, StandardMaterial};
@@ -13,9 +14,10 @@ use bevy::utils::default;
 use bytes::Buf;
 use thiserror::Error;
 
-use crate::assets::bmt::rim::{RimExtension, RimSettings};
+use crate::assets::bmt::rim::{RimExtension, RimSettings, SroRimMaterial};
 use crate::assets::bmt::sheen::{
-    SheenExtension, SheenSettings, ENV_SPHEREMAP_PATH, SHEEN_ALPHA_CUTOUT, SHINE_SPHEREMAP_PATH,
+    SheenExtension, SheenSettings, SroSheenMaterial, ENV_SPHEREMAP_PATH, SHEEN_ALPHA_CUTOUT,
+    SHINE_SPHEREMAP_PATH,
 };
 
 use crate::util::buf_ext::BufExt;
@@ -126,6 +128,11 @@ impl SroMaterial {
 #[derive(TypePath, Asset, Debug, Clone)]
 pub struct JMXVBMT {
     pub materials: Vec<SroMaterial>,
+    /// Each material's diffuse texture, keyed by [`material_label`]. Filled by
+    /// [`BmtLoader`] (empty when parsed standalone); materials with no diffuse
+    /// map have no entry. Kept so the rim/sheen variants can be built on
+    /// demand from the loaded set instead of up front for every material.
+    pub diffuse_textures: HashMap<String, Handle<Image>>,
 }
 
 impl JMXVBMT {
@@ -139,21 +146,36 @@ impl JMXVBMT {
             materials.push(mat);
         }
 
-        Self { materials }
+        Self {
+            materials,
+            diffuse_textures: HashMap::new(),
+        }
+    }
+
+    /// The material `name` refers to (case-insensitively, see
+    /// [`material_label`]) and its diffuse texture, if both exist.
+    pub fn material_with_texture(&self, name: &str) -> Option<(&SroMaterial, &Handle<Image>)> {
+        let label = material_label(name);
+        let texture = self.diffuse_textures.get(&label)?;
+        let material = self
+            .materials
+            .iter()
+            .find(|mat| material_label(&mat.name) == label)?;
+        Some((material, texture))
     }
 }
 
-/// The config-derived material bases every `.bmt` labeled sub-asset starts
-/// from. The client bin inserts it from `graphics.{sheen,rim}` before the
-/// asset plugins register; without it (tools, tests) [`BmtLoader`] falls
-/// back to the faithful defaults (no ambient rim, neutral sheen).
+/// The config-derived settings the rim and sheen material variants start from
+/// (see [`SroMaterial::to_rim_material`] / [`SroMaterial::to_sheen_material`]).
+/// The client bin inserts it from `graphics.{sheen,rim}` before the app runs;
+/// without it (tools, tests) the variants fall back to the faithful defaults
+/// (no ambient rim, neutral sheen).
 #[derive(bevy::prelude::Resource, Clone, Copy, Debug)]
 pub struct BmtMaterialDefaults {
-    /// Base settings of the `.sheen`/`.sheen_cutout` sub-assets.
+    /// Base settings of the sheen / sheen-cutout variants.
     pub sheen: SheenSettings,
-    /// `Some` = build a `.rim` sub-asset per material with these settings
-    /// and use it as the default for character-class meshes (see
-    /// `PreparedMeshGroups::prepare`); `None` = rim disabled.
+    /// `Some` = character-class meshes use a rim variant with these settings
+    /// (see `PreparedMeshGroups::prepare`); `None` = rim disabled.
     pub rim: Option<RimSettings>,
 }
 
@@ -166,29 +188,14 @@ impl Default for BmtMaterialDefaults {
     }
 }
 
-/// Carries the config-derived [`BmtMaterialDefaults`] so the sub-assets it
-/// builds start from `graphics.{sheen,rim}` (the loader has no world access
-/// at load time, so the settings are captured at registration via
-/// [`FromWorld`]; no `Default` derive — bevy's blanket
-/// `FromWorld for T: Default` would collide with the manual impl).
-#[derive(bevy::reflect::TypePath)]
-pub struct BmtLoader {
-    defaults: BmtMaterialDefaults,
-}
-
-impl bevy::prelude::FromWorld for BmtLoader {
-    fn from_world(world: &mut bevy::prelude::World) -> Self {
-        // Inserted by the client bin before the asset plugins register (this
-        // shared assets code can't see the config types — the parser-only
-        // lib target has no `plugins` module); absent (tools, tests) →
-        // faithful defaults.
-        let defaults = world
-            .get_resource::<BmtMaterialDefaults>()
-            .copied()
-            .unwrap_or_default();
-        Self { defaults }
-    }
-}
+/// Loads a `.bmt` material set. Only the default (alpha-masked) variant of each
+/// material becomes a labeled sub-asset; the rim and sheen variants are built
+/// on demand by the spawn path (`SroMaterialVariants` in the client), because
+/// building all of them for every material of every set meant several extra
+/// material assets per material — each extracted and prepared by the renderer
+/// — when a given mesh only ever uses one.
+#[derive(bevy::reflect::TypePath, Default)]
+pub struct BmtLoader;
 
 #[derive(Error, Debug)]
 pub enum BmtLoaderError {
@@ -222,8 +229,9 @@ impl AssetLoader for BmtLoader {
         }
         let mut path = load_context.path().path().to_path_buf();
         path.pop();
-        let material = JMXVBMT::from(&mut cursor, path);
+        let mut material = JMXVBMT::from(&mut cursor, path);
 
+        let mut diffuse_textures = HashMap::new();
         for mat in &material.materials {
             // info!("material: {}", &mat.name);
             let image: Handle<Image> = if mat.diffuse_map_is_relative {
@@ -255,66 +263,9 @@ impl AssetLoader for BmtLoader {
             let standard_material =
                 mat.to_standard_material(Some(image.clone()), MaterialVariant::Masked);
             load_context.add_labeled_asset(material_label(&mat.name), standard_material);
-            // variants for resources whose texture alpha is a sheen mask
-            // instead of transparency (see SroResource::alpha_is_sheen);
-            // the sheen variant is an extended material whose fragment
-            // shader turns that alpha into per-texel metallic (sheen.rs)
-            let opaque_material =
-                mat.to_standard_material(Some(image.clone()), MaterialVariant::Opaque);
-            load_context.add_labeled_asset(opaque_material_label(&mat.name), opaque_material);
-            // always-on rim variant for character-class meshes (the spawn
-            // side picks it over the plain Masked material when rim is
-            // enabled, see PreparedMeshGroups::prepare)
-            if let Some(rim) = self.defaults.rim {
-                let rim_material = ExtendedMaterial {
-                    base: mat.to_standard_material(Some(image.clone()), MaterialVariant::Masked),
-                    extension: RimExtension { settings: rim },
-                };
-                load_context.add_labeled_asset(rim_material_label(&mat.name), rim_material);
-            }
-            let sheen_material = ExtendedMaterial {
-                base: mat.to_standard_material(Some(image.clone()), MaterialVariant::Opaque),
-                extension: SheenExtension {
-                    settings: self.defaults.sheen,
-                    // the enhancement highlight sphere map is shared by all
-                    // sheen materials; sampled only once a shine tint is set
-                    shine_texture: load_probe(load_context, SHINE_SPHEREMAP_PATH),
-                    // the base chrome probe is always sampled
-                    env_texture: load_probe(load_context, ENV_SPHEREMAP_PATH),
-                },
-            };
-            load_context.add_labeled_asset(sheen_material_label(&mat.name), sheen_material);
-            // sheen with the original's alpha test (GREATEREQUAL ref 1):
-            // for resources whose EnvMap mod flags exact-zero alpha as
-            // cutout (e.g. glaive blade shapes punched out of the atlas).
-            // The base must be Mask, not Opaque: cameras run a depth
-            // prepass and the extension only replaces the main-pass
-            // fragment, so an Opaque base writes prepass/shadow depth for
-            // the very texels the main pass discards — geometry behind
-            // can't render there and the cutouts turn into opaque black
-            // holes (deg-7/8 CH shields). Mask makes the stock
-            // prepass/shadow shaders discard the same texels, while the
-            // main pass still receives the raw sampled alpha as the sheen
-            // mask (pbr_input_from_standard_material applies no
-            // alpha_discard).
-            let mut cutout_base = mat.to_standard_material(Some(image), MaterialVariant::Opaque);
-            cutout_base.alpha_mode = AlphaMode::Mask(SHEEN_ALPHA_CUTOUT);
-            let sheen_cutout_material = ExtendedMaterial {
-                base: cutout_base,
-                extension: SheenExtension {
-                    settings: SheenSettings {
-                        alpha_cutout: SHEEN_ALPHA_CUTOUT,
-                        ..self.defaults.sheen
-                    },
-                    shine_texture: load_probe(load_context, SHINE_SPHEREMAP_PATH),
-                    env_texture: load_probe(load_context, ENV_SPHEREMAP_PATH),
-                },
-            };
-            load_context.add_labeled_asset(
-                sheen_cutout_material_label(&mat.name),
-                sheen_cutout_material,
-            );
+            diffuse_textures.insert(material_label(&mat.name), image);
         }
+        material.diffuse_textures = diffuse_textures;
 
         Ok(material)
     }
@@ -324,17 +275,77 @@ impl AssetLoader for BmtLoader {
     }
 }
 
-/// Load a sheen probe/streak texture as a non-color intensity map (see
-/// [`DdjSettings::non_color`]): its stored bytes are the reflection
-/// intensity, so an sRGB view would decode mid-gray 128 to 0.216 instead
-/// of the intended 0.5 and halve the whole chrome term.
+/// The two sphere maps every sheen material samples, `(shine, env)`, loaded as
+/// non-color intensity maps (see [`DdjSettings::non_color`]): their stored
+/// bytes are the reflection intensity, so an sRGB view would decode mid-gray
+/// 128 to 0.216 instead of the intended 0.5 and halve the whole chrome term.
 ///
 /// [`DdjSettings::non_color`]: crate::assets::ddj::DdjSettings
-fn load_probe(load_context: &mut LoadContext<'_>, path: &'static str) -> Handle<Image> {
-    load_context
-        .load_builder()
-        .with_settings(|settings: &mut crate::assets::ddj::DdjSettings| settings.non_color = true)
-        .load(path)
+pub fn sheen_probe_textures(asset_server: &AssetServer) -> (Handle<Image>, Handle<Image>) {
+    let load = |path: &'static str| -> Handle<Image> {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut crate::assets::ddj::DdjSettings| {
+                settings.non_color = true
+            })
+            .load(path)
+    };
+    (load(SHINE_SPHEREMAP_PATH), load(ENV_SPHEREMAP_PATH))
+}
+
+impl SroMaterial {
+    /// The always-on rim variant for character-class meshes: the default
+    /// (Masked) material plus the config ambient rim.
+    pub fn to_rim_material(&self, texture: Handle<Image>, settings: RimSettings) -> SroRimMaterial {
+        ExtendedMaterial {
+            base: self.to_standard_material(Some(texture), MaterialVariant::Masked),
+            extension: RimExtension { settings },
+        }
+    }
+
+    /// The sheen variant, for resources whose texture alpha is a sheen mask
+    /// instead of transparency (see `SroResource::alpha_is_sheen`): an extended
+    /// material whose fragment shader turns that alpha into per-texel metallic
+    /// (sheen.rs). `probes` is [`sheen_probe_textures`]: the enhancement
+    /// highlight map (sampled only once a shine tint is set) and the base
+    /// chrome probe (always sampled).
+    ///
+    /// `cutout` adds the original's alpha test (GREATEREQUAL ref 1), for
+    /// resources whose EnvMap mod flags exact-zero alpha as cutout (e.g. glaive
+    /// blade shapes punched out of the atlas). Its base must be Mask, not
+    /// Opaque: cameras run a depth prepass and the extension only replaces the
+    /// main-pass fragment, so an Opaque base writes prepass/shadow depth for
+    /// the very texels the main pass discards — geometry behind can't render
+    /// there and the cutouts turn into opaque black holes (deg-7/8 CH shields).
+    /// Mask makes the stock prepass/shadow shaders discard the same texels,
+    /// while the main pass still receives the raw sampled alpha as the sheen
+    /// mask (pbr_input_from_standard_material applies no alpha_discard).
+    pub fn to_sheen_material(
+        &self,
+        texture: Handle<Image>,
+        settings: SheenSettings,
+        cutout: bool,
+        (shine_texture, env_texture): (Handle<Image>, Handle<Image>),
+    ) -> SroSheenMaterial {
+        let mut base = self.to_standard_material(Some(texture), MaterialVariant::Opaque);
+        let settings = if cutout {
+            base.alpha_mode = AlphaMode::Mask(SHEEN_ALPHA_CUTOUT);
+            SheenSettings {
+                alpha_cutout: SHEEN_ALPHA_CUTOUT,
+                ..settings
+            }
+        } else {
+            settings
+        };
+        ExtendedMaterial {
+            base,
+            extension: SheenExtension {
+                settings,
+                shine_texture,
+                env_texture,
+            },
+        }
+    }
 }
 
 /// Canonical label of a material's default variant within its .bmt. SRO
@@ -347,24 +358,19 @@ pub fn material_label(material_name: &str) -> String {
     material_name.to_ascii_lowercase()
 }
 
-/// Label of a material's opaque sub-asset variant within its .bmt.
-pub fn opaque_material_label(material_name: &str) -> String {
-    format!("{}.opaque", material_label(material_name))
-}
-
-/// Label of a material's always-on-rim sub-asset variant within its .bmt
-/// (the Masked base plus the config ambient rim; only built when
-/// [`BmtMaterialDefaults::rim`] is `Some`).
+/// Key of a material's always-on-rim variant (the Masked base plus the config
+/// ambient rim; only used when [`BmtMaterialDefaults::rim`] is `Some`). Not a
+/// labeled sub-asset: the variant is built on demand (`SroMaterialVariants`).
 pub fn rim_material_label(material_name: &str) -> String {
     format!("{}.rim", material_label(material_name))
 }
 
-/// Label of a material's metallic-sheen sub-asset variant within its .bmt.
+/// Key of a material's metallic-sheen variant (built on demand, like the rim).
 pub fn sheen_material_label(material_name: &str) -> String {
     format!("{}.sheen", material_label(material_name))
 }
 
-/// Label of the sheen variant that also cuts out exact-zero alpha texels
+/// Key of the sheen variant that also cuts out exact-zero alpha texels
 /// (for resources with the EnvMap alpha-test flag,
 /// [`SroResource::sheen_alpha_test`](crate::assets::bsr::resource::SroResource::sheen_alpha_test)).
 pub fn sheen_cutout_material_label(material_name: &str) -> String {
@@ -389,12 +395,10 @@ fn phong_power_to_perceptual_roughness(power: f32) -> f32 {
     (2.0 / (power + 2.0)).sqrt().clamp(0.1, 0.8)
 }
 
-/// Which labeled sub-asset variant of a material to build. The third,
-/// `"{name}.sheen"`, is not built here: it's an [`SroSheenMaterial`]
-/// (extended material) wrapping the Opaque variant, whose fragment shader
+/// Which [`StandardMaterial`] base of a material to build. The sheen variant
+/// ([`SroMaterial::to_sheen_material`]) is an [`SroSheenMaterial`]
+/// (extended material) wrapping the Opaque base, whose fragment shader
 /// turns the texture alpha into per-texel metallic — see `sheen.rs`.
-///
-/// [`SroSheenMaterial`]: crate::assets::bmt::sheen::SroSheenMaterial
 #[derive(Clone, Copy, PartialEq)]
 pub enum MaterialVariant {
     /// Default: texture alpha is transparency (alpha test).
@@ -406,8 +410,8 @@ pub enum MaterialVariant {
 
 impl SroMaterial {
     /// Builds one rendering variant of this material; the .bmt loader adds
-    /// all variants as labeled sub-assets and resources pick per their
-    /// alpha semantics.
+    /// the Masked one as a labeled sub-asset, the rim/sheen variants wrap
+    /// these on demand, and resources pick per their alpha semantics.
     pub fn to_standard_material(
         &self,
         texture: Option<Handle<Image>>,
@@ -470,5 +474,54 @@ impl SroMaterial {
             }
             None => StandardMaterial::from(self.ambient),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_with(name: &str) -> JMXVBMT {
+        JMXVBMT {
+            materials: vec![SroMaterial {
+                name: name.to_string(),
+                ..default()
+            }],
+            diffuse_textures: HashMap::from([(material_label(name), Handle::default())]),
+        }
+    }
+
+    /// Meshes may spell a material differently from its set (`Gyo` vs `gyo`),
+    /// and the on-demand variants must resolve it the way labels always have.
+    #[test]
+    fn material_lookup_is_case_insensitive() {
+        let set = set_with("WaterGhost");
+        assert!(set.material_with_texture("waterghost").is_some());
+        assert!(set.material_with_texture("WATERGHOST").is_some());
+        assert!(set.material_with_texture("other").is_none());
+    }
+
+    /// A material the loader skipped (no diffuse map) has no texture entry and
+    /// so no variant — like the labeled sub-assets it never got.
+    #[test]
+    fn material_without_texture_has_no_variant() {
+        let mut set = set_with("gyo");
+        set.diffuse_textures.clear();
+        assert!(set.material_with_texture("gyo").is_none());
+    }
+
+    #[test]
+    fn sheen_cutout_masks_exact_zero_alpha_and_plain_sheen_does_not() {
+        let material = SroMaterial::default();
+        let probes = || (Handle::default(), Handle::default());
+        let settings = SheenSettings::default();
+
+        let cutout = material.to_sheen_material(Handle::default(), settings, true, probes());
+        assert_eq!(cutout.base.alpha_mode, AlphaMode::Mask(SHEEN_ALPHA_CUTOUT));
+        assert_eq!(cutout.extension.settings.alpha_cutout, SHEEN_ALPHA_CUTOUT);
+
+        let plain = material.to_sheen_material(Handle::default(), settings, false, probes());
+        assert_eq!(plain.base.alpha_mode, AlphaMode::Opaque);
+        assert_eq!(plain.extension.settings.alpha_cutout, settings.alpha_cutout);
     }
 }

@@ -313,6 +313,7 @@ impl Plugin for IntroV2ScenePlugin {
                     chrome::update_chrome_art,
                     fade::on_fade_to_black,
                     net::on_gateway_login_response,
+                    net::poll_agent_login,
                     net::on_agent_login_response,
                     captcha::on_captcha_challenge,
                     captcha::on_captcha_confirm_response,

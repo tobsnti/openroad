@@ -3,12 +3,14 @@ use std::time::Duration;
 use bevy::app::App;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::{
-    trace, warn, AssetServer, Assets, Children, Commands, Component, Entity, Handle, Has, Image,
-    MeshMaterial3d, Plugin, Query, Res, ResMut, Time, Timer, TimerMode, Transform, Update, With,
+    trace, warn, AssetServer, Assets, Camera, Camera3d, Children, Commands, Component, Entity,
+    GlobalTransform, Handle, Has, Image, MeshMaterial3d, Plugin, Query, Res, ResMut, Resource,
+    Startup, Time, Timer, TimerMode, Transform, Update, With,
 };
 
 use packets::agent::character_data::ItemTypeData;
 
+use crate::assets::bmt::material::sheen_probe_textures;
 use crate::assets::bmt::sheen::{set_shine, ShineColor, SroSheenMaterial};
 use crate::assets::bsk::JMXVBSK;
 use crate::assets::bsr::resource::SroResource;
@@ -130,19 +132,60 @@ pub struct PendingWeaponShine {
 /// request is abandoned (with a `warn!` naming which one expired).
 const SHINE_STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Session-lifetime strong handles to the textures every sheen material and
+/// every enhancement glow shares: the two sphere-map probes and the five tier
+/// streaks. Bevy frees an asset the moment its last strong handle drops, and
+/// these are otherwise only held by sheen materials and pending shine requests
+/// — so whenever none happened to be alive, the next BMT load or `+N` equip
+/// decoded them from the PK2 again (a trace showed `spheremap_highlight.ddj`
+/// decoded 21 times in 17 s). They are a few small textures; keep them.
+#[derive(Resource)]
+struct PinnedSheenTextures(#[allow(dead_code)] Vec<Handle<Image>>);
+
+fn pin_sheen_textures(asset_server: Res<AssetServer>, mut commands: Commands) {
+    let (shine, env) = sheen_probe_textures(&asset_server);
+    let streaks = ShineColor::ALL.map(|tier| {
+        // non-color, matching `apply_weapon_shine`: the asset server keeps the
+        // first load's settings, so a mismatch here would decide them for
+        // everyone
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut crate::assets::ddj::DdjSettings| {
+                settings.non_color = true;
+            })
+            .load(tier.texture_path())
+    });
+    let handles = [shine, env].into_iter().chain(streaks).collect();
+    commands.insert_resource(PinnedSheenTextures(handles));
+}
+
 impl Plugin for DynamicResourceLoaderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                spawn_resources_when_loaded,
-                attach_pending_items,
-                apply_weapon_shine,
-                apply_rare_aura,
-            ),
-        );
+        app.add_plugins(crate::plugins::asset_residency::AssetResidencyPlugin)
+            .add_systems(Startup, pin_sheen_textures)
+            .add_systems(
+                Update,
+                (
+                    spawn_resources_when_loaded,
+                    attach_pending_items,
+                    apply_weapon_shine,
+                    apply_rare_aura,
+                ),
+            );
     }
 }
+
+/// Resource spawns applied per frame. Each one is an exclusive-world command
+/// that builds the skeleton, animation library and mesh/material bundles, and
+/// every streamed map object goes through here too (`map::objects` hands its
+/// placements over as [`UnloadedResource`]s) — so when a region's objects or a
+/// town's characters finish loading together, an unbudgeted pass applied all of
+/// them in one frame (a trace showed this system's commands at p99 74 ms, max
+/// 105 ms). The rest wait a frame, nearest to the camera first, the same idiom
+/// as `GROUP_BUILDS_PER_FRAME`/`OBJECT_SPAWNS_PER_FRAME`. Starting value, not a
+/// measurement: tune it against `world_counts/unspawned_resources` and
+/// `frame_time/max_window`.
+const RESOURCE_SPAWNS_PER_FRAME: usize = 16;
 
 fn spawn_resources_when_loaded(
     mut commands: Commands,
@@ -155,32 +198,67 @@ fn spawn_resources_when_loaded(
         Option<&PreferredAnimationGroup>,
         Option<&MaterialVariant>,
         Has<MirroredResource>,
+        Has<Player>,
+        Option<&GlobalTransform>,
     )>,
+    cameras: Query<(&GlobalTransform, &Camera), With<Camera3d>>,
 ) {
-    for (entity, res, anim_group, material_variant, mirrored) in query.iter() {
-        if asset_server.is_loaded_with_dependencies(&res.0) {
-            let resource = sro_resource_assets.get(&res.0).unwrap();
-            if let Some(skeleton) = &resource.skeleton {
-                if !asset_server.is_loaded_with_dependencies(skeleton)
-                    || !sro_skeleton_assets.contains(skeleton)
-                {
-                    trace!("skeleton not loaded. skipping to spawn resource");
-                    continue;
-                }
-            }
-            commands.spawn_resource(
-                res.0.clone(),
-                Transform::default(),
-                Some(entity),
-                anim_group.map(|g| g.0.clone()),
-                mirrored,
-                material_variant.copied().unwrap_or_default(),
-            );
-            // try_remove: the entity may despawn before this applies (the
-            // resource-load race handled in SpawnResource), and a plain
-            // remove on a dead entity panics.
-            commands.entity(entity).try_remove::<UnloadedResource>();
+    let camera_pos = cameras
+        .iter()
+        .find(|(_, camera)| camera.is_active)
+        .map(|(transform, _)| transform.translation());
+
+    let mut ready = Vec::new();
+    for (entity, res, anim_group, material_variant, mirrored, is_player, transform) in query.iter()
+    {
+        if !asset_server.is_loaded_with_dependencies(&res.0) {
+            continue;
         }
+        let resource = sro_resource_assets.get(&res.0).unwrap();
+        if let Some(skeleton) = &resource.skeleton {
+            if !asset_server.is_loaded_with_dependencies(skeleton)
+                || !sro_skeleton_assets.contains(skeleton)
+            {
+                trace!("skeleton not loaded. skipping to spawn resource");
+                continue;
+            }
+        }
+        // The local player never waits behind the scenery; anything without a
+        // placement yet (UI rigs, previews) counts as nearest.
+        let priority = if is_player {
+            f32::NEG_INFINITY
+        } else {
+            camera_pos
+                .zip(transform)
+                .map_or(0.0, |(cam, t)| cam.distance_squared(t.translation()))
+        };
+        ready.push((
+            priority,
+            entity,
+            res,
+            anim_group,
+            material_variant,
+            mirrored,
+        ));
+    }
+    if ready.len() > RESOURCE_SPAWNS_PER_FRAME {
+        ready.select_nth_unstable_by(RESOURCE_SPAWNS_PER_FRAME - 1, |a, b| a.0.total_cmp(&b.0));
+        ready.truncate(RESOURCE_SPAWNS_PER_FRAME);
+    }
+
+    for (_, entity, res, anim_group, material_variant, mirrored) in ready {
+        commands.spawn_resource(
+            res.0.clone(),
+            Transform::default(),
+            Some(entity),
+            anim_group.map(|g| g.0.clone()),
+            mirrored,
+            material_variant.copied().unwrap_or_default(),
+        );
+        // try_remove: the entity may despawn before this applies (the
+        // resource-load race handled in SpawnResource), and a plain
+        // remove on a dead entity panics.
+        commands.entity(entity).try_remove::<UnloadedResource>();
     }
 }
 

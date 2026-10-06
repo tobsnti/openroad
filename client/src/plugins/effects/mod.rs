@@ -10,6 +10,7 @@
 //! this module without touching the JMXVEFF asset or spawn API.
 
 pub mod components;
+pub mod instanced;
 pub mod material;
 pub mod rare;
 pub mod spawn;
@@ -126,6 +127,7 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(instanced::InstancedEffectsPlugin);
         app.add_plugins(MaterialPlugin::<SroEffectMaterial>::default())
             .init_resource::<EffectQuad>()
             .init_resource::<EffectMeshes>()

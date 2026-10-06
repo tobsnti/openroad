@@ -119,6 +119,11 @@ graphics:
   render_mode: vanilla
   terrain:
     lightmap_flip_v: false # V-axis calibration of the baked .t lightmap
+    # Ground draw path: material (default; stock Material path, binds a
+    # region-local copy of the tile atlas per region) | hand_rolled (custom
+    # pipeline binding one global 1024-tile atlas; needs a GPU allowing 1024
+    # binding-array elements per stage, Sun-only shadow casting). Restart.
+    pipeline: material
   # Dynamic sun shadows (cascaded shadow maps), PBR mode ONLY — vanilla mode
   # disables the Sun's shadow maps outright, regardless of this block. Set
   # enabled false to hard-disable shadow maps in PBR mode too (measure cost

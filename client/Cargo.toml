@@ -98,13 +98,19 @@ dynamic_linking = ["bevy/dynamic_linking"]
 # recorder, which chrome traces cannot show.
 profile-chrome = ["bevy/trace_chrome"]
 profile-tracy = ["bevy/trace_tracy"]
-# Terrain ground rendering has two draw paths (see client/src/assets/m/block_splat_material.rs
-# and client/src/plugins/map/terrain/render/): the stock Material/MaterialPlugin path (default,
-# battle-tested, but binds its tile atlas once PER REGION) and a hand-rolled
-# SpecializedMeshPipeline path that binds one shared atlas globally instead. The hand-rolled path
-# is new and does not yet cast/receive shadows — opt in with
-# `cargo run -p client --features terrain_hand_rolled_pipeline` until it's promoted to default.
-terrain_hand_rolled_pipeline = []
+# Opts in to the GPU integration test below. Not a runtime feature: it exists
+# so that a plain `cargo test -p client` does not select that test target.
+# Cargo builds a package's binaries whenever an integration test is selected
+# (so the test could run them), and this client *is* its binary — selecting
+# the test meant compiling and linking the whole client a second time, once
+# as `client.exe` and once as the unit-test harness, for a test that is
+# `#[ignore]`d in ordinary runs anyway. Run it per graphics backend with
+# `cargo test -p client --features gpu-tests --test bc1_gpu -- --ignored --nocapture`.
+gpu-tests = []
+
+[[test]]
+name = "bc1_gpu"
+required-features = ["gpu-tests"]
 
 [dev-dependencies]
 # Bevy reports failed commands through the `log` crate (bevy_ecs's error

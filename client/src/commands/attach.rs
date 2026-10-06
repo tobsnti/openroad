@@ -15,7 +15,7 @@ use crate::commands::{
     MeshIndexMap, PreparedMeshGroups, ReversedWinding, SkeletonBinding, SpawnResource,
     SpawnedFromResource,
 };
-use crate::plugins::map::objects::{SroBindPoses, SroMeshes};
+use crate::plugins::map::objects::{SroBindPoses, SroMaterialVariants, SroMeshes, VariantSources};
 
 /// SRO's canonical in-hand grip orientation (180° about the (0, 1, −1) axis):
 /// the rotation that every correctly-held weapon and shield bakes into its
@@ -41,6 +41,7 @@ impl Command for AttachResource {
         // the nested `SpawnResource` (see its `apply` for why).
         world.init_resource::<SroMeshes>();
         world.init_resource::<SroBindPoses>();
+        world.init_resource::<SroMaterialVariants>();
         world.resource_scope(|world, mesh_cache: Mut<SroMeshes>| {
             world.resource_scope(|world, bind_pose_cache: Mut<SroBindPoses>| {
                 world.resource_scope(|world, meshes: Mut<Assets<Mesh>>| {
@@ -236,8 +237,10 @@ impl AttachResource {
             // `.first()`, not `[0]`: a resource can carry no material set at
             // all (the corpus ships 221-byte stub `.bsr` files), and indexing
             // those panicked rather than skipping them.
-            let Some(material_set_path) =
-                resource.materials.first().and_then(|handle| handle.path())
+            let Some((material_set, material_set_path)) = resource
+                .materials
+                .first()
+                .and_then(|handle| handle.path().map(|path| (handle, path)))
             else {
                 debug!(
                     "no material set to skin to ({} entries); item not attached",
@@ -267,11 +270,15 @@ impl AttachResource {
                 .get_resource::<crate::plugins::config::ClientConfig>()
                 .map(|config| config.graphics.objects.clone())
                 .unwrap_or_default();
+            let variant_sources = VariantSources::from_world(world);
+            let variants = world.get_resource::<SroMaterialVariants>();
             let mesh_groups = PreparedMeshGroups::prepare(
                 asset_server,
                 resource,
                 bms_assets,
+                material_set,
                 material_set_path,
+                variants.zip(variant_sources.as_ref()),
                 &binding.bind_poses,
                 true,
                 // inherit the mirrored character's winding (see above)

@@ -553,6 +553,32 @@ pub struct TerrainGraphicsSettings {
     /// calibration (`docs/formats/mapt-jmxvmapt.md`); flip if baked shadows
     /// come out mirrored along Z.
     pub lightmap_flip_v: bool,
+    /// Which draw path renders terrain ground — see [`TerrainPipeline`].
+    /// Restart-only: it decides which render pipeline is registered.
+    pub pipeline: TerrainPipeline,
+}
+
+/// The two terrain ground draw paths (`client/src/assets/m/block_splat_material.rs`,
+/// `REGION_TILE_SLOT_COUNT`'s doc comment, has the full trade-off).
+///
+/// `material` (default) is the stock `Material`/`MaterialPlugin` path: battle-tested, with shadow
+/// casting, prepass and deferred support for free, but it binds a region-local copy of the tile
+/// atlas once *per region*.
+///
+/// `hand_rolled` is the custom `SpecializedMeshPipeline` in `plugins/map/terrain/render/` that
+/// binds the whole atlas once, globally. Newer: shadow casting is its own reimplementation
+/// (directional/Sun only), and the render-debug backface toggle does not reach it yet. It needs a
+/// GPU that allows 1024 binding-array elements per shader stage; the startup capability check logs
+/// an error when it does not.
+///
+/// Was the `terrain_hand_rolled_pipeline` Cargo feature; a config option so the two can be A/B'd
+/// on the same build. Read once at startup.
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, bevy::prelude::Resource)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainPipeline {
+    #[default]
+    Material,
+    HandRolled,
 }
 
 impl TerrainGraphicsSettings {
@@ -676,10 +702,10 @@ impl Default for SheenGraphicsSettings {
 }
 
 impl GraphicsSettings {
-    /// The config-derived material bases the `.bmt` loader builds its
-    /// labeled sub-assets from (inserted as [`BmtMaterialDefaults`] before
-    /// the asset plugins register — the loader itself can't see config
-    /// types; the parser-only lib target has no `plugins` module).
+    /// The config-derived settings the rim/sheen material variants are built
+    /// from (inserted as [`BmtMaterialDefaults`] at startup and read by the
+    /// spawn path's `SroMaterialVariants` — the asset code itself can't see
+    /// config types; the parser-only lib target has no `plugins` module).
     ///
     /// [`BmtMaterialDefaults`]: crate::assets::bmt::material::BmtMaterialDefaults
     pub fn to_material_defaults(&self) -> crate::assets::bmt::material::BmtMaterialDefaults {

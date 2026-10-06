@@ -2,13 +2,14 @@ use bevy::prelude::*;
 use bevy::text::EditableText;
 use bevy::ui::{InteractionDisabled, Pressed};
 use bevy::ui_widgets::Activate;
+use crossbeam::channel::{Receiver, TryRecvError};
 use mac_address::get_mac_address;
 
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{describe_login_error, LoginFailure, LoginRequest, LoginResponse};
 use packets::Packet;
 
-use crate::net::connection::SilkroadConnection;
+use crate::net::connection::{PendingConnection, SilkroadConnection};
 use crate::plugins::config::division::DivisionInfo;
 use crate::plugins::net::agent::AgentConnectionBundle;
 use crate::plugins::net::gateway::{GatewayConnection, GatewayConnectionStatus};
@@ -203,31 +204,108 @@ pub fn on_gateway_login_response(
         network_state.gateway = false;
         let info = res.login_info.clone().unwrap();
 
-        match SilkroadConnection::new(&format!("{}:{}", info.agent_ip, info.agent_port)) {
-            Ok(conn) => {
-                network_state.agent = true;
-                let mac = get_mac_address().unwrap().unwrap();
-                let sender = conn.get_sender();
+        // Both the agent connect (TCP + handshake) and the MAC lookup (an adapter
+        // enumeration on Windows) block; run inline here they froze the frame for
+        // ~0.6 s at login. `poll_agent_login` finishes the handoff once both land.
+        commands.spawn((
+            PendingAgentLogin {
+                connection: SilkroadConnection::connect_async(&format!(
+                    "{}:{}",
+                    info.agent_ip, info.agent_port
+                )),
+                mac: spawn_mac_lookup(),
+                mac_address: None,
+                token: info.agent_token,
+                username,
+                password,
+                content_id: division.content_id,
+            },
+            Name::from("AgentLogin (connecting)"),
+        ));
+    }
+}
 
-                let frame = Packet::from(AgentLoginRequest {
-                    token: info.agent_token,
-                    username,
-                    password,
-                    content_id: division.content_id,
-                    mac_address: mac.bytes(),
-                })
-                .into();
+/// An agent-server handoff in flight: the connect + handshake and the MAC lookup
+/// both run on worker threads, and [`poll_agent_login`] sends the
+/// [`AgentLoginRequest`] once both have delivered. Kept on its own entity rather
+/// than on an [`AgentConnection`](crate::plugins::net::agent::AgentConnection)
+/// so nothing that queries agent connections ever sees one without its socket.
+#[derive(Component)]
+pub struct PendingAgentLogin {
+    connection: PendingConnection,
+    mac: Receiver<[u8; 6]>,
+    mac_address: Option<[u8; 6]>,
+    token: u32,
+    username: String,
+    password: String,
+    content_id: u8,
+}
 
-                if let Err(e) = sender.send(frame) {
-                    error!("failed to send frame: {}", e.0);
-                }
-
-                commands.spawn(AgentConnectionBundle::new(conn));
+/// Looks up the local MAC address on a worker thread. A machine without one
+/// (or a failed lookup) sends zeros, as the headless net-check client does.
+fn spawn_mac_lookup() -> Receiver<[u8; 6]> {
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    let spawned = std::thread::Builder::new()
+        .name("sro-mac-lookup".to_string())
+        .spawn(move || {
+            let mac = get_mac_address().ok().flatten().map(|m| m.bytes());
+            if mac.is_none() {
+                warn!("no MAC address found; sending zeros in the agent login");
             }
+            let _ = tx.send(mac.unwrap_or([0; 6]));
+        });
+    if spawned.is_err() {
+        // The closure (and `tx`) was dropped; `poll_agent_login` sees the
+        // disconnect and falls back to zeros instead of waiting forever.
+        warn!("failed to spawn the MAC lookup thread");
+    }
+    rx
+}
+
+/// Completes a [`PendingAgentLogin`]: once the MAC is known and the agent
+/// connection is established, sends the agent login and replaces the pending
+/// entity with the [`AgentConnectionBundle`].
+pub fn poll_agent_login(
+    mut pending: Query<(Entity, &mut PendingAgentLogin)>,
+    mut network_state: ResMut<NetworkState>,
+    mut info_text_writer: MessageWriter<InfoTextV2Update>,
+    mut commands: Commands,
+) {
+    for (entity, mut login) in pending.iter_mut() {
+        if login.mac_address.is_none() {
+            login.mac_address = match login.mac.try_recv() {
+                Ok(mac) => Some(mac),
+                Err(TryRecvError::Empty) => continue,
+                Err(TryRecvError::Disconnected) => Some([0; 6]),
+            };
+        }
+        let Some(result) = login.connection.poll() else {
+            continue;
+        };
+        commands.entity(entity).despawn();
+        let conn = match result {
+            Ok(conn) => conn,
             Err(err) => {
                 error!("failed to connect to agent server: {}", err);
+                info_text_writer.write(InfoTextV2Update(format!(
+                    "Failed to connect to server: {err}"
+                )));
+                continue;
             }
+        };
+        network_state.agent = true;
+        let frame = Packet::from(AgentLoginRequest {
+            token: login.token,
+            username: std::mem::take(&mut login.username),
+            password: std::mem::take(&mut login.password),
+            content_id: login.content_id,
+            mac_address: login.mac_address.unwrap_or([0; 6]),
+        })
+        .into();
+        if let Err(e) = conn.get_sender().send(frame) {
+            error!("failed to send frame: {}", e.0);
         }
+        commands.spawn(AgentConnectionBundle::new(conn));
     }
 }
 

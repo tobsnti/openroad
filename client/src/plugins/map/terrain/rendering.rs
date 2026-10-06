@@ -16,7 +16,8 @@ const FOG_SUN_TINT: Srgba = Srgba::new(1.0, 0.95, 0.75, 1.0);
 pub fn fog(settings: &FogGraphicsSettings) -> DistanceFog {
     // Keep everything clear out to the edge of the visible streaming area, then fade
     // linearly to fully fogged by VISIBLE_RANGE + FOG_RANGE. Regions are only actually
-    // despawned a further `UNLOAD_BUFFER` rings out (see `load_terrain_dynamically`),
+    // despawned a further `UNLOAD_BUFFER + UNLOAD_HYSTERESIS` rings out (see
+    // `load_terrain_dynamically`),
     // so by the time a region disappears it has been fully hidden by fog for a while
     // and the unload is imperceptible.
     let fog_start = VISIBLE_RANGE as f32 * REGION_SIZE;

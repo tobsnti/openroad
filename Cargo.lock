@@ -6677,7 +6677,6 @@ dependencies = [
  "bevy",
  "byteorder",
  "bytes",
- "paste",
  "sro_macro",
  "sro_macro_derive",
  "thiserror 1.0.69",

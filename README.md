@@ -153,11 +153,13 @@ original-asset validation.
 Asset-free BC1 comparison through the masked, blended and sheen materials:
 
 ```bash
-cargo test -p client --test bc1_gpu -- --ignored --nocapture
+cargo test -p client --features gpu-tests --test bc1_gpu -- --ignored --nocapture
 ```
 
 Run it on each supported graphics backend; it needs an adapter but no PK2 data
-or window. A passing synthetic comparison does not replace checking the original
+or window. It sits behind the `gpu-tests` feature so that a plain
+`cargo test -p client` doesn't build the client binary a second time just to
+make this (ignored) test runnable. A passing synthetic comparison does not replace checking the original
 coin/cutout regression assets.
 
 ### Developing in WSL2, running on Windows

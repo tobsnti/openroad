@@ -34,13 +34,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::assets::m::block_splat_material::TerrainAmbientRatioPlugin;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
 use crate::assets::SroAssetStructsPlugin;
 use crate::plugins::assets::sro::SroAssetPlugin;
 use crate::plugins::camera::{
     despawn_cinematic_camera, spawn_fly_camera, spawn_terrain_benchmark_camera, DebugCamera,
 };
+use crate::plugins::config::graphics::TerrainPipeline;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::environment::celestial::CelestialBody;
 use crate::plugins::map::assets::{MapsAssets, TileAssets};
@@ -63,6 +63,8 @@ pub fn run_terrain_benchmark(config: ClientConfig, assets_dir: PathBuf) {
     let material_defaults = config.graphics.to_material_defaults();
     let present_mode = config.window_settings.present_mode.to_present_mode();
     let desired_maximum_frame_latency = config.window_settings.frame_latency();
+    // the same draw-path choice the full client makes in MapPlugin
+    let terrain_pipeline = config.graphics.terrain.pipeline;
 
     App::new()
         .insert_resource(config)
@@ -100,7 +102,7 @@ pub fn run_terrain_benchmark(config: ClientConfig, assets_dir: PathBuf) {
         .init_state::<GameState>()
         .add_plugins((
             SroAssetStructsPlugin,
-            TerrainBenchmarkPlugin,
+            TerrainBenchmarkPlugin { terrain_pipeline },
             FreeCameraPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
@@ -111,7 +113,9 @@ pub fn run_terrain_benchmark(config: ClientConfig, assets_dir: PathBuf) {
 /// loading, mesh-merging and splat-material path.  It is deliberately separate
 /// from `MapPlugin`: that plugin also installs foliage, water, sky, environment
 /// and map-object systems needed by a playable world but not by this benchmark.
-struct TerrainBenchmarkPlugin;
+struct TerrainBenchmarkPlugin {
+    terrain_pipeline: TerrainPipeline,
+}
 
 impl Plugin for TerrainBenchmarkPlugin {
     fn build(&self, app: &mut App) {
@@ -155,10 +159,14 @@ impl Plugin for TerrainBenchmarkPlugin {
             )
             .add_systems(Update, log_terrain_benchmark_adapter);
 
-        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-        app.add_plugins(bevy::pbr::MaterialPlugin::<TerrainBlockSplatMaterial>::default());
-        #[cfg(feature = "terrain_hand_rolled_pipeline")]
-        app.add_plugins(crate::plugins::map::terrain::render::TerrainRenderPipelinePlugin);
+        app.insert_resource(self.terrain_pipeline)
+            .add_plugins(bevy::pbr::MaterialPlugin::<TerrainBlockSplatMaterial>::default());
+        if self.terrain_pipeline == TerrainPipeline::HandRolled {
+            app.add_plugins(crate::plugins::map::terrain::render::TerrainRenderPipelinePlugin);
+        }
+        if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render_app.insert_resource(self.terrain_pipeline);
+        }
     }
 }
 

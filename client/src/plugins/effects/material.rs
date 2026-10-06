@@ -226,41 +226,54 @@ impl Material for SroEffectMaterial {
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let key_data = &key.bind_group_data;
-        let (src_factor, dst_factor) = if ldr_mode(
+        apply_effect_render_state(
+            descriptor,
             key_data.src_blend,
             key_data.dst_blend,
             key_data.ldr_additive,
-        ) != 0.0
-        {
-            // Saturating LDR-additive emulation: the shader premultiplies
-            // the D3D source factor into the color (see `ldr_mode`), so
-            // the hardware factor becomes the saturation term.
-            (BlendFactor::OneMinusDst, BlendFactor::One)
-        } else {
-            blend_components(key_data.src_blend, key_data.dst_blend)
-        };
-        let blend = BlendComponent {
-            src_factor,
-            dst_factor,
-            operation: BlendOperation::Add,
-        };
-        if let Some(fragment) = descriptor.fragment.as_mut() {
-            for target in fragment.targets.iter_mut().flatten() {
-                target.blend = Some(BlendState {
-                    color: blend,
-                    alpha: blend,
-                });
-            }
-        }
-        if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = Some(false);
-        }
-        // Effect plates/meshes are authored assuming no backface culling;
-        // this also sidesteps winding flips under mirrored (scale.x = -1)
-        // character wrappers.
-        descriptor.primitive.cull_mode = None;
+        );
         Ok(())
     }
+}
+
+/// The fixed-function state every effect draw shares, for both draw paths —
+/// this `Material` (trails) and the instanced particle pipeline
+/// (`effects::instanced`): the D3D blend factors (or the LDR-additive
+/// saturation emulation), no depth write, no culling.
+pub(crate) fn apply_effect_render_state(
+    descriptor: &mut RenderPipelineDescriptor,
+    src_blend: u32,
+    dst_blend: u32,
+    ldr_additive: bool,
+) {
+    let (src_factor, dst_factor) = if ldr_mode(src_blend, dst_blend, ldr_additive) != 0.0 {
+        // Saturating LDR-additive emulation: the shader premultiplies
+        // the D3D source factor into the color (see `ldr_mode`), so
+        // the hardware factor becomes the saturation term.
+        (BlendFactor::OneMinusDst, BlendFactor::One)
+    } else {
+        blend_components(src_blend, dst_blend)
+    };
+    let blend = BlendComponent {
+        src_factor,
+        dst_factor,
+        operation: BlendOperation::Add,
+    };
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        for target in fragment.targets.iter_mut().flatten() {
+            target.blend = Some(BlendState {
+                color: blend,
+                alpha: blend,
+            });
+        }
+    }
+    if let Some(depth) = descriptor.depth_stencil.as_mut() {
+        depth.depth_write_enabled = Some(false);
+    }
+    // Effect plates/meshes are authored assuming no backface culling;
+    // this also sidesteps winding flips under mirrored (scale.x = -1)
+    // character wrappers.
+    descriptor.primitive.cull_mode = None;
 }
 
 #[cfg(test)]

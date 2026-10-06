@@ -49,6 +49,7 @@ use crate::scenes::{in_playable_world, SceneState};
 use crate::GameState;
 
 pub mod celestial;
+pub mod light_visibility;
 pub mod reflections;
 
 /// Marks the world's single directional light (spawned in `map::setup_lighting`).
@@ -504,7 +505,10 @@ impl Plugin for EnvironmentPlugin {
             .init_resource::<ActiveEnvironment>()
             .init_resource::<EnvSmoothing>()
             .init_resource::<AppliedEnvColors>()
-            .add_plugins(CelestialPlugin)
+            .add_plugins((
+                CelestialPlugin,
+                light_visibility::ShadowGatedLightVisibilityPlugin,
+            ))
             .add_systems(Startup, seed_environment_settings_from_config)
             .add_systems(
                 Update,

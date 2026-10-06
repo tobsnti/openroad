@@ -73,6 +73,7 @@ pub mod system_message;
 pub mod target_menu;
 pub mod target_window;
 pub mod toast;
+pub mod ui_parking;
 pub mod underbar;
 pub mod window_positions;
 pub mod world_anchor;
@@ -179,6 +180,9 @@ impl Plugin for HudPlugin {
                 // five pages of the original's single frame behave as one.
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
+                // Not a window: parks closed windows' content out of the UI
+                // tree so Bevy's per-frame UI passes skip it.
+                ui_parking::UiParkingPlugin,
             ),
         ));
     }
@@ -225,7 +229,9 @@ mod test {
     #[test]
     fn no_plugin_group_exceeds_the_tuple_arity_bevy_implements() {
         const MAX_PLUGIN_TUPLE: usize = 15;
-        let text = registry();
+        // The patterns below are `\n`-based; a Windows checkout with
+        // `core.autocrlf` hands `include_str!` `\r\n` endings.
+        let text = registry().replace("\r\n", "\n");
         let start = text
             .find("app.add_plugins((")
             .expect("the registry call moved");

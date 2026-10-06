@@ -4,7 +4,14 @@ use bevy::camera::Camera3d;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 
+use crate::assets::ban::JMXVBAN;
 use crate::assets::bms::mesh::JMXVBMS;
+use crate::assets::bmt::material::{
+    rim_material_label, sheen_cutout_material_label, sheen_material_label, sheen_probe_textures,
+    BmtMaterialDefaults, JMXVBMT,
+};
+use crate::assets::bmt::rim::SroRimMaterial;
+use crate::assets::bmt::sheen::SroSheenMaterial;
 use crate::assets::bsk::JMXVBSK;
 use crate::assets::bsr::resource::SroResource;
 use crate::assets::cpd::JMXVCPD;
@@ -100,6 +107,217 @@ pub struct SroBindPoses(
     pub HashMap<(AssetId<JMXVBMS>, AssetId<JMXVBSK>), AssetId<SkinnedMeshInverseBindposes>>,
 );
 
+/// Caches retargeted animation clips by (`.ban`, skeleton, wrapper name) —
+/// together these fully determine the clip `JMXVBAN::to_animation_clip`
+/// builds (the name roots every bone's `AnimationTargetId`). Converting a clip
+/// builds a curve per animated bone, and a resource carries dozens of `.ban`s,
+/// so building them per *instance* made every spawn of a common monster or NPC
+/// re-convert its whole animation set, and every gait/skill change rebuild one.
+/// Clips are never mutated after creation, so instances can share them.
+/// Weak `AssetId` entries, same lifetime scheme as [`SroMeshes`].
+#[derive(Resource, Default)]
+pub struct SroAnimationClips(
+    pub HashMap<(AssetId<JMXVBAN>, AssetId<JMXVBSK>, String), AssetId<AnimationClip>>,
+);
+
+impl SroAnimationClips {
+    /// The shared clip for `ban` retargeted onto `skeleton` under
+    /// `wrapper_name`, converting it only on a cache miss (or once the last
+    /// user dropped it). Inserts through `Assets::add` so a second lookup in
+    /// the same frame already hits.
+    pub fn get_or_build(
+        &mut self,
+        clips: &mut Assets<AnimationClip>,
+        (ban_id, ban): (AssetId<JMXVBAN>, &JMXVBAN),
+        (skeleton_id, skeleton): (AssetId<JMXVBSK>, &JMXVBSK),
+        wrapper_name: &String,
+    ) -> Handle<AnimationClip> {
+        let key = (ban_id, skeleton_id, wrapper_name.clone());
+        if let Some(handle) = self.0.get(&key).and_then(|id| clips.get_strong_handle(*id)) {
+            return handle;
+        }
+        let handle = clips.add(ban.to_animation_clip(skeleton, wrapper_name));
+        self.0.insert(key, handle.id());
+        handle
+    }
+}
+
+/// The rim and sheen material variants, built on demand. The `.bmt` loader
+/// used to add every variant of every material as a labeled sub-asset, so each
+/// material in each loaded set cost several extra material assets (each one
+/// extracted and prepared by the renderer) when a mesh only ever uses one —
+/// and map props, the bulk of all sets, use none of them. Now the loader keeps
+/// only the default variant plus each material's texture
+/// ([`JMXVBMT::diffuse_textures`]), and the spawn path asks here.
+///
+/// Keyed by (material set, variant key — `rim_material_label` & co.), so one
+/// variant is shared by every instance of a set exactly as the labeled
+/// sub-asset was; every consumer that customizes one (selection highlight,
+/// `+N` shine) clones it first. Weak `AssetId` entries like [`SroMeshes`],
+/// resolved through the asset server: variants go in via `AssetServer::add`,
+/// which registers the id at once, so a second spawn in the same frame already
+/// hits (a duplicate would also split the batch). `prune_spawn_caches` drops
+/// dead ids.
+///
+/// Behind a `Mutex` so both spawn commands reach it through a shared world
+/// borrow while they hold the resource's own assets borrowed.
+#[derive(Resource, Default)]
+pub struct SroMaterialVariants(std::sync::Mutex<MaterialVariantMaps>);
+
+type VariantKey = (AssetId<JMXVBMT>, String);
+
+#[derive(Default)]
+pub struct MaterialVariantMaps {
+    rim: HashMap<VariantKey, AssetId<SroRimMaterial>>,
+    sheen: HashMap<VariantKey, AssetId<SroSheenMaterial>>,
+}
+
+/// What building a variant reads from the world. All shared borrows.
+pub struct VariantSources<'a> {
+    pub asset_server: &'a AssetServer,
+    pub material_sets: &'a Assets<JMXVBMT>,
+    pub defaults: BmtMaterialDefaults,
+}
+
+impl<'a> VariantSources<'a> {
+    /// `None` when the variant material types are not registered (apps built
+    /// without the client's material plugins, e.g. some tests).
+    pub fn from_world(world: &'a World) -> Option<Self> {
+        if !world.contains_resource::<Assets<SroRimMaterial>>()
+            || !world.contains_resource::<Assets<SroSheenMaterial>>()
+        {
+            return None;
+        }
+        Some(Self {
+            asset_server: world.get_resource::<AssetServer>()?,
+            material_sets: world.get_resource::<Assets<JMXVBMT>>()?,
+            defaults: world
+                .get_resource::<BmtMaterialDefaults>()
+                .copied()
+                .unwrap_or_default(),
+        })
+    }
+}
+
+impl SroMaterialVariants {
+    fn maps(&self) -> std::sync::MutexGuard<'_, MaterialVariantMaps> {
+        // a panic while holding the lock leaves plain maps behind; keep going
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The always-on rim variant of `material` in `set`.
+    pub fn rim(
+        &self,
+        sources: &VariantSources,
+        set: &Handle<JMXVBMT>,
+        material: &str,
+    ) -> Handle<SroRimMaterial> {
+        let key = (set.id(), rim_material_label(material));
+        resolve_variant(&mut self.maps().rim, key, sources.asset_server, || {
+            // only requested while the rim is configured on
+            let settings = sources.defaults.rim?;
+            let (mat, texture) = sources
+                .material_sets
+                .get(set)?
+                .material_with_texture(material)?;
+            Some(mat.to_rim_material(texture.clone(), settings))
+        })
+    }
+
+    /// The sheen (or, with `cutout`, sheen-cutout) variant of `material` in
+    /// `set`.
+    pub fn sheen(
+        &self,
+        sources: &VariantSources,
+        set: &Handle<JMXVBMT>,
+        material: &str,
+        cutout: bool,
+    ) -> Handle<SroSheenMaterial> {
+        let label = if cutout {
+            sheen_cutout_material_label(material)
+        } else {
+            sheen_material_label(material)
+        };
+        resolve_variant(
+            &mut self.maps().sheen,
+            (set.id(), label),
+            sources.asset_server,
+            || {
+                let (mat, texture) = sources
+                    .material_sets
+                    .get(set)?
+                    .material_with_texture(material)?;
+                Some(mat.to_sheen_material(
+                    texture.clone(),
+                    sources.defaults.sheen,
+                    cutout,
+                    sheen_probe_textures(sources.asset_server),
+                ))
+            },
+        )
+    }
+
+    /// Periodic sweep (see [`prune_spawn_caches`]).
+    fn prune(&self, asset_server: &AssetServer) {
+        let mut maps = self.maps();
+        maps.rim.retain(|_, id| asset_server.is_managed(*id));
+        maps.sheen.retain(|_, id| asset_server.is_managed(*id));
+    }
+
+    pub fn len(&self) -> usize {
+        let maps = self.maps();
+        maps.rim.len() + maps.sheen.len()
+    }
+}
+
+/// Resolve-or-build for one variant map. A material the set does not have
+/// (or a set that is not loaded) yields the default handle, which renders
+/// nothing — what requesting a missing labeled sub-asset did before.
+fn resolve_variant<M: Asset>(
+    ids: &mut HashMap<VariantKey, AssetId<M>>,
+    key: VariantKey,
+    asset_server: &AssetServer,
+    build: impl FnOnce() -> Option<M>,
+) -> Handle<M> {
+    if let Some(handle) = ids.get(&key).and_then(|id| asset_server.get_id_handle(*id)) {
+        return handle;
+    }
+    let Some(material) = build() else {
+        return Handle::default();
+    };
+    let handle = asset_server.add(material);
+    ids.insert(key, handle.id());
+    handle
+}
+
+/// `Assets<AnimationClip>` together with the [`SroAnimationClips`] cache, as
+/// one system parameter: the systems that build clips on demand (gait, skill
+/// and knockdown swaps in `player`) take this in place of the bare assets, so
+/// they reuse the clips the spawn already built without growing their
+/// parameter lists past Bevy's limit.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SharedClips<'w> {
+    clips: ResMut<'w, Assets<AnimationClip>>,
+    cache: ResMut<'w, SroAnimationClips>,
+}
+
+impl SharedClips<'_> {
+    /// See [`SroAnimationClips::get_or_build`].
+    pub fn get_or_build(
+        &mut self,
+        ban: (AssetId<JMXVBAN>, &JMXVBAN),
+        skeleton: (AssetId<JMXVBSK>, &JMXVBSK),
+        wrapper_name: &String,
+    ) -> Handle<AnimationClip> {
+        self.cache
+            .get_or_build(&mut self.clips, ban, skeleton, wrapper_name)
+    }
+
+    pub fn assets(&self) -> &Assets<AnimationClip> {
+        &self.clips
+    }
+}
+
 /// Wrapper entity of every spawned map object, keyed by (region id << 16 | uid).
 /// Region-edge objects are listed in *several* regions' `.o2` files, and regions
 /// complete on different frames (mesh builds are budgeted per frame), so the
@@ -135,11 +353,17 @@ pub fn prune_spawn_caches(
     mut mesh_cache: ResMut<SroMeshes>,
     mut bind_pose_cache: ResMut<SroBindPoses>,
     mut spawned: ResMut<SpawnedMapObjects>,
+    clips: Res<Assets<AnimationClip>>,
+    mut clip_cache: ResMut<SroAnimationClips>,
+    variants: Res<SroMaterialVariants>,
+    asset_server: Res<AssetServer>,
 ) {
+    variants.prune(&asset_server);
     mesh_cache.0.retain(|_, id| meshes.contains(*id));
     bind_pose_cache
         .0
         .retain(|_, id| inverse_bindposes.contains(*id));
+    clip_cache.0.retain(|_, id| clips.contains(*id));
     spawned.0.retain(|_, e| entities.contains(*e));
 }
 
@@ -221,7 +445,9 @@ pub struct LoadingResources(pub Vec<Handle<SroResource>>);
 
 /// Anchor entity of one compound (.cpd) part, parenting that part's spawned
 /// resource. Pure marker so entity-count diagnostics can attribute these
-/// (their `UnloadedResource` is removed once the resource spawns).
+/// (their `UnloadedResource` is removed once the resource spawns). Plain
+/// single-resource placements have none: their placement entity anchors the
+/// resource directly.
 #[derive(Component)]
 pub struct CompoundPart;
 
@@ -416,10 +642,17 @@ pub fn load_terrain_objects_system(
                                                     )))
                                                     .insert(object.clone())
                                                     .insert(GameCursorTarget::default())
-                                                    .insert(LoadingResources(vec![
-                                                        resource_handle,
-                                                    ]));
-                                                // parent.add_command(SpawnResource(resource_handle, transform, None));
+                                                    // The placement itself anchors its one
+                                                    // resource (as characters and dungeon
+                                                    // objects do): routing it through
+                                                    // `LoadingResources` gave every plain
+                                                    // object an identity `CompoundPart` child
+                                                    // in between — ~4,800 extra entities in a
+                                                    // loaded area, each walked by the
+                                                    // per-frame visibility passes and spawned
+                                                    // and despawned with its region. The
+                                                    // spawner waits for the load itself.
+                                                    .insert(UnloadedResource(resource_handle));
                                             }
                                         }
                                     });
@@ -641,5 +874,63 @@ mod tests {
             assert!(object_details(&index, 9999, &mut unknown).is_none());
         }
         assert_eq!(unknown.0.len(), 1);
+    }
+
+    #[derive(Asset, TypePath)]
+    struct TestVariant;
+
+    /// The variant cache shares one asset per key — also within a frame,
+    /// before the asset is even inserted — and rebuilds once the last user
+    /// dropped it instead of pinning it for the session.
+    #[test]
+    fn variants_are_shared_while_alive_and_rebuilt_after_release() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<TestVariant>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let mut ids = HashMap::new();
+        let key = (AssetId::<JMXVBMT>::default(), "gyo.sheen".to_string());
+        let mut builds = 0;
+
+        let first = resolve_variant(&mut ids, key.clone(), &server, || {
+            builds += 1;
+            Some(TestVariant)
+        });
+        let second = resolve_variant(&mut ids, key.clone(), &server, || {
+            builds += 1;
+            Some(TestVariant)
+        });
+        assert_eq!(first.id(), second.id(), "same-frame request must hit");
+        assert_eq!(builds, 1);
+
+        drop((first, second));
+        app.update();
+        let _third = resolve_variant(&mut ids, key, &server, || {
+            builds += 1;
+            Some(TestVariant)
+        });
+        assert_eq!(builds, 2, "a released variant is rebuilt, not resurrected");
+    }
+
+    #[test]
+    fn a_missing_material_yields_the_default_handle() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<TestVariant>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let mut ids: HashMap<VariantKey, AssetId<TestVariant>> = HashMap::new();
+        let key = (AssetId::<JMXVBMT>::default(), "missing.rim".to_string());
+        let handle = resolve_variant(&mut ids, key, &server, || None);
+        assert_eq!(handle, Handle::default());
+        assert!(
+            ids.is_empty(),
+            "nothing cached for a material that never built"
+        );
     }
 }

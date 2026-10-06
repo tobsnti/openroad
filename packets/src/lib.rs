@@ -2,9 +2,8 @@ use std::io::Error;
 use std::string::{FromUtf16Error, FromUtf8Error};
 
 use bevy::log::trace;
-use bevy::prelude::{Message, MessageReader, MessageWriter, PreUpdate};
+use bevy::prelude::{Commands, Message, MessageReader, PreUpdate};
 use bytes::Bytes;
-use paste::paste;
 use thiserror::Error;
 
 use sro_macro::error::SerializationError;
@@ -76,22 +75,23 @@ macro_rules! packets {
                     Packet::$name(other)
                 }
             }
+        )*
 
-            paste! {
-                #[allow(non_snake_case)]
-                pub fn [< transform_net_event_ $name >](
-                    mut r: MessageReader<Packet>,
-                    mut w: MessageWriter<$name>
-                ) {
-                    for packet in r.read() {
-                        match packet {
-                            Packet::$name(data) => {w.write(data.clone());},
-                            _ => {}
-                        }
-                    }
+        /// Re-sends every received [`Packet`] as its own typed message, the
+        /// one handlers read. A single system for all opcodes: one per opcode
+        /// (~250) each re-read the whole packet stream every frame, ~0.4 ms
+        /// per frame plus the scheduling of ~250 mostly idle systems (chrome
+        /// trace of 2026-10-05). The typed messages land when `PreUpdate`'s
+        /// commands apply, before any `Update` handler runs.
+        pub fn dispatch_net_events(mut r: MessageReader<Packet>, mut commands: Commands) {
+            for packet in r.read() {
+                match packet {
+                    $(Packet::$name(data) => {
+                        commands.write_message(data.clone());
+                    })*
                 }
             }
-        )*
+        }
 
         pub trait NetworkExt {
             fn add_network_events(&mut self) -> &mut Self;
@@ -101,14 +101,9 @@ macro_rules! packets {
             fn add_network_events(&mut self) -> &mut Self {
                 self.add_message::<Packet>();
                 $(
-                    self
-                        .add_message::<$name>();
-
-                    paste! {
-                        self.add_systems(PreUpdate, [<transform_net_event_ $name>]);
-                    }
-
+                    self.add_message::<$name>();
                 )*
+                self.add_systems(PreUpdate, dispatch_net_events);
                 self
             }
         }

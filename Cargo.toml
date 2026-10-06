@@ -40,6 +40,12 @@ debug = "line-tables-only"
 # Enable high optimizations for dependencies (incl. Bevy), but not for our code:
 [profile.dev.package."*"]
 opt-level = 3
+# No debug info for dependencies: their line tables are the bulk of what the
+# linker has to read and merge for every dev link of the client, and a link is
+# paid on every rebuild. Our own crates keep `line-tables-only` (above), so
+# backtraces still carry file:line for every openroad frame — only frames
+# inside Bevy and other dependencies lose their line numbers.
+debug = false
 
 # Release exists to do the one thing the dev profile above cannot: dev already builds
 # every dependency at opt-level 3, so the only optimization left to buy is cross-crate

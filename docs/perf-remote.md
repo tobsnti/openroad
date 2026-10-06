@@ -136,14 +136,20 @@ make perf attribute SECS=3               # per-subsystem frame-cost table (see b
 - `world_counts/*` — per-category entity counters (terrain blocks/tiles, map
   objects, mesh parts, effects, particles, bones, …) plus load/gating gauges:
   `loading_compounds`, `loading_resources` (in-flight object loads),
+  `unspawned_resources` (characters/NPCs/map objects still loading or parked
+  behind `RESOURCE_SPAWNS_PER_FRAME` in `dynamic_resource_loader.rs`),
   `terrain_building` (regions parked in the per-frame mesh-build budget),
   `paused_animations`, `paused_effects` (distance-gated subtrees).
 - `cache_counts/*` — sizes of the dedup/registry maps (`sro_meshes`,
-  `sro_bind_poses`, `sro_materials`, `spawned_map_objects`, `effect_meshes`,
+  `sro_bind_poses`, `sro_animation_clips`, `sro_material_variants`,
+  `sro_materials`, `spawned_map_objects`, `effect_meshes`,
   `effect_materials`). The maps hold weak ids and are swept every 10s, so
   the counts track *live* cached assets: expect a climb while exploring and
   a drop shortly after leaving an area. Growth that never plateaus while
-  revisiting the same area indicates a cache leak.
+  revisiting the same area indicates a cache leak. `resident_assets` is the
+  exception: *released* `.bsr`/region files held strongly for
+  `RESIDENCY_GRACE` (30 s, `asset_residency.rs`) so a quick return finds them
+  still decoded — it should drain to ~0 within that window of standing still.
 - `render/*/elapsed_gpu`, `render/*/elapsed_cpu` and the pipeline statistics
   (`vertex_shader_invocations`, `clipper_primitives_out`, …) from
   `RenderDiagnosticsPlugin`. Bevy requests every adapter feature
@@ -190,6 +196,21 @@ it (`cost_ms = frame_time_on − frame_time_off`). `enable_shadows` is skipped
 (off by default). The baseline is re-measured at the end and a >10 % drift
 prints a warning — run it standing still in a fully loaded area; a streaming
 world makes the numbers noisy.
+
+The `play_animations` row only means something from 2026-10-02 on: the switch
+works through `AnimationCullingPlugin`, whose registration in `main.rs` was
+commented out until then, so toggling it changed nothing and earlier captures
+read ~0 ms for animation regardless of the real cost.
+
+## GPU upload budget
+
+`main.rs` caps texture + mesh uploads at `UPLOAD_BYTES_PER_FRAME` (16 MiB,
+Bevy's `RenderAssetBytesPerFrame`); the rest waits a frame. It targets the
+render-thread stalls in `prepare_assets<GpuImage>` / `allocate_and_free_meshes`
+(up to ~200 ms in the 2026-09-17 trace) when a region's assets land together.
+When tuning it, read `frame_time/max_window` while crossing region boundaries
+against how late distant assets appear; Bevy logs a debug line whenever the
+budget is exhausted with assets still queued.
 
 ## Raw curl (what the CLI sends)
 

@@ -2,9 +2,9 @@
 //! tile atlas can be bound exactly once, globally, instead of once per region (see
 //! `client::assets::m::block_splat_material`'s `REGION_TILE_SLOT_COUNT` doc comment for why
 //! `Material` can't do this — its draw-command chain is fixed by a blanket impl inside `bevy_pbr`
-//! with no supported extension point for a fourth, globally-bound bind group). Opt-in via the
-//! `terrain_hand_rolled_pipeline` Cargo feature; the default build keeps using
-//! `TerrainBlockSplatMaterial`/`MaterialPlugin` unchanged.
+//! with no supported extension point for a fourth, globally-bound bind group). Opt-in via
+//! `graphics.terrain.pipeline: hand_rolled` (restart; registered by `MapPlugin`); the default
+//! keeps using `TerrainBlockSplatMaterial`/`MaterialPlugin`.
 //!
 //! Idea: reuse everything mesh-shaped from bevy_pbr/bevy_render as-is — mesh extraction, the
 //! `Opaque3d` binned phase and its render-pass node, `DrawMesh`, the view/mesh bind-group

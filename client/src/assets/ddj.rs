@@ -501,16 +501,25 @@ fn u16_to_r5g5b5a1_color(word: u16) -> Srgba {
     Srgba::rgba_u8((r) as u8, (g) as u8, (b) as u8, a as u8)
 }
 
-/// Whether a DXT1/BC1 mip-0 payload uses any punch-through (1-bit-alpha)
-/// blocks — those with `color0 <= color1`, whose 4th palette index is a
-/// transparent-black texel. Such textures need the alpha honored.
+/// Whether a DXT1/BC1 mip-0 payload actually contains a transparent texel: a
+/// block in punch-through mode (`color0 <= color1`) that *uses* its 4th
+/// palette index, which is transparent black in that mode. Such textures need
+/// the alpha honored.
+///
+/// Punch-through mode alone is not enough: encoders routinely write solid-color
+/// blocks with `color0 == color1`, which lands them in that mode without any
+/// texel ever selecting index 3. Counting those sent fully opaque textures
+/// down the CPU-decode path — a CPU mip build and an 8x larger RGBA8 upload
+/// instead of native BC1.
 fn dxt1_has_alpha(data: &[u8], width: u32, height: u32) -> bool {
     let blocks = width.div_ceil(4) as usize * height.div_ceil(4) as usize;
     (0..blocks).any(|i| {
-        data.get(i * 8..i * 8 + 4).is_some_and(|b| {
+        data.get(i * 8..i * 8 + 8).is_some_and(|b| {
             let c0 = u16::from_le_bytes([b[0], b[1]]);
             let c1 = u16::from_le_bytes([b[2], b[3]]);
-            c0 <= c1
+            let indices = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+            // a 2-bit index equals 0b11 iff both its bits are set
+            c0 <= c1 && indices & (indices >> 1) & 0x5555_5555 != 0
         })
     })
 }
@@ -1160,6 +1169,21 @@ mod tests {
             rgba.chunks(4).all(|px| px[3] == 255),
             "opaque-mode texels must stay opaque"
         );
+    }
+
+    #[test]
+    fn dxt1_solid_block_in_punch_mode_without_index_3_is_opaque() {
+        // color0 == color1 (a solid-color block, as encoders write them) puts
+        // the block in punch-through mode, but no texel selects index 3
+        let solid = [0x1F, 0x00, 0x1F, 0x00, 0, 0, 0, 0];
+        assert!(!dxt1_has_alpha(&solid, 4, 4));
+        // ... indices 1 and 2 (0b01, 0b10) don't either
+        let mixed = [0x1F, 0x00, 0x1F, 0x00, 0x99, 0x66, 0x99, 0x66];
+        assert!(!dxt1_has_alpha(&mixed, 4, 4));
+        // one texel on index 3 is enough, in any block of the mip
+        let mut two_blocks = [solid, solid].concat();
+        two_blocks[15] = 0b1100_0000;
+        assert!(dxt1_has_alpha(&two_blocks, 8, 4));
     }
 
     /// `Media/res_ui/nifenchantwnd.ddj` carries a `.ddj` extension but is a

@@ -204,10 +204,18 @@ pub fn maintain_paperdoll_clone(
 
 /// Move every clone mesh onto the PaperDoll layer (exclusively) as it streams
 /// in, hiding the clone from the main camera.
+#[allow(clippy::type_complexity)]
 pub fn tag_paperdoll_meshes(
     clones: Query<Entity, With<PaperDollClone>>,
     children: Query<&Children>,
-    meshes: Query<Option<&RenderLayers>, With<Mesh3d>>,
+    // instanced effect particles (item glows) render by layer too
+    meshes: Query<
+        Option<&RenderLayers>,
+        Or<(
+            With<Mesh3d>,
+            With<crate::plugins::effects::instanced::EffectInstanced>,
+        )>,
+    >,
     mut commands: Commands,
 ) {
     let doll_layer = RenderLayers::layer(CameraLayers::PaperDoll.into());

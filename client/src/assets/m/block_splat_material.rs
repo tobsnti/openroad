@@ -1,7 +1,7 @@
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use std::collections::HashSet;
 
 use bevy::asset::{Assets, RenderAssetUsages};
+use bevy::prelude::Component;
 use bevy::prelude::{
     error, info, not, resource_exists, warn, App, AssetServer, Commands, DetectChanges, Handle,
     Image, IntoScheduleConfigs, Plugin, PreUpdate, Res, ResMut, Resource, Startup, Update,
@@ -18,26 +18,17 @@ use crate::assets::ifo::IFOAsset;
 use crate::assets::m::TerrainBlock;
 use crate::plugins::map::assets::TileAssets;
 
-// Only the Material-based draw path (the default) needs bevy's Material/AsBindGroup machinery —
-// the hand-rolled pipeline (`plugins::map::terrain::render`, feature
-// `terrain_hand_rolled_pipeline`) builds its bind groups by hand from `RenderDevice` directly.
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
+// The Material-based draw path (`graphics.terrain.pipeline: material`, the default) uses bevy's
+// Material/AsBindGroup machinery; the hand-rolled one (`plugins::map::terrain::render`) builds its
+// bind groups by hand from `RenderDevice` directly. Both are always compiled; the config decides.
 use bevy::asset::Asset;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::ecs::system::SystemParam;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::log::warn_once;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::mesh::MeshVertexBufferLayoutRef;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::prelude::{default, AlphaMode, Material};
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::reflect::TypePath;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::render::render_asset::RenderAssets;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::render::render_resource::{
     AddressMode, AsBindGroup, AsBindGroupError, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType,
@@ -45,11 +36,8 @@ use bevy::render::render_resource::{
     RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages,
     SpecializedMeshPipelineError, TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
 };
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::render::texture::{FallbackImage, GpuImage};
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use bevy::shader::ShaderRef;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 use std::num::NonZeroU32;
 
 /// Size of [`TerrainTileAtlas`]'s CPU-side registry, mapping every tile id the map format can
@@ -101,7 +89,6 @@ pub const TILE_SLOT_COUNT: u32 = 1024;
 /// terrain loses shadow-casting, prepass and deferred-pass support — which `Material` currently
 /// provides for free and which `config.yaml` has switched on (`shadows.enabled: true`, and
 /// terrain does cast/receive shadows today) — unless those are separately reimplemented too.
-#[cfg_attr(feature = "terrain_hand_rolled_pipeline", allow(dead_code))]
 pub const REGION_TILE_SLOT_COUNT: u32 = 64;
 
 /// Vertices per block edge, and blocks per region edge — the `tile_map` packing below.
@@ -136,7 +123,6 @@ impl TerrainTileAtlas {
     }
 }
 
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 #[derive(TypePath, Asset, Default, Debug, Clone)]
 pub struct TerrainBlockSplatMaterial {
     /// Per-vertex tile choice for one region, as a 102x102 `Rg16Uint` image: `r` = this
@@ -170,7 +156,7 @@ pub struct TerrainBlockSplatMaterial {
 }
 
 /// Per-region ground textures for the hand-rolled render pipeline
-/// (`client/src/plugins/map/terrain/render/`, feature `terrain_hand_rolled_pipeline`) — the
+/// (`client/src/plugins/map/terrain/render/`, `graphics.terrain.pipeline: hand_rolled`) — the
 /// counterpart to [`TerrainBlockSplatMaterial`] for that path.
 ///
 /// A plain `Component`, not an `Asset`: unlike a normal material, these textures are never
@@ -178,7 +164,6 @@ pub struct TerrainBlockSplatMaterial {
 /// the `Handle<Self>`/`Assets<T>` indirection `TerrainBlockSplatMaterial` needs would be pure
 /// overhead here. Extracted into the render world by
 /// `plugins::map::terrain::render::extract_terrain_ground_textures`.
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
 #[derive(Component, Clone, Default)]
 pub struct TerrainGroundTextures {
     /// Per-vertex tile choice for one region, as a 102x102 `Rg16Uint` image — same layout as
@@ -192,7 +177,6 @@ pub struct TerrainGroundTextures {
     pub lightmap: Handle<Image>,
 }
 
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
 impl TerrainGroundTextures {
     /// Builds the per-region textures for one region's merged 6x6 block grid. Same role as
     /// `TerrainBlockSplatMaterial::from`, minus the local-index remap: see the type's own doc
@@ -227,7 +211,6 @@ impl TerrainGroundTextures {
 /// `tile_atlas` is bound once, globally, at the map format's full 1024-id size (see
 /// `REGION_TILE_SLOT_COUNT`'s doc comment for why the `Material`-based path needs the remap and
 /// this one doesn't).
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
 fn pack_tile_map_raw(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
     let mut buf = vec![0u8; TILE_MAP_SIZE * TILE_MAP_SIZE * 4];
     for (block, _, _) in blocks {
@@ -249,7 +232,7 @@ fn pack_tile_map_raw(blocks: &[(&TerrainBlock, f32, f32)]) -> Vec<u8> {
 /// Exercises `pack_tile_map_raw`'s raw-id packing (the hand-rolled pipeline's path — no local
 /// remap, see `REGION_TILE_SLOT_COUNT`'s doc comment). Mirrors the shape of `pack_tile_map`'s own
 /// tests below, minus the remap-specific ones (used_tiles/overflow-clamp), which don't apply here.
-#[cfg(all(test, feature = "terrain_hand_rolled_pipeline"))]
+#[cfg(test)]
 mod raw_pack_tests {
     use super::*;
     use crate::assets::m::{MapVertex, WaterType};
@@ -489,7 +472,6 @@ impl Plugin for TerrainAmbientRatioPlugin {
         // Works around a leak specific to the Material-based path's CreateBindGroupDirectly
         // bind group (see TerrainAmbientRatio's doc comment) — the hand-rolled pipeline never
         // goes through that allocator at all, so it has nothing to work around here.
-        #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
         super::tile_residency::register(app);
         app.init_resource::<TerrainAmbientRatio>()
             .init_resource::<TerrainRenderParams>()
@@ -606,7 +588,10 @@ fn init_terrain_lightmap_fallback(mut commands: Commands, mut images: ResMut<Ass
 /// On Metal both hold whenever Argument Buffers Tier 2 is available (which reports 1,000,000
 /// binding-array elements); the pre-Tier-2 tiers cap out at 96 — comfortably above
 /// `REGION_TILE_SLOT_COUNT` (64), unlike the previous 1024-slot global design this replaced.
-fn check_tile_atlas_support(render_device: Res<RenderDevice>) {
+fn check_tile_atlas_support(
+    render_device: Res<RenderDevice>,
+    pipeline: Option<Res<crate::plugins::config::graphics::TerrainPipeline>>,
+) {
     let missing = WgpuFeatures::TEXTURE_BINDING_ARRAY
         | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
     let missing = missing.difference(render_device.features());
@@ -619,10 +604,10 @@ fn check_tile_atlas_support(render_device: Res<RenderDevice>) {
     // The hand-rolled pipeline binds the atlas once, globally, at the map format's full 1024-id
     // size (no per-region remap — see REGION_TILE_SLOT_COUNT's doc comment); the Material-based
     // path binds a region-local remapped copy sized REGION_TILE_SLOT_COUNT instead.
-    #[cfg(feature = "terrain_hand_rolled_pipeline")]
-    let needed = TILE_SLOT_COUNT;
-    #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-    let needed = REGION_TILE_SLOT_COUNT;
+    let needed = match pipeline.as_deref() {
+        Some(crate::plugins::config::graphics::TerrainPipeline::HandRolled) => TILE_SLOT_COUNT,
+        _ => REGION_TILE_SLOT_COUNT,
+    };
 
     let limit = render_device
         .limits()
@@ -680,7 +665,6 @@ fn write_terrain_ambient_ratio(
     }
 }
 
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl Material for TerrainBlockSplatMaterial {
     fn vertex_shader() -> ShaderRef {
         "shaders/terrain_splat.wgsl".into()
@@ -710,7 +694,6 @@ impl Material for TerrainBlockSplatMaterial {
     }
 }
 
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl AsBindGroup for TerrainBlockSplatMaterial {
     type Data = bool;
     type Param = (
@@ -955,7 +938,6 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
     }
 }
 
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 impl TerrainBlockSplatMaterial {
     /// Builds the material for one region's merged 6x6 block grid. `blocks` is `(block, dx, dz)`
     /// in the same order and offset convention as `block_mesh::merge_block_meshes`; the tile map
@@ -1016,7 +998,6 @@ impl TerrainBlockSplatMaterial {
 /// Blocks are placed by their own `(x, z)` grid position, so this does not depend on the order
 /// `blocks` arrives in or on the mesh's vertex layout. `used_tiles` must be sorted (its own
 /// binary search relies on it) — `TerrainBlockSplatMaterial::from` guarantees this.
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
 fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)], used_tiles: &[u16]) -> Vec<u8> {
     // Every vertex of every block is written, so the zero fill never survives into a texel that
     // the shader can reach — local index 0 is a real (if possibly truncated-into) tile, so a gap
@@ -1048,7 +1029,7 @@ fn pack_tile_map(blocks: &[(&TerrainBlock, f32, f32)], used_tiles: &[u16]) -> Ve
 // Exercises `pack_tile_map`'s region-local remap, which only exists on the Material-based path
 // (see `REGION_TILE_SLOT_COUNT`'s doc comment) — `pack_tile_map_raw`'s raw-id packing is covered
 // separately, see below.
-#[cfg(all(test, not(feature = "terrain_hand_rolled_pipeline")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::assets::m::{MapVertex, WaterType};

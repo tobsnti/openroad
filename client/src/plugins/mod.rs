@@ -1,5 +1,6 @@
 pub mod animation_culling;
 pub mod animation_sounds;
+pub mod asset_residency;
 pub mod assets;
 pub mod camera;
 pub mod combat;

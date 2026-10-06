@@ -11,16 +11,15 @@ use bevy::prelude::Name;
 use bevy::prelude::*;
 
 use crate::assets::m::block_mesh::merge_block_meshes;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-use crate::assets::m::block_splat_material::TerrainBlockSplatMaterial;
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
-use crate::assets::m::block_splat_material::TerrainGroundTextures;
 use crate::assets::m::block_splat_material::TerrainLightmapFallback;
+use crate::assets::m::block_splat_material::{TerrainBlockSplatMaterial, TerrainGroundTextures};
 use crate::assets::m::{TerrainBlock, WaterType, JMXVMAPM};
 use crate::assets::mfo::JMXVMFO;
 use crate::assets::nvm::JMXVNVM;
 use crate::assets::o2::JMXVMAPO2;
 use crate::assets::t::JMXVMAPT;
+use crate::plugins::asset_residency::AssetResidency;
+use crate::plugins::config::graphics::TerrainPipeline;
 use crate::plugins::cursor::interactions::GameCursorTarget;
 use crate::plugins::dev::aabb_lines::DebugAabb;
 use crate::plugins::map::assets::MapsAssets;
@@ -29,7 +28,6 @@ use crate::plugins::world_origin::WorldOrigin;
 use crate::util::mesh::needs_winding_reversal;
 use crate::util::region::RegionIdExt;
 
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
 pub mod render;
 pub mod rendering;
 
@@ -60,8 +58,30 @@ pub const FOG_RANGE: i32 = 1;
 /// merging terrain blocks into far fewer draw calls, see `load_terrain_system` — lands.
 /// Watch for object/prop pop-in near the fog boundary if this needs to go back up.
 pub const UNLOAD_BUFFER: i32 = 1;
-/// Total ring width, beyond `VISIBLE_RANGE`, kept loaded before despawning.
+/// Total ring width, beyond `VISIBLE_RANGE`, that regions are streamed in to.
 pub const UNLOAD_MARGIN: i32 = FOG_RANGE + UNLOAD_BUFFER;
+
+/// Streaming hysteresis: a region is only despawned once it is this many rings
+/// *beyond* the ring regions are loaded out to. With the two rings equal (as
+/// they were), a camera hovering on a region line despawned a whole row and
+/// rebuilt it — re-decoding its `.m/.t/.o2/.nvm`, re-merging its meshes and
+/// respawning its map objects — every time it crossed back; a trace showed
+/// lightmaps decoded twice within 200 ms. One ring is enough to absorb that
+/// back-and-forth, and costs no draws: the lingering ring is past the fog and
+/// already hidden by `region_visibility`. It does keep up to one extra row of
+/// regions resident behind a moving camera.
+pub const UNLOAD_HYSTERESIS: i32 = 1;
+
+/// Whether region `(t_x, t_z)` lies outside the inclusive ring
+/// `[min_x, max_x] x [min_z, max_z]` grown by `pad` regions on every side.
+fn outside_ring(
+    (t_x, t_z): (i32, i32),
+    (min_x, min_z): (i32, i32),
+    (max_x, max_z): (i32, i32),
+    pad: i32,
+) -> bool {
+    t_x < min_x - pad || t_x > max_x + pad || t_z < min_z - pad || t_z > max_z + pad
+}
 
 /// Extra slack past the fog end before a region root is hidden outright:
 /// covers map-object meshes that overhang their region's 1920x1920 footprint
@@ -297,6 +317,14 @@ pub fn load_terrain_dynamically(
         (Entity, &Terrain, &mut Visibility, Option<&PreloadedTerrain>),
         With<Terrain>,
     >,
+    region_files: Query<(
+        Option<&TerrainMeshData>,
+        &TerrainLightmapData,
+        &TerrainObjectData,
+        &TerrainNavMeshData,
+    )>,
+    mut residency: Option<ResMut<AssetResidency>>,
+    time: Res<Time>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     map_infos: Res<Assets<JMXVMFO>>,
@@ -349,7 +377,8 @@ pub fn load_terrain_dynamically(
         let unload_min_z = min_z - unload_margin;
         let unload_max_z = max_z + unload_margin;
 
-        // Load chunks out to the same boundary they'd otherwise be despawned at, not just
+        // Load chunks out to the full margin ring (they are despawned only
+        // `UNLOAD_HYSTERESIS` rings beyond it), not just
         // out to the fully-visible (no-fog) range. That gives mesh/texture streaming a
         // head start while the chunk is still hidden behind fog, so by the time the camera
         // gets close enough for the fog to clear, the chunk is already fully loaded instead
@@ -370,16 +399,30 @@ pub fn load_terrain_dynamically(
                 let (t_x, t_z) = terrain.to_x_z();
                 let t_x = t_x as i32;
                 let t_z = t_z as i32;
-                let out_of_range = t_x < unload_min_x
-                    || t_x > unload_max_x
-                    || t_z < unload_min_z
-                    || t_z > unload_max_z;
+                let ring_min = (unload_min_x, unload_min_z);
+                let ring_max = (unload_max_x, unload_max_z);
+                let in_load_ring = !outside_ring((t_x, t_z), ring_min, ring_max, 0);
+                let out_of_range = outside_ring((t_x, t_z), ring_min, ring_max, UNLOAD_HYSTERESIS);
                 if out_of_range && preloaded.is_none() && unload_budget > 0 {
                     unload_budget -= 1;
                     trace!(
                         "Unload TerrainId {:?}",
                         TerrainId::from_x_z(t_x as u8, t_z as u8)
                     );
+                    // Keep the region's files loaded for a grace period, so
+                    // coming back soon finds them decoded (the lightmap alone
+                    // is tens of ms); see `asset_residency`.
+                    if let (Some(residency), Ok((mesh, lightmap, objects, nav))) =
+                        (residency.as_deref_mut(), region_files.get(entity))
+                    {
+                        let now = time.elapsed();
+                        if let Some(mesh) = mesh {
+                            residency.park(mesh.0.clone().untyped(), now);
+                        }
+                        residency.park(lightmap.0.clone().untyped(), now);
+                        residency.park(objects.0.clone().untyped(), now);
+                        residency.park(nav.0.clone().untyped(), now);
+                    }
                     commands.entity(entity).despawn();
                 } else {
                     // The preload marker is a *head start*, not a pin: it exists so the
@@ -389,7 +432,7 @@ pub fn load_terrain_dynamically(
                     // from despawn for the whole session, so walking away kept their
                     // meshes, materials, textures and full map-object subtrees resident
                     // and still paying extract/prepare cost every frame.
-                    if !out_of_range && preloaded.is_some() {
+                    if in_load_ring && preloaded.is_some() {
                         commands.entity(entity).remove::<PreloadedTerrain>();
                     }
                     // set_if_neq: an unconditional write would change-flag all
@@ -444,6 +487,19 @@ pub fn load_terrain_dynamically(
     }
 }
 
+/// Marks a merged terrain ground-group entity, whichever draw path built it
+/// (`graphics.terrain.pipeline`): the two paths carry different components
+/// (`MeshMaterial3d<TerrainBlockSplatMaterial>` vs. `TerrainGroundTextures`),
+/// and diagnostics / the render-debug panel just need "is this terrain".
+#[derive(Component)]
+pub struct TerrainGround;
+
+/// The per-region ground component of whichever draw path is active.
+enum GroundMaterial {
+    Material(MeshMaterial3d<TerrainBlockSplatMaterial>),
+    HandRolled(TerrainGroundTextures),
+}
+
 /// How many merged terrain groups may be built in one frame, across all
 /// regions. One build merges the group's block meshes and copies tile pixel
 /// data into the splat texture array — several milliseconds of main-thread
@@ -472,9 +528,10 @@ pub fn load_terrain_system(
     lightmap_fallback: Res<TerrainLightmapFallback>,
     mut image_assets: ResMut<Assets<Image>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
-    #[cfg(not(feature = "terrain_hand_rolled_pipeline"))] mut terrain_block_material_assets: ResMut<
-        Assets<TerrainBlockSplatMaterial>,
-    >,
+    mut terrain_block_material_assets: ResMut<Assets<TerrainBlockSplatMaterial>>,
+    // Fixed at startup by MapPlugin from `graphics.terrain.pipeline` (absent = material):
+    // only the pipeline registered then can draw what is built here.
+    pipeline: Option<Res<TerrainPipeline>>,
     // Exactly one water tier is inserted by `setup_terrain_mesh` (`graphics.water.quality`),
     // so both are optional and the spawn below picks whichever is present.
     water_material: Option<Res<WaterNormalMaterial>>,
@@ -601,27 +658,36 @@ pub fn load_terrain_system(
             let Ok(mut entity) = commands.get_entity(terrain_entity) else {
                 continue;
             };
-            #[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-            let ground_material = {
+            let hand_rolled = pipeline.as_deref() == Some(&TerrainPipeline::HandRolled);
+            let ground_material = if hand_rolled {
+                GroundMaterial::HandRolled(TerrainGroundTextures::from(
+                    &group_blocks,
+                    region_lightmap,
+                    &mut image_assets,
+                ))
+            } else {
                 let material = TerrainBlockSplatMaterial::from(
                     &group_blocks,
                     region_lightmap,
                     &mut image_assets,
                 );
-                MeshMaterial3d(terrain_block_material_assets.add(material))
+                GroundMaterial::Material(MeshMaterial3d(
+                    terrain_block_material_assets.add(material),
+                ))
             };
-            #[cfg(feature = "terrain_hand_rolled_pipeline")]
-            let ground_material =
-                TerrainGroundTextures::from(&group_blocks, region_lightmap, &mut image_assets);
             entity.with_children(|terrain_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| {
                 let mut group_entity = terrain_entity.spawn((
                     Mesh3d(mesh),
-                    ground_material,
+                    TerrainGround,
                     group_transform,
                     Visibility::default(),
                     group_aabb,
                     Name::from(format!("Ground group {}x{} ({})", gx, gz, terrain_name.as_str())),
                 ));
+                match ground_material {
+                    GroundMaterial::Material(material) => group_entity.insert(material),
+                    GroundMaterial::HandRolled(textures) => group_entity.insert(textures),
+                };
                 if terrain_only.is_some() {
                     return;
                 }
@@ -736,6 +802,60 @@ pub fn water_patch_mesh() -> Mesh {
     );
     mesh.insert_indices(Indices::U32(vec![2, 0, 3, 3, 0, 1]));
     mesh
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    /// A camera at region (10, 10) loads the ring 10 ± (VISIBLE_RANGE + UNLOAD_MARGIN).
+    fn ring() -> ((i32, i32), (i32, i32)) {
+        let r = VISIBLE_RANGE + UNLOAD_MARGIN;
+        ((10 - r, 10 - r), (10 + r, 10 + r))
+    }
+
+    #[test]
+    fn a_region_just_past_the_load_ring_is_kept() {
+        let (min, max) = ring();
+        let edge = (max.0 + 1, 10);
+        assert!(outside_ring(edge, min, max, 0), "not loaded any more");
+        assert!(
+            !outside_ring(edge, min, max, UNLOAD_HYSTERESIS),
+            "but kept: one step back across the line must not rebuild it"
+        );
+    }
+
+    #[test]
+    fn a_region_past_the_hysteresis_ring_is_unloaded() {
+        let (min, max) = ring();
+        assert!(outside_ring(
+            (min.0 - UNLOAD_HYSTERESIS - 1, 10),
+            min,
+            max,
+            UNLOAD_HYSTERESIS
+        ));
+        assert!(outside_ring(
+            (10, max.1 + UNLOAD_HYSTERESIS + 1),
+            min,
+            max,
+            UNLOAD_HYSTERESIS
+        ));
+    }
+
+    /// The whole point: oscillating across one region line never despawns a
+    /// region that is loaded on either side of it.
+    #[test]
+    fn oscillating_across_a_region_line_unloads_nothing() {
+        let r = VISIBLE_RANGE + UNLOAD_MARGIN;
+        for cam in [10, 11, 10, 11] {
+            let (min, max) = ((cam - r, 10 - r), (cam + r, 10 + r));
+            for other in [10, 11] {
+                for x in (other - r)..=(other + r) {
+                    assert!(!outside_ring((x, 10), min, max, UNLOAD_HYSTERESIS));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

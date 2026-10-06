@@ -14,6 +14,7 @@ use bevy::picking::mesh_picking::ray_cast::RayCastVisibility;
 use bevy::picking::mesh_picking::{MeshPickingPlugin, MeshPickingSettings};
 use bevy::prelude::*;
 use bevy::remote::RemotePlugin;
+use bevy::render::render_asset::RenderAssetBytesPerFrame;
 use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin, UiRenderOrder};
 use bevy_inspector_egui::quick::StateInspectorPlugin;
@@ -26,6 +27,15 @@ mod netcheck;
 mod plugins;
 mod scenes;
 mod util;
+
+/// Per-frame GPU upload budget (textures + meshes), see the
+/// `RenderAssetBytesPerFrame` insert in `main`. 16 MiB is a starting value
+/// chosen from the cost of the copy, not measured on this client yet: staging
+/// 16 MiB is a few ms of memcpy on the render thread, while still moving
+/// ~0.5–1 GB/s at 30–60 fps — a whole region's textures within a fraction of a
+/// second, well inside the fog-covered head start streaming has. Retune against
+/// `frame_time/max_window` while crossing region boundaries.
+const UPLOAD_BYTES_PER_FRAME: usize = 16 * 1024 * 1024;
 
 #[derive(Resource)]
 pub struct GameSettings {
@@ -84,7 +94,8 @@ fn main() {
     let diagnostics = config.diagnostics_enabled();
 
     let mut app = App::new();
-    // must exist before SroAssetStructsPlugin registers BmtLoader (FromWorld)
+    // read by the spawn path when it builds rim/sheen material variants
+    // (`SroMaterialVariants`)
     let material_defaults = config.graphics.to_material_defaults();
     let present_mode = config.window_settings.present_mode.to_present_mode();
     let desired_maximum_frame_latency = config.window_settings.frame_latency();
@@ -159,7 +170,7 @@ fn main() {
             },
             TweeningPlugin,
             scenes::SceneManagerPlugin,
-            // plugins::diagnostics::DiagnosticsPlugin,
+            // (DiagnosticsPlugin: registered with the `diagnostics` tier below)
             plugins::net::plugin::NetworkPlugin,
             (
                 plugins::system_window::SystemWindowPlugin,
@@ -188,9 +199,19 @@ fn main() {
             TextdataPlugin,
             DynamicResourceLoaderPlugin,
             plugins::effects::EffectsPlugin,
-            // plugins::animation_culling::AnimationCullingPlugin,
-            // animation-keyed SFX from the .bsr mod palette (Sound ModData)
-            plugins::animation_sounds::AnimationSoundsPlugin,
+            // Nested as one element (the tuple is at 14 of Bevy's 15):
+            (
+                // Stops bone animation of rigs fully behind the fog — map props
+                // animate out to the terrain unload boundary otherwise, and
+                // Bevy's `animate_targets` has no visibility filter. Was
+                // commented out here, which also left the render-debug
+                // `play_animations` switch (and with it `make perf attribute`'s
+                // animation row) and the `paused_animations` gauge inert.
+                plugins::animation_culling::AnimationCullingPlugin,
+                // animation-keyed SFX from the .bsr mod palette (Sound ModData);
+                // skips rigs the culling above has paused
+                plugins::animation_sounds::AnimationSoundsPlugin,
+            ),
             // zone BGM from effectenvsnd.txt, played out of Music.pk2 (#771)
             plugins::zone_ambience::ZoneAmbiencePlugin,
             plugins::zone_bgm::ZoneBgmPlugin,
@@ -206,6 +227,15 @@ fn main() {
             // UV-scrolling TexAni resources (waterfalls, canal water)
             plugins::texani::TexAniPlugin,
         ))
+        // Cap the texture/mesh bytes uploaded to the GPU per frame. Without it,
+        // everything that finished loading is uploaded in the frame it lands:
+        // a region's worth of textures and meshes arriving together showed up
+        // as render-thread stalls of up to ~200 ms in `prepare_assets<GpuImage>`
+        // and `allocate_and_free_meshes` (trace of 2026-09-17). The limit is
+        // soft — one asset larger than the budget still goes through alone —
+        // and the rest waits a frame, so assets appear slightly later instead
+        // of the frame freezing. See `UPLOAD_BYTES_PER_FRAME`.
+        .insert_resource(RenderAssetBytesPerFrame::new(UPLOAD_BYTES_PER_FRAME))
         // 3d raycast picking for the character selection previews. Strictly
         // opt-in via markers (`Pickable` on meshes, `MeshPickingCamera` on the
         // camera) so the world scene's terrain is never raycast.
@@ -233,6 +263,12 @@ fn main() {
         );
         app.add_plugins(
             (
+                // The world_counts/* and cache_counts/* gauges, the frame-pacing
+                // metrics and the corner performance panel. Registered here,
+                // in the measurement tier, rather than for every player; it
+                // must precede BrpExtrasPlugin, which only installs its own
+                // FrameTimeDiagnosticsPlugin when none is present yet.
+                plugins::diagnostics::DiagnosticsPlugin,
                 // `openroad/diagnostics` dumps the whole DiagnosticsStore
                 // (incl. the world_counts/* entity categories) over BRP —
                 // brp_extras only exposes FPS/frame-time.

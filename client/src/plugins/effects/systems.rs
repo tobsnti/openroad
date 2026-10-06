@@ -1,12 +1,13 @@
 use bevy::asset::{AssetEvent, Assets};
 use bevy::camera::{Camera, Camera3d, RenderTarget};
 use bevy::ecs::hierarchy::ChildOf;
-use bevy::math::{EulerRot, Mat3, Quat, Vec3};
+use bevy::math::{EulerRot, Mat3, Quat, Vec3, Vec4};
 use bevy::mesh::MeshTag;
 use bevy::prelude::{
-    Children, Commands, DetectChangesMut, Entity, GlobalTransform, Has, MessageReader, Query, Res,
-    ResMut, Time, Transform, Visibility, With, Without,
+    Children, Commands, DetectChangesMut, Entity, GlobalTransform, Handle, Has, Local,
+    MessageReader, Query, Res, ResMut, Time, Transform, Visibility, With, Without,
 };
+use bevy::utils::Parallel;
 use rand::Rng;
 
 use crate::assets::efp::format::{
@@ -569,200 +570,210 @@ pub fn run_programs(
     >,
 ) {
     let dt = time.delta_secs() * speed.0;
-    for (node, cache, mut motion, mut transform, billboard, has_visual) in &mut nodes {
-        // Inert nodes (no motion commands, no BAN drive, nothing in flight)
-        // have nothing to integrate; skipping them also keeps their
-        // Transform un-Changed so transform propagation ignores them.
-        if cache.motion.is_empty()
-            && cache.ban.is_none()
-            && motion.velocity == Vec3::ZERO
-            && motion.rvel_deg == Vec3::ZERO
-            && motion.spin_deg_vel == 0.0
-        {
-            continue;
-        }
+    // Each node only touches its own components and reads shared assets, so
+    // the per-node work runs across the compute pool (single-threaded it was
+    // ~0.6 ms per frame at a crowded spot, trace of 2026-10-02).
+    nodes.par_iter_mut().for_each(
+        |(node, cache, mut motion, mut transform, billboard, has_visual)| {
+            // Inert nodes (no motion commands, no BAN drive, nothing in flight)
+            // have nothing to integrate; skipping them also keeps their
+            // Transform un-Changed so transform propagation ignores them.
+            if cache.motion.is_empty()
+                && cache.ban.is_none()
+                && motion.velocity == Vec3::ZERO
+                && motion.rvel_deg == Vec3::ZERO
+                && motion.spin_deg_vel == 0.0
+            {
+                return;
+            }
 
-        let Some(effect) = effects.get(&node.handle) else {
-            continue;
-        };
-        let node_data = &effect.effect.nodes[node.node];
-        let frac = node.life_frac();
+            let Some(effect) = effects.get(&node.handle) else {
+                return;
+            };
+            let node_data = &effect.effect.nodes[node.node];
+            let frac = node.life_frac();
 
-        if let Some(ban) = &cache.ban {
-            apply_ban_controller(ban, node.age, &bans, &mut motion, &mut transform);
-        }
+            if let Some(ban) = &cache.ban {
+                apply_ban_controller(ban, node.age, &bans, &mut motion, &mut transform);
+            }
 
-        // Execute program commands on their scheduled effect frames — the
-        // original compiles one runtime command per occupied 50 ms row and
-        // runs each row's list once (compiler 0xca9070, executor 0xc84f90).
-        // Frames crossed since the last run are replayed (bounded after a
-        // hitch); forces add their FULL authored magnitude per scheduled
-        // frame with no dt — that per-frame impulse IS the authored unit.
-        let target = (node.age * EFFECT_FPS) as u32 + 1;
-        let crossed = target.saturating_sub(motion.sim_frame).min(16);
-        for frame in (target - crossed)..target {
-            for slot in &cache.motion {
-                if !slot.schedule.contains(frame) {
-                    continue;
+            // Execute program commands on their scheduled effect frames — the
+            // original compiles one runtime command per occupied 50 ms row and
+            // runs each row's list once (compiler 0xca9070, executor 0xc84f90).
+            // Frames crossed since the last run are replayed (bounded after a
+            // hitch); forces add their FULL authored magnitude per scheduled
+            // frame with no dt — that per-frame impulse IS the authored unit.
+            let target = (node.age * EFFECT_FPS) as u32 + 1;
+            let crossed = target.saturating_sub(motion.sim_frame).min(16);
+            for frame in (target - crossed)..target {
+                for slot in &cache.motion {
+                    if !slot.schedule.contains(frame) {
+                        continue;
+                    }
+                    let Some(source) = slot.source.resolve(node_data) else {
+                        continue;
+                    };
+                    use EffectCommand as C;
+                    match &source.command {
+                        C::SetPosition(v) => {
+                            let origin = motion.origin;
+                            transform.translation = origin + motion.origin_rotation * *v;
+                        }
+                        C::SetSpherePos(v) => {
+                            let offset = motion.origin_rotation * random_in_ellipsoid(*v);
+                            transform.translation = motion.origin + offset;
+                        }
+                        C::SetConePos(cone) => {
+                            // Spawn at a random point in a cone around local +Y —
+                            // the position sibling of SetConeVel (distance from
+                            // x/y, spread from the z half-angle).
+                            let dir =
+                                random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
+                            transform.translation = motion.origin + dir * cone_speed(cone.degrees);
+                        }
+                        C::SetVelocity(v) => {
+                            motion.velocity = motion.origin_rotation * *v;
+                        }
+                        C::SetConeVel(cone) => {
+                            let dir =
+                                random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
+                            motion.velocity = dir * cone_speed(cone.degrees);
+                        }
+                        C::SetRotation(rot) => {
+                            motion.base_rotation = mirror_quat(Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot.euler_degrees.x.to_radians(),
+                                rot.euler_degrees.y.to_radians(),
+                                rot.euler_degrees.z.to_radians(),
+                            ));
+                        }
+                        C::SetRotationAxis(axis) => {
+                            let a = axis.axis_angle;
+                            motion.base_rotation = mirror_quat(Quat::from_axis_angle(
+                                a.truncate().try_normalize().unwrap_or(Vec3::Y),
+                                a.w.to_radians(),
+                            ));
+                        }
+                        C::SetRotationMat(mat) => {
+                            motion.base_rotation =
+                                mirror_quat(Quat::from_mat3(&Mat3::from_mat4(*mat)));
+                        }
+                        C::SetRVelocity(rot) => {
+                            // Mirror-conjugated like the quats: rotations about
+                            // the mirrored X axis keep their sense, Y/Z reverse.
+                            let e = rot.euler_degrees;
+                            motion.rvel_deg = Vec3::new(e.x, -e.y, -e.z);
+                        }
+                        C::SetRVelocityAxis(axis) => {
+                            let a = axis.axis_angle;
+                            motion.spin_axis = mirror_axis(a.truncate());
+                            motion.spin_deg_vel = a.w;
+                        }
+                        C::SetRVelocityMat(mat) => {
+                            // Matrix form of rotational velocity: decompose to an
+                            // axis-angle spin (the sibling of SetRVelocityAxis).
+                            let (axis, angle) =
+                                Quat::from_mat3(&Mat3::from_mat4(*mat)).to_axis_angle();
+                            motion.spin_axis = mirror_axis(axis);
+                            motion.spin_deg_vel = angle.to_degrees();
+                        }
+                        C::SetShapeRot(axis) => {
+                            motion.spin_axis = mirror_axis(axis.axis_angle.truncate());
+                            motion.spin_deg = axis.axis_angle.w;
+                        }
+                        C::SetShapeRotVel(axis) => {
+                            motion.spin_axis = mirror_axis(axis.axis_angle.truncate());
+                            motion.spin_deg_vel = axis.axis_angle.w;
+                        }
+                        C::Force(v) => {
+                            let accel = motion.origin_rotation * *v;
+                            motion.velocity += accel;
+                        }
+                        C::ConeForce(cone) => {
+                            // Exe RE (case 70): identical cone construction to
+                            // SetConeVel but *added* to velocity, re-randomized
+                            // per scheduled frame.
+                            let dir =
+                                random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
+                            motion.velocity += dir * cone_speed(cone.degrees);
+                        }
+                        C::Attraction(strength) => {
+                            let to_origin = motion.origin - transform.translation;
+                            let dir = to_origin.try_normalize().unwrap_or(Vec3::ZERO);
+                            motion.velocity += dir * *strength;
+                        }
+                        // BAN paths sample continuously below; graphs in
+                        // `sample_graphs`; emission in `emit_particles`.
+                        _ => {}
+                    }
                 }
+            }
+            motion.sim_frame = target;
+
+            // Keyframed BAN position/rotation paths: the keys are per-frame rows,
+            // sampled continuously (lerped) for smooth motion at render rate.
+            for slot in &cache.motion {
                 let Some(source) = slot.source.resolve(node_data) else {
                     continue;
                 };
                 use EffectCommand as C;
                 match &source.command {
-                    C::SetPosition(v) => {
-                        let origin = motion.origin;
-                        transform.translation = origin + motion.origin_rotation * *v;
+                    C::SetBanPos(keys) => {
+                        if let Some(pos) = sample_keyframes(keys, frac, Vec3::lerp) {
+                            let origin_rotation = motion.origin_rotation;
+                            transform.translation = motion.origin + origin_rotation * pos;
+                        }
                     }
-                    C::SetSpherePos(v) => {
-                        let offset = motion.origin_rotation * random_in_ellipsoid(*v);
-                        transform.translation = motion.origin + offset;
+                    C::SetBanRot(keys) => {
+                        if let Some(rotation) = sample_mat_rotation(keys, frac) {
+                            motion.base_rotation = mirror_quat(rotation);
+                        }
                     }
-                    C::SetConePos(cone) => {
-                        // Spawn at a random point in a cone around local +Y —
-                        // the position sibling of SetConeVel (distance from
-                        // x/y, spread from the z half-angle).
-                        let dir = random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
-                        transform.translation = motion.origin + dir * cone_speed(cone.degrees);
-                    }
-                    C::SetVelocity(v) => {
-                        motion.velocity = motion.origin_rotation * *v;
-                    }
-                    C::SetConeVel(cone) => {
-                        let dir = random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
-                        motion.velocity = dir * cone_speed(cone.degrees);
-                    }
-                    C::SetRotation(rot) => {
-                        motion.base_rotation = mirror_quat(Quat::from_euler(
-                            EulerRot::XYZ,
-                            rot.euler_degrees.x.to_radians(),
-                            rot.euler_degrees.y.to_radians(),
-                            rot.euler_degrees.z.to_radians(),
-                        ));
-                    }
-                    C::SetRotationAxis(axis) => {
-                        let a = axis.axis_angle;
-                        motion.base_rotation = mirror_quat(Quat::from_axis_angle(
-                            a.truncate().try_normalize().unwrap_or(Vec3::Y),
-                            a.w.to_radians(),
-                        ));
-                    }
-                    C::SetRotationMat(mat) => {
-                        motion.base_rotation = mirror_quat(Quat::from_mat3(&Mat3::from_mat4(*mat)));
-                    }
-                    C::SetRVelocity(rot) => {
-                        // Mirror-conjugated like the quats: rotations about
-                        // the mirrored X axis keep their sense, Y/Z reverse.
-                        let e = rot.euler_degrees;
-                        motion.rvel_deg = Vec3::new(e.x, -e.y, -e.z);
-                    }
-                    C::SetRVelocityAxis(axis) => {
-                        let a = axis.axis_angle;
-                        motion.spin_axis = mirror_axis(a.truncate());
-                        motion.spin_deg_vel = a.w;
-                    }
-                    C::SetRVelocityMat(mat) => {
-                        // Matrix form of rotational velocity: decompose to an
-                        // axis-angle spin (the sibling of SetRVelocityAxis).
-                        let (axis, angle) = Quat::from_mat3(&Mat3::from_mat4(*mat)).to_axis_angle();
-                        motion.spin_axis = mirror_axis(axis);
-                        motion.spin_deg_vel = angle.to_degrees();
-                    }
-                    C::SetShapeRot(axis) => {
-                        motion.spin_axis = mirror_axis(axis.axis_angle.truncate());
-                        motion.spin_deg = axis.axis_angle.w;
-                    }
-                    C::SetShapeRotVel(axis) => {
-                        motion.spin_axis = mirror_axis(axis.axis_angle.truncate());
-                        motion.spin_deg_vel = axis.axis_angle.w;
-                    }
-                    C::Force(v) => {
-                        let accel = motion.origin_rotation * *v;
-                        motion.velocity += accel;
-                    }
-                    C::ConeForce(cone) => {
-                        // Exe RE (case 70): identical cone construction to
-                        // SetConeVel but *added* to velocity, re-randomized
-                        // per scheduled frame.
-                        let dir = random_in_cone(motion.origin_rotation * Vec3::Y, cone.degrees.z);
-                        motion.velocity += dir * cone_speed(cone.degrees);
-                    }
-                    C::Attraction(strength) => {
-                        let to_origin = motion.origin - transform.translation;
-                        let dir = to_origin.try_normalize().unwrap_or(Vec3::ZERO);
-                        motion.velocity += dir * *strength;
-                    }
-                    // BAN paths sample continuously below; graphs in
-                    // `sample_graphs`; emission in `emit_particles`.
                     _ => {}
                 }
             }
-        }
-        motion.sim_frame = target;
 
-        // Keyframed BAN position/rotation paths: the keys are per-frame rows,
-        // sampled continuously (lerped) for smooth motion at render rate.
-        for slot in &cache.motion {
-            let Some(source) = slot.source.resolve(node_data) else {
-                continue;
-            };
-            use EffectCommand as C;
-            match &source.command {
-                C::SetBanPos(keys) => {
-                    if let Some(pos) = sample_keyframes(keys, frac, Vec3::lerp) {
-                        let origin_rotation = motion.origin_rotation;
-                        transform.translation = motion.origin + origin_rotation * pos;
-                    }
-                }
-                C::SetBanRot(keys) => {
-                    if let Some(rotation) = sample_mat_rotation(keys, frac) {
-                        motion.base_rotation = mirror_quat(rotation);
-                    }
-                }
-                _ => {}
+            // Integrate. Authored velocities are units-per-effect-frame (exe RE:
+            // `pos += vel` once per 50 ms frame, no dt) — ×EFFECT_FPS converts
+            // to per-second so the render-rate integration matches the original
+            // trajectory. Writes are guarded so motionless nodes don't dirty
+            // their Transform (and drag the subtree through propagation).
+            if motion.velocity != Vec3::ZERO {
+                transform.translation += motion.velocity * (EFFECT_FPS * dt);
             }
-        }
-
-        // Integrate. Authored velocities are units-per-effect-frame (exe RE:
-        // `pos += vel` once per 50 ms frame, no dt) — ×EFFECT_FPS converts
-        // to per-second so the render-rate integration matches the original
-        // trajectory. Writes are guarded so motionless nodes don't dirty
-        // their Transform (and drag the subtree through propagation).
-        if motion.velocity != Vec3::ZERO {
-            transform.translation += motion.velocity * (EFFECT_FPS * dt);
-        }
-        if motion.rvel_deg.length_squared() > f32::EPSILON {
-            let rvel = motion.rvel_deg * (EFFECT_FPS * dt);
-            motion.base_rotation *= Quat::from_euler(
-                EulerRot::XYZ,
-                rvel.x.to_radians(),
-                rvel.y.to_radians(),
-                rvel.z.to_radians(),
-            );
-        }
-        if motion.spin_deg_vel != 0.0 {
-            motion.spin_deg += motion.spin_deg_vel * (EFFECT_FPS * dt);
-        }
-
-        // Billboarded plates get their rotation from the billboard system.
-        // Shape spin (SetShapeRot/Vel) is RENDER-ONLY in the original — a
-        // separate shape matrix multiplied at draw time (exe ctx+0x130),
-        // never part of the frame children/emitted particles inherit — so
-        // it only composes for nodes that render geometry themselves.
-        // Spinning an invisible emitter template would swing its attached
-        // particle chain around like a clock hand.
-        if billboard.is_none() {
-            let spin = if has_visual {
-                motion.spin()
-            } else {
-                Quat::IDENTITY
-            };
-            let rotation = motion.origin_rotation * motion.base_rotation * spin;
-            if transform.rotation != rotation {
-                transform.rotation = rotation;
+            if motion.rvel_deg.length_squared() > f32::EPSILON {
+                let rvel = motion.rvel_deg * (EFFECT_FPS * dt);
+                motion.base_rotation *= Quat::from_euler(
+                    EulerRot::XYZ,
+                    rvel.x.to_radians(),
+                    rvel.y.to_radians(),
+                    rvel.z.to_radians(),
+                );
             }
-        }
-    }
+            if motion.spin_deg_vel != 0.0 {
+                motion.spin_deg += motion.spin_deg_vel * (EFFECT_FPS * dt);
+            }
+
+            // Billboarded plates get their rotation from the billboard system.
+            // Shape spin (SetShapeRot/Vel) is RENDER-ONLY in the original — a
+            // separate shape matrix multiplied at draw time (exe ctx+0x130),
+            // never part of the frame children/emitted particles inherit — so
+            // it only composes for nodes that render geometry themselves.
+            // Spinning an invisible emitter template would swing its attached
+            // particle chain around like a clock hand.
+            if billboard.is_none() {
+                let spin = if has_visual {
+                    motion.spin()
+                } else {
+                    Quat::IDENTITY
+                };
+                let rotation = motion.origin_rotation * motion.base_rotation * spin;
+                if transform.rotation != rotation {
+                    transform.rotation = rotation;
+                }
+            }
+        },
+    );
 }
 
 /// Samples a SetBANRot matrix track, slerping between adjacent keys.
@@ -950,61 +961,77 @@ pub fn sample_graphs(
         (Without<PooledParticle>, Without<EffectSimPaused>),
     >,
     intensities: Query<&EffectIntensity>,
+    // Texture-slide writes go to shared material assets, so they are queued
+    // per thread and applied after the parallel pass.
+    mut uv_writes: Local<Parallel<Vec<(Handle<SroEffectMaterial>, Vec4)>>>,
 ) {
-    for (entity, node, cache, mut transform, visual) in &mut nodes {
-        // Nodes without any graph binding (resolved at spawn) sample nothing.
-        if cache.scale.is_none()
-            && cache.diffuse.is_none()
-            && cache.uv.is_none()
-            && cache.random_scale.is_none()
-        {
-            continue;
-        }
-        let Some(effect) = effects.get(&node.handle) else {
-            continue;
-        };
-        let node_data = &effect.effect.nodes[node.node];
-        let frac = node.life_frac();
-
-        // Scale graphs are RENDER-ONLY, like the shape spin: the exe's
-        // ScaleGraph/SetGraphRandomScale write the per-instance scale
-        // register absolutely at draw time, never a hierarchy transform.
-        // Writing the sampled value onto an invisible node's Transform (a
-        // leaf emitter anchor template samples the graph meant for its
-        // copies) multiplied every emitted copy's offset and inherited
-        // size by it via propagation — the talisman's anchors sampled
-        // ~5.7 and wrapped the wards in an oversized second haze layer
-        // (BRP-measured 2026-07-29).
-        if visual.is_some() {
-            let scale = sample_random_scale(cache, node_data, entity, node.age)
-                .or_else(|| sample_scale(&cache.scale, node_data, frac));
-            if let Some(scale) = scale {
-                if transform.scale != scale {
-                    transform.scale = scale;
-                }
+    // Everything else is per node (own Transform, MeshTag, EffectVisual), so
+    // it runs across the compute pool: single-threaded this was ~0.4 ms per
+    // frame at a crowded spot (trace of 2026-10-02).
+    nodes
+        .par_iter_mut()
+        .for_each(|(entity, node, cache, mut transform, visual)| {
+            // Nodes without any graph binding (resolved at spawn) sample nothing.
+            if cache.scale.is_none()
+                && cache.diffuse.is_none()
+                && cache.uv.is_none()
+                && cache.random_scale.is_none()
+            {
+                return;
             }
-        }
+            let Some(effect) = effects.get(&node.handle) else {
+                return;
+            };
+            let node_data = &effect.effect.nodes[node.node];
+            let frac = node.life_frac();
 
-        // Per-effect brightness dim (rare auras), applied to the tint RGB.
-        let intensity = intensities.get(node.root).map_or(1.0, |i| i.0);
-        if let Some((mut visual, mut tag)) = visual {
-            if let Some(argb) = sample_argb(&cache.diffuse, node_data, frac) {
-                let argb = dim_argb_rgb(argb, intensity);
-                if argb != visual.last_argb {
-                    tag.0 = argb;
-                    visual.last_argb = argb;
-                }
-            }
-            if let (Some(uv_source), Some(uv_material)) = (&cache.uv, visual.uv_material.clone()) {
-                if let Some(uv) = sample_texture_slide(uv_source, node_data, node.age) {
-                    if uv.distance_squared(visual.last_uv) > 1e-8 {
-                        if let Some(mut material) = materials.get_mut(&uv_material) {
-                            material.uv_offset_scale = uv;
-                        }
-                        visual.last_uv = uv;
+            // Scale graphs are RENDER-ONLY, like the shape spin: the exe's
+            // ScaleGraph/SetGraphRandomScale write the per-instance scale
+            // register absolutely at draw time, never a hierarchy transform.
+            // Writing the sampled value onto an invisible node's Transform (a
+            // leaf emitter anchor template samples the graph meant for its
+            // copies) multiplied every emitted copy's offset and inherited
+            // size by it via propagation — the talisman's anchors sampled
+            // ~5.7 and wrapped the wards in an oversized second haze layer
+            // (BRP-measured 2026-07-29).
+            if visual.is_some() {
+                let scale = sample_random_scale(cache, node_data, entity, node.age)
+                    .or_else(|| sample_scale(&cache.scale, node_data, frac));
+                if let Some(scale) = scale {
+                    if transform.scale != scale {
+                        transform.scale = scale;
                     }
                 }
             }
+
+            // Per-effect brightness dim (rare auras), applied to the tint RGB.
+            let intensity = intensities.get(node.root).map_or(1.0, |i| i.0);
+            if let Some((mut visual, mut tag)) = visual {
+                if let Some(argb) = sample_argb(&cache.diffuse, node_data, frac) {
+                    let argb = dim_argb_rgb(argb, intensity);
+                    if argb != visual.last_argb {
+                        tag.0 = argb;
+                        visual.last_argb = argb;
+                    }
+                }
+                // Instanced nodes read `last_uv` straight into their instance;
+                // only material-path nodes (trails) need the uniform write.
+                if let Some(uv_source) = &cache.uv {
+                    if let Some(uv) = sample_texture_slide(uv_source, node_data, node.age) {
+                        if uv.distance_squared(visual.last_uv) > 1e-8 {
+                            if let Some(uv_material) = visual.uv_material.clone() {
+                                uv_writes.borrow_local_mut().push((uv_material, uv));
+                            }
+                            visual.last_uv = uv;
+                        }
+                    }
+                }
+            }
+        });
+
+    for (uv_material, uv) in uv_writes.drain() {
+        if let Some(mut material) = materials.get_mut(&uv_material) {
+            material.uv_offset_scale = uv;
         }
     }
 }
@@ -1141,40 +1168,45 @@ pub fn billboard_effect_nodes(
         return;
     };
 
-    for (mut transform, global, billboard, child_of, motion) in &mut plates {
-        let desired = match billboard.0 {
-            // Screen-aligned: quad +Z parallel to the camera view axis.
-            ViewMode::Billboard => camera.rotation(),
-            // SilkroadDoc JMXVEFF: ViewVBillboard is a "vertical billboard
-            // (rotates only around the Y-axis)" — i.e. a cylindrical billboard
-            // upright in world space, the same constraint as YBillboard, not a
-            // free screen-facing quad.
-            ViewMode::VBillboard | ViewMode::YBillboard => {
-                let mut dir = camera.translation() - global.translation();
-                dir.y = 0.0;
-                match dir.try_normalize() {
-                    Some(dir) => Quat::from_rotation_arc(Vec3::Z, dir),
-                    None => continue,
+    // Per-plate and independent (each reads the camera and its own parent),
+    // so it runs across the compute pool: single-threaded it was ~0.7 ms per
+    // frame with ~1,800 plates at a crowded spot (trace of 2026-10-02).
+    plates
+        .par_iter_mut()
+        .for_each(|(mut transform, global, billboard, child_of, motion)| {
+            let desired = match billboard.0 {
+                // Screen-aligned: quad +Z parallel to the camera view axis.
+                ViewMode::Billboard => camera.rotation(),
+                // SilkroadDoc JMXVEFF: ViewVBillboard is a "vertical billboard
+                // (rotates only around the Y-axis)" — i.e. a cylindrical billboard
+                // upright in world space, the same constraint as YBillboard, not a
+                // free screen-facing quad.
+                ViewMode::VBillboard | ViewMode::YBillboard => {
+                    let mut dir = camera.translation() - global.translation();
+                    dir.y = 0.0;
+                    match dir.try_normalize() {
+                        Some(dir) => Quat::from_rotation_arc(Vec3::Z, dir),
+                        None => return,
+                    }
                 }
-            }
-            ViewMode::None => continue,
-        };
-        let spin = motion.map(EffectMotion::spin).unwrap_or(Quat::IDENTITY);
+                ViewMode::None => return,
+            };
+            let spin = motion.map(EffectMotion::spin).unwrap_or(Quat::IDENTITY);
 
-        let parent_linear = parents
-            .get(child_of.parent())
-            .map(|p| bevy::math::Mat3::from(p.affine().matrix3))
-            .unwrap_or(Mat3::IDENTITY);
-        let Some(rotation) = aimed_local_rotation(parent_linear, desired) else {
-            continue;
-        };
-        // Exact equality suppresses idle change ticks without an angular tolerance
-        // that could discard slow spin or camera motion. All inputs still run.
-        let rotation = rotation * spin;
-        if transform.rotation != rotation {
-            transform.rotation = rotation;
-        }
-    }
+            let parent_linear = parents
+                .get(child_of.parent())
+                .map(|p| bevy::math::Mat3::from(p.affine().matrix3))
+                .unwrap_or(Mat3::IDENTITY);
+            let Some(rotation) = aimed_local_rotation(parent_linear, desired) else {
+                return;
+            };
+            // Exact equality suppresses idle change ticks without an angular tolerance
+            // that could discard slow spin or camera motion. All inputs still run.
+            let rotation = rotation * spin;
+            if transform.rotation != rotation {
+                transform.rotation = rotation;
+            }
+        });
 }
 
 /// The local rotation that makes an entity's world basis equal `desired`

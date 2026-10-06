@@ -172,8 +172,13 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
     },
     SettingsGroup {
         field: "graphics",
-        liveness: Liveness::Live,
-        note: "terrain params via apply_terrain_render_params, bloom via \
+        liveness: Liveness::Mixed,
+        note: "restart: `terrain.pipeline` decides in MapPlugin::build \
+               (map/mod.rs) whether the hand-rolled terrain render pipeline \
+               is registered, and fixes the choice in a resource that new \
+               regions are built from, so a later edit cannot produce ground \
+               the registered pipeline cannot draw. live: everything else — \
+               terrain params via apply_terrain_render_params, bloom via \
                options_video::apply_bloom_option, rim mode via \
                apply_selection_colors, foliage via \
                map::foliage::apply_foliage_settings (#646). render_mode is \
@@ -428,7 +433,12 @@ mod test {
         // config value that decides *plugin registration* is restart-only by
         // construction, not by neglect. Each exception is a registration
         // decision and is listed as `Restart` in SETTINGS_AUDIT.
-        const ALLOWED: [(&str, &str); 4] = [
+        const ALLOWED: [(&str, &str); 5] = [
+            (
+                "map/mod.rs",
+                "graphics.terrain.pipeline registers the hand-rolled terrain \
+                 render pipeline (its RenderStartup layout needs a GPU limit)",
+            ),
             (
                 "net/plugin.rs",
                 "network_settings.enabled adds GatewayPlugin",
@@ -470,7 +480,8 @@ mod test {
                 let Ok(text) = std::fs::read_to_string(&path) else {
                     continue;
                 };
-                let name = path.to_string_lossy().to_string();
+                // `/`-separated so the ALLOWED suffixes match on Windows too
+                let name = path.to_string_lossy().replace('\\', "/");
                 if let Some(i) = ALLOWED.iter().position(|(f, _)| name.ends_with(f)) {
                     seen_exception[i] = true;
                     continue;

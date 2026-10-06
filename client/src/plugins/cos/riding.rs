@@ -155,45 +155,76 @@ const HAND_BONE: &str = "Hand";
 /// and any bone-anchored aura) in one write, and composes with the GM ghost
 /// (which swaps materials instead of visibility).
 ///
-/// Polls rather than reacting to `RiderOf` being added: attachments resolve
-/// over several frames, and a player can equip while mounted — an event-driven
-/// version would miss both. Writes only on an actual state change, so a
-/// settled character costs one comparison per attachment.
+/// Change-driven, covering the two cases a plain `RiderOf` reaction would
+/// miss: attachments resolve over several frames, and a player can equip while
+/// mounted. So it reacts to (a) a character mounting or dismounting — that
+/// character's held items are re-evaluated — and (b) any newly spawned
+/// attachment — its owning character's state decides. It used to poll instead,
+/// walking the whole subtree (every bone and mesh part) of every player AND
+/// every monster each frame: at a crowded spot that was ~0.4 ms per frame
+/// (trace of 2026-10-02) for a state that changes a few times per session.
 ///
 /// The inventory paper-doll is unaffected: it renders its own
 /// `PaperDollClone`, which is neither a `Player` nor a `RemoteEntity`.
+#[allow(clippy::type_complexity)]
 pub fn hide_held_items_while_mounted(
     characters: Query<
-        (Entity, Has<RiderOf>),
+        Has<RiderOf>,
         Or<(
             With<Player>,
             With<crate::plugins::net::entities::RemoteEntity>,
         )>,
     >,
+    mounted_now: Query<Entity, Added<RiderOf>>,
+    mut dismounted: RemovedComponents<RiderOf>,
+    new_attachments: Query<Entity, Added<crate::commands::SpawnedFromResource>>,
+    parents: Query<&ChildOf>,
     children: Query<&Children>,
     mut attachments: Query<(&ChildOf, &mut Visibility), With<crate::commands::SpawnedFromResource>>,
     bones: Query<&Name, With<crate::commands::Bone>>,
 ) {
-    for (character, mounted) in characters.iter() {
-        let wanted = if mounted {
+    let wanted = |mounted: bool| {
+        if mounted {
             Visibility::Hidden
         } else {
             Visibility::Inherited
+        }
+    };
+    // Held items hang off a hand bone; armor hangs off the wrapper.
+    let is_held = |parent: &ChildOf| {
+        bones
+            .get(parent.parent())
+            .is_ok_and(|name| name.as_str().contains(HAND_BONE))
+    };
+
+    // (a) mount state changed: re-evaluate that character's held items
+    let changed: Vec<Entity> = mounted_now.iter().chain(dismounted.read()).collect();
+    for character in changed {
+        let Ok(mounted) = characters.get(character) else {
+            continue; // despawned, or not a character
         };
         for descendant in children.iter_descendants(character) {
-            let Ok((parent, mut visibility)) = attachments.get_mut(descendant) else {
-                continue;
-            };
-            // Held items hang off a hand bone; armor hangs off the wrapper.
-            if !bones
-                .get(parent.parent())
-                .is_ok_and(|name| name.as_str().contains(HAND_BONE))
-            {
-                continue;
+            if let Ok((parent, mut visibility)) = attachments.get_mut(descendant) {
+                if is_held(parent) {
+                    visibility.set_if_neq(wanted(mounted));
+                }
             }
-            if *visibility != wanted {
-                *visibility = wanted;
-            }
+        }
+    }
+
+    // (b) a held item just appeared: its owner decides (equip while mounted)
+    for attachment in &new_attachments {
+        let Ok((parent, mut visibility)) = attachments.get_mut(attachment) else {
+            continue;
+        };
+        if !is_held(parent) {
+            continue;
+        }
+        let owner = parents
+            .iter_ancestors(attachment)
+            .find_map(|ancestor| characters.get(ancestor).ok());
+        if let Some(mounted) = owner {
+            visibility.set_if_neq(wanted(mounted));
         }
     }
 }

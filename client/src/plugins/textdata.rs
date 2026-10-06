@@ -806,15 +806,20 @@ fn add_rare_effects_when_loaded(
     commands.insert_resource(ClientRareEffects(merged));
 }
 
+/// Moves each loaded table out of `Assets<Textdata>` into its `Client*`
+/// resource. Taking ownership (rather than cloning) matters: itemdata,
+/// skilldata and characterdata are tens of thousands of rows, and deep-cloning
+/// them on the main thread was a ~0.3 s frame at login. Nothing reads
+/// `Assets<Textdata>` afterwards — the resources are the only consumers.
 fn add_resource_when_textdata_loaded(
     mut reader: MessageReader<AssetEvent<Textdata>>,
     mut commands: Commands,
     mut guide: ResMut<ClientGameGuide>,
-    textdata_assets: Res<Assets<Textdata>>,
+    mut textdata_assets: ResMut<Assets<Textdata>>,
 ) {
     for event in reader.read() {
         let textdata = match event {
-            AssetEvent::Added { id } => textdata_assets.get(*id),
+            AssetEvent::Added { id } => textdata_assets.remove(*id),
             _ => None,
         };
 
@@ -828,7 +833,7 @@ fn add_resource_when_textdata_loaded(
                         .map(|(id, row)| (row.code_name().clone(), *id))
                         .collect();
                     commands.insert_resource(ClientCharacterIndex(index));
-                    commands.insert_resource(ClientCharacterData(Some(char_data.clone())))
+                    commands.insert_resource(ClientCharacterData(Some(char_data)))
                 }
                 Textdata::ItemData(item_data) => {
                     info!("loaded {} itemdata rows", item_data.len());
@@ -838,10 +843,10 @@ fn add_resource_when_textdata_loaded(
                         .map(|(id, row)| (row.code_name().clone(), *id))
                         .collect();
                     commands.insert_resource(ClientItemIndex(index));
-                    commands.insert_resource(ClientItemData(Some(item_data.clone())))
+                    commands.insert_resource(ClientItemData(Some(item_data)))
                 }
                 Textdata::LevelData(level_data) => {
-                    commands.insert_resource(ClientLevelData(Some(level_data.clone())))
+                    commands.insert_resource(ClientLevelData(Some(level_data)))
                 }
                 Textdata::QuestRewards(modes, values, items) => {
                     info!(
@@ -849,11 +854,7 @@ fn add_resource_when_textdata_loaded(
                         modes.0.len(),
                         items.0.len()
                     );
-                    commands.insert_resource(ClientQuestRewards(Some((
-                        modes.clone(),
-                        values.clone(),
-                        items.clone(),
-                    ))))
+                    commands.insert_resource(ClientQuestRewards(Some((modes, values, items))))
                 }
                 Textdata::Quests(table) => {
                     info!(
@@ -861,35 +862,35 @@ fn add_resource_when_textdata_loaded(
                         table.by_id.len(),
                         table.contents.len()
                     );
-                    commands.insert_resource(ClientQuestTable(Some(table.clone())))
+                    commands.insert_resource(ClientQuestTable(Some(table)))
                 }
                 Textdata::ZoneNames(zone_names) => {
                     info!("loaded {} zone names", zone_names.0.len());
-                    commands.insert_resource(ClientZoneNames(Some(zone_names.clone())))
+                    commands.insert_resource(ClientZoneNames(Some(zone_names)))
                 }
                 Textdata::Names(names) => {
                     info!("loaded {} display names", names.0.len());
-                    commands.insert_resource(ClientTextNames(Some(names.clone())))
+                    commands.insert_resource(ClientTextNames(Some(names)))
                 }
                 Textdata::SkillData(skill_data) => {
                     info!("loaded {} skilldata rows", skill_data.len());
-                    commands.insert_resource(ClientSkillData(Some(skill_data.clone())))
+                    commands.insert_resource(ClientSkillData(Some(skill_data)))
                 }
                 Textdata::SkillEffects(table) => {
                     info!("loaded {} skilleffect entries", table.skills.len());
-                    commands.insert_resource(ClientSkillEffects(Some(table.clone())))
+                    commands.insert_resource(ClientSkillEffects(Some(table)))
                 }
                 Textdata::MasteryData(masteries) => {
                     info!("loaded {} masteries", masteries.len());
-                    commands.insert_resource(ClientMasteryData(Some(masteries.clone())))
+                    commands.insert_resource(ClientMasteryData(Some(masteries)))
                 }
                 Textdata::SkillGroups(groups) => {
                     info!("loaded {} skill-group branches", groups.len());
-                    commands.insert_resource(ClientSkillGroups(Some(groups.clone())))
+                    commands.insert_resource(ClientSkillGroups(Some(groups)))
                 }
                 Textdata::MagicOption(magic_options) => {
                     info!("loaded {} magic-option rows", magic_options.len());
-                    commands.insert_resource(ClientMagicOptions(Some(magic_options.clone())))
+                    commands.insert_resource(ClientMagicOptions(Some(magic_options)))
                 }
                 Textdata::CollectionBook(book) => {
                     info!(
@@ -897,11 +898,11 @@ fn add_resource_when_textdata_loaded(
                         book.themes.len(),
                         book.items.len()
                     );
-                    commands.insert_resource(ClientCollectionBook(Some(book.clone())))
+                    commands.insert_resource(ClientCollectionBook(Some(book)))
                 }
                 Textdata::ActionWnd(table) => {
                     info!("loaded {} action-window commands", table.0.len());
-                    commands.insert_resource(ClientActionCommands(Some(table.clone())))
+                    commands.insert_resource(ClientActionCommands(Some(table)))
                 }
                 // The guide's two halves land independently and fill one
                 // resource, so they mutate it rather than replacing it.
@@ -913,27 +914,27 @@ fn add_resource_when_textdata_loaded(
                             mismatch.category, mismatch.stated, mismatch.actual
                         );
                     }
-                    guide.index = Some(index.clone());
+                    guide.index = Some(index);
                 }
                 Textdata::GuideText(bodies) => {
                     info!("loaded {} game-guide bodies", bodies.0.len());
-                    guide.bodies = Some(bodies.clone());
+                    guide.bodies = Some(bodies);
                 }
                 Textdata::UiSystem(strings) => {
                     info!("loaded {} UI strings", strings.0.len());
-                    commands.insert_resource(ClientUiStrings(Some(strings.clone())))
+                    commands.insert_resource(ClientUiStrings(Some(strings)))
                 }
                 Textdata::SpeechText(strings) => {
                     info!("loaded {} speech strings", strings.0.len());
-                    commands.insert_resource(ClientSpeechText(Some(strings.clone())))
+                    commands.insert_resource(ClientSpeechText(Some(strings)))
                 }
                 Textdata::NpcChat(chat) => {
                     info!("loaded {} npc chat entries", chat.0.len());
-                    commands.insert_resource(ClientNpcChat(Some(chat.clone())))
+                    commands.insert_resource(ClientNpcChat(Some(chat)))
                 }
                 Textdata::Shops(shops) => {
                     info!("loaded {} npc shops", shops.by_npc.len());
-                    commands.insert_resource(ClientShops(Some(shops.clone())))
+                    commands.insert_resource(ClientShops(Some(shops)))
                 }
                 Textdata::Teleport(teleport) => {
                     info!(
@@ -941,7 +942,7 @@ fn add_resource_when_textdata_loaded(
                         teleport.info.len(),
                         teleport.links.len()
                     );
-                    commands.insert_resource(ClientTeleport(Some(teleport.clone())))
+                    commands.insert_resource(ClientTeleport(Some(teleport)))
                 }
                 Textdata::WorldMap(worldmap) => {
                     info!(
@@ -949,11 +950,11 @@ fn add_resource_when_textdata_loaded(
                         worldmap.maps.len(),
                         worldmap.pois.len()
                     );
-                    commands.insert_resource(ClientWorldMap(Some(worldmap.clone())))
+                    commands.insert_resource(ClientWorldMap(Some(worldmap)))
                 }
                 Textdata::DungeonInfo(dungeons) => {
                     info!("loaded {} dungeon info rows", dungeons.0.len());
-                    commands.insert_resource(ClientDungeonInfo(Some(dungeons.clone())))
+                    commands.insert_resource(ClientDungeonInfo(Some(dungeons)))
                 }
                 Textdata::ZoneSounds(zone_sounds) => {
                     info!(
@@ -972,7 +973,7 @@ fn add_resource_when_textdata_loaded(
                             zone_sounds.unmatched_zones.join(", ")
                         );
                     }
-                    commands.insert_resource(ClientZoneSounds(Some(zone_sounds.clone())))
+                    commands.insert_resource(ClientZoneSounds(Some(zone_sounds)))
                 }
                 Textdata::EffectSounds(effect_sounds) => {
                     info!(
@@ -981,7 +982,7 @@ fn add_resource_when_textdata_loaded(
                         effect_sounds.len(),
                         effect_sounds.mute_rows()
                     );
-                    commands.insert_resource(ClientEffectSounds::from_table(effect_sounds.clone()))
+                    commands.insert_resource(ClientEffectSounds::from_table(effect_sounds))
                 }
             }
         }

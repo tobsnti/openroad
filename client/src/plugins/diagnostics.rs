@@ -1,15 +1,17 @@
 use crate::assets::m::TerrainBlock;
 use crate::assets::o2::MapObject;
-use crate::commands::{Bone, MeshGroup, SpawnedFromResource};
+use crate::commands::{Bone, SpawnedFromResource};
 use crate::plugins::animation_culling::PausedAnimationGraph;
 use crate::plugins::camera::CameraLayers;
+use crate::plugins::dynamic_resource_loader::UnloadedResource;
 use crate::plugins::effects::spawn::{EffectMaterials, EffectMeshes};
 use crate::plugins::effects::{
     EffectInstance, EffectNode, EffectSimPaused, EmittedBy, PooledParticle,
 };
 use crate::plugins::map::foliage::FoliageBlock;
 use crate::plugins::map::objects::{
-    CompoundPart, LoadingCompound, LoadingResources, SpawnedMapObjects, SroBindPoses, SroMeshes,
+    CompoundPart, LoadingCompound, LoadingResources, SpawnedMapObjects, SroAnimationClips,
+    SroBindPoses, SroMaterialVariants, SroMeshes,
 };
 use crate::plugins::map::terrain::{TerrainLoadState, WaterPlane};
 use crate::GameState;
@@ -20,8 +22,6 @@ use bevy::diagnostic::{
 };
 use bevy::ecs::entity::Entities;
 use bevy::mesh::Mesh3d;
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::remote::BrpResult;
 use bevy::render::render_phase::{
@@ -56,7 +56,6 @@ pub const COMPOUND_PART_COUNT: DiagnosticPath =
     DiagnosticPath::const_new("world_counts/compound_parts");
 pub const RESOURCE_ROOT_COUNT: DiagnosticPath =
     DiagnosticPath::const_new("world_counts/resource_roots");
-pub const MESH_GROUP_COUNT: DiagnosticPath = DiagnosticPath::const_new("world_counts/mesh_groups");
 pub const MESH_PART_COUNT: DiagnosticPath = DiagnosticPath::const_new("world_counts/mesh_parts");
 pub const FOLIAGE_BLOCK_COUNT: DiagnosticPath =
     DiagnosticPath::const_new("world_counts/foliage_blocks");
@@ -86,6 +85,15 @@ pub const PAUSED_EFFECT_COUNT: DiagnosticPath =
     DiagnosticPath::const_new("world_counts/paused_effects");
 pub const TERRAIN_BUILDING_COUNT: DiagnosticPath =
     DiagnosticPath::const_new("world_counts/terrain_building");
+/// Characters, NPCs and map objects waiting to spawn: still loading, or loaded
+/// and parked behind `RESOURCE_SPAWNS_PER_FRAME` (`dynamic_resource_loader`).
+pub const UNSPAWNED_RESOURCE_COUNT: DiagnosticPath =
+    DiagnosticPath::const_new("world_counts/unspawned_resources");
+/// Distinct component combinations in the world. Every new one is matched
+/// against every query of every system, and building a query (some engine
+/// systems do per frame) walks all of them, so a count that keeps climbing
+/// is a CPU cost of its own.
+pub const ARCHETYPE_COUNT: DiagnosticPath = DiagnosticPath::const_new("world_counts/archetypes");
 
 // Sizes of the dedup/registry HashMaps (mesh, bind-pose, material and
 // map-object caches). Growth that never plateaus while revisiting the same
@@ -120,6 +128,13 @@ pub const FRAME_TIME_STUTTER_RATE: DiagnosticPath =
 pub const SRO_MESH_CACHE: DiagnosticPath = DiagnosticPath::const_new("cache_counts/sro_meshes");
 pub const SRO_BIND_POSE_CACHE: DiagnosticPath =
     DiagnosticPath::const_new("cache_counts/sro_bind_poses");
+pub const SRO_ANIMATION_CLIP_CACHE: DiagnosticPath =
+    DiagnosticPath::const_new("cache_counts/sro_animation_clips");
+pub const SRO_MATERIAL_VARIANT_CACHE: DiagnosticPath =
+    DiagnosticPath::const_new("cache_counts/sro_material_variants");
+/// Released assets kept loaded for a grace period (`asset_residency`).
+pub const RESIDENT_ASSET_CACHE: DiagnosticPath =
+    DiagnosticPath::const_new("cache_counts/resident_assets");
 pub const SPAWNED_MAP_OBJECT_CACHE: DiagnosticPath =
     DiagnosticPath::const_new("cache_counts/spawned_map_objects");
 pub const EFFECT_MESH_CACHE: DiagnosticPath =
@@ -135,15 +150,27 @@ impl Plugin for DiagnosticsPlugin {
         // frame-time diagnostic was only present as a side effect of
         // BrpExtrasPlugin (which defensively installs it), so gating BRP
         // behind `dev_tools` silently froze the FPS counter.
-        app.add_plugins(FrameTimeDiagnosticsPlugin::default())
-            .add_plugins(EntityCountDiagnosticsPlugin::default())
-            // process/mem_usage (GB) + cpu_usage in the BRP dump: macOS
-            // sandboxing blocks ps/vmmap from outside, so leak hunts need the
-            // game to report its own footprint.
-            .add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin)
-            .register_diagnostic(Diagnostic::new(MESH_PART_COUNT).with_smoothing_factor(0.0))
+        //
+        // Each one only if absent: Bevy panics on a second registration, and
+        // other plugins install these on their own — `DevPlugin`'s
+        // `FpsOverlayPlugin` adds `FrameTimeDiagnosticsPlugin` before this one
+        // runs.
+        if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
+            app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        }
+        if !app.is_plugin_added::<EntityCountDiagnosticsPlugin>() {
+            app.add_plugins(EntityCountDiagnosticsPlugin::default());
+        }
+        // process/mem_usage (GB) + cpu_usage in the BRP dump: macOS
+        // sandboxing blocks ps/vmmap from outside, so leak hunts need the
+        // game to report its own footprint.
+        if !app.is_plugin_added::<bevy::diagnostic::SystemInformationDiagnosticsPlugin>() {
+            app.add_plugins(bevy::diagnostic::SystemInformationDiagnosticsPlugin);
+        }
+        app.register_diagnostic(Diagnostic::new(MESH_PART_COUNT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(OTHER_COUNT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(TERRAIN_BUILDING_COUNT).with_smoothing_factor(0.0))
+            .register_diagnostic(Diagnostic::new(ARCHETYPE_COUNT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(FRAME_TIME_MAX_WINDOW).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(FRAME_TIME_LOW_1PCT).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(FRAME_TIME_LOW_01PCT).with_smoothing_factor(0.0))
@@ -153,6 +180,13 @@ impl Plugin for DiagnosticsPlugin {
             )
             .register_diagnostic(Diagnostic::new(SRO_MESH_CACHE).with_smoothing_factor(0.0))
             .register_diagnostic(Diagnostic::new(SRO_BIND_POSE_CACHE).with_smoothing_factor(0.0))
+            .register_diagnostic(
+                Diagnostic::new(SRO_ANIMATION_CLIP_CACHE).with_smoothing_factor(0.0),
+            )
+            .register_diagnostic(
+                Diagnostic::new(SRO_MATERIAL_VARIANT_CACHE).with_smoothing_factor(0.0),
+            )
+            .register_diagnostic(Diagnostic::new(RESIDENT_ASSET_CACHE).with_smoothing_factor(0.0))
             .register_diagnostic(
                 Diagnostic::new(SPAWNED_MAP_OBJECT_CACHE).with_smoothing_factor(0.0),
             )
@@ -172,6 +206,9 @@ impl Plugin for DiagnosticsPlugin {
                     ),
                     // Cache sizes only move while regions stream in; 4 Hz
                     // keeps six resource borrows off the per-frame schedule.
+                    archetype_count_system.run_if(bevy::time::common_conditions::on_timer(
+                        std::time::Duration::from_millis(250),
+                    )),
                     cache_count_system.run_if(bevy::time::common_conditions::on_timer(
                         std::time::Duration::from_millis(250),
                     )),
@@ -194,7 +231,6 @@ impl Plugin for DiagnosticsPlugin {
         track::<MapObject>(app, MAP_OBJECT_COUNT);
         track::<CompoundPart>(app, COMPOUND_PART_COUNT);
         track::<SpawnedFromResource>(app, RESOURCE_ROOT_COUNT);
-        track::<MeshGroup>(app, MESH_GROUP_COUNT);
         track::<WaterPlane>(app, WATER_COUNT);
         track::<FoliageBlock>(app, FOLIAGE_BLOCK_COUNT);
         track::<EffectInstance>(app, EFFECT_INSTANCE_COUNT);
@@ -207,6 +243,7 @@ impl Plugin for DiagnosticsPlugin {
         track::<LoadingResources>(app, LOADING_RESOURCES_COUNT);
         track::<PausedAnimationGraph>(app, PAUSED_ANIMATION_COUNT);
         track::<EffectSimPaused>(app, PAUSED_EFFECT_COUNT);
+        track::<UnloadedResource>(app, UNSPAWNED_RESOURCE_COUNT);
     }
 }
 
@@ -234,15 +271,10 @@ type MeshPartFilter = (
     Without<FoliageBlock>,
 );
 
-/// The component that marks a terrain ground-group entity, whichever draw path is active — see
-/// `client::assets::m::block_splat_material::REGION_TILE_SLOT_COUNT`'s doc comment for the two
-/// paths. Kept as one alias so callers (here, and `dev::render_debug`) don't need their own
-/// `#[cfg]` branches just to say "is this terrain".
-#[cfg(not(feature = "terrain_hand_rolled_pipeline"))]
-pub(crate) type TerrainGroundMarker =
-    MeshMaterial3d<crate::assets::m::block_splat_material::TerrainBlockSplatMaterial>;
-#[cfg(feature = "terrain_hand_rolled_pipeline")]
-pub(crate) type TerrainGroundMarker = crate::assets::m::block_splat_material::TerrainGroundTextures;
+/// The component that marks a terrain ground-group entity, whichever draw path is active
+/// (`graphics.terrain.pipeline`). Kept as an alias so callers (here, and `dev::render_debug`)
+/// say "is this terrain" in one place.
+pub(crate) type TerrainGroundMarker = crate::plugins::map::terrain::TerrainGround;
 
 fn mesh_part_count_system(mut diagnostics: Diagnostics, parts: Query<(), MeshPartFilter>) {
     diagnostics.add_measurement(&MESH_PART_COUNT, || parts.iter().len() as f64);
@@ -256,6 +288,13 @@ fn mesh_part_count_system(mut diagnostics: Diagnostics, parts: Query<(), MeshPar
 // twice. What remains in "other": region roots, loading intermediates,
 // scene-spawned resource anchors, UI text spans, cameras/lights, and
 // engine-internal entities (systems, observers).
+fn archetype_count_system(
+    mut diagnostics: Diagnostics,
+    archetypes: &bevy::ecs::archetype::Archetypes,
+) {
+    diagnostics.add_measurement(&ARCHETYPE_COUNT, || archetypes.len() as f64);
+}
+
 fn other_count_system(
     mut diagnostics: Diagnostics,
     entities: &Entities,
@@ -264,7 +303,6 @@ fn other_count_system(
     objects: Query<(), With<MapObject>>,
     compound_parts: Query<(), With<CompoundPart>>,
     resource_roots: Query<(), With<SpawnedFromResource>>,
-    mesh_groups: Query<(), With<MeshGroup>>,
     mesh_parts: Query<(), MeshPartFilter>,
     foliage: Query<(), With<FoliageBlock>>,
     water: Query<(), With<WaterPlane>>,
@@ -278,7 +316,6 @@ fn other_count_system(
             + objects.iter().len()
             + compound_parts.iter().len()
             + resource_roots.iter().len()
-            + mesh_groups.iter().len()
             + mesh_parts.iter().len()
             + foliage.iter().len()
             + water.iter().len()
@@ -400,9 +437,21 @@ fn cache_count_system(
     spawned_map_objects: Option<Res<SpawnedMapObjects>>,
     effect_meshes: Option<Res<EffectMeshes>>,
     effect_materials: Option<Res<EffectMaterials>>,
+    sro_animation_clips: Option<Res<SroAnimationClips>>,
+    sro_material_variants: Option<Res<SroMaterialVariants>>,
+    resident_assets: Option<Res<crate::plugins::asset_residency::AssetResidency>>,
 ) {
+    if let Some(cache) = resident_assets {
+        diagnostics.add_measurement(&RESIDENT_ASSET_CACHE, || cache.len() as f64);
+    }
+    if let Some(cache) = sro_material_variants {
+        diagnostics.add_measurement(&SRO_MATERIAL_VARIANT_CACHE, || cache.len() as f64);
+    }
     if let Some(cache) = sro_meshes {
         diagnostics.add_measurement(&SRO_MESH_CACHE, || cache.0.len() as f64);
+    }
+    if let Some(cache) = sro_animation_clips {
+        diagnostics.add_measurement(&SRO_ANIMATION_CLIP_CACHE, || cache.0.len() as f64);
     }
     if let Some(cache) = sro_bind_poses {
         diagnostics.add_measurement(&SRO_BIND_POSE_CACHE, || cache.0.len() as f64);
@@ -517,14 +566,13 @@ fn fps_update_system(
 
 /// Label/diagnostic pairs rendered by `stats_text_update_system`, top to
 /// bottom. Adding a category = one `track::<Marker>` call + one row here.
-static PANEL_ROWS: [(&str, DiagnosticPath); 17] = [
+static PANEL_ROWS: [(&str, DiagnosticPath); 16] = [
     ("entities", EntityCountDiagnosticsPlugin::ENTITY_COUNT),
     ("terrain blocks", TERRAIN_BLOCK_COUNT),
     ("terrain tiles", TERRAIN_TILE_COUNT),
     ("map objects", MAP_OBJECT_COUNT),
     ("compound parts", COMPOUND_PART_COUNT),
     ("resource roots", RESOURCE_ROOT_COUNT),
-    ("mesh groups", MESH_GROUP_COUNT),
     ("mesh parts", MESH_PART_COUNT),
     ("foliage", FOLIAGE_BLOCK_COUNT),
     ("water", WATER_COUNT),
@@ -1074,4 +1122,22 @@ fn sorted_phase<P: SortedPhaseItem>(app: &mut App, phase: &'static str) {
         .after(RenderSystems::PrepareResourcesBatchPhases)
         .before(RenderSystems::Render),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The diagnostics tier crashed the client at startup ("plugin was already
+    /// added"): `DevPlugin`'s `FpsOverlayPlugin` installs
+    /// `FrameTimeDiagnosticsPlugin` first, and this plugin added it again.
+    #[test]
+    fn registers_after_another_plugin_installed_frame_time_diagnostics() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(FrameTimeDiagnosticsPlugin::default())
+            .add_plugins(EntityCountDiagnosticsPlugin::default())
+            .add_plugins(DiagnosticsPlugin);
+        assert!(app.is_plugin_added::<DiagnosticsPlugin>());
+    }
 }

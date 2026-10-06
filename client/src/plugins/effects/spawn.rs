@@ -23,6 +23,7 @@ use crate::assets::efp::format::{
 };
 use crate::assets::efp::{normalize_effect_path, JMXVEFF};
 use crate::plugins::effects::components::*;
+use crate::plugins::effects::instanced::EffectInstanced;
 use crate::plugins::effects::material::SroEffectMaterial;
 use crate::plugins::effects::trail::{empty_trail_mesh, EffectTrail, TRAIL_MAX_AGE};
 
@@ -571,8 +572,13 @@ pub fn spawn_node_tree(
     };
 
     if let Some(mesh) = render_mesh.filter(|_| !self_emitter) {
-        // TextureSlide animates the uv uniform -> private material; every
-        // other node shares one immutable material per (texture, blend).
+        // Plates and meshes render instanced (instanced.rs): their tint and
+        // TextureSlide UV travel per instance, so they all share one
+        // immutable material per (texture, blend). Trails stay on the
+        // Material path, where TextureSlide animates a private material's
+        // uv uniform.
+        let is_trail = matches!(shape, RenderShape::LinkPipe | RenderShape::LinkDPipe);
+        let uv_animated = uv_animated && is_trail;
         let build = |assets: &EffectSpawnAssets| {
             let mut material = SroEffectMaterial::from_resource(resource, texture.clone());
             if material.dst_blend == 2 {
@@ -606,17 +612,26 @@ pub fn spawn_node_tree(
                 handle
             })
         };
-        commands.entity(entity).insert((
-            Mesh3d(mesh),
-            MeshMaterial3d(material.clone()),
-            MeshTag(0xFFFFFFFF),
-            EffectVisual {
-                uv_material: uv_animated.then_some(material),
-                last_argb: 0xFFFFFFFF,
-                last_uv: bevy::math::Vec4::new(0.0, 0.0, 1.0, 1.0),
-            },
-            NotShadowCaster,
-        ));
+        let visual = EffectVisual {
+            uv_material: uv_animated.then(|| material.clone()),
+            last_argb: 0xFFFFFFFF,
+            last_uv: bevy::math::Vec4::new(0.0, 0.0, 1.0, 1.0),
+        };
+        if is_trail {
+            commands.entity(entity).insert((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                MeshTag(0xFFFFFFFF),
+                visual,
+                NotShadowCaster,
+            ));
+        } else {
+            commands.entity(entity).insert((
+                EffectInstanced { mesh, material },
+                MeshTag(0xFFFFFFFF),
+                visual,
+            ));
+        }
         if shape == RenderShape::Plate && node.view_mode != ViewMode::None {
             commands
                 .entity(entity)
