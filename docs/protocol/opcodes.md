@@ -23,6 +23,18 @@ table and the macro disagree, so coverage stays honest.
 > (`0x2xxx`/`0x6xxx`/`0x7xxx` client→server; `0xAxxx`/`0xBxxx`/`0x3xxx`
 > server→client) and cross-checked against the macro's own section comments.
 
+
+## What is *not* in this ledger
+
+The original client dispatches **320** opcodes and the vSRO GameServer **172**; both tables
+were read out of the binaries themselves. **241 of those appear nowhere in this file** — see
+[`opcodes-unmodelled.md`](opcodes-unmodelled.md), which also lists the 19 that already have
+captured frames and can therefore be settled without a server session.
+
+One routing property from the same measurement, because it changes how the numbers read: the
+server indexes its tables with `opcode & 0x7FF`, so `0x3010`, `0x7010` and `0xB010` reach the
+same handler there.
+
 ## Handshake & global
 
 | Opcode | Name | Direction | Status | Notes |
