@@ -32,7 +32,7 @@ pub fn main() -> iced::Result {
     let media_pk2 = match pk2::read_pk2("Media.pk2") {
         Ok(archive) => archive,
         Err(e) => {
-            println!("Konnte Media.pk2 nicht laden: {e}");
+            println!("could not read Media.pk2: {e}");
             return Ok(());
         }
     };

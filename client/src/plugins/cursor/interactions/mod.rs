@@ -170,11 +170,11 @@ pub fn transform_aabb_to_world(aabb: &Aabb, translation: Vec3, rotation: Quat) -
     let min = Vec3::from(aabb.center - aabb.half_extents);
     let max = Vec3::from(aabb.center + aabb.half_extents);
 
-    // Transformieren Sie die Eckpunkte in Weltkoordinaten
+    // Corners into world space
     let min_world = translation + rotation * min;
     let max_world = translation + rotation * max;
 
-    // Erstellen Sie eine neue AABB in Weltkoordinaten
+    // The world-space AABB those two corners span
     Aabb::from_min_max(min_world, max_world)
 }
 
