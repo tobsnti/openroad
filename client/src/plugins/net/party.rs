@@ -43,6 +43,8 @@ use packets::Packet;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::net::agent::AgentConnection;
+use crate::plugins::net::entities::DisplayName;
+use crate::plugins::player::Player;
 
 /// The party the local player is in. Empty when there is no party.
 #[derive(Resource, Default, Debug)]
@@ -80,6 +82,32 @@ impl PartyRoster {
     /// unknown, which is the honest answer: no crown is better than a wrong one.
     pub fn is_leader(&self, member_id: u32) -> bool {
         self.master_join_id == Some(member_id)
+    }
+
+    /// Whether *we* lead this party. `false` while either id is unknown, for
+    /// the same reason: a wrong crown sends verbs the server will refuse.
+    pub fn is_local_master(&self) -> bool {
+        self.own_join_id.is_some() && self.master_join_id == self.own_join_id
+    }
+
+    /// Learn our own JID from a full roster, by name — the fallback for the
+    /// case the join ack cannot cover: `0x3065` is also pushed unrequested, so
+    /// logging in on a character that is *already* in a party delivers the
+    /// roster and no ack at all. Without this an ack-only client keeps
+    /// `own_join_id == None` for the whole session, and both the departure
+    /// check and the kick guard below go quiet after a relog.
+    ///
+    /// A name is unique per server here, so this is an exact match, not a
+    /// guess — and it never overwrites an id the ack already gave us.
+    fn learn_own_join_id(&mut self, local_name: &str) {
+        if self.own_join_id.is_some() || local_name.is_empty() {
+            return;
+        }
+        self.own_join_id = self
+            .members
+            .iter()
+            .find(|m| m.name.as_deref() == Some(local_name))
+            .and_then(|m| m.member_id);
     }
 
     pub fn member(&self, member_id: u32) -> Option<&PartyMemberCore> {
@@ -211,9 +239,19 @@ fn merge_member(member: &mut PartyMemberCore, delta: &PartyMemberCore) {
     }
 }
 
-pub fn on_party_data(mut reader: MessageReader<PartyData>, mut roster: ResMut<PartyRoster>) {
+pub fn on_party_data(
+    mut reader: MessageReader<PartyData>,
+    mut roster: ResMut<PartyRoster>,
+    // A query, not a resource: the headless harness has no player entity, and
+    // an empty query is simply empty — a missing resource would panic the
+    // schedule instead.
+    local: Query<&DisplayName, With<Player>>,
+) {
     for data in reader.read() {
         roster.apply_data(data);
+        if let Ok(name) = local.single() {
+            roster.learn_own_join_id(&name.0);
+        }
     }
 }
 
@@ -284,6 +322,21 @@ pub fn send_party_actions(
     };
     let in_party = roster.is_active();
     for action in pending {
+        // The original gates its own kick button on "am I the master", read
+        // from the flag its 0x3065 handler sets when the wire's master JID
+        // equals ours — so a non-master never puts 0x7063 on the wire at all.
+        // We refuse the same way, and only log: what the original shows on
+        // refusal is unknown, and inventing a dialog would be worse than
+        // silence.
+        if let PartyAction::Kick(member_id) = action {
+            if !roster.is_local_master() {
+                warn!(
+                    "party: refusing to kick {member_id} — not the master (master={:?}, us={:?})",
+                    roster.master_join_id, roster.own_join_id
+                );
+                continue;
+            }
+        }
         let packet = party_action_packet(*action, in_party, setup.0);
         info!("party: sending {action:?} (in_party={in_party})");
         if let Err(e) = conn.get_sender().send(packet.into()) {
@@ -575,6 +628,55 @@ pub(crate) mod tests {
         assert_eq!(roster.members.len(), 2);
         assert!(roster.is_leader(2));
         assert_eq!(roster.capacity(), 4, "EXP sharing was switched off");
+    }
+
+    /// The hole the join ack cannot close: `0x3065` is pushed unrequested, so
+    /// logging in on a character that is already in a party brings the roster
+    /// and no ack at all. The name match is exact — names are unique per
+    /// server — and it must never overwrite what an ack already told us.
+    #[test]
+    fn our_own_jid_is_learned_from_the_roster_when_no_ack_arrives() {
+        let mut roster = PartyRoster::default();
+        roster.apply_data(&party_data(vec![
+            core(4, "Me", 25000),
+            core(2, "Bob", 25000),
+        ]));
+        assert_eq!(roster.own_join_id, None, "no ack, no id yet");
+
+        roster.learn_own_join_id("Me");
+        assert_eq!(roster.own_join_id, Some(4));
+
+        // An ack-given id wins over any later roster push.
+        let mut roster = PartyRoster::default();
+        roster.own_join_id = Some(7);
+        roster.apply_data(&party_data(vec![core(4, "Me", 25000)]));
+        roster.learn_own_join_id("Me");
+        assert_eq!(roster.own_join_id, Some(7), "the ack is the better source");
+
+        // A name that is not in the roster leaves us without an id rather than
+        // guessing the first member.
+        let mut roster = PartyRoster::default();
+        roster.apply_data(&party_data(vec![core(4, "Me", 25000)]));
+        roster.learn_own_join_id("Somebody else");
+        assert_eq!(roster.own_join_id, None);
+    }
+
+    /// Being master is the conjunction of two known ids. Either one missing
+    /// means `false`, because a wrong crown puts verbs on the wire that the
+    /// server refuses.
+    #[test]
+    fn mastership_needs_both_ids_to_be_known() {
+        let mut roster = PartyRoster::default();
+        assert!(!roster.is_local_master(), "nothing known");
+
+        roster.own_join_id = Some(4);
+        assert!(!roster.is_local_master(), "no master known");
+
+        roster.master_join_id = Some(2);
+        assert!(!roster.is_local_master(), "the master is somebody else");
+
+        roster.master_join_id = Some(4);
+        assert!(roster.is_local_master());
     }
 
     /// The defect this slice is about: the server sends the *same* type 3 for
