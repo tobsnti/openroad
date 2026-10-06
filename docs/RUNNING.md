@@ -96,6 +96,25 @@ distribute them. Without a key the client exits before a window appears.
 `config.yaml` must sit in the directory you start the client *from* — that is
 where it is looked up.
 
+### The short form
+
+Copying the example is the documented path because it explains every knob, but
+nothing in it is mandatory except the key: every section and every field falls
+back to a built-in default. A complete, working `config.yaml` can be four
+lines — your archive key and the server you connect to:
+
+```yaml
+pk2:
+  key: "..."
+  salt: "..."
+network_settings:
+  gateway_address: "127.0.0.1:15779"
+```
+
+You then get a windowed 1280x720 client titled "OpenRoad" that starts in the
+world scene. `config.example.yaml` stays the full reference for everything you
+may want to change from there.
+
 ## 6. Run it
 
 ```bash
