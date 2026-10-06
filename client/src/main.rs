@@ -236,10 +236,14 @@ fn main() {
                 // `openroad/diagnostics` dumps the whole DiagnosticsStore
                 // (incl. the world_counts/* entity categories) over BRP —
                 // brp_extras only exposes FPS/frame-time.
-                RemotePlugin::default().with_method_main(
-                    "openroad/diagnostics",
-                    plugins::diagnostics::brp_all_diagnostics,
-                ),
+                RemotePlugin::default()
+                    .with_method_main(
+                        "openroad/diagnostics",
+                        plugins::diagnostics::brp_all_diagnostics,
+                    )
+                    // Where the UI actually sits, to compare against the rects
+                    // a `.2dt` descriptor authored.
+                    .with_method_main("openroad/ui_rects", plugins::dev::ui_rects::brp_ui_rects),
                 BrpExtrasPlugin,
                 // Per-pass render timings. Bevy requests every adapter feature
                 // (`WgpuSettingsPriority::Functionality`), so on Vulkan and DX12
