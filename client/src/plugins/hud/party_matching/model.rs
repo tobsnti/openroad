@@ -15,9 +15,10 @@ use packets::agent::party::{
 };
 
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
-use crate::plugins::net::party::{party_error_text, PartyRoster};
+use crate::plugins::net::party::{party_error_key, resolve_error_text, PartyRoster};
 use crate::plugins::settings::keymap::KEY_PARTY_MATCH;
 use crate::plugins::settings::options::GameOptions;
+use crate::plugins::textdata::ClientUiStrings;
 
 /// Rows the board draws at once — twelve `CIFPartyMatchSlot` blocks, fixed, no
 /// scrollbar behaviour behind them. Paging is the server's, via the spinner.
@@ -276,6 +277,7 @@ pub fn on_join_ack(
     mut reader: MessageReader<PartyMatchJoinAck>,
     mut state: ResMut<PartyMatchState>,
     mut history: Option<ResMut<ChatHistory>>,
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for message in reader.read() {
         info!(
@@ -284,7 +286,7 @@ pub fn on_join_ack(
         );
         if message.result != 1 {
             state.dialog = MatchDialog::None;
-            report(&mut history, message.error_code, "join");
+            report(&mut history, message.error_code, "join", strings.as_deref());
         }
     }
 }
@@ -345,6 +347,7 @@ pub fn on_form_acks(
     mut state: ResMut<PartyMatchState>,
     mut history: Option<ResMut<ChatHistory>>,
     mut reload: MessageWriter<ReloadMatchList>,
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for message in created.read() {
         if message.result == 1 {
@@ -356,7 +359,12 @@ pub fn on_form_acks(
             state.own_listing = message.entry.as_ref().map(|entry| entry.party_number);
             reload.write(ReloadMatchList);
         } else {
-            report(&mut history, message.error_code, "registration");
+            report(
+                &mut history,
+                message.error_code,
+                "registration",
+                strings.as_deref(),
+            );
         }
     }
     for message in edited.read() {
@@ -365,7 +373,12 @@ pub fn on_form_acks(
             state.own_listing = message.entry.as_ref().map(|entry| entry.party_number);
             reload.write(ReloadMatchList);
         } else {
-            report(&mut history, message.error_code, "change");
+            report(
+                &mut history,
+                message.error_code,
+                "change",
+                strings.as_deref(),
+            );
         }
     }
 }
@@ -375,6 +388,7 @@ pub fn on_delete_ack(
     mut reader: MessageReader<PartyMatchDeleteResponse>,
     mut state: ResMut<PartyMatchState>,
     mut history: Option<ResMut<ChatHistory>>,
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for message in reader.read() {
         if message.result == 1 {
@@ -391,7 +405,12 @@ pub fn on_delete_ack(
                 }
             }
         } else {
-            report(&mut history, message.error_code, "deletion");
+            report(
+                &mut history,
+                message.error_code,
+                "deletion",
+                strings.as_deref(),
+            );
         }
     }
 }
@@ -401,14 +420,23 @@ pub fn on_delete_ack(
 /// `ChatHistory` is optional for the same reason the party acks make it
 /// optional: the headless netcheck harness builds no HUD, and Bevy does not
 /// skip a system whose `ResMut` is missing — it panics the schedule.
-fn report(history: &mut Option<ResMut<ChatHistory>>, code: Option<u16>, verb: &str) {
-    let text = match code.and_then(party_error_text) {
-        Some(text) => text.to_string(),
-        None => match code {
-            Some(code) => format!("Party {verb} failed (code {code})."),
-            None => format!("Party {verb} failed."),
-        },
+fn report(
+    history: &mut Option<ResMut<ChatHistory>>,
+    code: Option<u16>,
+    verb: &str,
+    strings: Option<&ClientUiStrings>,
+) {
+    // Same rule as the party acks: the original prints the key its jump table
+    // names, and nothing at all for the codes it routes to its empty branch.
+    let Some(key) = code.and_then(party_error_key) else {
+        warn!(
+            "party match: {verb} failed with a code the original does not report (code {})",
+            code.map(|c| c.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return;
     };
+    let text = resolve_error_text(key, strings);
     match history {
         Some(history) => history.push(ChatLine::system(text)),
         None => info!("party match (headless): {text}"),
