@@ -315,6 +315,33 @@ pub fn party_action_packet(action: PartyAction, in_party: bool, setup: PartySetu
 /// original's own strings are `textuisystem` keys we cannot bind to a code
 /// without a capture (the client resolves them through its category-2 error box,
 /// `FUN_00778190(2, code, …)`, `docs/re/net/inbound/party.md:538,578`).
+/// What the captures say, and what they do not. Across every ack log in
+/// `packet_dump/` there are 19 failure frames and seven distinct
+/// (verb, code) pairs:
+///
+/// | verb | code | frames | in the table below |
+/// |---|---|---|---|
+/// | invite | 4 | 8 | no |
+/// | invite | 11295 | 3 | no |
+/// | invite | 11282 | 1 | no |
+/// | join | 11280 | 3 | yes |
+/// | create | 11280 | 2 | yes |
+/// | create | 11288 | 1 | yes |
+/// | create | 4 | 1 | no |
+///
+/// So the most frequent captured party error — code 4, nine frames — has no
+/// text, and the table's five entries cover six of the nineteen frames.
+///
+/// Inventing wording for the three unmapped codes is what this deliberately
+/// does **not** do. The original resolves them through its category-2 error box
+/// (`FUN_00778190(2, code, …)`), and its vocabulary is in the user's own data:
+/// `textuisystem.txt` holds 27 `UIIT_MSG_PARTYERR_*` keys, among them
+/// "The party request was denied.", "The time for party request is over.",
+/// "Cannot find target." and "The player is in another party." The key names do
+/// **not** appear as strings in `sro_client.exe` (searched, 0 of 27), so the
+/// code → key mapping is not readable from the binary's string table and needs
+/// the resolving experiment instead: trigger each error against the original
+/// client and read which box it shows.
 pub fn party_error_text(code: u16) -> Option<&'static str> {
     match code {
         11276 => Some("The party request was declined."),
