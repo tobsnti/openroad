@@ -244,8 +244,6 @@ packets! {
     // their bytes. Five record fields have a verified width but no naming site,
     // so they stay unk_* until a wartime capture.
     0x385F => SiegeUpdate,
-    // Not yet wired: 0x3206 SERVER_TICKET (server-unnamed, purpose unresolved —
-    // skipped). See docs/net-captured-opcodes.md.
 
     // Invite / petition (docs/net-invite-0x3080.md). 0x3080 is dual-mapped:
     // S->C it is the petition popup, C->S the accept/decline, so its type is
@@ -341,6 +339,9 @@ packets! {
     // could not separate that from a result byte).
     0xB0BD => BuffAdd,
     0xB072 => BuffRemove,
+    // The remaining-time refresh for a running buff. A u8 sub-type selects the
+    // body; an unknown one is kept whole (see BuffRemainTime).
+    0x3206 => BuffRemainTime,
 
     // GM commands (e.g. /invisible).
     0x7010 => GmCommand,
