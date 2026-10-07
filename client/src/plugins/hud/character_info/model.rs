@@ -307,4 +307,51 @@ mod tests {
             );
         }
     }
+
+    /// 0xB050 `01` is a success and costs exactly one point; a refusal costs
+    /// none. The deduction is local because the stat change itself arrives in
+    /// the follow-up 0x303D, so a wrong sign here would desync the wallet from
+    /// the server without any packet saying so.
+    #[test]
+    fn only_a_successful_spend_ack_costs_a_point() {
+        let mut app = App::new();
+        app.add_message::<IncreaseStrResponse>()
+            .add_message::<IncreaseIntResponse>()
+            .init_resource::<PlayerStats>()
+            .add_systems(Update, on_stat_spend_ack);
+        app.world_mut().resource_mut::<PlayerStats>().stat_points = 55;
+
+        app.world_mut().write_message(IncreaseStrResponse::Success);
+        app.update();
+        assert_eq!(app.world().resource::<PlayerStats>().stat_points, 54);
+
+        app.world_mut().write_message(IncreaseIntResponse::Success);
+        app.update();
+        assert_eq!(app.world().resource::<PlayerStats>().stat_points, 53);
+
+        app.world_mut()
+            .write_message(IncreaseStrResponse::Failure(3));
+        app.update();
+        assert_eq!(
+            app.world().resource::<PlayerStats>().stat_points,
+            53,
+            "a refused request must not spend a point"
+        );
+    }
+
+    /// The wallet never goes below zero: an ack that arrives with an empty
+    /// wallet (a stale reply, a server that acks twice) would otherwise wrap a
+    /// `u16` to 65535 and offer points the character does not have.
+    #[test]
+    fn an_ack_with_an_empty_wallet_cannot_wrap() {
+        let mut app = App::new();
+        app.add_message::<IncreaseStrResponse>()
+            .add_message::<IncreaseIntResponse>()
+            .init_resource::<PlayerStats>()
+            .add_systems(Update, on_stat_spend_ack);
+
+        app.world_mut().write_message(IncreaseStrResponse::Success);
+        app.update();
+        assert_eq!(app.world().resource::<PlayerStats>().stat_points, 0);
+    }
 }
