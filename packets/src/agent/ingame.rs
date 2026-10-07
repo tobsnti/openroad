@@ -101,7 +101,7 @@ pub struct CelestialUpdate {
 /// 2026-08-10 11:29:22 … 12:19:22, exactly ten minutes apart and matching the
 /// dump's own timestamps to the second (the server's clock runs 7 h behind the
 /// capture host's UTC). See `docs/net-celestial-0x3020.md`.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Copy, Debug, PartialEq)]
 pub struct ServerTime {
     pub packed: u32,
 }
