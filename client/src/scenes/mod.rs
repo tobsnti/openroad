@@ -120,23 +120,6 @@ impl Plugin for SceneManagerPlugin {
                 game_scene::GameScenePlugin,
                 NewAssetLoadingScenePlugin,
                 AnimationTestingScenePlugin,
-                (
-                    CharSelectUiPreviewPlugin,
-                    MiniInfoUiPreviewPlugin,
-                    MinimapUiPreviewPlugin,
-                    ChatUiPreviewPlugin,
-                    InventoryUiPreviewPlugin,
-                    UnderbarUiPreviewPlugin,
-                    AlchemyUiPreviewPlugin,
-                    CharacterInfoUiPreviewPlugin,
-                    PartyUiPreviewPlugin,
-                    NpcDialogUiPreviewPlugin,
-                    QuestRewardUiPreviewPlugin,
-                    ChoiceConfirmUiPreviewPlugin,
-                    WorldMapUiPreviewPlugin,
-                    AutoPotionUiPreviewPlugin,
-                    StallUiPreviewPlugin,
-                ),
                 EquipmentsScenePlugin,
                 ParticleTestingScenePlugin,
                 SkillsScenePlugin,
@@ -148,10 +131,14 @@ impl Plugin for SceneManagerPlugin {
                     DungeonsScenePlugin,
                     world_debug_scene::WorldDebugScenePlugin,
                 ),
+                // The window previews are registered one by one below, after this
+                // block — see `add_ui_previews`.
                 ProgressPlugin::<SceneState>::new()
                     // Note: To set the scene you want to start with, change it here
                     .with_state_transition(SceneState::Loading, start_scene),
             ));
+
+        add_ui_previews(app);
 
         // Same `dev_tools` gate the other inspectors use: `DevWindowsVisible`
         // defaults to `true`, so a `run_if` on it alone left this egui window
@@ -168,6 +155,93 @@ impl Plugin for SceneManagerPlugin {
         }
     }
 }
+
+/// The `SCENE=ui_testing` window previews, registered by name.
+///
+/// IDEA. Every preview spawns its windows `OnEnter(SceneState::UiTesting)`, so
+/// registering all of them paints the whole HUD on top of itself — useful for
+/// "does anything crash", useless for looking at one window. `UI_ONLY=<name>`
+/// registers exactly one, which is what makes a per-window gallery possible:
+/// run the client once per name with `SCREENSHOT=<name>.png` and the result is
+/// one image per surface.
+///
+/// It also keeps the registration out of a tuple. Bevy's `Plugins` impl tops
+/// out at 15 entries and the previous tuple held exactly 15 — the next preview
+/// would have broken the build with an error that names no type at all.
+fn add_ui_previews(app: &mut App) {
+    let only = std::env::var("UI_ONLY").ok();
+    let only = only.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let mut wanted = |name: &str| match only {
+        None => true,
+        Some(filter) => filter.eq_ignore_ascii_case(name),
+    };
+
+    if wanted("char_select") {
+        app.add_plugins(CharSelectUiPreviewPlugin);
+    }
+    if wanted("mini_info") {
+        app.add_plugins(MiniInfoUiPreviewPlugin);
+    }
+    if wanted("minimap") {
+        app.add_plugins(MinimapUiPreviewPlugin);
+    }
+    if wanted("chat") {
+        app.add_plugins(ChatUiPreviewPlugin);
+    }
+    if wanted("inventory") {
+        app.add_plugins(InventoryUiPreviewPlugin);
+    }
+    if wanted("underbar") {
+        app.add_plugins(UnderbarUiPreviewPlugin);
+    }
+    if wanted("alchemy") {
+        app.add_plugins(AlchemyUiPreviewPlugin);
+    }
+    if wanted("character_info") {
+        app.add_plugins(CharacterInfoUiPreviewPlugin);
+    }
+    if wanted("party") {
+        app.add_plugins(PartyUiPreviewPlugin);
+    }
+    if wanted("npc_dialog") {
+        app.add_plugins(NpcDialogUiPreviewPlugin);
+    }
+    if wanted("quest_reward") {
+        app.add_plugins(QuestRewardUiPreviewPlugin);
+    }
+    if wanted("choice_confirm") {
+        app.add_plugins(ChoiceConfirmUiPreviewPlugin);
+    }
+    if wanted("world_map") {
+        app.add_plugins(WorldMapUiPreviewPlugin);
+    }
+    if wanted("auto_potion") {
+        app.add_plugins(AutoPotionUiPreviewPlugin);
+    }
+    if wanted("stall") {
+        app.add_plugins(StallUiPreviewPlugin);
+    }
+}
+
+/// Every name [`add_ui_previews`] knows, for the gallery runner and for the
+/// test that keeps the two in step.
+pub const UI_PREVIEW_NAMES: [&str; 15] = [
+    "char_select",
+    "mini_info",
+    "minimap",
+    "chat",
+    "inventory",
+    "underbar",
+    "alchemy",
+    "character_info",
+    "party",
+    "npc_dialog",
+    "quest_reward",
+    "choice_confirm",
+    "world_map",
+    "auto_potion",
+    "stall",
+];
 
 #[allow(dead_code)]
 fn log_scene_state(scene_state: Res<State<SceneState>>) {
@@ -237,5 +311,32 @@ mod tests {
     #[test]
     fn sandbox_and_game_world_stay_distinct() {
         assert_ne!(SceneState::WorldSandbox, SceneState::GameWorld);
+    }
+}
+
+#[cfg(test)]
+mod gallery_tests {
+    use super::*;
+
+    /// The runner walks `UI_PREVIEW_NAMES`; `add_ui_previews` decides what each
+    /// name registers. If the two drift, the gallery silently skips a window —
+    /// which looks exactly like a window that does not exist.
+    #[test]
+    fn every_preview_name_is_matched_by_the_registration() {
+        let source = include_str!("mod.rs");
+        for name in UI_PREVIEW_NAMES {
+            let needle = format!("wanted(\"{name}\")");
+            assert!(
+                source.contains(&needle),
+                "`{name}` is listed but nothing registers it"
+            );
+        }
+        // ...and nothing registers a name the list does not carry.
+        let registered = source.matches("wanted(\"").count();
+        assert_eq!(
+            registered,
+            UI_PREVIEW_NAMES.len(),
+            "a preview is registered under a name the gallery list does not know"
+        );
     }
 }
