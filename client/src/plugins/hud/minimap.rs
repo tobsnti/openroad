@@ -3,10 +3,10 @@
 //!
 //! Idea: the layout is hand-transcribed from the vanilla
 //! `Media.pk2/resinfo/ifminimap.txt` (like the mini-info panel transcribes
-//! ifplayerminiinfo.txt), uniformly scaled. The map viewport is a square
-//! `overflow: clip` node; the `mm_window.ddj` frame drawn on top is opaque
-//! everywhere except its circular hole, which turns the square map into the
-//! vanilla round minimap for free. Terrain tiles are `minimap/{x}x{z}.ddj`,
+//! ifplayerminiinfo.txt), uniformly scaled. The map is drawn in two clipped
+//! bands that together approximate the frame's round hole, because the
+//! `mm_window.ddj` frame is NOT an opaque plate (see `VIEWPORT_BANDS`).
+//! Terrain tiles are `minimap/{x}x{z}.ddj`,
 //! one 256px image per 1920-unit region, re-pointed when the player crosses a
 //! region border; dots and tile offsets are recomputed per frame from the SRO
 //! world positions (mind the mirrored render X, see `world_origin`).
@@ -61,6 +61,42 @@ const WINDOW_RIGHT: f32 = DESIGN_SCREEN_W - WINDOW_RECT.0 - WINDOW_RECT.2;
 
 // Element rects (x, y, w, h) in window space, verbatim from the resinfo.
 const VIEWPORT_RECT: (f32, f32, f32, f32) = (14.0, 57.0, 105.0, 105.0);
+
+// --- The round mask ---------------------------------------------------------
+//
+// Every number in this block is counted on the shipped art itself
+// (`interface/minimap/mm_window.ddj` and `mm_alpha.ddj`, both uncompressed
+// A1R5G5B5, so "transparent" is one bit per pixel), not taken on trust.
+//
+// The map area is a square and the frame drawn on top is not an opaque plate
+// with a hole: `mm_window.ddj` is transparent over 13811 of its 25760 px,
+// because its outer silhouette is round too. Inside the viewport rect the
+// frame is transparent at 210 px that are not part of the map disc, all of
+// them in rows 145..161 where the round silhouette curves back inside the
+// square — so the map leaks past the ring in the bottom corners.
+//
+// bevy cannot clip a circle: `CalculatedClip` is a `Rect`, and `BorderRadius`
+// only rounds a node's own surface, never its children, so a rounded viewport
+// would leave the nine tile children square. An overlay cannot help either:
+// the leaking pixels sit outside the window silhouette, where the world must
+// show through.
+//
+// What the art offers instead is an exact two-rectangle cover. `mm_alpha.ddj`
+// (104x104, 7999 opaque px) matches the frame's hole at offset (14,58) with
+// zero differing pixels, so the disc is 101x101 at (14,58). Rows 57..145 of
+// the square carry no leaking pixel at all, and rows 145..159 need only
+// x 29..100 to hold every disc pixel while touching no leaking one. Both
+// rects come from the alpha channel, so neither number is invented.
+const VIEWPORT_BANDS: [(f32, f32, f32, f32); 2] =
+    [(14.0, 57.0, 105.0, 88.0), (29.0, 145.0, 71.0, 14.0)];
+/// The disc the two bands cover, in frame space: centre and radius of
+/// `mm_alpha.ddj`'s opaque area (101x101 at (14,58)). Used to cull markers, so
+/// a dot can never land on one of the 210 leaking pixels.
+const DISC_CENTER: (f32, f32) = (64.0, 108.0);
+const DISC_RADIUS: f32 = 50.5;
+/// The markers (dots, party signs, player arrow) live in one node spanning the
+/// whole disc, clipped to the square: 57..159 is where the disc has pixels.
+const MARKER_LAYER_RECT: (f32, f32, f32, f32) = (14.0, 57.0, 105.0, 102.0);
 const AREA_NAME_RECT: (f32, f32, f32, f32) = (12.0, 9.0, 104.0, 12.0);
 // `GDR_MINIMAP_TEXT_POS_X` (ifminimap.txt:63) and `..._TEXT_POS_Y` (:44): the
 // original labels the second readout **Y**, though it carries world Z.
@@ -157,19 +193,28 @@ pub struct MinimapAssets {
 
 #[derive(Component, Default, Clone)]
 pub struct MinimapRoot;
-/// The clipped square map area; its tile/dot/arrow children are added by
-/// [`populate_minimap_viewport`].
+/// One clipped map band; its terrain-tile children are added by
+/// [`populate_minimap_viewport`]. There are two, indexing [`VIEWPORT_BANDS`]:
+/// together they are the round map hole, which a single rect cannot be.
 #[derive(Component, Default, Clone)]
-pub struct MinimapViewport;
-/// Marks a viewport whose children have been populated.
+pub struct MinimapViewport {
+    pub band: usize,
+}
+/// The clipped square the markers (dots, party signs, player arrow) live in.
+/// Separate from the tile bands because the markers are culled to the disc in
+/// code and would otherwise have to be drawn once per band.
+#[derive(Component, Default, Clone)]
+pub struct MinimapMarkerLayer;
+/// Marks a viewport or marker layer whose children have been populated.
 #[derive(Component)]
 pub struct MinimapViewportReady;
 /// One of the 3x3 terrain tile slots, at grid offset (dx, dz) from the
-/// player's region.
+/// player's region, in the band it was spawned into.
 #[derive(Component)]
 pub struct MinimapTile {
     dx: i8,
     dz: i8,
+    band: usize,
 }
 /// One slot of the entity-dot pool.
 #[derive(Component)]
@@ -413,7 +458,9 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
     let floor_font = fonts.nine.clone();
 
     let s = hud_scale();
-    let (vp_l, vp_t, vp_w, vp_h) = scaled(VIEWPORT_RECT, s);
+    let (b0_l, b0_t, b0_w, b0_h) = scaled(VIEWPORT_BANDS[0], s);
+    let (b1_l, b1_t, b1_w, b1_h) = scaled(VIEWPORT_BANDS[1], s);
+    let (ml_l, ml_t, ml_w, ml_h) = scaled(MARKER_LAYER_RECT, s);
     let (an_l, an_t, an_w, an_h) = scaled(AREA_NAME_RECT, s);
     let (px_l, px_t, px_w, px_h) = scaled(POS_X_RECT, s);
     let (pz_l, pz_t, pz_w, pz_h) = scaled(POS_Z_RECT, s);
@@ -436,23 +483,49 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
         GlobalZIndex(50)
         Pickable::IGNORE
         Children [
-            // clipped square map area; the black backdrop shows where tiles
-            // are missing (world edge) or still streaming in
+            // The map, in the two measured bands that add up to the frame's
+            // round hole (see VIEWPORT_BANDS). The black backdrop shows where
+            // tiles are missing (world edge) or still streaming in.
             (
-                MinimapViewport
+                MinimapViewport { band: 0 }
                 Node {
                     position_type: PositionType::Absolute,
-                    left: px(vp_l),
-                    top: px(vp_t),
-                    width: px(vp_w),
-                    height: px(vp_h),
+                    left: px(b0_l),
+                    top: px(b0_t),
+                    width: px(b0_w),
+                    height: px(b0_h),
                     overflow: {Overflow::clip()},
                 }
                 BackgroundColor(Color::BLACK)
                 Pickable::IGNORE
             ),
-            // the frame on top: opaque ring around a transparent circular
-            // hole -> the square map reads as the vanilla round minimap
+            (
+                MinimapViewport { band: 1 }
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(b1_l),
+                    top: px(b1_t),
+                    width: px(b1_w),
+                    height: px(b1_h),
+                    overflow: {Overflow::clip()},
+                }
+                BackgroundColor(Color::BLACK)
+                Pickable::IGNORE
+            ),
+            // the markers on top of both bands, in one square layer
+            (
+                MinimapMarkerLayer
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(ml_l),
+                    top: px(ml_t),
+                    width: px(ml_w),
+                    height: px(ml_h),
+                    overflow: {Overflow::clip()},
+                }
+                Pickable::IGNORE
+            ),
+            // the frame on top: the ring whose round hole the bands fill
             (
                 ImageNode { image: {frame}, image_mode: NodeImageMode::Stretch }
                 Node {
@@ -561,12 +634,14 @@ fn button_style(asset_server: &AssetServer, stem: &str) -> ImageButtonStyle {
 pub fn populate_minimap_viewport(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    viewports: Query<Entity, (With<MinimapViewport>, Without<MinimapViewportReady>)>,
+    viewports: Query<(Entity, &MinimapViewport), Without<MinimapViewportReady>>,
+    layers: Query<Entity, (With<MinimapMarkerLayer>, Without<MinimapViewportReady>)>,
 ) {
     let s = hud_scale();
     let h = VIEWPORT_RECT.2 / 2.0;
-    for viewport in viewports.iter() {
-        let arrow: Handle<Image> = asset_server.load(SIGN_CHARACTER);
+    // each band draws the whole 3x3 grid and shows the slice its clip admits
+    for (viewport, band) in viewports.iter() {
+        let band = band.band;
         commands
             .entity(viewport)
             .insert(MinimapViewportReady)
@@ -574,7 +649,7 @@ pub fn populate_minimap_viewport(
                 for dz in -1..=1i8 {
                     for dx in -1..=1i8 {
                         parent.spawn((
-                            MinimapTile { dx, dz },
+                            MinimapTile { dx, dz, band },
                             ImageNode {
                                 image_mode: NodeImageMode::Stretch,
                                 ..default()
@@ -589,6 +664,14 @@ pub fn populate_minimap_viewport(
                         ));
                     }
                 }
+            });
+    }
+    for layer in layers.iter() {
+        let arrow: Handle<Image> = asset_server.load(SIGN_CHARACTER);
+        commands
+            .entity(layer)
+            .insert(MinimapViewportReady)
+            .with_children(|parent| {
                 for _ in 0..DOT_POOL_SIZE {
                     parent.spawn((
                         MinimapDot,
@@ -647,6 +730,30 @@ pub fn populate_minimap_viewport(
 }
 
 // --- Per-frame updates ------------------------------------------------------
+
+/// Where a band's own origin sits relative to the square viewport's space,
+/// so a child positioned in square space can be shifted into the band.
+fn band_offset(band: usize) -> (f32, f32) {
+    (
+        VIEWPORT_BANDS[band].0 - VIEWPORT_RECT.0,
+        VIEWPORT_BANDS[band].1 - VIEWPORT_RECT.1,
+    )
+}
+
+/// Whether a marker of `size` centred at (cx, cy) in the square viewport's
+/// space fits wholly inside the measured disc.
+///
+/// Culling against the disc and not the square is the point: the frame is
+/// transparent at 210 px of the square's bottom corners, and anything drawn
+/// there hangs outside the round window.
+fn marker_inside_disc(cx: f32, cy: f32, size: f32) -> bool {
+    let (dcx, dcy) = (
+        DISC_CENTER.0 - VIEWPORT_RECT.0,
+        DISC_CENTER.1 - VIEWPORT_RECT.1,
+    );
+    let reach = (DISC_RADIUS - size / 2.0).max(0.0);
+    (cx - dcx).powi(2) + (cy - dcy).powi(2) <= reach.powi(2)
+}
 
 /// Server-global (gx, gz) of the local player, in world units. The render
 /// world mirrors X relative to the region grid (`server_position_to_render`),
@@ -710,9 +817,13 @@ pub fn update_minimap_tiles(
             image.image = asset_server.load(path);
         }
 
-        // tile top edge = its region's north edge
-        let left = Val::Px((h + (tx as f32 * REGION_SIZE - gx) * k) * s);
-        let top = Val::Px((h - ((tz + 1) as f32 * REGION_SIZE - gz) * k) * s);
+        // tile top edge = its region's north edge. Positions are in the
+        // square viewport's space, so a band that starts elsewhere in the
+        // frame shifts them by its own origin — both bands then show the same
+        // map through different clips.
+        let (band_x, band_y) = band_offset(tile.band);
+        let left = Val::Px((h + (tx as f32 * REGION_SIZE - gx) * k - band_x) * s);
+        let top = Val::Px((h - ((tz + 1) as f32 * REGION_SIZE - gz) * k - band_y) * s);
         let size = Val::Px(p * s);
         if node.left != left {
             node.left = left;
@@ -877,9 +988,7 @@ pub fn update_minimap_dots(
         let (ex, ez) = (-sro.x, sro.z);
         let cx = h + (ex - gx) * k;
         let cy = h - (ez - gz) * k;
-        // circle cull against the frame's round hole; overflow clip catches
-        // the square corners anyway
-        if (cx - h).powi(2) + (cy - h).powi(2) > (h + size / 2.0).powi(2) {
+        if !marker_inside_disc(cx, cy, size) {
             continue;
         }
         visible.push((cx, cy, size, image));
@@ -1200,6 +1309,139 @@ mod tests {
         assert_eq!(DOT_SIZE, 8.0);
         assert_eq!(UNIQUE_DOT_SIZE, 12.0);
         assert_eq!(ARROW_SIZE, 16.0);
+    }
+
+    /// True if the frame-space point (x, y) is drawn by one of the map bands.
+    fn in_a_band(x: f32, y: f32) -> bool {
+        VIEWPORT_BANDS
+            .iter()
+            .any(|(bx, by, bw, bh)| x >= *bx && x < bx + bw && y >= *by && y < by + bh)
+    }
+
+    /// The map used to stick out of the round frame at the bottom corners.
+    ///
+    /// Two facts counted on the shipped art are pinned here. (1) The disc
+    /// `mm_alpha.ddj` cuts is 101x101 at (14,58), i.e. centre (64,108) radius
+    /// 50.5 — the bands must draw all of it, or the map would show a chord.
+    /// (2) Inside the viewport rect the frame is transparent at 210 px that
+    /// are NOT disc: none above row 145, and in rows 145..158 only at columns
+    /// x <= 27 or x >= 107. Anything the bands draw there hangs outside the
+    /// round window.
+    ///
+    /// The red control is the old single square (14,57,105,105): the same two
+    /// checks run against it below, and the second one fails — which is the
+    /// defect. Without it this test would only be asserting that a rectangle
+    /// contains itself.
+    #[test]
+    fn the_map_bands_cover_the_disc_and_nothing_that_leaks_past_the_frame() {
+        let old_square = |x: f32, y: f32| {
+            x >= VIEWPORT_RECT.0
+                && x < VIEWPORT_RECT.0 + VIEWPORT_RECT.2
+                && y >= VIEWPORT_RECT.1
+                && y < VIEWPORT_RECT.1 + VIEWPORT_RECT.3
+        };
+
+        // (1) every pixel of the measured disc is drawn — by both shapes
+        let mut disc_px = 0;
+        for row in 58..159 {
+            for col in 14..115 {
+                let (dx, dy) = (
+                    col as f32 + 0.5 - DISC_CENTER.0,
+                    row as f32 + 0.5 - DISC_CENTER.1,
+                );
+                if dx * dx + dy * dy <= DISC_RADIUS * DISC_RADIUS {
+                    disc_px += 1;
+                    assert!(
+                        in_a_band(col as f32 + 0.5, row as f32 + 0.5),
+                        "disc pixel ({col},{row}) is not in any band"
+                    );
+                    assert!(old_square(col as f32 + 0.5, row as f32 + 0.5));
+                }
+            }
+        }
+        // ~pi * 50.5^2; the loop must have actually run over the disc
+        assert!(disc_px > 7900 && disc_px < 8100, "disc pixels {disc_px}");
+
+        // (2) the measured leaking columns are drawn by NEITHER band ...
+        let mut leaking = 0;
+        for row in 145..162 {
+            for col in [14, 20, 27, 107, 112, 118] {
+                if row >= 159 || !(28..107).contains(&col) {
+                    leaking += 1;
+                    assert!(
+                        !in_a_band(col as f32 + 0.5, row as f32 + 0.5),
+                        "band draws the leaking pixel ({col},{row})"
+                    );
+                }
+            }
+        }
+        assert!(leaking > 0, "the leak sample must not be empty");
+        // ... and red: the old square drew them, which is the defect
+        assert!(old_square(14.5, 150.5));
+        assert!(old_square(118.5, 157.5));
+        assert!(old_square(66.5, 160.5));
+    }
+
+    /// Both bands must show the SAME map: a tile placed at square-space
+    /// (sx, sy) has to land on the same frame pixel whichever band draws it,
+    /// which is what the band offset is for. Red control: an offset of (0, 0)
+    /// (the state before the split) moves band 1's copy of the map by the
+    /// band's own origin, so the two halves no longer line up.
+    #[test]
+    fn a_tile_lands_on_the_same_frame_pixel_in_both_bands() {
+        let frame_pos = |band: usize, sx: f32, sy: f32| {
+            let (ox, oy) = band_offset(band);
+            (
+                VIEWPORT_BANDS[band].0 + sx - ox,
+                VIEWPORT_BANDS[band].1 + sy - oy,
+            )
+        };
+        assert_eq!(band_offset(0), (0.0, 0.0));
+        assert_eq!(band_offset(1), (15.0, 88.0));
+        for (sx, sy) in [(0.0, 0.0), (52.5, 52.5), (104.0, 101.0)] {
+            assert_eq!(frame_pos(0, sx, sy), frame_pos(1, sx, sy));
+            assert_eq!(
+                frame_pos(0, sx, sy),
+                (VIEWPORT_RECT.0 + sx, VIEWPORT_RECT.1 + sy)
+            );
+        }
+    }
+
+    /// A marker may only be drawn where the frame really is a hole: fully
+    /// inside the measured disc. Red control: the cull this replaced measured
+    /// from the *square's* centre with radius `h + size/2` = 56.5, which
+    /// admits points well outside the 50.5 disc.
+    #[test]
+    fn a_marker_is_culled_against_the_disc_not_the_square() {
+        let h = VIEWPORT_RECT.2 / 2.0;
+        let (dcx, dcy) = (
+            DISC_CENTER.0 - VIEWPORT_RECT.0,
+            DISC_CENTER.1 - VIEWPORT_RECT.1,
+        );
+        let disc_keeps = marker_inside_disc;
+        let old_keeps = |cx: f32, cy: f32, size: f32| {
+            (cx - h).powi(2) + (cy - h).powi(2) <= (h + size / 2.0).powi(2)
+        };
+
+        // the centre dot stays either way
+        assert!(disc_keeps(dcx, dcy, DOT_SIZE));
+        // a dot in the square's bottom-left corner is outside the disc: the
+        // old rule kept it (it is 55.6 from the square centre, under 56.5),
+        // the new one drops it
+        let (cx, cy) = (13.0, 91.0);
+        assert!(old_keeps(cx, cy, DOT_SIZE), "the red control must be red");
+        assert!(!disc_keeps(cx, cy, DOT_SIZE));
+        // and a dot right at the rim is only kept while it fits whole
+        assert!(disc_keeps(
+            dcx + DISC_RADIUS - DOT_SIZE / 2.0 - 0.01,
+            dcy,
+            DOT_SIZE
+        ));
+        assert!(!disc_keeps(
+            dcx + DISC_RADIUS - DOT_SIZE / 2.0 + 0.01,
+            dcy,
+            DOT_SIZE
+        ));
     }
 }
 
