@@ -18,9 +18,10 @@
 //! both is server-confirmed only (model.rs).
 //!
 //! The repurchase ("buy back") strip below the detail board is live in this
-//! media (`RESTORE_SOLDITEM_INSHOP` is defined) and is drawn empty on purpose:
-//! its frame, label and five slot rects are authored data, but no known packet
-//! delivers the sold-item list.
+//! media (`RESTORE_SOLDITEM_INSHOP` is defined) and shows what this session
+//! sold: a sell ack names the tray slot the item landed in, `model.rs` mirrors
+//! it into the 5-deep session tray, and the strip draws that tray. The slots
+//! do not click — no client->server request for a repurchase is known.
 
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
@@ -39,7 +40,9 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::scale::hud_scale;
-use crate::plugins::hud::store::model::{PendingStoreOp, StoreHoveredGood, StoreOp, StoreState};
+use crate::plugins::hud::store::model::{
+    BuybackEntry, PendingStoreOp, StoreHoveredGood, StoreOp, StoreState, BUYBACK_TRAY_DEPTH,
+};
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::Inventory;
@@ -321,6 +324,33 @@ fn tab_label(name_key: &str, names: &ClientTextNames, ui_strings: &ClientUiStrin
         .or_else(|| ui_strings.get(name_key))
         .unwrap_or(name_key)
         .to_string()
+}
+
+/// What one repurchase slot draws.
+#[derive(Debug, PartialEq)]
+struct BuybackSlotArt {
+    /// `None` when itemdata does not know the sold ref id — the slot then
+    /// still marks itself occupied, it just has no picture.
+    icon: Option<String>,
+    /// The stack count, omitted for a single item like every other grid.
+    count: Option<String>,
+}
+
+/// The art for the five repurchase slots. An empty tray entry stays `None`,
+/// so an untouched tray leaves the frame bare.
+fn buyback_tray_art(
+    tray: &[Option<BuybackEntry>; BUYBACK_TRAY_DEPTH],
+    item_data: &ClientItemData,
+) -> [Option<BuybackSlotArt>; BUYBACK_TRAY_DEPTH] {
+    std::array::from_fn(|index| {
+        let entry = tray[index]?;
+        Some(BuybackSlotArt {
+            icon: item_data
+                .get(&(entry.ref_id as i32))
+                .and_then(|row| row.icon_path()),
+            count: (entry.quantity > 1).then(|| entry.quantity.to_string()),
+        })
+    })
 }
 
 /// Rebuild the store window whenever the session changes.
@@ -703,10 +733,14 @@ pub fn sync_store_window(
         }
 
         // The repurchase ("buy back") strip: the redeem frame, its label and
-        // five reserved slots. Deliberately empty — which packet delivers the
-        // sold-item list is UNKNOWN (no builder, no parser, no dump sample), so
-        // the frame and label are data and an item in a slot would be an
-        // invention. `BuybackSlot` reserves the fill site for when it lands.
+        // the five tray slots, filled from the session tray.
+        //
+        // The sell ack carries the tray index the sold item landed in
+        // (`sold_buyback` in `packets/src/agent/inventory.rs`) and
+        // `model::record_buyback` mirrors it, so the tray is real data, not an
+        // invention. A slot shows but does not click: no client->server
+        // request for a repurchase is known, and guessing one would send a
+        // body the original never sends.
         content.spawn((
             abs_node(BUYBACK_REDEEM_RECT, s),
             ImageNode {
@@ -728,8 +762,9 @@ pub fn sync_store_window(
             abs_node(BUYBACK_LABEL_RECT, s),
             Pickable::IGNORE,
         ));
+        let tray_art = buyback_tray_art(&session.buyback, &item_data);
         for (index, x) in BUYBACK_SLOT_XS.iter().enumerate() {
-            content.spawn((
+            let mut slot = content.spawn((
                 BuybackSlot(index),
                 abs_node(
                     (*x, BUYBACK_SLOT_Y, BUYBACK_SLOT_SIZE, BUYBACK_SLOT_SIZE),
@@ -737,6 +772,41 @@ pub fn sync_store_window(
                 ),
                 Pickable::IGNORE,
             ));
+            let Some(art) = &tray_art[index] else {
+                continue;
+            };
+            slot.with_children(|slot| {
+                if let Some(icon) = &art.icon {
+                    slot.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        ImageNode {
+                            image: asset_server.load(icon),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
+                if let Some(count) = &art.count {
+                    slot.spawn((
+                        Text::new(count.clone()),
+                        text_font(7.0),
+                        TextColor(PRICE_COLOR),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(1.0 * s),
+                            bottom: Val::Px(1.0 * s),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
+            });
         }
     });
 }
@@ -1801,5 +1871,50 @@ mod test {
         );
         // GDR_STORE_ICON_SLOT_* are all y 289.
         assert_eq!(BUYBACK_SLOT_Y, 289.0 - game_window::CONTENT_TOP);
+    }
+
+    /// What a sell ack put in the tray has to reach the strip: art for the
+    /// occupied slots only, with a stack count on a stack and none on a
+    /// single item.
+    #[test]
+    fn buyback_tray_art_fills_only_the_occupied_slots() {
+        use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
+        use std::collections::HashMap;
+
+        let mut fields = vec![String::new(); 161];
+        fields[54] = String::from("item\\china\\weapon\\icon_spear.ddj");
+        let item_data =
+            ClientItemData::from_data(ItemData(HashMap::from([(7, ItemDataRow(fields))])));
+        let mut tray = [None; BUYBACK_TRAY_DEPTH];
+        tray[0] = Some(BuybackEntry {
+            ref_id: 7,
+            quantity: 1,
+        });
+        tray[3] = Some(BuybackEntry {
+            ref_id: 9,
+            quantity: 12,
+        });
+
+        let art = buyback_tray_art(&tray, &item_data);
+        assert_eq!(
+            art[0],
+            Some(BuybackSlotArt {
+                icon: Some(String::from(
+                    "media://icon/item/china/weapon/icon_spear.ddj"
+                )),
+                count: None,
+            })
+        );
+        assert_eq!(art[1], None);
+        assert_eq!(art[2], None);
+        // ref id 9 is not in itemdata: occupied, but no picture
+        assert_eq!(
+            art[3],
+            Some(BuybackSlotArt {
+                icon: None,
+                count: Some(String::from("12")),
+            })
+        );
+        assert_eq!(art[4], None);
     }
 }
