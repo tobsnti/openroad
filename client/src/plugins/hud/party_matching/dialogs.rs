@@ -685,10 +685,14 @@ fn build_auto(
     spawn_purpose_group(plate, asset_server, ui_strings, state.form.purpose, font, s);
 
     // Section 2 — the race preference, three options in one group container.
+    // Corpus keys, not invented ones: `..._RECORD_RACE_CHN/_EUR/_OPEN` appear
+    // in none of the 247 resinfo files nor in `textuisystem.txt`, so they
+    // resolved to our English fallbacks every time — in a client whose own
+    // language is not English.
     let races = [
-        ("UIIT_CTL_PARTYMATCH_RECORD_RACE_CHN", "China", Some(0u8)),
-        ("UIIT_CTL_PARTYMATCH_RECORD_RACE_EUR", "Europe", Some(1)),
-        ("UIIT_CTL_PARTYMATCH_RECORD_RACE_OPEN", "Open", None),
+        ("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_CH", "CHN", Some(0u8)),
+        ("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_EU", "EUR", Some(1)),
+        ("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_ANYTHING", "Open", None),
     ];
     for (index, (key, fallback, value)) in races.iter().enumerate() {
         let rect = (

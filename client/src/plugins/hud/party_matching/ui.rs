@@ -919,22 +919,48 @@ const DEFAULT_OWN_PARTY_COLOR: &str = "FF7FB2FF";
 fn purpose_label(purpose: u8, ui_strings: &ClientUiStrings) -> String {
     match purpose {
         packets::agent::party::PARTY_PURPOSE_HUNTING => ui_strings
-            .get_or("UIIT_CTL_PARTYMATCH_PSEARCH_OBJECT_HUNT", "Hunting")
+            .get_or("UIIT_CTL_PARTYMATCH_PSEARCH_OBJECTCOMBAT", "Hunting")
             .to_string(),
         packets::agent::party::PARTY_PURPOSE_TRADER => ui_strings
-            .get_or("UIIT_CTL_PARTYMATCH_PSEARCH_OBJECT_TRADE", "Trade")
+            .get_or(
+                "UIIT_CTL_PARTYMATCH_PSEARCH_FIND_OBJECTTRADER",
+                "Trade Union",
+            )
             .to_string(),
         packets::agent::party::PARTY_PURPOSE_THIEF => ui_strings
-            .get_or("UIIT_CTL_PARTYMATCH_RECORD_OBJECT_THIEF", "Thief Union")
+            .get_or(
+                "UIIT_CTL_PARTYMATCH_PSEARCH_FIND_OBJECTTHIEF",
+                "Thief Union",
+            )
             .to_string(),
         other => other.to_string(),
     }
 }
 
-/// `race_type` is byte-exact against go-sro's `countryType`, but which value is
-/// which race is UNKNOWN, so the raw value is shown rather than a guessed name.
-fn race_label(race: u8, _ui_strings: &ClientUiStrings) -> String {
-    race.to_string()
+/// The race cell, in the player's own wording.
+///
+/// The original keeps three strings for this and we hold its keys rather than
+/// sentences: `UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_CH` ("CHN"), `..._EU`
+/// ("EUR") and `..._ANYTHING` ("Open"), all three in `textuisystem.txt`.
+///
+/// Which number is which race is **measured**, not assumed: `race_type` is the
+/// client's own `m_byCountry`, and its debug string says there are exactly two
+/// valid values ("weder Europa noch China.. (m_byCountry : %d)"). 0 is China,
+/// 1 is Europe. Five independent decode sites agree, and the matching list's
+/// race cell is filled through the control's `SetText` — a string, not an icon.
+///
+/// Anything outside 0..=1 keeps its raw number: the original treats such a
+/// value as an error rather than a third race.
+fn race_label(race: u8, ui_strings: &ClientUiStrings) -> String {
+    match race {
+        0 => ui_strings
+            .get_or("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_CH", "CHN")
+            .to_string(),
+        1 => ui_strings
+            .get_or("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_EU", "EUR")
+            .to_string(),
+        other => other.to_string(),
+    }
 }
 
 // --- Observers --------------------------------------------------------------
@@ -1198,6 +1224,41 @@ pub fn reload_match_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both cells must read the player's own corpus, not our words. The table
+    /// is deliberately wrong-looking: if a lookup ever stopped working, the
+    /// assertions would come back as our English fallbacks and pass for the
+    /// wrong reason.
+    #[test]
+    fn the_race_and_purpose_cells_come_from_the_players_strings() {
+        let strings = ClientUiStrings::from_rows(&[
+            ("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_CH", "ROT"),
+            ("UIIT_CTL_PARTYMATCH_AUTOMATCH_RACE_EU", "BLAU"),
+            ("UIIT_CTL_PARTYMATCH_PSEARCH_OBJECTCOMBAT", "JAGD"),
+            ("UIIT_CTL_PARTYMATCH_PSEARCH_FIND_OBJECTTRADER", "HANDEL"),
+            ("UIIT_CTL_PARTYMATCH_PSEARCH_FIND_OBJECTTHIEF", "DIEB"),
+        ]);
+
+        assert_eq!(race_label(0, &strings), "ROT");
+        assert_eq!(race_label(1, &strings), "BLAU");
+        // The client's own m_byCountry has exactly two valid values, so a third
+        // one keeps its number instead of being folded into a race.
+        assert_eq!(race_label(2, &strings), "2");
+
+        assert_eq!(
+            purpose_label(packets::agent::party::PARTY_PURPOSE_HUNTING, &strings),
+            "JAGD"
+        );
+        assert_eq!(
+            purpose_label(packets::agent::party::PARTY_PURPOSE_TRADER, &strings),
+            "HANDEL"
+        );
+        assert_eq!(
+            purpose_label(packets::agent::party::PARTY_PURPOSE_THIEF, &strings),
+            "DIEB"
+        );
+    }
+
     use crate::plugins::hud::party_matching::dialogs::sync_match_dialogs;
 
     /// The regression that killed every button in the match dialogs.
