@@ -50,7 +50,7 @@
 use crate::plugins::camera::retarget_window_cameras;
 use bevy::app::AppExit;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::{Camera, RenderTarget};
+use bevy::camera::{Camera, ClearColorConfig, RenderTarget};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -226,6 +226,7 @@ fn drive_screenshot(
     mut images: ResMut<Assets<Image>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: Query<(Entity, &mut RenderTarget), With<Camera>>,
+    mut clears: Query<&mut Camera>,
     mut exit: MessageWriter<AppExit>,
 ) {
     clock.elapsed += time.delta();
@@ -252,8 +253,24 @@ fn drive_screenshot(
             let size = measured.unwrap_or(FALLBACK_SIZE);
             let scale_factor = window.map(|window| window.scale_factor()).unwrap_or(1.0);
             let target = images.add(offscreen_target(size));
-            let retargeted =
-                retarget_window_cameras(cameras.iter_mut(), &target, scale_factor).len();
+            let moved = retarget_window_cameras(cameras.iter_mut(), &target, scale_factor);
+            // The capture image needs someone to clear it, and nothing did:
+            // measured here, the one camera that draws into it carries
+            // `ClearColorConfig::None` — right for a window, where it composites
+            // over the 3D pass, and wrong for an image, which is never otherwise
+            // overwritten. So every frame painted on top of the last one: the
+            // boot loading screen from frame 1 stayed under every later capture,
+            // and text drew over itself until it was unreadable. The
+            // lowest-order camera owns the frame, so it is the one that clears.
+            if let Some(&first) = moved
+                .iter()
+                .min_by_key(|entity| clears.get(**entity).map(|c| c.order).unwrap_or(isize::MAX))
+            {
+                if let Ok(mut camera) = clears.get_mut(first) {
+                    camera.clear_color = ClearColorConfig::Default;
+                }
+            }
+            let retargeted = moved.len();
             if retargeted == 0 {
                 warn!(
                     "screenshot: no camera renders to the window — the capture will be \
