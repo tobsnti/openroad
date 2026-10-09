@@ -65,6 +65,22 @@ const FOLLOW_BTN_DDJ: &str = "media://interface/ifcommon/com_mid_button";
 
 const LABEL_COLOR: Color = Color::srgb_u8(235, 225, 190);
 
+/// `wmap_sign_location.ddj` is not one sign: it is a 432x36 strip of twelve
+/// 36x36 frames. Drawn whole into the 16x16 marker box it collapses into a
+/// striped band, which is what the map showed at every teleporter.
+///
+/// Which frame the original picks, and whether it plays the sequence, is not
+/// established here. Frame 0 is the smallest assumption.
+const LOCATION_SIGN_STRIP_WIDTH: f32 = 432.0;
+const LOCATION_SIGN_FRAMES: f32 = 12.0;
+/// One frame: the strip divided by its frame count, and square.
+const LOCATION_SIGN_FRAME: f32 = LOCATION_SIGN_STRIP_WIDTH / LOCATION_SIGN_FRAMES;
+
+/// The source rect of the frame drawn for a generic location marker.
+fn location_sign_frame() -> Rect {
+    Rect::new(0.0, 0.0, LOCATION_SIGN_FRAME, LOCATION_SIGN_FRAME)
+}
+
 #[derive(Component)]
 pub struct WmWindowRoot;
 
@@ -268,11 +284,13 @@ pub fn sync_world_map_window(
                                 // marker layer (party/academy plug in later)
                                 for marker in &markers.0 {
                                     let px = map.project(marker.gx / 10.0, marker.gz / 10.0) * s;
-                                    let sign = match marker.kind {
-                                        MarkerKind::Party => "wmap_sign_party",
-                                        MarkerKind::UnionParty => "wmap_sign_unionparty",
-                                        MarkerKind::Academy => "wmap_sign_apprenticeship",
-                                        MarkerKind::Generic => "wmap_sign_location",
+                                    let (sign, sign_rect) = match marker.kind {
+                                        MarkerKind::Party => ("wmap_sign_party", None),
+                                        MarkerKind::UnionParty => ("wmap_sign_unionparty", None),
+                                        MarkerKind::Academy => ("wmap_sign_apprenticeship", None),
+                                        MarkerKind::Generic => {
+                                            ("wmap_sign_location", Some(location_sign_frame()))
+                                        }
                                     };
                                     // Hoverable, unlike the decorations around
                                     // it: the marker carries a name and the
@@ -294,6 +312,7 @@ pub fn sync_world_map_window(
                                                 image: asset_server.load(format!(
                                                     "media://interface/worldmap/{sign}.ddj"
                                                 )),
+                                                rect: sign_rect,
                                                 image_mode: NodeImageMode::Stretch,
                                                 ..default()
                                             },
@@ -901,6 +920,22 @@ pub fn cleanup_world_map(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The generic location sign is a strip, not a single image: 432 = 12 * 36.
+    /// A frame that does not divide the strip would show parts of two signs,
+    /// which is how the striped band on the map came about.
+    #[test]
+    fn the_location_sign_strip_holds_twelve_square_frames() {
+        assert_eq!(LOCATION_SIGN_FRAME, 36.0);
+        assert_eq!(
+            LOCATION_SIGN_STRIP_WIDTH,
+            LOCATION_SIGN_FRAME * LOCATION_SIGN_FRAMES
+        );
+        let frame = location_sign_frame();
+        assert_eq!(frame.min, Vec2::ZERO);
+        assert_eq!(frame.max, Vec2::splat(LOCATION_SIGN_FRAME));
+        assert!(frame.max.x <= LOCATION_SIGN_STRIP_WIDTH);
+    }
 
     /// `ginterface.txt:240` `GDR_WORLDMAP` `Rect="100,100,652,424"`: the
     /// content box must reconstruct that outer size, and the spawn anchor must
