@@ -71,6 +71,7 @@ const ART_COMMON: &str = "media://interface/ifcommon/";
 const ART_GUILD: &str = "media://interface/guild/";
 const ART_FRAME: &str = "media://interface/frame/";
 const ART_INVENTORY: &str = "media://interface/inventory/";
+const ART_PARTY: &str = "media://interface/party/";
 
 /// `GDR_PARTYMATCH_FRAME` — the inner `int_window_` ring, at content origin.
 const INNER_FRAME_RECT: (f32, f32, f32, f32) = (0.0, 0.0, 762.0, 428.0);
@@ -227,6 +228,11 @@ pub struct MatchRow(pub usize);
 pub struct MatchRowBar(pub usize, pub &'static str);
 #[derive(Component)]
 pub struct MatchCell(pub usize, pub MatchColumn);
+
+/// The row's Type cell — an icon, not a string, so it cannot live in
+/// [`MatchCell`] with the rest.
+#[derive(Component)]
+pub struct MatchMark(pub usize);
 #[derive(Component)]
 pub struct MatchHeader(pub MatchSort);
 #[derive(Component)]
@@ -504,14 +510,13 @@ pub fn spawn_match_window(
                             Pickable::IGNORE,
                         ));
                     }
-                    // The Type column is a 16x16 icon with `DDJ=""` and no
-                    // tooltip string anywhere in the data, so which icons it
-                    // picks from is UNKNOWN (§9-D). The slot is reserved and
-                    // left empty rather than filled with a guess.
+                    // The Type column is a 16x16 icon the data does not name
+                    // (`DDJ=""`), but the original picks it on a bit we already
+                    // read: see `mark_art`.
                     slot.spawn((
+                        MatchMark(row),
                         abs_node(CELL_MARK, s),
                         ImageNode::default(),
-                        Visibility::Hidden,
                         Pickable::IGNORE,
                     ));
                 });
@@ -827,8 +832,12 @@ pub fn refresh_match_board(
     asset_server: Res<AssetServer>,
     mut rows: Query<(&MatchRow, &mut Visibility)>,
     mut cells: Query<(&MatchCell, &mut Text, &mut TextColor)>,
-    mut bars: Query<(&MatchRowBar, &mut ImageNode)>,
+    mut bars: Query<(&MatchRowBar, &mut ImageNode), Without<MatchMark>>,
     mut page: Query<&mut Text, (With<MatchPageLabel>, Without<MatchCell>)>,
+    mut marks: Query<
+        (&MatchMark, &mut ImageNode, &mut Visibility),
+        (Without<MatchRow>, Without<MatchRowBar>),
+    >,
 ) {
     let sorted = state.sorted();
     let own_tint = own_party_tint(&config.hud.party.own_party_color);
@@ -854,6 +863,19 @@ pub fn refresh_match_board(
         // unconditional write would dirty `ImageNode` for twelve rows a frame.
         if image.image != art {
             image.image = art;
+        }
+    }
+    for (mark, mut image, mut visibility) in marks.iter_mut() {
+        match sorted.get(mark.0) {
+            Some(entry) => {
+                let art = asset_server.load(format!("{ART_PARTY}{}", mark_art(entry.setup)));
+                if image.image != art {
+                    image.image = art;
+                }
+                *visibility = Visibility::Inherited;
+            }
+            // An empty row shows no icon at all rather than a stale one.
+            None => *visibility = Visibility::Hidden,
         }
     }
     for (cell, mut text, mut color) in cells.iter_mut() {
@@ -951,6 +973,22 @@ fn purpose_label(purpose: u8, ui_strings: &ClientUiStrings) -> String {
 ///
 /// Anything outside 0..=1 keeps its raw number: the original treats such a
 /// value as an error rather than a third race.
+/// The Type icon for a listing: shared-EXP parties advertise as a group, the
+/// rest as singles.
+///
+/// The original branches on one bit — `test byte [..+0x0B],1` — and picks
+/// `pt_association.ddj` when it is set, `pt_eachone.ddj` when it is not. That
+/// is the same bit as [`PartySetup::is_exp_shared`], which also raises the
+/// member cap from 4 to 8; the original reaches both from the same test, which
+/// is why the two must never drift apart here (the test below pins that).
+fn mark_art(setup: u8) -> &'static str {
+    if PartySetup(setup).is_exp_shared() {
+        "pt_association.ddj"
+    } else {
+        "pt_eachone.ddj"
+    }
+}
+
 fn race_label(race: u8, ui_strings: &ClientUiStrings) -> String {
     match race {
         0 => ui_strings
@@ -1224,6 +1262,25 @@ pub fn reload_match_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original reaches the Type icon and the member cap from the **same**
+    /// test on the same bit. We keep them in two boxes — `mark_art` here and
+    /// `PartySetup::capacity` in `packets` — so only a test can catch them
+    /// drifting apart. All eight setup values, both directions.
+    #[test]
+    fn the_type_icon_and_the_member_cap_read_the_same_bit() {
+        for raw in 0u8..8 {
+            let setup = PartySetup(raw);
+            let grouped = mark_art(raw) == "pt_association.ddj";
+            assert_eq!(
+                grouped,
+                setup.capacity() == 8,
+                "setup {raw:#04b}: icon says grouped={grouped}, cap says {}",
+                setup.capacity()
+            );
+            assert_eq!(grouped, setup.is_exp_shared(), "setup {raw:#04b}");
+        }
+    }
 
     /// Both cells must read the player's own corpus, not our words. The table
     /// is deliberately wrong-looking: if a lookup ever stopped working, the
