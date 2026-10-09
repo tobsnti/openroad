@@ -95,6 +95,14 @@ impl Default for GameWindowStyle {
 /// `com_windowclose{,_focus,_press}.ddj` all read 16x16, so drawing it at 14
 /// rescaled it.
 const CLOSE_SIZE: f32 = 16.0;
+/// Distance from the shell's right edge to the close button's own right edge,
+/// matching [`close_button_node`]'s `right`.
+const CLOSE_RIGHT_INSET: f32 = 10.0;
+
+/// How much of a title band's right end the close button owns, measured from
+/// the shell's right edge. A caption that wants to sit on the band has to stop
+/// here or it runs under the button.
+pub const TITLE_RIGHT_RESERVED: f32 = CLOSE_RIGHT_INSET + CLOSE_SIZE + CHROME_PAD;
 /// Caption colour. `mframe_wnd_` blocks declare `FontColor="255,255,255,255"`
 /// in 29 of their 31 corpus occurrences (`ifsystemwnd.txt:148` plus 28 in
 /// `ginterface.txt`). The two exceptions are `GDR_COMMUNITY`
@@ -524,7 +532,7 @@ pub fn abs_node(rect: (f32, f32, f32, f32), s: f32) -> Node {
 fn close_button_node(s: f32) -> Node {
     Node {
         position_type: PositionType::Absolute,
-        right: Val::Px(10.0 * s),
+        right: Val::Px(CLOSE_RIGHT_INSET * s),
         top: Val::Px(4.0 * s),
         width: Val::Px(CLOSE_SIZE * s),
         height: Val::Px(CLOSE_SIZE * s),
