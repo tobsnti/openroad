@@ -113,6 +113,9 @@ fn seed_mock_party(
     });
     party.open = true;
 
+    // Both race values are seeded, not four zeros: a preview that only ever
+    // shows one value cannot show whether the cell resolves at all — which is
+    // exactly how this column came to read as a bare "0".
     matching.entries = vec![
         match_entry(
             1,
@@ -122,6 +125,7 @@ fn seed_mock_party(
             80,
             4,
             PARTY_PURPOSE_HUNTING,
+            0,
         ),
         match_entry(
             2,
@@ -131,6 +135,7 @@ fn seed_mock_party(
             70,
             6,
             PARTY_PURPOSE_TRADER,
+            1,
         ),
         match_entry(
             3,
@@ -140,6 +145,7 @@ fn seed_mock_party(
             90,
             2,
             PARTY_PURPOSE_THIEF,
+            0,
         ),
         match_entry(
             4,
@@ -149,6 +155,7 @@ fn seed_mock_party(
             100,
             7,
             PARTY_PURPOSE_HUNTING,
+            1,
         ),
     ];
     matching.page_index = 0;
@@ -164,12 +171,13 @@ fn match_entry(
     level_max: u8,
     members: u8,
     purpose: u8,
+    race_type: u8,
 ) -> PartyMatchEntry {
     PartyMatchEntry {
         number,
         registered_at: 0,
         master_name: master.to_string(),
-        race_type: 0,
+        race_type,
         member_count: members,
         setup: PartySetup::EXP_SHARED,
         purpose,
