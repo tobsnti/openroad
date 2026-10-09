@@ -187,6 +187,13 @@ fn clear_enter_consumed(mut consumed: ResMut<EnterConsumed>) {
 
 /// A window that just appeared is the focused one — opening it is the most
 /// recent thing the player did with a window.
+///
+/// The insert is deferred, and a window can be despawned in the same frame it
+/// was spawned — a scene that opens and closes a dialog while it builds does
+/// exactly that. `commands.entity(..).insert(..)` panics when the command
+/// finally runs against an entity that is gone, which takes the process down
+/// from a HUD bookkeeping step. `try_insert` skips it instead: a window that no
+/// longer exists does not need a focus stamp.
 fn stamp_new_windows(
     fresh: Query<Entity, (Or<(With<HudWindow>, With<HudDialog>)>, Without<FocusStamp>)>,
     mut focus: ResMut<HudFocus>,
@@ -194,7 +201,7 @@ fn stamp_new_windows(
 ) {
     for entity in fresh.iter() {
         let stamp = focus.stamp();
-        commands.entity(entity).insert(stamp);
+        commands.entity(entity).try_insert(stamp);
     }
 }
 
@@ -212,7 +219,10 @@ fn stamp_clicked_window(
     loop {
         if windows.contains(entity) {
             let stamp = focus.stamp();
-            commands.entity(entity).insert(stamp);
+            // Same reason as `stamp_new_windows`: the press that focuses a
+            // window can also be the press that closes it, and the insert runs
+            // later.
+            commands.entity(entity).try_insert(stamp);
             return;
         }
         let Ok(parent) = parents.get(entity) else {
@@ -308,6 +318,48 @@ pub fn confirm_focused_dialog_on_enter(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The crash this fix is about, reproduced deterministically: the stamp is
+    /// queued through `Commands`, and the window is despawned before that queue
+    /// is applied. On `main` the apply panics and takes the process down from a
+    /// bookkeeping step — measured by running the `ui_testing` scene:
+    /// `Encountered a panic when applying buffers for system
+    /// client::plugins::hud::focus::stamp_new_windows`.
+    ///
+    /// The ordering is explicit rather than left to the schedule: a sync point
+    /// between the two systems would apply the insert first and reproduce
+    /// nothing, which is exactly how a first attempt at this test passed
+    /// against the broken code.
+    #[test]
+    fn a_stamp_queued_for_a_despawned_window_does_not_panic() {
+        use bevy::ecs::system::SystemState;
+
+        let mut world = World::new();
+        world.init_resource::<HudFocus>();
+        let close_button = world.spawn_empty().id();
+        let window = world.spawn(HudWindow { close_button }).id();
+
+        let mut state: SystemState<(
+            Query<Entity, (Or<(With<HudWindow>, With<HudDialog>)>, Without<FocusStamp>)>,
+            ResMut<HudFocus>,
+            Commands,
+        )> = SystemState::new(&mut world);
+
+        {
+            let (fresh, mut focus, mut commands) =
+                state.get_mut(&mut world).expect("system state builds");
+            for entity in fresh.iter() {
+                let stamp = focus.stamp();
+                commands.entity(entity).try_insert(stamp);
+            }
+        }
+
+        // The window goes away before the queued insert runs.
+        world.despawn(window);
+        state.apply(&mut world);
+
+        assert!(world.get_entity(window).is_err(), "the window stayed gone");
+    }
 
     /// Stamps are strictly increasing, which is the whole ordering.
     #[test]
