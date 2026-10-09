@@ -113,6 +113,8 @@ fn seed_mock_party(
     });
     party.open = true;
 
+    // Both race values AND both setups are seeded: a preview that shows one
+    // value per column cannot show whether that column resolves at all.
     // Both race values are seeded, not four zeros: a preview that only ever
     // shows one value cannot show whether the cell resolves at all — which is
     // exactly how this column came to read as a bare "0".
@@ -126,6 +128,7 @@ fn seed_mock_party(
             4,
             PARTY_PURPOSE_HUNTING,
             0,
+            PartySetup::EXP_SHARED,
         ),
         match_entry(
             2,
@@ -136,6 +139,7 @@ fn seed_mock_party(
             6,
             PARTY_PURPOSE_TRADER,
             1,
+            0,
         ),
         match_entry(
             3,
@@ -146,6 +150,7 @@ fn seed_mock_party(
             2,
             PARTY_PURPOSE_THIEF,
             0,
+            PartySetup::EXP_SHARED,
         ),
         match_entry(
             4,
@@ -156,6 +161,7 @@ fn seed_mock_party(
             7,
             PARTY_PURPOSE_HUNTING,
             1,
+            0,
         ),
     ];
     matching.page_index = 0;
@@ -172,6 +178,7 @@ fn match_entry(
     members: u8,
     purpose: u8,
     race_type: u8,
+    setup: u8,
 ) -> PartyMatchEntry {
     PartyMatchEntry {
         number,
@@ -179,7 +186,7 @@ fn match_entry(
         master_name: master.to_string(),
         race_type,
         member_count: members,
-        setup: PartySetup::EXP_SHARED,
+        setup,
         purpose,
         level_min,
         level_max,
