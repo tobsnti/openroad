@@ -22,6 +22,12 @@ use crate::net::sequence::Sequence;
 pub enum HandshakeError {
     #[error("invalid frame")]
     InvalidFrame,
+    #[error("the peer closed the connection during the handshake")]
+    PeerClosed,
+    #[error("reading the handshake packet failed: {0}")]
+    Io(String),
+    #[error("the handshake packet did not complete within {0} bytes")]
+    Oversized(usize),
     #[error("invalid handshake packet")]
     InvalidHandshakePacket,
     #[error("handshake already completed")]
@@ -109,16 +115,59 @@ pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeEr
     Ok(flags)
 }
 
+/// Read one whole handshake frame, however TCP chooses to deliver it.
+///
+/// IDEA. A frame is not a datagram. The setup packet is small, so a single
+/// `read` usually returns all of it — usually. When the peer's segments land
+/// split, the parser answers `Incomplete`, and the previous code turned that
+/// into `.expect(...)`, i.e. a panic in a Bevy task while the player watches a
+/// login screen. Measured once against the live test server: the agent leg
+/// panicked at this exact spot right after `0xA102`, and the same build
+/// connected fine on the next three runs — so it is a timing window, not a bad
+/// peer.
+///
+/// So this reads until the parser is satisfied, and every way it can fail is an
+/// error the caller can report: a closed connection, an IO failure, or a frame
+/// that never completes within the buffer we are willing to hold.
+fn read_handshake_frame<R: Read>(
+    stream: &mut R,
+    security: Arc<RwLock<SilkroadSecurityState>>,
+) -> Result<SilkroadFrame, HandshakeError> {
+    // The handshake packet is at most a few dozen bytes; this cap is three
+    // orders of magnitude above that and exists only so a peer that dribbles
+    // bytes forever cannot grow our buffer without end.
+    const MAX_HANDSHAKE_BYTES: usize = 4096;
+
+    let mut buf = Vec::with_capacity(MAX_HANDSHAKE_BYTES);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|e| HandshakeError::Io(e.to_string()))?;
+        if read == 0 {
+            return Err(HandshakeError::PeerClosed);
+        }
+        buf.extend_from_slice(&chunk[..read]);
+
+        match SilkroadFrame::parse(&mut buf[..], security.clone()) {
+            Ok((_, frame)) => return Ok(frame),
+            // Not all of it has arrived yet — go back for the rest.
+            Err(SilkroadFrameError::Incomplete) => {
+                if buf.len() >= MAX_HANDSHAKE_BYTES {
+                    return Err(HandshakeError::Oversized(MAX_HANDSHAKE_BYTES));
+                }
+            }
+            Err(_) => return Err(InvalidFrame),
+        }
+    }
+}
+
 pub(crate) fn initialize(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
+    let frame = read_handshake_frame(stream, security.clone())?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -248,11 +297,7 @@ pub(crate) fn finalize(
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
+    let frame = read_handshake_frame(stream, security.clone())?;
     return match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -633,5 +678,83 @@ mod test {
             .unwrap(),
             FLAG_CHALLENGE
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    /// A reader that hands out `chunk` bytes at a time, the way a TCP stream is
+    /// allowed to.
+    struct Dribble {
+        bytes: Vec<u8>,
+        pos: usize,
+        chunk: usize,
+    }
+
+    impl Read for Dribble {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let end = (self.pos + self.chunk).min(self.bytes.len());
+            let n = end - self.pos;
+            out[..n].copy_from_slice(&self.bytes[self.pos..end]);
+            self.pos = end;
+            Ok(n)
+        }
+    }
+
+    fn state() -> Arc<RwLock<SilkroadSecurityState>> {
+        Arc::new(RwLock::new(SilkroadSecurityState::new()))
+    }
+
+    /// One `0x5000` setup frame on the wire: length, opcode, count, crc, body.
+    fn setup_frame_bytes() -> Vec<u8> {
+        let body = [0x0Eu8, 1, 2, 3, 4];
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        wire.extend_from_slice(&0x5000u16.to_le_bytes());
+        wire.push(0); // count
+        wire.push(0); // crc
+        wire.extend_from_slice(&body);
+        wire
+    }
+
+    /// The defect this guards: one `read` was assumed to deliver a whole frame.
+    /// Measured against the live test server, the agent leg once panicked with
+    /// `Incomplete` right after `0xA102` and the same build connected fine on
+    /// the next three runs — a timing window, not a bad peer.
+    #[test]
+    fn a_frame_split_across_reads_is_assembled() {
+        let wire = setup_frame_bytes();
+        for chunk in [1usize, 2, 3, 5] {
+            let mut reader = Dribble {
+                bytes: wire.clone(),
+                pos: 0,
+                chunk,
+            };
+            let frame = read_handshake_frame(&mut reader, state())
+                .unwrap_or_else(|e| panic!("chunk {chunk}: {e}"));
+            match frame {
+                SilkroadFrame::Packet { opcode, .. } => assert_eq!(opcode, 0x5000),
+                _ => panic!("chunk {chunk}: expected a Packet frame"),
+            }
+        }
+    }
+
+    /// The counter-test: without it the loop above would also "pass" by
+    /// spinning forever on a peer that says nothing.
+    #[test]
+    fn a_peer_that_closes_mid_frame_is_an_error_not_a_hang() {
+        let wire = setup_frame_bytes();
+        let mut reader = Dribble {
+            bytes: wire[..4].to_vec(), // header only, then EOF
+            pos: 0,
+            chunk: 4,
+        };
+        assert!(matches!(
+            read_handshake_frame(&mut reader, state()),
+            Err(HandshakeError::PeerClosed)
+        ));
     }
 }

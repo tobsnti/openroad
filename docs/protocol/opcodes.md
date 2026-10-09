@@ -189,6 +189,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB203` | MasteryLevelDownResponse | S→C | experimental | exact mirror of 0xB0A2; failure shape [U] |
 | `0xB0BD` | BuffAdd | S→C | wired |  |
 | `0xB072` | BuffRemove | S→C | wired |  |
+| `0x3206` | BuffRemainTime | S→C | wired | `u8` sub-type: 0 = the player's own character, 8 = a named entity ([U], no body seen); any other sub-type, and any body that does not end where its fields do, is kept whole |
 
 ## GM commands
 
@@ -568,14 +569,6 @@ every table row to exist in the `packets!` macro):
   wire. Listed in `KNOWN_IGNORED_OPCODES` (`client/src/plugins/net/plugin.rs`) so a
   future capture is logged as known-and-ignored, not as an unhandled opcode, and does
   not attract a speculative layout.
-
-Captured but deliberately **not** wired (from the PR #179 capture):
-
-- **`0x3206`** — **not a "ticket" and no longer unresolved.** Its handler is named by
-  its own log string `"OnRefreshBuffRemaintime:%d"`: a `u8` sub-type family for **buff /
-  status-effect refresh**. `sub 8` = `u32 uid`, `u32 buff instance id`, `u32 duration in
-  milliseconds` (stored `÷ 1000`). Wire it alongside the buff HUD rather than waiting for a
-  "ticket state" capture that does not exist.
 
 ---
 
