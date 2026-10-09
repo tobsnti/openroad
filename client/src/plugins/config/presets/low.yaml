@@ -1,0 +1,57 @@
+# graphics.preset: low — DX10-class and integrated GPUs from ~2008-2012, on
+# wgpu's GL 3.3 backend or an old DX12/Vulkan driver. Every key here is a
+# default that config.yaml can override; see plugins/config/preset.rs.
+graphics:
+  view:
+    # 7x7 regions streamed instead of 9x9; the fog closes in to match.
+    view_distance: 2880.0
+    fog_start: 1920.0
+    fog_end: 2880.0
+    # stop drawing what short night fog hides
+    cull_follows_envi_fog: true
+    terrain_lod: aggressive
+    # other players, NPCs and monsters drawn this far (0 = all the server sends)
+    character_distance: 1500.0
+  # MSAA multiplies fill cost, and so does the FXAA pass; the 75% render
+  # scale upscale softens edges anyway
+  msaa: 1
+  fxaa: false
+  # model textures and ground tiles one mip level down: ~1/4 of their VRAM
+  texture_detail: half
+  # plain trilinear: anisotropic taps cost texture bandwidth an old card lacks
+  anisotropy: 1
+  # no HDR target: bloom needs one, and tonemapping then runs per fragment
+  bloom:
+    enabled: false
+  tonemapping: none
+  water:
+    quality: low
+  objects:
+    factor: 100.0
+    min_distance: 800.0
+    # trees/grass: the heaviest alpha-tested overdraw (docs/perf-remote.md)
+    nature_view_distance: 1200.0
+    # and only 70% of them spawn at all (a stable, even thinning)
+    nature_density: 0.7
+    # swaying trees, flags and lamps (Dynamic Animation)
+    animate: false
+  # the 3D view renders at 75% and is upscaled; the HUD stays native
+  render_scale: 0.75
+  # free departed areas sooner on a 4 GB machine
+  streaming:
+    residency_grace_secs: 10.0
+    # half the per-frame streaming work: smaller hitches on a 2-core CPU, at
+    # the cost of later pop-in
+    region_builds_per_frame: 1
+    region_unloads_per_frame: 1
+    object_spawns_per_frame: 32
+    resource_spawns_per_frame: 8
+  depth_prepass: false
+  # PBR mode only; vanilla lighting draws no shadow maps at all
+  shadows:
+    enabled: false
+  # particle caps (Effect Quality) and the sun's lens flare
+  effect_quality: low
+  lens_flare: false
+  dungeon:
+    max_lights: 8

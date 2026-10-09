@@ -10,7 +10,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::Name;
 use bevy::prelude::*;
 
-use crate::assets::m::block_mesh::merge_block_meshes;
+use crate::assets::m::block_mesh::{merge_block_meshes, merge_block_meshes_lod};
 use crate::assets::m::block_splat_material::TerrainLightmapFallback;
 use crate::assets::m::block_splat_material::{TerrainBlockSplatMaterial, TerrainGroundTextures};
 use crate::assets::m::{TerrainBlock, WaterType, JMXVMAPM};
@@ -23,6 +23,7 @@ use crate::plugins::config::graphics::TerrainPipeline;
 use crate::plugins::cursor::interactions::GameCursorTarget;
 use crate::plugins::dev::aabb_lines::DebugAabb;
 use crate::plugins::map::assets::MapsAssets;
+use crate::plugins::map::view_range::TerrainLodLevel;
 use crate::plugins::map::water_hq_material::HighQualityWaterMaterial;
 use crate::plugins::world_origin::WorldOrigin;
 use crate::util::mesh::needs_winding_reversal;
@@ -33,14 +34,10 @@ pub mod rendering;
 
 /// World-space size of one terrain region/tile (matches the .m/.o2/.nvm grid step).
 pub const REGION_SIZE: f32 = 1920.0;
-/// How many regions out from the camera stay fully visible (no fog).
-pub const VISIBLE_RANGE: i32 = 2;
-/// Extra ring of regions, beyond `VISIBLE_RANGE`, over which the fog fades a region
-/// out to fully opaque. See `rendering::fog()`.
-pub const FOG_RANGE: i32 = 1;
 /// Extra rings of regions kept loaded (but already fully hidden by fog) beyond
-/// `VISIBLE_RANGE + FOG_RANGE` before actually being despawned — and, read the other
-/// way around, how far ahead of the fully-fogged point a region is spawned.
+/// the view distance (`graphics.view`, `ViewRange::load_ring`) before actually being
+/// despawned — and, read the other way around, how far ahead of the fully-fogged
+/// point a region is spawned.
 ///
 /// This needs to be more than one region: fog opacity is a smooth per-pixel distance
 /// from the camera's exact position, so it can reach full opacity partway *through*
@@ -58,8 +55,6 @@ pub const FOG_RANGE: i32 = 1;
 /// merging terrain blocks into far fewer draw calls, see `load_terrain_system` — lands.
 /// Watch for object/prop pop-in near the fog boundary if this needs to go back up.
 pub const UNLOAD_BUFFER: i32 = 1;
-/// Total ring width, beyond `VISIBLE_RANGE`, that regions are streamed in to.
-pub const UNLOAD_MARGIN: i32 = FOG_RANGE + UNLOAD_BUFFER;
 
 /// Streaming hysteresis: a region is only despawned once it is this many rings
 /// *beyond* the ring regions are loaded out to. With the two rings equal (as
@@ -91,20 +86,20 @@ const REGION_HIDE_MARGIN: f32 = 160.0;
 
 /// Region-root visibility for region `(t_x, t_z)` given the camera's
 /// SRO-space position: `Hidden` when the nearest point of the region's XZ
-/// footprint lies past the distance where `rendering::fog()` is fully opaque
-/// (env profiles only ever pull fog closer, never past it — see
-/// `envi_fog_range`). Regions stay *loaded* out to the unload boundary so
-/// streaming keeps its fog-covered head start, but everything fully behind
-/// the fog stops being rendered instead of being drawn and then erased by
-/// per-pixel fog. The per-pixel fog distance is 3D >= this XZ distance, so
-/// the test is conservative. `fog_active` = the camera actually carries
-/// `DistanceFog` (the render-debug panel can remove it) — without fog there
-/// is nothing to hide behind.
-fn region_visibility(cam_sro: Vec3, t_x: i32, t_z: i32, fog_active: bool) -> Visibility {
-    if !fog_active {
+/// footprint lies past `cull` — the cull distance, by default where the fog
+/// is fully opaque (`ViewRange::live_cull`; env profiles only ever pull fog
+/// closer, never past it — see `envi_fog_range`). Regions stay *loaded* out
+/// to the unload boundary so streaming keeps its fog-covered head start, but
+/// everything fully behind the fog stops being rendered instead of being
+/// drawn and then erased by per-pixel fog. The per-pixel fog distance is
+/// 3D >= this XZ distance, so the test is conservative. `None` = the camera
+/// carries no `DistanceFog` (the render-debug panel can remove it) — without
+/// fog there is nothing to hide behind.
+fn region_visibility(cam_sro: Vec3, t_x: i32, t_z: i32, cull: Option<f32>) -> Visibility {
+    let Some(cull) = cull else {
         return Visibility::default();
-    }
-    let hide_dist = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE + REGION_HIDE_MARGIN;
+    };
+    let hide_dist = cull + REGION_HIDE_MARGIN;
     // SRO-space footprint: region x covers world x in [-(t_x+1), -t_x] * REGION_SIZE
     // (world X is mirrored), region z covers [t_z, t_z+1] * REGION_SIZE.
     let x_max = t_x as f32 * -REGION_SIZE;
@@ -306,13 +301,28 @@ pub fn preload_terrain_region(
 /// camera's position every time this system runs, so a region that misses
 /// its budget this frame is simply re-evaluated (and despawned once budget
 /// allows) the next one — no extra state needed.
-const REGION_UNLOADS_PER_FRAME: i32 = 2;
+pub(crate) const REGION_UNLOADS_PER_FRAME: u32 = 2;
 
 pub fn load_terrain_dynamically(
+    // Only the main 3D view cameras (the `Main` render layer) stream and
+    // fog-cull the world. The UI camera has no fog, so it would show every
+    // region, and the HUD portrait and paper-doll rigs sit somewhere else
+    // entirely, so they would stream around the wrong place. With a
+    // `Changed<Transform>` filter that never came up, because those cameras
+    // do not move. It does now that a view-range change also re-runs this.
     camera_query: Query<
-        (&Transform, &Camera, Has<DistanceFog>),
-        (With<Camera>, Changed<Transform>),
+        (
+            Ref<Transform>,
+            &Camera,
+            Has<DistanceFog>,
+            // absent = Bevy's default, layer 0, which is `Main` (the
+            // terrain benchmark's camera)
+            Option<&bevy::camera::visibility::RenderLayers>,
+        ),
+        With<Camera3d>,
     >,
+    view: Res<crate::plugins::map::view_range::ViewRange>,
+    config: Option<Res<crate::plugins::config::ClientConfig>>,
     mut terrain_query: Query<
         (Entity, &Terrain, &mut Visibility, Option<&PreloadedTerrain>),
         With<Terrain>,
@@ -331,21 +341,28 @@ pub fn load_terrain_dynamically(
     maps_assets: Res<MapsAssets>,
     origin: Res<WorldOrigin>,
 ) {
-    let x_range = VISIBLE_RANGE;
-    let z_range = VISIBLE_RANGE;
-    let x_neg_range = VISIBLE_RANGE;
-    let z_neg_range = VISIBLE_RANGE;
-    let unload_margin = UNLOAD_MARGIN;
+    // Regions streamed in on each side of the camera's region: the view
+    // distance plus `UNLOAD_BUFFER` rings of head start (`ViewRange::load_ring`).
+    let load_ring = view.load_ring;
 
     // Nothing to do
     if camera_query.is_empty() {
         return;
     }
 
-    for (transform, camera, fog_active) in camera_query.iter() {
-        if !camera.is_active {
+    let main_layer = bevy::camera::visibility::RenderLayers::layer(
+        crate::plugins::camera::CameraLayers::Main.into(),
+    );
+    for (transform, camera, fog_active, layers) in camera_query.iter() {
+        if !camera.is_active || !layers.is_none_or(|layers| layers.intersects(&main_layer)) {
             continue;
         }
+        // Only a moved camera or a changed view range can change the ring or
+        // the region visibility.
+        if !transform.is_changed() && !view.is_changed() {
+            continue;
+        }
+        let cull = fog_active.then_some(view.live_cull);
 
         // The camera lives in render space; region ids are derived from SRO
         // space, so the world origin has to be added back first.
@@ -367,15 +384,10 @@ pub fn load_terrain_dynamically(
             return;
         }
 
-        let min_x = (region_x as i32 - x_neg_range).max(0);
-        let max_x = (region_x as i32 + x_range).min(map_info.map_width as i32 - 1);
-        let min_z = (region_z as i32 - z_neg_range).max(0);
-        let max_z = (region_z as i32 + z_range).min(map_info.map_height as i32 - 1);
-
-        let unload_min_x = min_x - unload_margin;
-        let unload_max_x = max_x + unload_margin;
-        let unload_min_z = min_z - unload_margin;
-        let unload_max_z = max_z + unload_margin;
+        let unload_min_x = region_x as i32 - load_ring;
+        let unload_max_x = region_x as i32 + load_ring;
+        let unload_min_z = region_z as i32 - load_ring;
+        let unload_max_z = region_z as i32 + load_ring;
 
         // Load chunks out to the full margin ring (they are despawned only
         // `UNLOAD_HYSTERESIS` rings beyond it), not just
@@ -392,7 +404,12 @@ pub fn load_terrain_dynamically(
         // fog cover), but only regions not yet fully behind the opaque fog are rendered —
         // see `region_visibility`. Hiding the region root hides its whole subtree
         // (ground groups, map objects, water planes).
-        let mut unload_budget = REGION_UNLOADS_PER_FRAME;
+        // `graphics.streaming.region_unloads_per_frame` (this constant by default)
+        let mut unload_budget = config.as_ref().map_or(REGION_UNLOADS_PER_FRAME, |config| {
+            crate::plugins::config::graphics::StreamingSettings::budget(
+                config.graphics.streaming.region_unloads_per_frame,
+            )
+        });
         terrain_query
             .iter_mut()
             .for_each(|(entity, terrain, mut visibility, preloaded)| {
@@ -438,7 +455,7 @@ pub fn load_terrain_dynamically(
                     // set_if_neq: an unconditional write would change-flag all
                     // ~81 region subtrees for visibility re-propagation on
                     // every camera move.
-                    visibility.set_if_neq(region_visibility(position, t_x, t_z, fog_active));
+                    visibility.set_if_neq(region_visibility(position, t_x, t_z, cull));
                     existing_terrains.insert((t_x, t_z), true);
                 }
             });
@@ -478,7 +495,7 @@ pub fn load_terrain_dynamically(
                             // outer-ring regions spawn already hidden — they
                             // must not render a stray frame before the next
                             // camera move re-evaluates them
-                            visibility: region_visibility(position, x, z, fog_active),
+                            visibility: region_visibility(position, x, z, cull),
                         })
                         .insert(Name::from(format!("Region {}/{}", x, z)));
                 }
@@ -507,7 +524,15 @@ enum GroundMaterial {
 /// once; building them all in one frame was the terrain-streaming hitch, so
 /// the work is spread over frames instead, nearest region first (the far
 /// ones sit behind fog while they wait).
-const GROUP_BUILDS_PER_FRAME: i32 = 2;
+pub(crate) const GROUP_BUILDS_PER_FRAME: u32 = 2;
+
+/// How far the terrain LOD skirts hang below a region's edge
+/// (`merge_block_meshes_lod`). It only has to exceed the height a coarser
+/// edge can miss between two of its vertices. That is bounded by the relief
+/// across 80 units (a quarter-grid step), and 100 covers the steep slopes of
+/// the shipped regions. A deeper skirt costs nothing visible, since it stays
+/// under the neighbour's surface.
+const TERRAIN_SKIRT_DEPTH: f32 = 100.0;
 
 pub fn load_terrain_system(
     mut commands: Commands,
@@ -534,9 +559,17 @@ pub fn load_terrain_system(
     pipeline: Option<Res<TerrainPipeline>>,
     // Exactly one water tier is inserted by `setup_terrain_mesh` (`graphics.water.quality`),
     // so both are optional and the spawn below picks whichever is present.
-    water_material: Option<Res<WaterNormalMaterial>>,
-    water_low_material: Option<Res<WaterLowMaterial>>,
-    ice_material: Option<Res<WaterIceMaterial>>,
+    // tupled: this system is at Bevy's 16-parameter ceiling
+    (water_material, water_low_material, ice_material): (
+        Option<Res<WaterNormalMaterial>>,
+        Option<Res<WaterLowMaterial>>,
+        Option<Res<WaterIceMaterial>>,
+    ),
+    // tupled with the view range: at the 16-parameter ceiling
+    (view, config): (
+        Res<crate::plugins::map::view_range::ViewRange>,
+        Option<Res<crate::plugins::config::ClientConfig>>,
+    ),
     terrain_only: Option<Res<TerrainOnlyBenchmark>>,
 ) {
     // No tile-index gate here any more: ground textures are resolved once, globally, by
@@ -593,7 +626,12 @@ pub fn load_terrain_system(
     }
     building.sort_by(|a, b| a.5.total_cmp(&b.5));
 
-    let mut budget = GROUP_BUILDS_PER_FRAME;
+    // `graphics.streaming.region_builds_per_frame` (this constant by default)
+    let mut budget = config.as_ref().map_or(GROUP_BUILDS_PER_FRAME, |config| {
+        crate::plugins::config::graphics::StreamingSettings::budget(
+            config.graphics.streaming.region_builds_per_frame,
+        )
+    });
     for (terrain_entity, terrain_name, map_data, lightmap, mut load_state, _dist_sq) in building {
         if budget <= 0 {
             break;
@@ -644,13 +682,39 @@ pub fn load_terrain_system(
                 scale: Vec3::new(-1.0, 1.0, 1.0),
                 ..default()
             };
-            let mesh = merge_block_meshes(
-                map_data,
-                &group_blocks,
-                needs_winding_reversal(&group_transform.to_matrix()),
-            );
+            let hand_rolled = pipeline.as_deref() == Some(&TerrainPipeline::HandRolled);
+            let reverse_winding = needs_winding_reversal(&group_transform.to_matrix());
+            // `graphics.view.terrain_lod`: the full grid plus a half and a
+            // quarter grid, all skirted, switched by distance (`ViewRange::
+            // terrain_lod_range`). Material path only: the hand-rolled
+            // pipeline draws whatever it extracts and would draw all three.
+            let lod = view.terrain_lod.is_some() && !hand_rolled;
+            let mut group_aabb = merged_group_aabb(&group_blocks);
+            let mesh = if lod {
+                group_aabb.center.y -= TERRAIN_SKIRT_DEPTH / 2.0;
+                group_aabb.half_extents.y += TERRAIN_SKIRT_DEPTH / 2.0;
+                merge_block_meshes_lod(
+                    map_data,
+                    &group_blocks,
+                    reverse_winding,
+                    1,
+                    Some(TERRAIN_SKIRT_DEPTH),
+                )
+            } else {
+                merge_block_meshes(map_data, &group_blocks, reverse_winding)
+            };
             let mesh = mesh_assets.add(mesh);
-            let group_aabb = merged_group_aabb(&group_blocks);
+            let lod_meshes = lod.then(|| {
+                [2, 4].map(|step| {
+                    mesh_assets.add(merge_block_meshes_lod(
+                        map_data,
+                        &group_blocks,
+                        reverse_winding,
+                        step,
+                        Some(TERRAIN_SKIRT_DEPTH),
+                    ))
+                })
+            });
             let region_lightmap = lightmap
                 .clone()
                 .unwrap_or_else(|| lightmap_fallback.0.clone());
@@ -658,7 +722,6 @@ pub fn load_terrain_system(
             let Ok(mut entity) = commands.get_entity(terrain_entity) else {
                 continue;
             };
-            let hand_rolled = pipeline.as_deref() == Some(&TerrainPipeline::HandRolled);
             let ground_material = if hand_rolled {
                 GroundMaterial::HandRolled(TerrainGroundTextures::from(
                     &group_blocks,
@@ -675,7 +738,28 @@ pub fn load_terrain_system(
                     terrain_block_material_assets.add(material),
                 ))
             };
+            let lod_material = match &ground_material {
+                GroundMaterial::Material(material) if lod => Some(material.clone()),
+                _ => None,
+            };
             entity.with_children(|terrain_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| {
+                // The half and quarter grids: siblings of the full one, same
+                // placement and material, each drawn over its own distances.
+                if let (Some(lod_meshes), Some(material)) = (&lod_meshes, &lod_material) {
+                    for (level, lod_mesh) in (1u8..).zip(lod_meshes) {
+                        terrain_entity.spawn((
+                            Mesh3d(lod_mesh.clone()),
+                            material.clone(),
+                            TerrainGround,
+                            group_transform,
+                            Visibility::default(),
+                            group_aabb,
+                            TerrainLodLevel(level),
+                            view.terrain_lod_range(level),
+                            Name::from(format!("Ground LOD{level} ({})", terrain_name.as_str())),
+                        ));
+                    }
+                }
                 let mut group_entity = terrain_entity.spawn((
                     Mesh3d(mesh),
                     TerrainGround,
@@ -688,6 +772,9 @@ pub fn load_terrain_system(
                     GroundMaterial::Material(material) => group_entity.insert(material),
                     GroundMaterial::HandRolled(textures) => group_entity.insert(textures),
                 };
+                if lod {
+                    group_entity.insert((TerrainLodLevel(0), view.terrain_lod_range(0)));
+                }
                 if terrain_only.is_some() {
                     return;
                 }
@@ -808,9 +895,9 @@ pub fn water_patch_mesh() -> Mesh {
 mod streaming_tests {
     use super::*;
 
-    /// A camera at region (10, 10) loads the ring 10 ± (VISIBLE_RANGE + UNLOAD_MARGIN).
+    /// A camera at region (10, 10) loads the ring 10 ± the default load ring.
     fn ring() -> ((i32, i32), (i32, i32)) {
-        let r = VISIBLE_RANGE + UNLOAD_MARGIN;
+        let r = crate::plugins::map::view_range::ViewRange::default().load_ring;
         ((10 - r, 10 - r), (10 + r, 10 + r))
     }
 
@@ -846,7 +933,7 @@ mod streaming_tests {
     /// region that is loaded on either side of it.
     #[test]
     fn oscillating_across_a_region_line_unloads_nothing() {
-        let r = VISIBLE_RANGE + UNLOAD_MARGIN;
+        let r = crate::plugins::map::view_range::ViewRange::default().load_ring;
         for cam in [10, 11, 10, 11] {
             let (min, max) = ((cam - r, 10 - r), (cam + r, 10 + r));
             for other in [10, 11] {

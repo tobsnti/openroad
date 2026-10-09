@@ -8,7 +8,7 @@ use crate::plugins::config::ClientConfig;
 use crate::plugins::map::objects::{
     SroAnimationClips, SroBindPoses, SroMaterialVariants, SroMeshes, VariantSources,
 };
-use crate::plugins::map::terrain::{FOG_RANGE, REGION_SIZE, VISIBLE_RANGE};
+use crate::plugins::map::view_range::{PartLod, ViewRange};
 use bevy::asset::{AssetPath, AssetServer, Assets};
 use bevy::camera::visibility::VisibilityRange;
 use bevy::ecs::hierarchy::{ChildOf, ChildSpawner};
@@ -82,7 +82,7 @@ type MeshPartBundle<M> = (
     MeshMaterial3d<M>,
     Vec<String>,
     Option<Handle<SkinnedMeshInverseBindposes>>,
-    VisibilityRange,
+    (VisibilityRange, PartLod),
 );
 
 // Object-part distance LOD. Every object mesh part stops drawing past a distance
@@ -92,36 +92,55 @@ type MeshPartBundle<M> = (
 // range; this trims the cheaper-to-lose parts inside it, cutting the mesh-
 // instance count the GPU-preprocessing/instance-buffer systems pay for.
 //
-// Tuning: `OBJECT_LOD_FACTOR` maps an object's largest dimension to its cull
-// distance (the "constant screen size" heuristic — a part of size S is only a
-// few pixels past ~S·factor). `OBJECT_LOD_MIN_DIST` is a floor so nothing near
-// the camera is ever culled; lower it (or the factor) to cull more aggressively.
-// The ceiling is the fully-fogged distance, so a part's range never outlives
-// what the fog cull already hides.
 // The factor, floor and fade band are config-exposed (`graphics.objects`,
-// [`ObjectLodSettings`]) because the right values are hardware-dependent — the
-// original client has no per-part LOD to match. The ceiling is not: it is the
-// fully-fogged distance, so a part's range can never outlive what the fog cull
-// already hides.
-const OBJECT_LOD_MAX_DIST: f32 = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
+// [`ObjectLodSettings::part_range`]) because the right values are
+// hardware-dependent — the original client has no per-part LOD to match. The
+// ceiling is the cull distance (`graphics.view`, `ViewRange::static_cull`), so
+// a part's range never outlives what the whole-object cull already hides.
+// Each part keeps its [`PartLod`] inputs, so `view_range::apply_object_lod`
+// can recompute the range when any of these settings change.
 
-/// Per-part cull range from its `.bms` bounding box: fully visible up to a
-/// size-scaled distance, then dithered out over `OBJECT_LOD_FADE` (materials
-/// without the crossfade path just hard-cut at the far edge). `use_aabb` is
-/// false so the distance is measured to the part's origin — which equals the
-/// object's world anchor, since every level between carries a default transform,
-/// matching how `cull_fogged_objects`/`cull_distant_animations` measure.
-fn mesh_visibility_range(bounding_box: (Vec3, Vec3), lod: &ObjectLodSettings) -> VisibilityRange {
-    let extent = (bounding_box.1 - bounding_box.0).max_element().max(0.0);
-    let cull = (extent * lod.factor).clamp(
-        lod.min_distance.min(OBJECT_LOD_MAX_DIST),
-        OBJECT_LOD_MAX_DIST,
-    );
-    VisibilityRange {
-        start_margin: 0.0..0.0,
-        end_margin: (cull - lod.fade).max(0.0)..cull,
-        use_aabb: false,
+/// The per-spawn LOD inputs every part of one resource shares.
+pub(crate) struct PartLodContext {
+    lod: ObjectLodSettings,
+    /// A `res/nature/` resource, which `nature_view_distance` caps.
+    nature: bool,
+    /// [`ViewRange::static_cull`] at spawn time.
+    ceiling: f32,
+}
+
+impl PartLodContext {
+    /// The LOD inputs for spawning the resource at `path`. Read here rather
+    /// than threaded from a system because the spawns are `Command`s with
+    /// exclusive world access.
+    pub(crate) fn from_world(world: &World, path: Option<&AssetPath>) -> Self {
+        Self {
+            lod: world
+                .get_resource::<ClientConfig>()
+                .map(|config| config.graphics.objects.clone())
+                .unwrap_or_default(),
+            nature: path.is_some_and(crate::plugins::config::graphics::is_nature_path),
+            ceiling: world
+                .get_resource::<ViewRange>()
+                .map_or_else(|| ViewRange::default().static_cull, |view| view.static_cull),
+        }
     }
+}
+
+/// Per-part cull range from its `.bms` bounding box, plus the inputs it was
+/// computed from.
+fn mesh_visibility_range(
+    bounding_box: (Vec3, Vec3),
+    ctx: &PartLodContext,
+) -> (VisibilityRange, PartLod) {
+    let part = PartLod {
+        extent: (bounding_box.1 - bounding_box.0).max_element().max(0.0),
+        nature: ctx.nature,
+    };
+    (
+        ctx.lod.part_range(part.extent, part.nature, ctx.ceiling),
+        part,
+    )
 }
 
 /// Build the sub-asset path structurally because SRO material names can contain
@@ -487,13 +506,9 @@ impl SpawnResource {
             .get_resource::<BmtMaterialDefaults>()
             .is_some_and(|defaults| defaults.rim.is_some())
             && is_character_class_path(self.resource.path());
-        // Per-part LOD tuning (`graphics.objects`). Read here rather than
-        // threaded from a system because this is a `Command`: the spawn runs
-        // with exclusive world access, the same way `rim` above resolves.
-        let lod = world
-            .get_resource::<ClientConfig>()
-            .map(|config| config.graphics.objects.clone())
-            .unwrap_or_default();
+        // Per-part LOD tuning (`graphics.objects`, `graphics.view`), resolved
+        // the same way as `rim` above.
+        let lod = PartLodContext::from_world(world, self.resource.path());
         // `material_set_path` came from this handle, so it is always `Some` here
         let Some(material_set) = material_handle else {
             return;
@@ -862,7 +877,7 @@ impl SpawnResource {
         bind_pose_cache: &mut SroBindPoses,
         meshes: &mut Assets<Mesh>,
         inverse_bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
-        lod: &ObjectLodSettings,
+        lod: &PartLodContext,
         material_for: impl Fn(&str) -> Handle<M>,
     ) -> Vec<(Name, Vec<MeshPartBundle<M>>)> {
         // Skill-object resources (the skilleffect.txt arrows —
@@ -1227,12 +1242,33 @@ impl PreparedMeshGroups {
         bind_pose_cache: &mut SroBindPoses,
         meshes: &mut Assets<Mesh>,
         inverse_bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
-        lod: &ObjectLodSettings,
+        lod: &PartLodContext,
         // pick the rim variant (always-on character rim) over the plain
         // Masked material; only valid while rim is enabled
         rim: bool,
     ) -> Self {
         match variants {
+            // Metallic Sheen off: the plain opaque material, never the
+            // default Masked one (the alpha is a sheen mask, not cutout)
+            Some((variants, sources))
+                if resource.alpha_is_sheen && !sources.defaults.sheen_enabled =>
+            {
+                let cutout = resource.sheen_alpha_test;
+                Self::Standard(SpawnResource::prepare_mesh_groups(
+                    resource,
+                    bms_assets,
+                    bind_poses,
+                    use_skinning,
+                    reverse_winding,
+                    skeleton,
+                    mesh_cache,
+                    bind_pose_cache,
+                    meshes,
+                    inverse_bindposes,
+                    lod,
+                    |material| variants.unsheened(sources, material_set, material, cutout),
+                ))
+            }
             Some((variants, sources)) if resource.alpha_is_sheen => {
                 // resources with the EnvMap alpha-test flag additionally cut
                 // out exact-zero alpha texels (see SroResource::sheen_alpha_test)
@@ -1313,6 +1349,40 @@ mod tests {
 
     use super::*;
     use crate::assets::bsr::bsr::PrimitiveAnimationEvent;
+
+    /// `graphics.objects.nature_view_distance` caps vegetation only, and only
+    /// when set; everything else keeps the fog ceiling.
+    #[test]
+    fn nature_view_distance_caps_vegetation_only() {
+        let big_part = (Vec3::ZERO, Vec3::splat(100.0)); // 100 * 150 = past the fog ceiling
+        let ceiling = ViewRange::default().static_cull;
+        let ctx = |nature_view_distance, nature| PartLodContext {
+            lod: ObjectLodSettings {
+                nature_view_distance,
+                ..ObjectLodSettings::default()
+            },
+            nature,
+            ceiling,
+        };
+        let end = |ctx: &PartLodContext| mesh_visibility_range(big_part, ctx).0.end_margin;
+
+        assert_eq!(end(&ctx(0.0, true)).end, ceiling);
+        assert_eq!(end(&ctx(2000.0, true)), 1400.0..2000.0);
+        assert_eq!(end(&ctx(2000.0, false)).end, ceiling);
+        // a cap below the near floor wins over the floor
+        assert_eq!(end(&ctx(800.0, true)).end, 800.0);
+    }
+
+    /// The configured cull distance (`graphics.view`) is the ceiling every
+    /// part is clamped to, and the near floor never reaches past it.
+    #[test]
+    fn the_view_cull_distance_caps_every_part() {
+        let lod = ObjectLodSettings::default();
+        let big = lod.part_range(100.0, false, 2880.0);
+        assert_eq!(big.end_margin, 2280.0..2880.0);
+        let small = lod.part_range(1.0, false, 900.0);
+        assert_eq!(small.end_margin.end, 900.0);
+    }
 
     #[test]
     fn material_asset_path_preserves_hash_in_label() {

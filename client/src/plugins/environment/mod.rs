@@ -36,8 +36,7 @@ use crate::plugins::config::ClientConfig;
 use crate::plugins::environment::celestial::{CelestialMaterials, CelestialPlugin};
 use crate::plugins::map::assets::MapsAssets;
 use crate::plugins::map::terrain::{
-    Terrain, TerrainMeshData, WaterLowMaterial, WaterNormalMaterial, FOG_RANGE, REGION_SIZE,
-    VISIBLE_RANGE,
+    Terrain, TerrainMeshData, WaterLowMaterial, WaterNormalMaterial, REGION_SIZE,
 };
 use crate::plugins::map::water_hq_material::HighQualityWaterMaterial;
 use crate::plugins::map::water_material::LowQualityWaterMaterial;
@@ -49,6 +48,7 @@ use crate::scenes::{in_playable_world, SceneState};
 use crate::GameState;
 
 pub mod celestial;
+pub mod lens_flare;
 pub mod light_visibility;
 pub mod reflections;
 
@@ -113,11 +113,13 @@ pub struct EnvironmentSettings {
     pub ambient_brightness: f32,
     /// Use the profile's fog planes — normalized [-1, 1] fractions of the view range,
     /// see `envi_fog_range` — instead of the streaming-derived defaults. Gives SRO's
-    /// long clear noons and short, heavily fogged nights.
+    /// long clear noons and short, heavily fogged nights. Follows `graphics.view.envi_fog`
+    /// (`apply_view_fog_settings`); an inspector edit lasts until the next config change.
     pub use_envi_fog_distances: bool,
     /// Multiplier on the ENVI-mapped fog distances (the raw mapping reads short: noon
     /// median ~3530 of the 5760 ceiling across the 1.188 profiles). The far plane stays
-    /// clamped to the terrain streaming end so regions still despawn fully fogged.
+    /// clamped to `graphics.view.fog_end` so regions still despawn fully fogged.
+    /// Follows `graphics.view.envi_fog_scale`, like the switch above.
     #[inspector(min = 0.5, max = 3.0)]
     pub fog_distance_scale: f32,
     /// Time constant for smoothing profile switches and scrubbing.
@@ -250,14 +252,10 @@ struct EnvMaterials<'w> {
     water_low: ResMut<'w, Assets<LowQualityWaterMaterial>>,
 }
 
-/// Streaming-derived fog distances, identical to `rendering::fog()` — regions must be
-/// fully fogged before they despawn, so these also act as the ceiling for ENVI values.
-fn default_fog_range() -> (f32, f32) {
-    (
-        VISIBLE_RANGE as f32 * REGION_SIZE,
-        (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE,
-    )
-}
+/// Fallback for a profile with no fog-plane graphs: both planes as far out as
+/// they go (+1 in the profiles' normalized [-1, 1] range), so `envi_fog_range`
+/// maps them to the configured fog band's ceiling (`ViewRange::fog_end`).
+const DEFAULT_FOG_PLANE: f32 = 1.0;
 
 fn default_sky_color() -> Vec3 {
     let sky = Srgba::hex(SKY_COLOR_HEX).unwrap();
@@ -268,7 +266,6 @@ impl EnvSample {
     /// Missing/empty graphs fall back to the hardcoded defaults so a sparse profile
     /// degrades to today's look instead of black.
     fn from_profile(profile: &EnvironmentProfile, t: f32) -> Self {
-        let (fog_near, fog_far) = default_fog_range();
         let ambient_color = profile.object_ambient_color.sample(t).unwrap_or(Vec3::ONE);
         let sky_color = profile
             .sky_top_color
@@ -287,8 +284,11 @@ impl EnvSample {
                 .fog_color
                 .sample(t)
                 .unwrap_or(Vec3::new(0.1, 0.2, 0.4)),
-            fog_near: profile.fog_near_plane.sample(t).unwrap_or(fog_near),
-            fog_far: profile.fog_far_plane.sample(t).unwrap_or(fog_far),
+            fog_near: profile
+                .fog_near_plane
+                .sample(t)
+                .unwrap_or(DEFAULT_FOG_PLANE),
+            fog_far: profile.fog_far_plane.sample(t).unwrap_or(DEFAULT_FOG_PLANE),
             sky_color,
             // Falls back to the top color => flat sky, exactly the pre-gradient look.
             sky_bottom_color: profile.sky_bottom_color.sample(t).unwrap_or(sky_color),
@@ -507,9 +507,17 @@ impl Plugin for EnvironmentPlugin {
             .init_resource::<AppliedEnvColors>()
             .add_plugins((
                 CelestialPlugin,
+                lens_flare::LensFlarePlugin,
                 light_visibility::ShadowGatedLightVisibilityPlugin,
             ))
             .add_systems(Startup, seed_environment_settings_from_config)
+            .init_resource::<crate::plugins::map::view_range::ViewRange>()
+            .add_systems(
+                PreUpdate,
+                apply_view_fog_settings
+                    .after(crate::plugins::map::view_range::apply_view_range)
+                    .run_if(crate::plugins::settings::live::config_changed),
+            )
             .add_systems(
                 Update,
                 (
@@ -628,6 +636,22 @@ fn seed_environment_settings_from_config(
     mut settings: ResMut<EnvironmentSettings>,
 ) {
     settings.mode = config.graphics.render_mode;
+}
+
+/// Follows `graphics.view.envi_fog` / `envi_fog_scale` into the live fog
+/// knobs, which the dev inspector can also edit for the session. Writes only
+/// on a difference: any write to [`EnvironmentSettings`] re-runs
+/// `apply_render_mode`.
+fn apply_view_fog_settings(
+    view: Res<crate::plugins::map::view_range::ViewRange>,
+    mut settings: ResMut<EnvironmentSettings>,
+) {
+    if settings.use_envi_fog_distances != view.envi_fog
+        || settings.fog_distance_scale != view.envi_fog_scale
+    {
+        settings.use_envi_fog_distances = view.envi_fog;
+        settings.fog_distance_scale = view.envi_fog_scale;
+    }
 }
 
 /// Wires the vanilla/PBR switch (`EnvironmentSettings.mode`, hotkey N) directly to the
@@ -758,7 +782,11 @@ fn apply_environment(
     time: Res<Time>,
     tod: Res<TimeOfDay>,
     settings: Res<EnvironmentSettings>,
-    config: Res<crate::plugins::config::ClientConfig>,
+    // tupled: this system is at Bevy's 16-parameter ceiling
+    (config, mut view): (
+        Res<crate::plugins::config::ClientConfig>,
+        ResMut<crate::plugins::map::view_range::ViewRange>,
+    ),
     active: Res<ActiveEnvironment>,
     maps_assets: Res<MapsAssets>,
     ifo_assets: Res<Assets<IFOAsset>>,
@@ -856,17 +884,25 @@ fn apply_environment(
         }
     }
 
-    let (default_start, default_end) = default_fog_range();
+    // `graphics.view`: the configured band is the fixed fog, and its end the
+    // ceiling the profile fog may reach.
     let (fog_start, fog_end) = if settings.use_envi_fog_distances {
         envi_fog_range(
             sample.fog_near,
             sample.fog_far,
-            default_end,
+            view.fog_end,
             settings.fog_distance_scale.max(0.0),
         )
     } else {
-        (default_start, default_end)
+        (view.fog_start, view.fog_end)
     };
+    // `cull_follows_envi_fog`: the per-frame culls stop at this frame's fog
+    // end. Stepped and compared first, so a smoothly moving fog does not
+    // change-flag the view range every frame.
+    let live_cull = view.live_cull_for(fog_end);
+    if view.live_cull != live_cull {
+        view.live_cull = live_cull;
+    }
     // Alpha is the in-scattering strength, not an opacity: Bevy scales the
     // whole sun-halo term by it. It stays a config knob defaulting to 0 because
     // the sun's color reaches the shader premultiplied by its 10k-lux

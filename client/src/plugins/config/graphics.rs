@@ -32,6 +32,15 @@ pub enum RenderMode {
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct GraphicsSettings {
+    /// The quality preset whose values fill in every graphics key this file
+    /// leaves unset (`plugins/config/preset.rs`). `auto` picks one from the
+    /// GPU.
+    #[serde(default)]
+    pub preset: super::preset::QualityPreset,
+    /// What `preset` resolved to and why, set by `ClientConfig::from_file`;
+    /// not configured.
+    #[serde(skip)]
+    pub resolved_preset: Option<super::preset::ResolvedPreset>,
     #[serde(default)]
     pub bloom: BloomSettings,
     #[serde(default)]
@@ -51,16 +60,67 @@ pub struct GraphicsSettings {
     pub dungeon: DungeonGraphicsSettings,
     #[serde(default)]
     pub fog: FogGraphicsSettings,
+    /// View, fog and cull distances — see [`ViewSettings`].
+    #[serde(default)]
+    pub view: ViewSettings,
+    /// How long streamed-out assets stay loaded — see [`StreamingSettings`].
+    #[serde(default)]
+    pub streaming: StreamingSettings,
     #[serde(default)]
     pub objects: ObjectLodSettings,
     #[serde(default)]
     pub msaa: MsaaSamples,
+    /// FXAA post pass on the window cameras — see [`FxaaSetting`].
+    #[serde(default)]
+    pub fxaa: FxaaSetting,
+    /// Mip levels dropped from world textures — see [`TextureDetail`].
+    #[serde(default)]
+    pub texture_detail: TextureDetail,
+    /// Anisotropic filtering clamp — see [`Anisotropy`].
+    #[serde(default)]
+    pub anisotropy: Anisotropy,
+    /// Particle effect quality — see [`EffectQuality`].
+    #[serde(default)]
+    pub effect_quality: EffectQuality,
+    /// The sun's lens flare (the original's Lens Flare option), composited
+    /// from your own `Map.pk2` `sun/lens*` sprites
+    /// (`environment/lens_flare.rs`). Six small additive quads plus a
+    /// 10 Hz occlusion ray, so cheap, but off by default because the client
+    /// never drew it before. Live.
+    #[serde(default)]
+    pub lens_flare: bool,
+    /// Bevy's GPU light clustering. Off (the default) assigns the few point
+    /// lights there are on the CPU instead: ~0.5 ms per frame cheaper on an
+    /// iGPU with nothing visible lost (`plugins/light_clustering.rs`). Live.
+    #[serde(default)]
+    pub gpu_light_clustering: bool,
     #[serde(default)]
     pub water: WaterSettings,
     #[serde(default)]
     pub render_scale: RenderScale,
     #[serde(default)]
     pub tonemapping: TonemappingConfig,
+    /// Depth-only prepass on the window cameras, so the main pass shades each
+    /// pixel once: early-Z then rejects every hidden fragment before its
+    /// material runs. Facing the Jangan West waterfall the opaque pass shaded
+    /// ~10M fragments for a 2M-pixel screen (map objects stacked behind each
+    /// other, drawn in no particular depth order) — ~3.5 ms of GPU time.
+    #[serde(default)]
+    pub depth_prepass: bool,
+    /// Bevy's bindless material slabs (`StandardMaterial` and friends binding their textures
+    /// from shared arrays indexed per fragment). Bevy turns them on wherever the GPU offers the
+    /// features; off here (the default) withholds those features so materials use ordinary
+    /// bind groups. Facing the Jangan West waterfall on an AMD iGPU that was ~1.7 ms of GPU time
+    /// per frame (57-59 -> 63-65 FPS) with identical output. Restart-only.
+    #[serde(default)]
+    pub bindless_materials: bool,
+    /// The sky environment map on the window cameras (`environment::reflections`): every lit
+    /// pixel samples its diffuse and specular cubemaps. Off (the default) skips it entirely:
+    /// facing the Jangan West waterfall that was 64 -> 71 FPS (~1.6 ms of GPU time) with no
+    /// visible difference in vanilla lighting — the original client had no image-based lighting
+    /// either. Sheen materials keep their own sphere maps either way. Restart-only.
+    #[serde(default)]
+    pub sky_reflections: bool,
 }
 
 /// Which water shader the streamed water planes use.
@@ -199,15 +259,19 @@ impl ShadowFiltering {
     }
 }
 
-/// Tonemapping curve applied to the main view as a full-screen post pass.
+/// Tonemapping curve applied to the main view.
 ///
-/// The idea: this pass runs whether or not there is anything HDR to tonemap.
-/// With `bloom.enabled: false` the cameras have no `Hdr` marker, so the curve
-/// is being applied to values already clamped to 0..1 — a full-screen read,
-/// LUT sample and write for a transform of an LDR image. For scale, FXAA covers
-/// that same full screen for simpler math and costs ~0.95 ms at 1920x1080.
+/// Where it runs depends on the camera. With bloom on, the camera has an `Hdr`
+/// target and the curve is a full-screen post pass. With `bloom.enabled:
+/// false` there is no HDR target, and Bevy instead compiles the curve *into
+/// every material's fragment shader* (`TONEMAP_IN_SHADER`, with the deband
+/// dither riding along): a LUT sample per shaded fragment, so it costs per
+/// fragment times overdraw, not per screen pixel. Facing dense vegetation,
+/// where the opaque pass shades ~5x the screen's pixels (`docs/perf-remote.md`),
+/// that is more than one full-screen pass would be, spent on values already
+/// clamped to 0..1.
 ///
-/// `none` skips the node entirely (and the `DebandDither` that rides with it).
+/// `none` removes it from both places (and the `DebandDither` with it).
 /// It is **not** pixel-identical — it is a deliberate, stated deviation — but it
 /// is the *more* faithful one under ADR 0009: the original client is
 /// fixed-function D3D8 and applies no tonemap curve at all.
@@ -284,6 +348,113 @@ impl MsaaSamples {
     }
 }
 
+/// How much of each world texture's mip chain is uploaded
+/// (`graphics.texture_detail`; `assets::texture_detail`).
+///
+/// `full` uploads every authored level. `half` starts one level down: model
+/// textures and ground tiles at half their width and height, about a quarter
+/// of the VRAM. `quarter` goes one further, to about a sixteenth. The HUD's
+/// textures always stay whole. Applies to textures loaded afterwards, so
+/// restart to apply it everywhere.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TextureDetail {
+    #[default]
+    Full,
+    Half,
+    Quarter,
+}
+
+impl TextureDetail {
+    /// Mip levels dropped from the top of each chain.
+    pub fn skipped_mips(self) -> u32 {
+        match self {
+            Self::Full => 0,
+            Self::Half => 1,
+            Self::Quarter => 2,
+        }
+    }
+}
+
+/// Particle effect quality (`graphics.effect_quality`; the original's Effect
+/// Quality option): the share of each emitter's authored particle cap that
+/// may be alive at once (`effects::EffectQualityScale`). Live.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EffectQuality {
+    Low,
+    Medium,
+    /// Every authored particle, as the client always drew them.
+    #[default]
+    High,
+}
+
+impl EffectQuality {
+    /// Fraction of the authored particle caps. Low keeps enough of a spray
+    /// to read as the same effect; medium thins it visibly but mildly.
+    pub fn particle_scale(self) -> f32 {
+        match self {
+            Self::Low => 0.4,
+            Self::Medium => 0.7,
+            Self::High => 1.0,
+        }
+    }
+}
+
+/// Maximum anisotropic filtering of world textures (`graphics.anisotropy`):
+/// 1 (off, plain trilinear), 2, 4, 8 or 16.
+///
+/// Anisotropic filtering takes extra texture samples on surfaces seen at a
+/// grazing angle, which in this game is most of the ground. 4 is what the
+/// client shipped with. An old card is short of texture bandwidth, so 1 is
+/// the low preset's choice; a strong one can afford 16. Read once when the
+/// renderer starts (the default image sampler and the ground-tile sampler),
+/// so restart-only.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Anisotropy(pub u16);
+
+impl Default for Anisotropy {
+    fn default() -> Self {
+        Self(4)
+    }
+}
+
+impl Anisotropy {
+    /// The clamp to give a sampler: one of the powers of two wgpu accepts,
+    /// anything else falling back to 4 with a warning.
+    pub fn clamp(self) -> u16 {
+        match self.0 {
+            1 | 2 | 4 | 8 | 16 => self.0,
+            other => {
+                bevy::log::warn_once!(
+                    "graphics.anisotropy: {other} is not 1, 2, 4, 8 or 16; using 4"
+                );
+                4
+            }
+        }
+    }
+}
+
+/// Whether the window cameras run Bevy's FXAA post pass (`graphics.fxaa`).
+///
+/// It is a full-screen pass, about 1 ms at 1920x1080 on an integrated GPU
+/// (`docs/perf-remote.md`), and the only edge smoothing left once MSAA is
+/// off. On by default, as it always was. The low preset turns it off: on a
+/// DX10-class card a full-screen pass costs proportionally more, and that
+/// preset also renders below window resolution, where the upscale softens
+/// edges anyway. A newtype so the derived `GraphicsSettings::default()`
+/// agrees with the serde default.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct FxaaSetting(pub bool);
+
+impl Default for FxaaSetting {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// Per-part distance LOD for map objects (`commands::mesh_visibility_range`).
 ///
 /// The idea: an object's mesh parts are culled on a "constant screen size"
@@ -311,6 +482,25 @@ pub struct ObjectLodSettings {
     /// Width of the dither/crossfade band before the cull distance. Materials
     /// without the crossfade path hard-cut at the far edge instead.
     pub fade: f32,
+    /// View distance (world units) for `res/nature/` resources — trees, grass,
+    /// flowers. 0 = unlimited (they reach the fog like everything else). Their
+    /// alpha-tested cards are the heaviest overdraw in dense views: facing the
+    /// Jangan West waterfall, 2000 took 12.6M shaded fragments to 10.1M
+    /// (68 -> 79 FPS) and 1200 to 7.3M (86 FPS), with the fog already hiding
+    /// most of what is cut.
+    pub nature_view_distance: f32,
+    /// Share of `res/nature/` placements (trees, grass, flowers) that spawn
+    /// at all, 0..=1. 1 (the default) is every placement, as authored. Lower
+    /// thins vegetation evenly by a stable hash per placement, cutting the
+    /// alpha-tested overdraw within `nature_view_distance` too, which the
+    /// distance cap cannot. It applies to regions loaded afterwards.
+    pub nature_density: f32,
+    /// Animate map props (swaying trees, flags, lamps, wheels; the original's
+    /// Dynamic Animation option). Off holds them still, which saves the bone
+    /// animation of every prop in view: at the Jangan West waterfall that was
+    /// ~1,550 of 1,668 animated bones (`docs/perf-remote.md`). Characters
+    /// always animate. Live.
+    pub animate: bool,
 }
 
 impl Default for ObjectLodSettings {
@@ -319,8 +509,52 @@ impl Default for ObjectLodSettings {
             factor: 150.0,
             min_distance: 1200.0,
             fade: 600.0,
+            nature_view_distance: 0.0,
+            nature_density: 1.0,
+            animate: true,
         }
     }
+}
+
+impl ObjectLodSettings {
+    /// The cull range of a mesh part whose largest dimension is `extent`.
+    /// It is fully visible up to the size-scaled distance, then dithered out
+    /// over `fade`; materials without the crossfade path hard-cut at the far
+    /// edge.
+    ///
+    /// `ceiling` is the cull distance (`ViewRange::static_cull`), which no part
+    /// outlives. For a `nature` part, `nature_view_distance` lowers that
+    /// ceiling when set. `use_aabb` is false, so the distance is measured to
+    /// the part's origin. That origin equals the object's world anchor, since
+    /// every level in between carries a default transform, which matches how
+    /// the whole-object and animation culls measure.
+    pub fn part_range(
+        &self,
+        extent: f32,
+        nature: bool,
+        ceiling: f32,
+    ) -> bevy::camera::visibility::VisibilityRange {
+        let max = if nature && self.nature_view_distance > 0.0 {
+            self.nature_view_distance.min(ceiling)
+        } else {
+            ceiling
+        };
+        let cull = (extent.max(0.0) * self.factor).clamp(self.min_distance.min(max), max);
+        bevy::camera::visibility::VisibilityRange {
+            start_margin: 0.0..0.0,
+            end_margin: (cull - self.fade).max(0.0)..cull,
+            use_aabb: false,
+        }
+    }
+}
+
+/// Trees, grass, flowers and other vegetation (`res/nature/...`).
+pub fn is_nature_path(path: &bevy::asset::AssetPath) -> bool {
+    path.path()
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('\\', "/")
+        .contains("res/nature/")
 }
 
 /// Distance fog (`plugins/map/terrain/rendering.rs`, driven per-frame by
@@ -361,6 +595,166 @@ impl Default for FogGraphicsSettings {
             sun_scattering: 0.0,
             sun_scattering_exponent: 30.0,
         }
+    }
+}
+
+/// How far the overworld is streamed, fogged and drawn (`graphics.view`),
+/// all in world units. Derived and clamped into
+/// [`crate::plugins::map::view_range::ViewRange`], which is what the
+/// streaming, fog and cull systems read.
+///
+/// The defaults are the distances the client has always used: the fog
+/// starts two regions out (3840) and is opaque at three (5760), terrain is
+/// streamed one region beyond that, and the camera's far plane sits one
+/// region past the fog. The original client's own draw distance is likewise
+/// fog-bound (its `config.ifo` far plane is 5500). The fields are
+/// configurable because the right values depend on the hardware rather than
+/// the game data. Every streamed region costs RAM, draw items and per-frame
+/// visibility work, so a weak machine wants less and a strong one can afford
+/// more.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ViewSettings {
+    /// How far terrain and map objects are streamed in and can be drawn.
+    /// The load ring is `ceil(view_distance / 1920)` regions around the
+    /// camera's region, plus one more ring for streaming head start.
+    /// Valid range 1920..=9600.
+    pub view_distance: f32,
+    /// Where the fog begins when `envi_fog` is off. With it on, the
+    /// environment profile's near plane decides instead.
+    pub fog_start: f32,
+    /// Where the fog is fully opaque, and the ceiling the environment
+    /// profiles' fog may reach (they can only pull it closer). Clamped to
+    /// `view_distance`, so nothing is ever drawn unfogged at the edge of what
+    /// is streamed.
+    pub fog_end: f32,
+    /// Follow the fog planes of the region's environment profile
+    /// (`Map.pk2` `environment.ifo`): long, clear noons and short, heavily
+    /// fogged nights, as in the original. Off = a fixed `fog_start..fog_end`.
+    pub envi_fog: bool,
+    /// Multiplier on the profile-mapped fog distances. The raw mapping reads
+    /// short (noon median ~3530 of the 5760 ceiling across the 1.188
+    /// profiles), so the client has always scaled it by 1.5.
+    pub envi_fog_scale: f32,
+    /// Distance past which whole map objects, terrain regions, effects and
+    /// animations stop being drawn or simulated. 0 = at `fog_end`, where the
+    /// fog has already hidden them. A value below `fog_end` culls things the
+    /// fog has not fully hidden yet, which trades visible pop-out for speed.
+    pub fog_cull_distance: f32,
+    /// Cull at the *current* fog end (night fog can end at ~1200) instead of
+    /// at the configured ceiling. Fully fogged geometry still shows as a
+    /// fog-coloured silhouette against the sky gradient, so this changes the
+    /// look of the horizon at night; off (the default) keeps it as it was.
+    pub cull_follows_envi_fog: bool,
+    /// Distance LOD for the terrain mesh — see [`TerrainLod`].
+    pub terrain_lod: TerrainLod,
+    /// How far other players, NPCs and monsters are drawn (the original's
+    /// Character Sight Range option); 0 = as far as the server sends them.
+    /// Each one is a skinned, animated model with equipment, and a crowded
+    /// town is the heaviest view in the game, so a short range is a large
+    /// saving on a weak machine. It is client-side only (the server still
+    /// sends them) and never shorter than 1000: clicking reaches 1000 and
+    /// nameplates 600, so nothing hidden can be clicked or labelled. Live.
+    pub character_distance: f32,
+}
+
+/// Terrain geometry LOD (`graphics.view.terrain_lod`).
+///
+/// Off, every region draws its full 20-unit grid out to the fog: 18,432
+/// triangles a region, ~1.5M for a 9x9 ring. With LOD, regions farther away
+/// draw every 2nd vertex (a quarter of the triangles), then every 4th (a
+/// sixteenth). Textures are unaffected, since the splat shader samples by
+/// world position, and only distant relief loses detail, deep in the fog.
+/// The original client has no terrain LOD, so `off` is the faithful setting.
+/// Switch distances are measured to each region's centre.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TerrainLod {
+    #[default]
+    Off,
+    /// Full grid within 2880 of a region's centre, half to 4800, quarter
+    /// beyond.
+    Normal,
+    /// Full grid within 1920, half to 3840, quarter beyond.
+    Aggressive,
+}
+
+impl TerrainLod {
+    /// The distances at which the half and the quarter grid take over.
+    pub fn switch_distances(self) -> Option<(f32, f32)> {
+        match self {
+            Self::Off => None,
+            Self::Normal => Some((2880.0, 4800.0)),
+            Self::Aggressive => Some((1920.0, 3840.0)),
+        }
+    }
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            view_distance: 5760.0,
+            fog_start: 3840.0,
+            fog_end: 5760.0,
+            envi_fog: true,
+            envi_fog_scale: 1.5,
+            fog_cull_distance: 0.0,
+            cull_follows_envi_fog: false,
+            terrain_lod: TerrainLod::Off,
+            character_distance: 0.0,
+        }
+    }
+}
+
+/// Streaming memory (`graphics.streaming`, `plugins/asset_residency.rs`).
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct StreamingSettings {
+    /// Seconds a departed area's meshes, materials and textures stay loaded,
+    /// so a quick return finds them decoded. Shorter frees memory sooner on
+    /// a machine with little RAM, and costs re-decoding on a return. 30 is
+    /// a starting value, not a measurement.
+    pub residency_grace_secs: f32,
+    /// Per-frame streaming budgets. Work past a budget waits for the next
+    /// frame, nearest to the camera first, so a region crossing spreads over
+    /// several frames instead of stalling one. Smaller budgets mean smaller
+    /// hitches but slower pop-in; that suits a 2-core CPU, while a fast one
+    /// can stream more per frame. The defaults are the values that took the
+    /// measured worst region-crossing frame from 208 ms to 58 ms
+    /// (`docs/perf-remote.md`). Each is at least 1. All apply live.
+    ///
+    /// Region ground meshes merged and spawned per frame
+    /// (`terrain::load_terrain_system`).
+    pub region_builds_per_frame: u32,
+    /// Regions torn down per frame (`terrain::load_terrain_dynamically`).
+    pub region_unloads_per_frame: u32,
+    /// Map-object placements spawned per frame
+    /// (`map::objects::load_terrain_objects_system`).
+    pub object_spawns_per_frame: u32,
+    /// Loaded resources (models with skeletons, meshes and materials) turned
+    /// into entities per frame (`dynamic_resource_loader`).
+    pub resource_spawns_per_frame: u32,
+}
+
+impl Default for StreamingSettings {
+    fn default() -> Self {
+        Self {
+            residency_grace_secs: 30.0,
+            // the measured defaults, documented where they are used
+            region_builds_per_frame: crate::plugins::map::terrain::GROUP_BUILDS_PER_FRAME,
+            region_unloads_per_frame: crate::plugins::map::terrain::REGION_UNLOADS_PER_FRAME,
+            object_spawns_per_frame: crate::plugins::map::objects::OBJECT_SPAWNS_PER_FRAME,
+            resource_spawns_per_frame:
+                crate::plugins::dynamic_resource_loader::RESOURCE_SPAWNS_PER_FRAME,
+        }
+    }
+}
+
+impl StreamingSettings {
+    /// A budget as the consumers use it: never 0, which would stall
+    /// streaming outright.
+    pub fn budget(value: u32) -> u32 {
+        value.max(1)
     }
 }
 
@@ -558,18 +952,17 @@ pub struct TerrainGraphicsSettings {
     pub pipeline: TerrainPipeline,
 }
 
-/// The two terrain ground draw paths (`client/src/assets/m/block_splat_material.rs`,
-/// `REGION_TILE_SLOT_COUNT`'s doc comment, has the full trade-off).
+/// The two terrain ground draw paths. Both sample the same global ground-tile arrays
+/// (`client/src/assets/m/tile_arrays.rs`); they differ in how the per-draw bind groups are built.
 ///
 /// `material` (default) is the stock `Material`/`MaterialPlugin` path: battle-tested, with shadow
-/// casting, prepass and deferred support for free, but it binds a region-local copy of the tile
-/// atlas once *per region*.
+/// casting, prepass and deferred support for free, but every region gets its own bind group
+/// (holding the shared arrays and buffers again).
 ///
 /// `hand_rolled` is the custom `SpecializedMeshPipeline` in `plugins/map/terrain/render/` that
-/// binds the whole atlas once, globally. Newer: shadow casting is its own reimplementation
-/// (directional/Sun only), and the render-debug backface toggle does not reach it yet. It needs a
-/// GPU that allows 1024 binding-array elements per shader stage; the startup capability check logs
-/// an error when it does not.
+/// binds the shared arrays and buffers once, globally. Newer: shadow casting is its own
+/// reimplementation (directional/Sun only), and the render-debug backface toggle does not reach it
+/// yet.
 ///
 /// Was the `terrain_hand_rolled_pipeline` Cargo feature; a config option so the two can be A/B'd
 /// on the same build. Read once at startup.
@@ -688,6 +1081,12 @@ pub struct SheenGraphicsSettings {
     /// underlying intensities as calibration-pending, so this knob is tuning a
     /// number that was never measured in the first place.
     pub intensity: f32,
+    /// Metallic sheen on weapons and metal armour at all (the original's
+    /// Metallic Sheen option). Off draws them with their plain material: no
+    /// chrome probe, no +N enhancement glow, and one texture sample less per
+    /// pixel of armour. Restart-only, because materials are chosen at spawn
+    /// from defaults built once at startup.
+    pub enabled: bool,
 }
 
 impl Default for SheenGraphicsSettings {
@@ -697,6 +1096,7 @@ impl Default for SheenGraphicsSettings {
             // of its energy and no intensity compensated for it.
             shine_pow: 2.0,
             intensity: 3.0,
+            enabled: true,
         }
     }
 }
@@ -742,7 +1142,11 @@ impl GraphicsSettings {
             sheen.rim_power = rim.power;
             sheen.rim_mode = rim.mode;
         }
-        BmtMaterialDefaults { sheen, rim }
+        BmtMaterialDefaults {
+            sheen,
+            rim,
+            sheen_enabled: self.sheen.enabled,
+        }
     }
 }
 
@@ -780,5 +1184,23 @@ impl BloomSettings {
             intensity: self.intensity,
             ..Bloom::NATURAL
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_option_tests {
+    use super::*;
+
+    #[test]
+    fn bindless_and_sky_reflections_default_off() {
+        let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
+        assert!(!empty.bindless_materials);
+        assert!(!empty.sky_reflections);
+        assert!(!GraphicsSettings::default().sky_reflections);
+
+        let set: GraphicsSettings =
+            serde_yaml::from_str("bindless_materials: true\nsky_reflections: true").unwrap();
+        assert!(set.bindless_materials);
+        assert!(set.sky_reflections);
     }
 }

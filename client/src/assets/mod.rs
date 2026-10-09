@@ -1,6 +1,7 @@
 use std::io::Cursor;
 
 use bevy::asset::AssetApp;
+use bevy::prelude::IntoScheduleConfigs;
 use bevy::prelude::{
     info, warn, App, AssetServer, Font, Handle, Local, Plugin, Res, ResMut, Resource, Update,
 };
@@ -61,6 +62,8 @@ pub mod o;
 pub mod o2;
 pub mod resinfo;
 pub mod t;
+pub mod texture_detail;
+pub mod tile_layers;
 pub mod tile_tint;
 pub mod twodt;
 
@@ -107,6 +110,15 @@ pub fn read_str(bytes: &[u8]) -> String {
                             //format!("{}->{}",str.as_str(),unidecode(str.as_str()))
 }
 
+/// Follows `graphics.texture_detail` into the level the DDJ loader reads
+/// (`texture_detail`).
+fn apply_texture_detail(
+    config: Res<crate::plugins::config::ClientConfig>,
+    level: Res<texture_detail::TextureDetailLevel>,
+) {
+    level.set(config.graphics.texture_detail.skipped_mips());
+}
+
 pub struct SroAssetStructsPlugin;
 impl Plugin for SroAssetStructsPlugin {
     fn build(&self, app: &mut App) {
@@ -114,6 +126,15 @@ impl Plugin for SroAssetStructsPlugin {
             .init_asset_loader::<twodt::TwoDtLoader>()
             .init_asset::<JMXVDDJ>()
             .init_asset_loader::<ddj::DDJLoader>()
+            // `graphics.texture_detail`, read by the DDJ loader
+            .add_systems(
+                bevy::app::PreUpdate,
+                apply_texture_detail.run_if(
+                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                        crate::plugins::config::ClientConfig,
+                    >,
+                ),
+            )
             .init_asset::<JMXVMFO>()
             .init_asset_loader::<mfo::MFOLoader>()
             .init_asset::<IFOAsset>()

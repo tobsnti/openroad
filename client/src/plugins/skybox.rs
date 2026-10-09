@@ -122,8 +122,23 @@ impl Material for SkyGradientMaterial {
         "shaders/sky_gradient.wgsl".into()
     }
 
+    /// The sky is drawn *after* the opaque world, not with it. As an opaque
+    /// mesh it sat in the binned opaque phase in no particular order, so it
+    /// could shade the whole screen before the terrain overdrew it. In the
+    /// transparent phase it is depth-tested against everything opaque and
+    /// shades only the pixels nothing covered. Its shader writes alpha 1, so
+    /// blending changes nothing, and it writes no depth, which nothing after
+    /// it needs: the clouds, sun and moon sort behind everything anyway.
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Opaque
+        AlphaMode::Blend
+    }
+
+    /// First in the transparent phase, before the cloud layers (-1,000,100
+    /// and -1,000,000) and the sun and moon (`CELESTIAL_DEPTH_BIAS`), which
+    /// all draw over it. The cube is centred on the camera, so its
+    /// unbiased sort distance would put it last.
+    fn depth_bias(&self) -> f32 {
+        -2_000_000.0
     }
 
     fn specialize(
@@ -201,9 +216,10 @@ pub fn setup(
         gradient: default_sky_gradient(),
     });
     commands.insert_resource(SkyboxMaterial(skybox_material.clone()));
-    // Wide enough (110k half extent) that the 90k/95k cloud discs stay fully inside:
-    // the opaque cube writes depth, so anything poking through its walls gets clipped
-    // along the cube's silhouette. Corners reach ~190k, still inside the 200k far plane.
+    // Wide enough (110k half extent) that the 90k/95k cloud discs stay fully inside
+    // it. The cube writes no depth any more, but a cloud poking through a wall would
+    // still be drawn over by nothing and look cut. The projection has no far clip
+    // (infinite reverse-Z), so the corners at ~190k are drawn too.
     commands.spawn((
         Mesh3d(meshes.add(Mesh::from(Cuboid::default()))),
         MeshMaterial3d(skybox_material),

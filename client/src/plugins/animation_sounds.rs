@@ -48,10 +48,10 @@ use bevy::animation::graph::AnimationNodeIndex;
 use bevy::animation::{ActiveAnimation, AnimationPlayer};
 use bevy::app::{App, Plugin, Update};
 use bevy::asset::AssetServer;
-use bevy::audio::{AudioPlayer, PlaybackSettings, SpatialScale};
+use bevy::audio::{AudioPlayer, PlaybackSettings, SpatialListener, SpatialScale};
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::{
-    Commands, Component, Entity, GlobalTransform, Name, Query, Res, Transform, Without,
+    Commands, Component, Entity, GlobalTransform, Name, Or, Query, Res, Transform, With, Without,
 };
 
 use crate::commands::{AnimationLibrary, AnimationSounds};
@@ -73,6 +73,26 @@ pub const SOUND_MAX_DISTANCE: f32 = 100.0;
 /// unity-gain radius exactly on the palette's min distance instead of on an
 /// invented number.
 pub const SPATIAL_SCALE: f32 = 1.0 / SOUND_MIN_DISTANCE;
+
+/// Emitters farther than this from the listener spawn no sound at all. Our
+/// rolloff is inverse-square in [`SPATIAL_SCALE`] units, so at twice the
+/// palette's max distance a sound is already 52 dB down, which is inaudible
+/// under anything else playing. Spawning it anyway cost an entity, a decoder
+/// and a mixer voice per footstep of every distant crowd.
+pub const SOUND_CULL_DISTANCE: f32 = 2.0 * SOUND_MAX_DISTANCE;
+
+/// Most animation sounds alive at once. A crowded town crosses dozens of
+/// footstep keytimes a frame, and each one is a rodio source the audio
+/// thread mixes for its whole length. A 2-core CPU then shares a core with
+/// that mixing. 32 is the hardware-voice count of the DirectSound-era cards
+/// the original targeted, not a value from its data. Sounds past the cap are
+/// dropped, not queued: a footstep heard late is worse than one not heard.
+pub const MAX_ANIMATION_SOUNDS: usize = 32;
+
+/// Marks a sound spawned by [`play_animation_sounds`], to count them against
+/// [`MAX_ANIMATION_SOUNDS`].
+#[derive(Component)]
+pub struct AnimationSoundVoice;
 
 /// Distance between the listener's ears, in world units. SRO world units are
 /// decimetres (`docs/formats/textdata-itemdata.md`: weapon range is in
@@ -144,8 +164,23 @@ pub fn play_animation_sounds(
         ),
         Without<PausedAnimationGraph>,
     >,
+    listeners: Query<&GlobalTransform, With<SpatialListener>>,
+    // only voices actually playing: a sound whose file failed to load never
+    // gets a sink, and must not hold a voice forever
+    voices: Query<
+        (),
+        (
+            With<AnimationSoundVoice>,
+            Or<(
+                With<bevy::audio::AudioSink>,
+                With<bevy::audio::SpatialAudioSink>,
+            )>,
+        ),
+    >,
 ) {
     let playback = options.audio.fx_playback();
+    let listener = listeners.iter().next().map(GlobalTransform::translation);
+    let mut free_voices = MAX_ANIMATION_SOUNDS.saturating_sub(voices.iter().count());
 
     for (entity, player, library, sounds, mut cursor, emitter_transform) in &mut wrappers {
         let playing = library
@@ -172,6 +207,14 @@ pub fn play_animation_sounds(
         let Some(tracks) = sounds.0.get(&(entry.group.clone(), entry.anim_type)) else {
             continue;
         };
+        // too far to hear (the cursor above has still advanced)
+        if let (Some(listener), Some(emitter)) = (listener, emitter_transform) {
+            if emitter.translation().distance_squared(listener)
+                > SOUND_CULL_DISTANCE * SOUND_CULL_DISTANCE
+            {
+                continue;
+            }
+        }
 
         // Positional only when the emitter has a transform to inherit; the
         // sound entity needs its own `Transform` for propagation to give it a
@@ -187,12 +230,17 @@ pub fn play_animation_sounds(
             if !sound_track_is_due(previous_ms, now_ms, track.key_time_ms) {
                 continue;
             }
+            if free_voices == 0 {
+                continue;
+            }
+            free_voices -= 1;
             commands.spawn((
                 AudioPlayer::new(asset_server.load(format!("data://{}", track.path))),
                 playback,
                 Transform::default(),
                 Name::new(format!("anim sound: {}", track.path)),
                 ChildOf(entity),
+                AnimationSoundVoice,
             ));
         }
     }

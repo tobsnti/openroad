@@ -177,6 +177,10 @@ pub struct BmtMaterialDefaults {
     /// `Some` = character-class meshes use a rim variant with these settings
     /// (see `PreparedMeshGroups::prepare`); `None` = rim disabled.
     pub rim: Option<RimSettings>,
+    /// `false` = sheen resources draw with the plain opaque material
+    /// ([`SroMaterial::to_unsheened_material`]) instead of the sheen extension
+    /// (`graphics.sheen.enabled`, the Metallic Sheen option).
+    pub sheen_enabled: bool,
 }
 
 impl Default for BmtMaterialDefaults {
@@ -184,6 +188,7 @@ impl Default for BmtMaterialDefaults {
         Self {
             sheen: SheenSettings::default(),
             rim: None,
+            sheen_enabled: true,
         }
     }
 }
@@ -320,6 +325,19 @@ impl SroMaterial {
     /// Mask makes the stock prepass/shadow shaders discard the same texels,
     /// while the main pass still receives the raw sampled alpha as the sheen
     /// mask (pbr_input_from_standard_material applies no alpha_discard).
+    /// What a sheen resource draws with when metallic sheen is off: the same
+    /// opaque base the sheen variant extends, without the extension. Its
+    /// texture alpha is a sheen mask, not transparency, so it must not be the
+    /// default Masked material, which would punch it out. `cutout` keeps the
+    /// original's exact-zero alpha test, as in [`Self::to_sheen_material`].
+    pub fn to_unsheened_material(&self, texture: Handle<Image>, cutout: bool) -> StandardMaterial {
+        let mut base = self.to_standard_material(Some(texture), MaterialVariant::Opaque);
+        if cutout {
+            base.alpha_mode = AlphaMode::Mask(SHEEN_ALPHA_CUTOUT);
+        }
+        base
+    }
+
     pub fn to_sheen_material(
         &self,
         texture: Handle<Image>,

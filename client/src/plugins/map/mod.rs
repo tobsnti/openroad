@@ -27,6 +27,7 @@ mod events;
 pub mod foliage;
 pub mod objects;
 pub mod terrain;
+pub mod view_range;
 pub mod water_hq_material;
 pub mod water_material;
 
@@ -120,7 +121,22 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                cull_fogged_objects.run_if(in_state(GameState::Game)),
+                (cull_fogged_objects, view_range::cull_distant_characters)
+                    .run_if(in_state(GameState::Game)),
+            )
+            // `graphics.view` -> `ViewRange` (the live rule: PreUpdate, gated
+            // on the config changing, so it also seeds the value at boot), and
+            // the object-part LOD that bakes its cull ceiling in.
+            .init_resource::<view_range::ViewRange>()
+            .add_systems(
+                PreUpdate,
+                (
+                    view_range::apply_view_range,
+                    view_range::apply_object_lod,
+                    view_range::apply_terrain_lod,
+                )
+                    .chain()
+                    .run_if(crate::plugins::settings::live::config_changed),
             )
             // not gated on GameState::Game so it also sweeps after leaving it
             .add_systems(

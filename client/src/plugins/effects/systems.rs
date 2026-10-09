@@ -78,6 +78,7 @@ pub fn rebuild_program_caches(
 pub fn cull_effect_simulation(
     mut commands: Commands,
     cameras: Query<(&Camera, &RenderTarget, &GlobalTransform), With<Camera3d>>,
+    view: Res<crate::plugins::map::view_range::ViewRange>,
     active_dungeon: Option<Res<crate::plugins::dungeon::ActiveDungeon>>,
     dofs: Res<Assets<crate::assets::dof::JMXVDOF>>,
     mut roots: Query<
@@ -99,7 +100,7 @@ pub fn cull_effect_simulation(
         ),
     >,
 ) {
-    use crate::plugins::map::terrain::{FOG_RANGE, REGION_SIZE, VISIBLE_RANGE};
+    use crate::plugins::map::terrain::REGION_SIZE;
     let (pause_dist, resume_dist) = match &active_dungeon {
         Some(active) => {
             let fog = crate::plugins::dungeon::atmosphere::current_fog_far(active, &dofs);
@@ -108,8 +109,9 @@ pub fn cull_effect_simulation(
             (fog + 200.0, fog + 50.0)
         }
         None => {
-            // Fully fogged from here on out (see `terrain/rendering.rs::fog`).
-            let pause = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
+            // The cull distance, by default where the fog turns opaque
+            // (`graphics.view`, `ViewRange::live_cull`).
+            let pause = view.live_cull;
             // Resume a bit closer (~75% fogged, still virtually invisible) so
             // a camera hovering at the boundary doesn't thrash the markers.
             (pause, pause - REGION_SIZE * 0.25)
@@ -309,7 +311,11 @@ pub fn emit_particles(
     >,
     globals: Query<&GlobalTransform>,
     locals: Query<(&Transform, &ChildOf)>,
-    leaf_policy: Res<crate::plugins::effects::LeafEmitPolicy>,
+    // tupled: this system is at Bevy's 16-parameter ceiling
+    (leaf_policy, quality): (
+        Res<crate::plugins::effects::LeafEmitPolicy>,
+        Res<crate::plugins::effects::EffectQualityScale>,
+    ),
     one_shots: Query<Has<OneShotEffect>>,
 ) {
     let _ = &time;
@@ -347,6 +353,8 @@ pub fn emit_particles(
         } else {
             emit.max_alive
         };
+        // `graphics.effect_quality`: every emitter's authored cap, scaled
+        let max_alive = ((max_alive as f32 * quality.0).ceil() as u32).max(1);
 
         // Exe-faithful pacing (worker 0xc84e70): evaluate every effect frame
         // crossed since the last run; on frames inside the emission window
@@ -1419,6 +1427,7 @@ mod tests {
         world.init_resource::<EffectAdditiveIntensity>();
         world.init_resource::<EffectLdrAdditive>();
         world.init_resource::<LeafEmitPolicy>();
+        world.init_resource::<crate::plugins::effects::EffectQualityScale>();
         world.init_resource::<EffectPlaybackSpeed>();
         world.insert_resource(Time::<()>::default());
 

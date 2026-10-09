@@ -17,7 +17,8 @@ evidence — are not published; see [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
 - [`cutscene-convert.md`](cutscene-convert.md) — how the intro cutscene is chosen and
   converted from your own `Media.pk2` at startup (`make cutscene convert`)
 - [`perf-remote.md`](perf-remote.md) — remote perf inspection over the Bevy Remote
-  Protocol (`make perf ...`)
+  Protocol (`make perf ...`), the GPU feature/limit switches, and worked examples of
+  every measured lever
 
 ## Client architecture
 - [`settings-live-apply.md`](settings-live-apply.md) — how a changed setting reaches
@@ -54,3 +55,5 @@ ADRs live in [`adrs/`](adrs/) and are numbered:
 | 0008 | Dungeon pipeline |
 | 0009 | Clone, not replica — the reference doctrine |
 | 0010 | Revert rationale |
+| 0011 | GPU capability baseline |
+| 0012 | Graphics presets and the configurable view range |

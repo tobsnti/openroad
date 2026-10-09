@@ -57,6 +57,124 @@ enum AppMode {
     DebugMode,
 }
 
+/// The GPU features Bevy's bindless material slabs need; withheld unless
+/// `graphics.bindless_materials` is on (nothing else in the client uses binding arrays).
+fn bindless_features() -> bevy::render::settings::WgpuFeatures {
+    use bevy::render::settings::WgpuFeatures;
+    WgpuFeatures::TEXTURE_BINDING_ARRAY
+        | WgpuFeatures::BUFFER_BINDING_ARRAY
+        | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+        | WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY
+}
+
+/// The render plugin: Bevy's, minus the bindless-material features unless
+/// `graphics.bindless_materials` asks for them.
+///
+/// Measurement switches on top:
+/// - `OPENROAD_GPU_BASELINE=1` requests only what a ~2014 desktop GPU guarantees —
+///   WebGPU-baseline limits, no optional features except BC texture compression (every
+///   D3D10+-class GPU has it, and every DDJ texture is BC) — so features the client would need
+///   beyond old hardware show up as validation errors on a current machine.
+///   `WGPU_SETTINGS_PRIO=webgpu` alone also drops BC, which no real old PC lacks.
+/// - `OPENROAD_GPU_BASELINE=gl33` goes further down, to what wgpu's GL 3.3 backend offers a
+///   DX10-class card (GeForce 8-500, Radeon HD 2000-6000): WebGL2-class limits, so no storage
+///   buffers, storage textures or compute workgroups, but a realistic 8192 texture size. It is
+///   meant to be run on Vulkan or DX12, where it exercises Bevy's uniform-buffer fallbacks and
+///   shows every compute path that is not gated as a validation error. The real backend
+///   (`--features gles`, `WGPU_BACKEND=gl`) is the confirmation.
+/// - `OPENROAD_WGPU_DISABLE` withholds more, a comma-separated list of groups — `bindless`,
+///   `indirect` (GPU mesh preprocessing + multi-draw indirect), `mappable`
+///   (MAPPABLE_PRIMARY_BUFFERS, which Bevy turns on for integrated GPUs) — or raw wgpu feature
+///   names (`TIMESTAMP_QUERY`).
+/// - `OPENROAD_GPU_LIMITS=webgpu` constrains the device to WebGPU-default limits, keeping the
+///   features (combine with `bindless` off: Bevy enables bindless by feature alone, and the
+///   WebGPU limits allow no binding-array elements).
+fn render_plugin(
+    graphics: &plugins::config::graphics::GraphicsSettings,
+    // the probed adapter runs on wgpu's GL backend (`config::gpu_probe`)
+    gpu_is_gl: bool,
+) -> bevy::render::RenderPlugin {
+    use bevy::render::settings::{WgpuFeatures, WgpuSettings, WgpuSettingsPriority};
+    if env::var("OPENROAD_GPU_BASELINE").is_ok_and(|v| v == "1") {
+        return bevy::render::RenderPlugin {
+            render_creation: WgpuSettings {
+                priority: WgpuSettingsPriority::WebGPU,
+                features: WgpuFeatures::TEXTURE_COMPRESSION_BC,
+                ..default()
+            }
+            .into(),
+            ..default()
+        };
+    }
+    if env::var("OPENROAD_GPU_BASELINE").is_ok_and(|v| v == "gl33") {
+        let mut limits = bevy::render::settings::WgpuLimits::downlevel_webgl2_defaults();
+        // GL 3.3 guarantees 1024, but every DX10-class desktop card offers 8192;
+        // WebGL2's 2048 would reject textures those cards render fine.
+        limits.max_texture_dimension_1d = 8192;
+        limits.max_texture_dimension_2d = 8192;
+        return bevy::render::RenderPlugin {
+            render_creation: WgpuSettings {
+                priority: WgpuSettingsPriority::WebGL2,
+                features: WgpuFeatures::TEXTURE_COMPRESSION_BC,
+                limits: limits.clone(),
+                constrained_limits: Some(limits),
+                ..default()
+            }
+            .into(),
+            ..default()
+        };
+    }
+
+    let mut disabled = if graphics.bindless_materials {
+        WgpuFeatures::empty()
+    } else {
+        bindless_features()
+    };
+    for name in env::var("OPENROAD_WGPU_DISABLE")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        disabled |= match name {
+            "bindless" => bindless_features(),
+            "indirect" => {
+                WgpuFeatures::MULTI_DRAW_INDIRECT_COUNT | WgpuFeatures::INDIRECT_FIRST_INSTANCE
+            }
+            "mappable" => WgpuFeatures::MAPPABLE_PRIMARY_BUFFERS,
+            raw => WgpuFeatures::from_name(raw).unwrap_or_else(|| {
+                eprintln!("OPENROAD_WGPU_DISABLE: unknown feature or group {raw:?}");
+                WgpuFeatures::empty()
+            }),
+        };
+    }
+    let mut constrained_limits = env::var("OPENROAD_GPU_LIMITS")
+        .is_ok_and(|v| v == "webgpu")
+        .then(bevy::render::settings::WgpuLimits::default);
+    // wgpu's GL backend: hold the device to the floor's limits (ADR 0011),
+    // with fewer than the five storage textures Bevy's SSAO needs. On a real
+    // GL 3.3 card there are none and Bevy never registers SSAO. A current GL
+    // 4.x driver offers them, so Bevy builds SSAO's compute pipeline, whose
+    // shader its GLSL translation cannot express (`textureGatherOffset`),
+    // and quits. Capping the limit makes both take the same path.
+    if gpu_is_gl {
+        disabled |= bindless_features();
+        let mut limits = constrained_limits.unwrap_or_default();
+        limits.max_storage_textures_per_shader_stage =
+            limits.max_storage_textures_per_shader_stage.min(4);
+        constrained_limits = Some(limits);
+    }
+    bevy::render::RenderPlugin {
+        render_creation: WgpuSettings {
+            disabled_features: Some(disabled),
+            constrained_limits,
+            ..default()
+        }
+        .into(),
+        ..default()
+    }
+}
+
 fn main() {
     let working_dir = env::current_dir().unwrap();
     let mut assets_dir = working_dir.clone();
@@ -66,7 +184,14 @@ fn main() {
     // Loaded before the App is built: plugin registration below is decided by
     // config values (`dev_tools`, network), and NetworkPlugin reads the
     // resource during Plugin::build.
-    let config = plugins::config::ClientConfig::load();
+    let mut config = plugins::config::ClientConfig::load();
+    // The options window's saved graphics rows outrank config.yaml (as the
+    // original's options file does), and some are read only while the app is
+    // built (the sampler, the sheen materials): lay them over it now, not on
+    // the first frame.
+    if let Some(options) = plugins::settings::persistence::read_user_settings() {
+        plugins::options_video::overlay_saved_rows(&options.video.graphic1, &mut config);
+    }
 
     // Headless net-check mode: drive the full network roundtrip with no window
     // and dump packets, then exit. Reuses the net stack minus rendering/scenes.
@@ -99,6 +224,15 @@ fn main() {
     let material_defaults = config.graphics.to_material_defaults();
     let present_mode = config.window_settings.present_mode.to_present_mode();
     let desired_maximum_frame_latency = config.window_settings.frame_latency();
+    let render = render_plugin(
+        &config.graphics,
+        config.gpu.as_ref().is_some_and(|gpu| gpu.gl),
+    );
+    // `graphics.anisotropy`: the default image sampler below and the ground
+    // tiles' own sampler, both built once when the renderer starts
+    let anisotropy = config.graphics.anisotropy.clamp();
+    assets::m::block_splat_material::TILE_ANISOTROPY
+        .store(anisotropy, std::sync::atomic::Ordering::Relaxed);
     app.insert_resource(config)
         // Read straight out of Media.pk2 before the app ticks: the gateway
         // connect fires on the first frame, so the asset server would deliver
@@ -109,6 +243,12 @@ fn main() {
             SroAssetPlugin,
             DefaultPlugins
                 .build()
+                // Nothing in the client reads gamepads, yet gilrs would poll
+                // every one each frame. (`GltfPlugin` is just as unused but
+                // cannot go the same way: with the `bevy_gltf` feature on,
+                // `PbrPlugin` registers a glTF extension handler into its
+                // resource at build and panics without it.)
+                .disable::<bevy::gilrs::GilrsPlugin>()
                 .set(AssetPlugin {
                     file_path: (String::from(assets_dir.to_str().unwrap())),
                     // Hot-reload is a development affordance, but the `file_watcher`
@@ -120,6 +260,7 @@ fn main() {
                     watch_for_changes_override: Some(cfg!(debug_assertions)),
                     ..default()
                 })
+                .set(render)
                 .set(ImagePlugin {
                     default_sampler: ImageSamplerDescriptor {
                         min_filter: ImageFilterMode::Linear,
@@ -131,7 +272,7 @@ fn main() {
                         // needs all filters Linear (they are); mostly pays
                         // off on grazing-angle ground/water once textures
                         // carry mip chains
-                        anisotropy_clamp: 4,
+                        anisotropy_clamp: anisotropy,
                         ..default()
                     },
                 })
@@ -236,6 +377,10 @@ fn main() {
         // and the rest waits a frame, so assets appear slightly later instead
         // of the frame freezing. See `UPLOAD_BYTES_PER_FRAME`.
         .insert_resource(RenderAssetBytesPerFrame::new(UPLOAD_BYTES_PER_FRAME))
+        // `window_settings.fps_limit` / `unfocused_fps_limit`
+        .add_plugins(plugins::frame_pacing::FramePacingPlugin)
+        // `graphics.gpu_light_clustering`
+        .add_plugins(plugins::light_clustering::LightClusteringPlugin)
         // 3d raycast picking for the character selection previews. Strictly
         // opt-in via markers (`Pickable` on meshes, `MeshPickingCamera` on the
         // camera) so the world scene's terrain is never raycast.

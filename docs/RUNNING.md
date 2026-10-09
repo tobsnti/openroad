@@ -134,6 +134,72 @@ scenes:
 
 `dungeons` and `skills` are the other two offline scenes.
 
+## 8. On a weak or older GPU
+
+The graphics settings come in presets. `graphics.preset: auto`, the default,
+picks one from your GPU at startup and logs the choice (`graphics preset: medium
+(auto: integrated GPU ...)`):
+
+| preset | for | what it gives up |
+|---|---|---|
+| `low` | DX10-class and old integrated GPUs (~2008-2012) | 7x7 regions streamed (2880 view), short fog, no MSAA/FXAA/bloom, low water, 3D at 75% resolution, trees and grass end at 1200 and 30% of them are left out, model and ground textures at half resolution, distant terrain at a quarter and a sixteenth of its triangles, departed areas freed after 10 s |
+| `medium` | integrated GPUs | 3840 view, no MSAA/bloom, low water, trees and grass end at 2000, coarser distant terrain |
+| `high` | discrete GPUs | nothing: the full look, as the client always shipped |
+| `ultra` | strong machines, never picked automatically | draws further than the original (7680, 11x11 regions) |
+
+Name one to override the choice:
+
+```yaml
+graphics:
+  preset: low
+```
+
+Every key you set yourself in `config.yaml` wins over the preset, so you can
+start from a preset and change one thing. In the game, the options window's
+Video tab shows the preset in effect. Its Shadow Detail, Background Sight
+Range, Water Detail and Texture Detail rows also change those settings. A
+choice made there is saved in `user_settings.yaml` and wins over
+`config.yaml`, the same as the original's own options file. The keys a preset controls are
+commented out in `config.example.yaml`, with notes on what each costs.
+
+The one that matters most on an old machine is how far the world is drawn.
+Every streamed region costs memory, draw calls and per-frame work:
+
+```yaml
+graphics:
+  view:
+    view_distance: 2880   # load and draw this far (1920-9600); 2880 = 7x7 regions
+    fog_end: 2880         # fog is opaque here; never past view_distance
+    fog_start: 1920       # used when envi_fog is off
+    fog_cull_distance: 0  # cull things past this; 0 = where the fog is opaque
+    cull_follows_envi_fog: true  # also cull behind the short night fog
+```
+
+On a card with 1-2 GB of memory, `graphics.texture_detail: half` (or
+`quarter`) uploads model and ground textures one (or two) mip levels down; the
+HUD stays sharp. It needs a restart.
+
+The view settings apply while the game runs. So do `window_settings.fps_limit` and
+`unfocused_fps_limit`, which cap the frame rate. An uncapped old laptop runs hot
+until it throttles, so a cap at what it sustains keeps the frame rate steadier.
+
+What a 15-year-old PC needs to run the client at all:
+
+- **Windows 10 or later, or Linux.** The Rust standard library and the DX12
+  backend both dropped Windows 7/8.
+- **A GPU with a Vulkan or DX12 driver:** GeForce 600 or newer, Radeon HD 7000
+  or newer, Intel HD 4400/4600 or newer. GeForce 400/500 cards have a DX12
+  driver (384.76 or later), but it is slow. Older cards (Radeon HD 5000/6000,
+  GeForce 8 to 200) have only OpenGL. On wgpu's GL backend the client starts
+  and draws terrain, but not the world's objects: Bevy 0.19 only takes its
+  OpenGL-safe rendering paths in browser builds (see `docs/perf-remote.md`,
+  "The GL 3.3 floor"). Intel HD 2000/3000 on Windows has only GL 3.1 and is
+  out of reach.
+- **Any 64-bit x86 CPU.** Release builds assume no AVX or SSE4.
+
+The measurements behind the presets, and how to take your own, are in
+[`perf-remote.md`](https://github.com/ferdoran/openroad/blob/main/docs/perf-remote.md).
+
 ## Troubleshooting
 
 | Symptom | Cause |

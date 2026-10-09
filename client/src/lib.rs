@@ -41,5 +41,7 @@ pub mod assets {
     /// histogram itemdata/skilldata columns through the real parsers (and by
     /// `dungeon_scan` for the dungeoninfo table + string decoder).
     pub mod textdata;
+    pub mod texture_detail;
+    pub mod tile_layers;
     pub mod tile_tint;
 }

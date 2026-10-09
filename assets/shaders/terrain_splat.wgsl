@@ -110,60 +110,36 @@ fn vertex(
 // texel (block_col*17 + i, block_row*17 + j) is that block's vertex (i, j). Blocks keep their
 // own duplicated edge vertices, so a fragment never gathers across a block boundary and the
 // per-block behaviour of the old layout is reproduced exactly. `.g` = splat scale code always.
-// `.r` differs by draw path (see the two branches below): the `Material`-based path (default)
-// stores this region's *local* tile index (its position in
-// `TerrainBlockSplatMaterial::used_tiles`, capped at `REGION_TILE_SLOT_COUNT` because that path
-// binds one atlas copy PER region); the hand-rolled-pipeline path
-// (`client/src/plugins/map/terrain/render/`, feature `terrain_hand_rolled_pipeline`) binds the
-// atlas exactly ONCE, globally, so it has no per-region size pressure and `.r` is simply the
-// map's raw 10-bit tile id, indexing `tile_atlas` directly.
+// `.r` is the map's raw 10-bit tile id on both draw paths: tile `id` is layer `id % 256` of
+// `tile_array_<id / 256>` (see `sample` below and `TerrainTileArrays` in tile_arrays.rs).
 const REGION_SIZE: f32 = 1920.0;      // 6 blocks * 320 units
 const BLOCK_SIZE: f32 = 320.0;
 const VERTEX_SPACING: f32 = 20.0;     // 17 vertices per block edge => 16 intervals of 20
 const BLOCK_VERTS: u32 = 17u;
 
-// Two bind-group layouts for the same bindings, chosen by which draw path is active
-// (`TerrainPipeline::specialize` pushes the `TERRAIN_HAND_ROLLED_PIPELINE` def; the stock
-// `Material`/`MaterialPlugin` path never does). Only the *shape* differs — groups vs. one group,
-// and the atlas size — every `var` name and all the fragment logic below is identical either way.
-#ifdef TERRAIN_HAND_ROLLED_PIPELINE
-// Per-region group: the two textures that are genuinely unique per region. Everything else this
-// shader reads is identical for every terrain draw and lives in the global group below instead —
-// see client/src/assets/m/block_splat_material.rs's REGION_TILE_SLOT_COUNT doc comment for why
-// that split needed a hand-rolled pipeline (Bevy's `Material` trait has no supported way to bind
-// an extra, globally-shared group).
-@group(3) @binding(0) var tile_map: texture_2d<u32>;
-@group(3) @binding(1) var lightmap_tex: texture_2d<f32>;
-
-// Global group: bound exactly once, shared by every terrain region's draw. `tile_atlas` covers
-// the map format's entire 10-bit id space (see `TILE_SLOT_COUNT` in block_splat_material.rs) —
-// no per-region cap needed since there is only ever one copy of this array, not one per region.
-@group(4) @binding(0) var clamp_sampler: sampler;
-@group(4) @binding(1) var tile_atlas: binding_array<texture_2d<f32>, 1024>;
-@group(4) @binding(2) var tile_sampler: sampler;
-@group(4) @binding(3) var<storage> ambient_ratio: vec4<f32>;
-@group(4) @binding(4) var<storage> terrain_params: array<vec4<f32>, 3>;
-#else
+// One bind group, the same on both draw paths: the stock `Material` path binds it as the material
+// group, the hand-rolled pipeline (`TerrainPipeline::specialize`) defines `MATERIAL_BIND_GROUP`
+// for its own group 3 — four groups in all, the baseline `max_bind_groups`.
+//
+// The ground tiles are four `texture_2d_array`s of 256 layers (the baseline array-layer limit)
+// covering the 10-bit id space, not a texture *binding array*: per-fragment indexing of a binding
+// array is bindless sampling, which pre-2016 GPUs and WebGPU/WebGL2-class devices lack (see
+// client/src/assets/tile_layers.rs). The shared params are uniform buffers for the same reason.
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var tile_map: texture_2d<u32>;
 // Clamp+filtering sampler, used for the lightmap (`tile_map` is only ever `textureLoad`ed).
 @group(#{MATERIAL_BIND_GROUP}) @binding(1)
 var clamp_sampler: sampler;
-// This region's own ground tiles only — up to REGION_TILE_SLOT_COUNT (block_splat_material.rs)
-// distinct textures, indexed by the *local* index `tile_map` carries (see the header comment
-// above), not the map's raw 10-bit tile id. Each region's bind group fills only as many of these
-// slots as it actually uses (`TerrainBlockSplatMaterial::used_tiles`); the rest are the shared
-// fallback texture.
+// Ground tiles with ids 0..255; 256.. are bindings 7, 8, 9.
 @group(#{MATERIAL_BIND_GROUP}) @binding(2)
-var tile_atlas: binding_array<texture_2d<f32>, 64>;
+var tile_array_0: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3)
 var tile_sampler: sampler;
 // Per-channel ratio of SRO's terrain ambient to the global (object) ambient — one GPU
 // buffer shared by ALL splat materials, updated in place by `TerrainAmbientRatioPlugin`
-// (see `TerrainAmbientRatio` in block_splat_material.rs). w unused. Storage, not uniform:
-// wgpu forbids mixing binding arrays (`tile_atlas` above) with uniform buffers in one group.
+// (see `TerrainAmbientRatio` in block_splat_material.rs). w unused.
 @group(#{MATERIAL_BIND_GROUP}) @binding(4)
-var<storage> ambient_ratio: vec4<f32>;
+var<uniform> ambient_ratio: vec4<f32>;
 // Baked per-region terrain lightmap (JMXVMAPT, see assets/t.rs): SRO's pre-baked static sun and
 // cast shadows on the ground. Sampled at region-local UV with `clamp_sampler` (binding 1).
 // A white 1x1 texture stands in for regions with no `.t`, making the multiply a no-op.
@@ -187,8 +163,13 @@ var lightmap_tex: texture_2d<f32>;
 //            multiplies the lit ground by 1-[2].w where the shadow map is fully
 //            occluded, sampled manually below so it works in every lighting mode.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6)
-var<storage> terrain_params: array<vec4<f32>, 3>;
-#endif
+var<uniform> terrain_params: array<vec4<f32>, 3>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(7)
+var tile_array_1: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(8)
+var tile_array_2: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(9)
+var tile_array_3: texture_2d_array<f32>;
 
 @fragment
 fn fragment(
@@ -271,8 +252,8 @@ fn fragment(
     // Darken the lit result by the sun's shadow factor directly — a stand-in for the
     // original client's dark projected player shadow (in vanilla mode only the player
     // casts). Sampled manually instead of relying on apply_pbr_lighting so the
-    // baked mode gets the player shadow too. terrain_params is a
-    // storage buffer (formally non-uniform to WGSL), but the block stays legal:
+    // baked mode gets the player shadow too. The branch is on a buffer value; either way
+    // the block stays legal:
     // fetch_directional_shadow's hardware path uses textureSampleCompareLevel,
     // which needs no derivatives and is allowed in non-uniform control flow.
     let shadow_strength = terrain_params[2].w;
@@ -430,20 +411,8 @@ fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f3
     return color;
 }
 
-// `tile` indexes `tile_atlas` directly — the region-local index (0..REGION_TILE_SLOT_COUNT,
-// baked into `tile_map` by `pack_tile_map`) on the `Material`-based path, or the map's raw
-// 10-bit id on the hand-rolled-pipeline path (see the header comment above `tile_map`'s
-// declaration). The index varies per fragment, so this relies on non-uniform indexing of a
-// sampled-texture binding array (`SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`)
-// — `check_tile_atlas_support` in block_splat_material.rs reports at startup if the device lacks
-// it. The `min` clamp is a defensive backstop only: both paths already guarantee every baked
-// index is in range.
+// `tile` is the map's raw 10-bit tile id (see the header comment above `tile_map`'s declaration).
 fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>, duv_dy: vec2<f32>) -> vec4<f32> {
-#ifdef TERRAIN_HAND_ROLLED_PIPELINE
-    let tex = tile_atlas[min(tile, 1023u)];
-#else
-    let tex = tile_atlas[min(tile, 63u)];
-#endif
     let splat_scale = get_splat_scale(splat);
     // 16, not 4: one texture repeat spans `320 * splat_scale` world units (a 320-unit block
     // has 16 20-unit tiles), so splat_scale 1.0 => exactly one repeat per block (1x1), 0.25 =>
@@ -454,7 +423,20 @@ fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>,
     let scale = 1.0 / (20.0 * max_uv);
     let uv2 = uv * scale;
 
-    return textureSampleGrad(tex, tile_sampler, uv2, duv_dx * scale, duv_dy * scale) * contrib;
+    return sample_tile(tile, uv2, duv_dx * scale, duv_dy * scale) * contrib;
+}
+
+// Tile `id` is layer `id % 256` of `tile_array_<id / 256>`. The array varies per fragment, so
+// each branch samples with explicit gradients (legal in non-uniform control flow, unlike an
+// implicit-derivative `textureSample`).
+fn sample_tile(tile: u32, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    let layer = i32(tile & 255u);
+    switch (min(tile, 1023u) >> 8u) {
+        case 0u: { return textureSampleGrad(tile_array_0, tile_sampler, uv, layer, ddx, ddy); }
+        case 1u: { return textureSampleGrad(tile_array_1, tile_sampler, uv, layer, ddx, ddy); }
+        case 2u: { return textureSampleGrad(tile_array_2, tile_sampler, uv, layer, ddx, ddy); }
+        default: { return textureSampleGrad(tile_array_3, tile_sampler, uv, layer, ddx, ddy); }
+    }
 }
 
 // Code -> repeat factor, all five from the shared params buffer so every

@@ -34,12 +34,14 @@ pub mod dev_fast_login;
 pub mod division;
 pub mod effects;
 pub mod fonts;
+pub mod gpu_probe;
 pub mod graphics;
 pub mod guild;
 pub mod hud;
 pub mod input;
 pub mod nameplates;
 pub mod network;
+pub mod preset;
 mod scene;
 pub mod selection;
 pub mod window;
@@ -56,7 +58,7 @@ impl Plugin for ConfigPlugin {
         // spawned the primary window by then, and when the *initial*
         // `OnEnter` runs relative to `Startup` is a bevy_state implementation
         // detail that has moved between versions.
-        app.add_systems(Startup, (log_network_config, window::setup_window))
+        app.add_systems(Startup, (log_startup_config, window::setup_window))
             // Update, not Startup: bevy_winit spawns the monitor entities
             // from its own event loop, so a startup system sees nothing.
             .add_systems(Update, window::log_monitors)
@@ -73,8 +75,16 @@ impl Plugin for ConfigPlugin {
     }
 }
 
-fn log_network_config(config: Res<ClientConfig>) {
+fn log_startup_config(config: Res<ClientConfig>) {
     info!("initialized network config: {:?}", config.network_settings);
+    if let Some(preset) = &config.graphics.resolved_preset {
+        info!(
+            "graphics preset: {} (requested {}; {}); keys set in config.yaml override it",
+            preset.tier.name(),
+            config.graphics.preset.name(),
+            preset.reason
+        );
+    }
 }
 
 #[derive(Resource, Deserialize)]
@@ -138,6 +148,10 @@ pub struct ClientConfig {
     /// Combat presentation (knockdown dwell).
     #[serde(default)]
     pub combat: combat::CombatSettings,
+    /// The GPU the renderer will use, probed while the config was loaded
+    /// (`gpu_probe`); `None` when no adapter was found. Not configured.
+    #[serde(skip)]
+    pub gpu: Option<preset::GpuSummary>,
 }
 
 impl ClientConfig {
@@ -172,10 +186,62 @@ impl ClientConfig {
     /// from the shipped example instead of from a struct literal that would
     /// drift away from what users actually run.
     pub(crate) fn from_file(name: &str) -> Result<Self, config::ConfigError> {
-        let config = Config::builder()
-            .add_source(config::File::with_name(name))
-            .build()?;
-        deserialize_guarded(config)
+        // Unit tests build configs from the shipped example and must not
+        // depend on the machine's GPU: under test, `auto` resolves as for a
+        // discrete GPU (`high`, the look the built-in defaults describe).
+        #[cfg(test)]
+        let probe = preset::test_discrete_gpu;
+        #[cfg(not(test))]
+        let probe = gpu_probe::probe;
+        Self::from_file_with(name, probe)
+    }
+
+    /// [`from_file`](Self::from_file) with the GPU probe injected, so tests
+    /// resolve `preset: auto` without a GPU.
+    ///
+    /// Two passes: the first reads only `graphics.preset` (resolving `auto`
+    /// from the probed GPU), the second layers that preset's YAML *under* the
+    /// user's file. config-rs merges sources key by key, so every key the user
+    /// sets wins over the preset (see `preset.rs`). The probe runs whatever
+    /// the preset: plugin registration also depends on the GPU class (see
+    /// [`Self::gpu`]).
+    pub(crate) fn from_file_with(
+        name: &str,
+        probe: impl FnOnce() -> Option<preset::GpuSummary>,
+    ) -> Result<Self, config::ConfigError> {
+        let gpu = probe();
+        let user = config::File::with_name(name);
+        let requested = Config::builder()
+            .add_source(user.clone())
+            .build()?
+            .get::<preset::QualityPreset>("graphics.preset")
+            .or_else(|err| match err {
+                config::ConfigError::NotFound(_) => Ok(preset::QualityPreset::Auto),
+                err => Err(err),
+            })?;
+        let resolved = match requested {
+            preset::QualityPreset::Auto => preset::tier_for(gpu.as_ref()),
+            tier => preset::ResolvedPreset {
+                tier,
+                reason: "set in config.yaml".into(),
+            },
+        };
+        let mut builder = Config::builder();
+        if let Some(layer) = resolved.tier.layer() {
+            builder = builder.add_source(config::File::from_str(layer, config::FileFormat::Yaml));
+        }
+        let mut config: Self = deserialize_guarded(builder.add_source(user).build()?)?;
+        config.graphics.resolved_preset = Some(resolved);
+        config.gpu = gpu;
+        Ok(config)
+    }
+
+    /// Whether the GPU has compute shaders and storage buffers. Plugins
+    /// whose pipelines need them check this before registering. Assumed true
+    /// when the probe found no adapter: the renderer reports that failure
+    /// itself.
+    pub fn gpu_has_compute(&self) -> bool {
+        self.gpu.as_ref().is_none_or(|gpu| gpu.compute)
     }
 }
 
@@ -410,6 +476,70 @@ mod tests {
             "the error carries a message for the user"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A preset fills in the graphics keys the file leaves out, and a key the
+    /// file does set always wins over it (`preset.rs`).
+    #[test]
+    fn config_keys_override_the_preset_layer() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config.example.yaml"),
+            )
+            .expect("config.example.yaml is readable"),
+        )
+        .expect("config.example.yaml is yaml");
+        let graphics = config["graphics"].as_mapping_mut().expect("a graphics map");
+        graphics.insert("preset".into(), "low".into());
+        graphics.insert("msaa".into(), 4.into());
+        graphics.remove("render_scale");
+        graphics.remove("view");
+
+        let dir = std::env::temp_dir().join(format!(
+            "openroad-cfg-preset-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("config.yaml"),
+            serde_yaml::to_string(&config).expect("serialize"),
+        )
+        .expect("write");
+        let loaded =
+            ClientConfig::from_file_with(dir.join("config").to_str().expect("utf-8"), || {
+                // `auto` would make this GPU `high`: the explicit `low` must win
+                preset::test_discrete_gpu()
+            })
+            .expect("loads");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let resolved = loaded.graphics.resolved_preset.expect("resolved");
+        assert_eq!(resolved.tier, preset::QualityPreset::Low);
+        // set in the file: the file wins
+        assert_eq!(loaded.graphics.msaa.0, 4);
+        // left out: the preset's values
+        assert_eq!(loaded.graphics.render_scale.factor(), 0.75);
+        assert_eq!(loaded.graphics.view.view_distance, 2880.0);
+        assert!(loaded.graphics.view.cull_follows_envi_fog);
+    }
+
+    /// `auto` asks the probe, and only `auto` does.
+    #[test]
+    fn auto_resolves_through_the_probe() {
+        let config = ClientConfig::from_file_with(&example_config_name(), || {
+            Some(preset::GpuSummary {
+                name: "old card".into(),
+                backend: "Gl".into(),
+                kind: preset::GpuKind::Discrete,
+                compute: false,
+                gl: true,
+            })
+        })
+        .expect("config.example.yaml loads");
+        let resolved = config.graphics.resolved_preset.expect("resolved");
+        assert_eq!(resolved.tier, preset::QualityPreset::Low);
+        assert!(resolved.reason.contains("old card"), "{}", resolved.reason);
     }
 
     /// #581: naming an enum variant as a bare string where the Rust side

@@ -1,0 +1,45 @@
+# graphics.preset: high — the look the client shipped with before presets
+# existed, for current discrete GPUs. Every key here is a default that
+# config.yaml can override; see plugins/config/preset.rs.
+graphics:
+  view:
+    view_distance: 5760.0
+    fog_start: 3840.0
+    fog_end: 5760.0
+    cull_follows_envi_fog: false
+    terrain_lod: "off"
+    # other players, NPCs and monsters drawn this far (0 = all the server sends)
+    character_distance: 0.0
+  msaa: 4
+  fxaa: true
+  texture_detail: full
+  anisotropy: 4
+  bloom:
+    enabled: true
+  tonemapping: tony_mc_mapface
+  water:
+    quality: high
+  objects:
+    factor: 150.0
+    min_distance: 1200.0
+    nature_view_distance: 0.0
+    nature_density: 1.0
+    # swaying trees, flags and lamps (Dynamic Animation)
+    animate: true
+  render_scale: 1.0
+  streaming:
+    residency_grace_secs: 30.0
+    region_builds_per_frame: 2
+    region_unloads_per_frame: 2
+    object_spawns_per_frame: 64
+    resource_spawns_per_frame: 16
+  depth_prepass: false
+  shadows:
+    enabled: true
+    cascades: 2
+    map_size: 2048
+  # particle caps (Effect Quality) and the sun's lens flare
+  effect_quality: high
+  lens_flare: true
+  dungeon:
+    max_lights: 16

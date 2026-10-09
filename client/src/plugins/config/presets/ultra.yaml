@@ -1,0 +1,47 @@
+# graphics.preset: ultra — more than the original ever drew, for strong
+# machines: 11x11 regions streamed. Never picked by `auto`. Every key here is a
+# default that config.yaml can override; see plugins/config/preset.rs.
+graphics:
+  view:
+    view_distance: 7680.0
+    fog_start: 5760.0
+    fog_end: 7680.0
+    cull_follows_envi_fog: false
+    terrain_lod: "off"
+    # other players, NPCs and monsters drawn this far (0 = all the server sends)
+    character_distance: 0.0
+  msaa: 4
+  fxaa: true
+  texture_detail: full
+  anisotropy: 16
+  bloom:
+    enabled: true
+  tonemapping: tony_mc_mapface
+  water:
+    quality: high
+  objects:
+    factor: 200.0
+    min_distance: 1600.0
+    nature_view_distance: 0.0
+    nature_density: 1.0
+    # swaying trees, flags and lamps (Dynamic Animation)
+    animate: true
+  render_scale: 1.0
+  streaming:
+    residency_grace_secs: 30.0
+    # a fast CPU streams the larger ring sooner
+    region_builds_per_frame: 3
+    region_unloads_per_frame: 3
+    object_spawns_per_frame: 96
+    resource_spawns_per_frame: 24
+  # measured a net win even on an iGPU (docs/perf-remote.md, vegetation overdraw)
+  depth_prepass: true
+  shadows:
+    enabled: true
+    cascades: 4
+    map_size: 2048
+  # particle caps (Effect Quality) and the sun's lens flare
+  effect_quality: high
+  lens_flare: true
+  dungeon:
+    max_lights: 32

@@ -117,7 +117,10 @@ impl Plugin for DevPlugin {
             // gate below on purpose: it's the low-overhead reading used to tell
             // whether the heavier egui inspectors are themselves the frame-time
             // bottleneck, so it has to keep working with `dev_tools: false`.
-            .add_plugins(FpsOverlayPlugin::default())
+            // ...except on a GPU without storage buffers (wgpu's GL 3.3
+            // backend): the overlay builds its frame-time graph material, which
+            // binds one, even with the graph disabled, and that pipeline
+            // cannot be created there (the `if` below this chain).
             // .add_plugins(DebugLinesPlugin::with_depth_test(true))
             //
             // `WireframePlugin` carries no UI and no hotkey of its own, and the
@@ -135,6 +138,13 @@ impl Plugin for DevPlugin {
             // button moved into the gated block: it is chrome for tooling that
             // no longer exists when `dev_tools` is off.
             .add_systems(Update, switch_mode);
+        if app
+            .world()
+            .get_resource::<ClientConfig>()
+            .is_none_or(ClientConfig::gpu_has_compute)
+        {
+            app.add_plugins(FpsOverlayPlugin::default());
+        }
 
         // Everything key-driven or egui-driven: opt-in, so a play session keeps
         // its letters and its screen (see `dev_tools_enabled` and

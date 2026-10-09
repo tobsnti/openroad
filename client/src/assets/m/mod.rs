@@ -15,7 +15,7 @@ use crate::assets::read_str_and_jump;
 pub mod block_mesh;
 pub mod block_splat_material;
 pub mod loader;
-mod tile_residency;
+pub mod tile_arrays;
 
 #[allow(dead_code)]
 const TERRAIN_NUM_VERTICES: usize = 97 * 97;

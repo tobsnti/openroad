@@ -352,6 +352,7 @@ fn attach_character_equipment(
 fn setup_fog(
     mut commands: Commands,
     config: Res<crate::plugins::config::ClientConfig>,
+    view: Res<crate::plugins::map::view_range::ViewRange>,
     camera_query: Query<Entity, With<PlayerCamera>>,
 ) {
     for cam in camera_query.iter() {
@@ -359,6 +360,7 @@ fn setup_fog(
             .entity(cam)
             .insert(crate::plugins::map::terrain::rendering::fog(
                 &config.graphics.fog,
+                &view,
             ));
     }
 }

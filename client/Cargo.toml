@@ -13,6 +13,11 @@ license.workspace = true
 anyhow = { workspace = true }
 bevy_asset_loader = { version = "0.27", features = ["progress_tracking"] }
 bevy_brp_extras = "0.21.0"
+# Only to reach `bevy_render`'s `gles` feature (wgpu's native OpenGL backend),
+# which the `bevy` crate does not re-export; see the `gles` feature below. Renamed
+# on purpose: Bevy's derive macros generate `bevy_render::` paths when a
+# dependency is literally named `bevy_render`, which breaks every non-gles build.
+bevy_render_gles = { package = "bevy_render", version = "0.19", default-features = false, optional = true }
 bevy-inspector-egui = "0.37"
 bevy_egui = "0.40"
 bevy_tweening = "0.16"
@@ -33,6 +38,12 @@ rand = "0.9"
 rgb565 = "0.1.3"
 thiserror = { workspace = true }
 unidecode = "0.3.0"
+# The `auto` graphics preset probes the GPU before the App exists
+# (plugins/config/gpu_probe.rs), which needs wgpu's Instance, and Bevy does not
+# re-export it. The same version Bevy already pulls in, with no features of its
+# own: feature unification gives it Bevy's backends, so no new crate enters the
+# tree.
+wgpu = { version = "29.0.4", default-features = false }
 palette = "0.7.2"
 packets = { path = "../packets" }
 bevy_pk2 = { path = "../bevy_pk2" }
@@ -98,6 +109,11 @@ dynamic_linking = ["bevy/dynamic_linking"]
 # recorder, which chrome traces cannot show.
 profile-chrome = ["bevy/trace_chrome"]
 profile-tracy = ["bevy/trace_tracy"]
+# Compiles in wgpu's native OpenGL (GLES 3 / WGL) backend, for checking the
+# client on GPUs without usable Vulkan or DX12 (e.g. Haswell-era Intel iGPUs).
+# Opt-in and inert unless selected at runtime: Windows defaults to Vulkan/DX12,
+# `WGPU_BACKEND=gl` picks GL.
+gles = ["dep:bevy_render_gles", "bevy_render_gles/gles"]
 # Opts in to the GPU integration test below. Not a runtime feature: it exists
 # so that a plain `cargo test -p client` does not select that test target.
 # Cargo builds a package's binaries whenever an integration test is selected

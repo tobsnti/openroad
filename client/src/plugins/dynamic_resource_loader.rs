@@ -185,7 +185,7 @@ impl Plugin for DynamicResourceLoaderPlugin {
 /// as `GROUP_BUILDS_PER_FRAME`/`OBJECT_SPAWNS_PER_FRAME`. Starting value, not a
 /// measurement: tune it against `world_counts/unspawned_resources` and
 /// `frame_time/max_window`.
-const RESOURCE_SPAWNS_PER_FRAME: usize = 16;
+pub(crate) const RESOURCE_SPAWNS_PER_FRAME: u32 = 16;
 
 fn spawn_resources_when_loaded(
     mut commands: Commands,
@@ -202,7 +202,14 @@ fn spawn_resources_when_loaded(
         Option<&GlobalTransform>,
     )>,
     cameras: Query<(&GlobalTransform, &Camera), With<Camera3d>>,
+    config: Option<Res<crate::plugins::config::ClientConfig>>,
 ) {
+    // `graphics.streaming.resource_spawns_per_frame`, this constant by default
+    let spawns_per_frame = config.map_or(RESOURCE_SPAWNS_PER_FRAME as usize, |config| {
+        crate::plugins::config::graphics::StreamingSettings::budget(
+            config.graphics.streaming.resource_spawns_per_frame,
+        ) as usize
+    });
     let camera_pos = cameras
         .iter()
         .find(|(_, camera)| camera.is_active)
@@ -241,9 +248,9 @@ fn spawn_resources_when_loaded(
             mirrored,
         ));
     }
-    if ready.len() > RESOURCE_SPAWNS_PER_FRAME {
-        ready.select_nth_unstable_by(RESOURCE_SPAWNS_PER_FRAME - 1, |a, b| a.0.total_cmp(&b.0));
-        ready.truncate(RESOURCE_SPAWNS_PER_FRAME);
+    if ready.len() > spawns_per_frame {
+        ready.select_nth_unstable_by(spawns_per_frame - 1, |a, b| a.0.total_cmp(&b.0));
+        ready.truncate(spawns_per_frame);
     }
 
     for (_, entity, res, anim_group, material_variant, mirrored) in ready {

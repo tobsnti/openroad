@@ -48,19 +48,18 @@ roll. The basis is **left-handed (D3D)**, matching `D3DXMatrixLookAtLH`.
 **5500.0**, fov 1.0 rad (≈57.3°) vs **45°**. See EP-26 / #108.
 
 **What #108 adopted, and what it did not.** `near` and `fov` are taken verbatim.
-`far` is **not**: our fog fades from `VISIBLE_RANGE * REGION_SIZE` (3840) to
-`(VISIBLE_RANGE + FOG_RANGE) * REGION_SIZE` (5760), and Bevy's linear fog is
-`alpha = (d − start) / (end − start)`, so at 5500 terrain is only ~86 % opaque —
-a 5500 far plane clips partially transparent geometry out of the outer fog ring
-instead of letting it finish fading into the horizon-matched `FOG_COLOR`. The far
-plane is now derived from those streaming constants, so retuning them cannot
-reintroduce the clip.
+`far` is **not**. By default our fog fades from 3840 to 5760, and Bevy's
+linear fog is `alpha = (d − start) / (end − start)`, so at 5500 terrain is only
+~86 % opaque. A 5500 far plane would clip partially transparent geometry out of
+the outer fog ring instead of letting it finish fading into the horizon-matched
+`FOG_COLOR`. The far plane is derived from the view distance (`graphics.view`,
+`ViewRange::far`, one region past it), and the fog end is clamped to that
+distance, so no configuration can reintroduce the clip.
 
-Our fog ring width is itself ungrounded (`VISIBLE_RANGE`/`FOG_RANGE` were
-promoted from bare literals with no citation), so 5760 and 5500 are two
-independently arbitrary numbers that happen to sit 4.7 % apart. Aligning the
-streaming radius to 5500 is a defensible follow-up, but it touches six files and
-is not a camera-constants change.
+The default fog band is itself ungrounded: it was promoted from bare literals
+with no citation, so 5760 and 5500 are two independently arbitrary numbers that
+happen to sit 4.7 % apart. Since the band is now configurable
+(`graphics.view.fog_end`), a 5500 setting is one config line away.
 
 Two cautions on this record. `fov` is stored without an aspect ratio, so
 "vertical" is inferred from the left-handed D3D basis

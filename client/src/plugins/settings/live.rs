@@ -115,7 +115,18 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                and the scale-factor pin are boot-only in \
                config::window::setup_window (re-centring on an edit would \
                yank a moved window); `RESOLUTION=` stays an env override that \
-               outranks the configured size",
+               outranks the configured size. `fps_limit` and \
+               `unfocused_fps_limit` are live via \
+               frame_pacing::apply_frame_pacing",
+    },
+    SettingsGroup {
+        field: "gpu",
+        liveness: Liveness::Restart,
+        note: "not a setting: the adapter class config::gpu_probe reads while \
+               the file is loaded, before any plugin exists. It resolves \
+               `graphics.preset: auto`, and dev/mod.rs registers the FPS \
+               overlay only when it reports storage buffers. Both are \
+               decisions made once, at registration",
     },
     SettingsGroup {
         field: "scenes",
@@ -177,8 +188,53 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                (map/mod.rs) whether the hand-rolled terrain render pipeline \
                is registered, and fixes the choice in a resource that new \
                regions are built from, so a later edit cannot produce ground \
-               the registered pipeline cannot draw. live: everything else — \
-               terrain params via apply_terrain_render_params, bloom via \
+               the registered pipeline cannot draw. `preset` is resolved once \
+               while the file is loaded (ClientConfig::from_file, the GPU \
+               probe for `auto`) and its values are layered under the file \
+               there, so it has no runtime consumer to re-apply. Also \
+               restart-only, each read once by what it builds: \
+               `bindless_materials` (the wgpu \
+               features requested in main.rs::render_plugin), `water.quality` \
+               (map::setup_terrain_mesh at OnExit(Loading)), `shadows` \
+               enabled/cascades/distance/map_size (map::setup_lighting; a \
+               live cascade-count change panics, see there), `sheen` and \
+               `rim` intensities (baked into the .bmt materials), and \
+               `anisotropy` (main builds the default image sampler and sets \
+               the ground-tile sampler's clamp from it), \
+               `texture_detail` (assets::texture_detail::apply_texture_detail \
+               updates the level live, but each texture keeps the level it \
+               was loaded with, and the ground-tile arrays are built once). \
+               Next \
+               camera spawn, i.e. the next scene: `msaa`, `fxaa`, \
+               `depth_prepass`, `sky_reflections` \
+               (camera::apply_window_camera_msaa on Added<Camera>), \
+               `tonemapping` and `shadows.filtering` (the spawn sites). \
+               Every original quality row of the options window except \
+               Bloom writes its key over the file: saved steps outrank \
+               config.yaml, laid over it in main before the app is built \
+               and again on every change (options_video::overlay_saved_rows, \
+               apply_config_rows). Each is then as live as its key. \
+               `sheen.enabled` is restart-only (BmtMaterialDefaults, built \
+               once in main). `lens_flare`, `effect_quality`, \
+               `objects.animate` and `view.character_distance` are live \
+               (environment::lens_flare, effects::apply_effect_quality, \
+               animation_culling, map::view_range::cull_distant_characters). \
+               live: `gpu_light_clustering` via \
+               light_clustering::apply_light_clustering, `streaming` via \
+               asset_residency::apply_residency_grace (the per-frame budgets \
+               are read each frame by their streaming systems), \
+               `render_scale` via \
+               dev::render_debug::follow_config_render_scale, `view` via \
+               map::view_range::apply_view_range \
+               (streaming ring, fog band, culls, camera far plane, terrain \
+               LOD switch distances via map::view_range::apply_terrain_lod; \
+               regions built without LOD meshes keep the full grid until \
+               they stream in again) and \
+               environment::apply_view_fog_settings, `objects` via \
+               map::view_range::apply_object_lod (re-walks every part's \
+               VisibilityRange; `objects.nature_density` is the exception, \
+               decided per placement at spawn), terrain params via \
+               apply_terrain_render_params, bloom via \
                options_video::apply_bloom_option, rim mode via \
                apply_selection_colors, foliage via \
                map::foliage::apply_foliage_settings (#646). render_mode is \

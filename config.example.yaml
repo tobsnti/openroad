@@ -83,12 +83,37 @@ window_settings:
   # RESTART-ONLY: bevy reads it once, when it creates the surface. Changing it
   # in a running client does nothing.
   # max_frame_latency: 3
+  # Frame-rate caps; 0 = uncapped. An uncapped client keeps an old laptop at
+  # 100% until it throttles; capping at what the machine sustains (or at the
+  # display refresh) keeps it cool and the frame rate steady. The cap is a
+  # sleep at the end of each frame, so it works with every present_mode.
+  # unfocused_fps_limit applies while the window is in the background (0 =
+  # the engine's own ~60 Hz background rate).
+  # Both apply live. Leave them 0 while measuring (docs/perf-remote.md).
+  fps_limit: 0
+  unfocused_fps_limit: 0
 # Render quality. Bloom puts the main cameras on an HDR target, which is what
 # lets emissive props and the +N enhancement shine glow instead of clipping at
 # white. Disabling it restores the original LDR rendering exactly.
 graphics:
+  # Quality preset: auto | low | medium | high | ultra.
+  #
+  # A preset supplies every graphics value this file leaves unset. The keys it
+  # controls are commented out below, with their high-preset values, so
+  # uncommenting one overrides the preset for that key alone.
+  #
+  #   low     DX10-class / old integrated GPUs (GL 3.3, ~2008-2012): 7x7
+  #           regions, short fog, no MSAA/bloom, low water, 75% render scale
+  #   medium  integrated GPUs: 3840 view, no MSAA/bloom, low water
+  #   high    the full original look, as this client always shipped
+  #   ultra   beyond the original: 7680 view (11x11 regions), depth prepass
+  #   auto    picks low/medium/high from your GPU at startup (never ultra)
+  #
+  # The log says which one was chosen and why ("graphics preset: ...").
+  # Restart to change it.
+  preset: auto
   bloom:
-    enabled: true
+    # enabled: true
     intensity: 0.15 # energy-conserving scatter strength, 0.0-1.0
   # Metallic sheen on weapons/metal armor. Defaults adopt the mobile port's
   # modernized look; the commented value on each line restores faithful 1.188.
@@ -103,6 +128,10 @@ graphics:
     # Both of these are read once at startup (the .bmt materials bake them),
     # so a change needs a restart.
     intensity: 3.0
+    # Metallic sheen at all (the original's Metallic Sheen option): false draws
+    # weapons and metal armour with their plain material, without the chrome
+    # probe and the +N glow. Restart-only.
+    enabled: true
   # Always-on subtle rim light on characters/NPCs/monsters and equipment
   # (mobile-port look; the original has none). Selection highlighting is
   # separate and stays available with enabled: false.
@@ -132,10 +161,10 @@ graphics:
   # faint blob; ~600-1000 keeps shadows sharp. map_size (power of two,
   # default 2048) trades GPU memory for shadow crispness.
   shadows:
-    enabled: true
-    cascades: 2
+    # enabled: true
+    # cascades: 2
     distance: 120.0
-    map_size: 2048
+    # map_size: 2048
     # Shadow-edge filtering: gaussian | hardware_2x2.
     #
     # This is a per-lit-PIXEL cost, not a shadow-map cost, so it scales with
@@ -189,7 +218,7 @@ graphics:
     # Cap on active dungeon point lights (nearest to the player win; 0 =
     # unlimited). Dense dungeons like the Donwhang cave author hundreds of
     # lights; this is a performance calibration knob, not PK2 data.
-    max_lights: 16
+    # max_lights: 16
   # Distance fog. The color/planes come from the environment profiles; the only
   # knob here is the sun's in-scattering halo — a glow blended into the fog
   # around the sun direction. The original's fixed-function fog has no such
@@ -203,20 +232,91 @@ graphics:
     # value of 100 is half-strength at ~6.7 degrees — a hot disc rather than a
     # glow, which is what made it look specular. Lower = broader.
     sun_scattering_exponent: 30.0
+  # How far the world is streamed, fogged and drawn, in world units (one region
+  # is 1920). The defaults are the distances the client has always used, and
+  # like the original they are fog-bound: the fog fades in from 3840 and is
+  # opaque at 5760. Lowering view_distance is the biggest lever on an old
+  # machine: every region streamed costs RAM, draw items and per-frame work,
+  # and 2880 streams 7x7 regions instead of 9x9. All of these apply live.
+  view:
+    # Terrain and map objects are loaded and drawn out to here (1920..9600).
+    # view_distance: 5760.0
+    # Where the fog starts when envi_fog is off; with it on, the region's
+    # environment profile decides.
+    # fog_start: 3840.0
+    # Where the fog is opaque, and the ceiling the environment profiles' fog
+    # may reach (they only ever pull it closer). Clamped to view_distance.
+    # fog_end: 5760.0
+    # Follow the fog planes of your Map.pk2 environment.ifo: long clear noons,
+    # short heavily fogged nights, as in the original. false = a fixed
+    # fog_start..fog_end band.
+    envi_fog: true
+    # Multiplier on the profile fog distances (the raw mapping reads short).
+    envi_fog_scale: 1.5
+    # Past this distance whole objects, terrain regions, effects and
+    # animations are culled. 0 = at fog_end, where the fog already hides them;
+    # lower trades visible pop-out for speed.
+    fog_cull_distance: 0.0
+    # Cull at the current fog end (night fog can end at ~1200) instead of at
+    # fog_end. Faster at night, but fully fogged mountains no longer show as
+    # silhouettes against the sky there, which is why it is off by default.
+    # cull_follows_envi_fog: false
+    # Terrain geometry LOD: "off" | normal | aggressive. Distant regions draw
+    # every 2nd, then every 4th vertex of the ground grid (a quarter, then a
+    # sixteenth of the triangles); textures are unaffected, only far relief
+    # loses detail inside the fog. normal: full grid within 2880 of a region's
+    # centre, half to 4800. aggressive: 1920 / 3840. "off" (quoted: bare off is
+    # a YAML boolean) is the original's full grid everywhere. The switch
+    # distances apply live; regions loaded while it was "off" keep the full
+    # grid until they stream in again.
+    # terrain_lod: "off"
+    # Other players, NPCs and monsters are drawn this far; 0 = as far as the
+    # server sends them. Each is a skinned, animated model, so a crowded town
+    # is the heaviest view in the game. Never less than 1000 (clicking reaches
+    # that far). Applies live.
+    # character_distance: 0.0
+  # Streaming. residency_grace_secs: how long a departed area's meshes,
+  # materials and textures stay loaded, so stepping back finds them decoded;
+  # lower frees memory sooner on a machine with little RAM (low uses 10).
+  # The *_per_frame budgets cap how much streaming work one frame does; the
+  # rest waits a frame, nearest first. Smaller = smaller hitches on a slow CPU
+  # but later pop-in (low halves them, ultra raises them by half). All live.
+  # streaming:
+    # residency_grace_secs: 30.0
+    # region_builds_per_frame: 2
+    # region_unloads_per_frame: 2
+    # object_spawns_per_frame: 64
+    # resource_spawns_per_frame: 16
   # Per-part distance LOD for map objects (props, buildings, rocks). A part
   # whose largest dimension is S stops being drawn past roughly S * factor —
   # the "constant screen size" heuristic — with `min_distance` as a floor so
   # nothing close is ever culled, and `fade` the dither band before the cut.
-  # The ceiling is always the fully-fogged distance, so this only trims parts
-  # the whole-object fog cull was still drawing.
+  # The ceiling is always the cull distance (view.fog_cull_distance, by
+  # default the fully-fogged distance), so this only trims parts the
+  # whole-object fog cull was still drawing.
   #
   # The original client has no per-part LOD to match (its draw distance is a
   # fixed fog range), so these are a hardware knob, not a fidelity one: lower
   # `factor` or `min_distance` to cut draw items on a fill-limited GPU.
   objects:
-    factor: 150.0
-    min_distance: 1200.0
+    # factor: 150.0
+    # min_distance: 1200.0
     fade: 600.0
+    # View distance for vegetation (res/nature: trees, grass, flowers); 0 =
+    # unlimited, i.e. to the fog like everything else. Their alpha-tested cards
+    # are the heaviest overdraw facing dense vegetation: at the Jangan West
+    # waterfall 2000 gave 68 -> 79 FPS and 1200 86 FPS, the fog hiding most of
+    # what is cut. These four apply live, to objects already spawned too.
+    # nature_view_distance: 0.0
+    # Share of vegetation placements that spawn at all, 0..1. 1 is every one,
+    # as authored; lower thins trees and grass evenly (a stable choice per
+    # placement), which also cuts their overdraw up close, where the view
+    # distance above cannot. Applies to regions loaded afterwards.
+    # nature_density: 1.0
+    # Animate map props: swaying trees, flags, lamps, wheels (the original's
+    # Dynamic Animation option). false holds them still; characters always
+    # animate. Applies live.
+    # animate: true
   # Multisample anti-aliasing for the window cameras: 1 (off), 2, 4 or 8.
   #
   # This is the renderer's largest fixed cost — it multiplies rasterization AND
@@ -229,7 +329,35 @@ graphics:
   # camera drawing to the window at once (they must agree — see
   # `camera::apply_window_camera_msaa`); the offscreen portrait and paper-doll
   # rigs are unaffected.
-  msaa: 4
+  # msaa: 4
+  # FXAA post pass on the window cameras: a full-screen pass (~1 ms at
+  # 1920x1080 on an integrated GPU) and the only edge smoothing once msaa is 1.
+  # Applies to cameras spawned afterwards (the next scene).
+  # fxaa: true
+  # How much of each world texture's mip chain is uploaded: full | half |
+  # quarter. half starts model textures and ground tiles one level down (half
+  # the width and height, ~1/4 of their VRAM); quarter one further (~1/16).
+  # The HUD always stays sharp. The biggest VRAM lever for a 1-2 GB card.
+  # Applies to textures loaded afterwards: restart to apply it everywhere.
+  # texture_detail: full
+  # Anisotropic filtering: 1 (off), 2, 4, 8 or 16. Extra texture samples on
+  # surfaces seen at a grazing angle, which is most of the ground; it keeps
+  # distant ground sharp and costs texture bandwidth an old card lacks.
+  # Restart-only.
+  # anisotropy: 4
+  # Bevy's GPU light clustering: a compute pass every frame, even with no point
+  # light anywhere (the overworld in vanilla lighting has none). Off assigns the
+  # few dungeon lights on the CPU instead: ~0.5 ms per frame cheaper on an
+  # integrated GPU, nothing visible lost. Applies live.
+  gpu_light_clustering: false
+  # Particle effects: low | medium | high. The share of each effect's authored
+  # particles alive at once (0.4 / 0.7 / 1.0); fewer particles is less CPU
+  # simulation and less blended overdraw in a crowded fight. Applies live.
+  # effect_quality: high
+  # The sun's lens flare, from your Map.pk2's own sun/lens sprites (the
+  # original's Lens Flare option). Cheap; hidden when terrain or a building
+  # blocks the sun. Applies live.
+  # lens_flare: true
   # Water shader tier: high | low.
   #
   # high (default) is the current look — a transmissive material with real
@@ -246,8 +374,8 @@ graphics:
   # transmission too, since one transmissive mesh in view is enough to trigger
   # the copy. Closer to the original client's fixed-function scrolling water
   # than high is.
-  water:
-    quality: high
+  # water:
+    # quality: high
   # Fraction of the window the 3D view renders at. The HUD is always composited
   # at the window's native size, so text and icons stay sharp; only the world
   # softens, and an FXAA post pass already runs over it.
@@ -263,23 +391,37 @@ graphics:
   # It is also the measurement instrument: mirrored onto RenderDebugSettings, so
   # `make perf set render_scale=0.8` runs a resolution ladder in one session
   # without relaunching.
-  render_scale: 1.0
+  # render_scale: 1.0
   # Tonemapping curve: tony_mc_mapface | reinhard_luminance | none.
   #
-  # This is a full-screen post pass, and it runs whether or not there is
-  # anything HDR to tonemap. With bloom disabled the cameras carry no HDR
-  # target, so the curve is applied to values already clamped to 0..1 - a
-  # full-screen read, LUT sample and write to transform an LDR image. For
-  # scale: FXAA covers the same screen for simpler math and costs ~0.95 ms at
-  # 1920x1080.
+  # With bloom on it is a full-screen post pass. With bloom off the cameras
+  # carry no HDR target, and the curve instead runs inside every material's
+  # fragment shader - a LUT sample per shaded fragment, so it costs more the
+  # more overdraw there is (dense vegetation shades ~5x the screen's pixels),
+  # spent on values already clamped to 0..1.
   #
-  # none skips the pass entirely (and the deband dither that rides with it). It
+  # none removes it from both places (and the deband dither with it). It
   # is NOT pixel-identical, but it is the more faithful setting: the original
   # client is fixed-function D3D8 and applies no tonemap curve at all.
   #
   # Keep tony_mc_mapface (Bevy's default, and what this shipped with) if bloom
   # is on - that is the case the curve exists for.
-  tonemapping: tony_mc_mapface
+  # tonemapping: tony_mc_mapface
+  # Depth-only prepass on the window cameras, so hidden opaque pixels are
+  # rejected before their material runs. Facing the Jangan West waterfall it
+  # cut the opaque pass from 11.8M to 7.6M shaded fragments (alpha-tested
+  # foliage still overdraws), for ~0.6 ms net on an integrated GPU.
+  # depth_prepass: false
+  # Bevy's bindless material slabs. Off withholds the GPU features they need,
+  # so materials use ordinary bind groups - identical output, ~1.7 ms of GPU
+  # time cheaper per frame at the waterfall on an AMD iGPU. Restart-only.
+  bindless_materials: false
+  # Sky environment map on the main cameras: every lit pixel samples it.
+  # Off by default: ~1.6 ms of GPU time at the waterfall (64 -> 71 FPS) with
+  # no visible difference in vanilla lighting, and the original client had no
+  # image-based lighting. Sheen materials keep their own sphere maps.
+  # Restart-only.
+  sky_reflections: false
 # Combat presentation.
 combat:
   # Seconds a knocked-down body lies there (DOWN_RM, anim type 63) between the

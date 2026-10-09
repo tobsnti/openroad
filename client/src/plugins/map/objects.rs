@@ -22,9 +22,7 @@ use crate::plugins::cursor::interactions::GameCursorTarget;
 use crate::plugins::dev::render_debug::RenderDebugSettings;
 use crate::plugins::dynamic_resource_loader::{MirroredResource, UnloadedResource};
 use crate::plugins::map::assets::MapsAssets;
-use crate::plugins::map::terrain::{
-    Terrain, TerrainLoadState, TerrainObjectData, FOG_RANGE, REGION_SIZE, VISIBLE_RANGE,
-};
+use crate::plugins::map::terrain::{Terrain, TerrainLoadState, TerrainObjectData};
 use crate::util::mesh::needs_winding_reversal;
 use crate::util::region::RegionIdExt;
 
@@ -35,7 +33,8 @@ use crate::util::region::RegionIdExt;
 /// the fully-fogged distance — invisible either way.
 const OBJECT_HIDE_MARGIN: f32 = 480.0;
 
-/// Hides map-object wrappers whose anchor sits fully behind the opaque fog.
+/// Hides map-object wrappers whose anchor sits past the cull distance
+/// (`ViewRange::live_cull`, by default where the fog turns opaque).
 /// The region-root hiding (`terrain::region_visibility`) only covers regions
 /// *entirely* past the fog end — objects in boundary regions, and objects
 /// parented to a nearer region than the one they geographically occupy
@@ -46,6 +45,7 @@ const OBJECT_HIDE_MARGIN: f32 = 480.0;
 /// while the camera carries no `DistanceFog` to hide behind.
 pub fn cull_fogged_objects(
     settings: Res<RenderDebugSettings>,
+    view: Res<crate::plugins::map::view_range::ViewRange>,
     cameras: Query<(&Transform, &Camera, Has<DistanceFog>), With<Camera3d>>,
     mut objects: Query<(&GlobalTransform, &mut Visibility), With<MapObject>>,
 ) {
@@ -59,7 +59,7 @@ pub fn cull_fogged_objects(
     else {
         return;
     };
-    let hide_dist = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE + OBJECT_HIDE_MARGIN;
+    let hide_dist = view.live_cull + OBJECT_HIDE_MARGIN;
     let hide_dist_sq = hide_dist * hide_dist;
 
     for (global, mut visibility) in &mut objects {
@@ -170,6 +170,7 @@ type VariantKey = (AssetId<JMXVBMT>, String);
 pub struct MaterialVariantMaps {
     rim: HashMap<VariantKey, AssetId<SroRimMaterial>>,
     sheen: HashMap<VariantKey, AssetId<SroSheenMaterial>>,
+    unsheened: HashMap<VariantKey, AssetId<StandardMaterial>>,
 }
 
 /// What building a variant reads from the world. All shared borrows.
@@ -257,16 +258,46 @@ impl SroMaterialVariants {
         )
     }
 
+    /// What a sheen resource's `material` draws with while metallic sheen is
+    /// off (`graphics.sheen.enabled`): the plain opaque material, see
+    /// `SroMaterial::to_unsheened_material`.
+    pub fn unsheened(
+        &self,
+        sources: &VariantSources,
+        set: &Handle<JMXVBMT>,
+        material: &str,
+        cutout: bool,
+    ) -> Handle<StandardMaterial> {
+        let label = format!(
+            "{}.unsheened{}",
+            crate::assets::bmt::material::material_label(material),
+            if cutout { ".cutout" } else { "" }
+        );
+        resolve_variant(
+            &mut self.maps().unsheened,
+            (set.id(), label),
+            sources.asset_server,
+            || {
+                let (mat, texture) = sources
+                    .material_sets
+                    .get(set)?
+                    .material_with_texture(material)?;
+                Some(mat.to_unsheened_material(texture.clone(), cutout))
+            },
+        )
+    }
+
     /// Periodic sweep (see [`prune_spawn_caches`]).
     fn prune(&self, asset_server: &AssetServer) {
         let mut maps = self.maps();
         maps.rim.retain(|_, id| asset_server.is_managed(*id));
         maps.sheen.retain(|_, id| asset_server.is_managed(*id));
+        maps.unsheened.retain(|_, id| asset_server.is_managed(*id));
     }
 
     pub fn len(&self) -> usize {
         let maps = self.maps();
-        maps.rim.len() + maps.sheen.len()
+        maps.rim.len() + maps.sheen.len() + maps.unsheened.len()
     }
 }
 
@@ -513,7 +544,29 @@ fn object_details<'a>(
 /// this is the same idiom for object spawning. Deferred objects cost nothing
 /// extra to retry: the cross-frame `SpawnedMapObjects` dedup below already
 /// makes re-walking a partially-spawned region safe.
-const OBJECT_SPAWNS_PER_FRAME: i32 = 64;
+pub(crate) const OBJECT_SPAWNS_PER_FRAME: u32 = 64;
+
+/// Whether the map placement `key` (region id << 16 | uid) of the resource
+/// at `path` spawns, given `graphics.objects.nature_density`. Everything
+/// outside `res/nature/` always does. Vegetation is kept for a share
+/// `density` of placements, chosen by a hash of the placement key. That keeps
+/// the choice stable, so the same trees stay away on every visit, and spread
+/// evenly instead of thinning one side of a forest.
+pub(crate) fn keeps_nature_placement(path: &str, key: u32, density: f32) -> bool {
+    if density >= 1.0 {
+        return true;
+    }
+    let lower = path.to_ascii_lowercase().replace('\\', "/");
+    if !lower.contains("res/nature/") {
+        return true;
+    }
+    // splitmix32-style finalizer: neighbouring uids land far apart
+    let mut h = key.wrapping_mul(0x9E37_79B9);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    (h as f32 / u32::MAX as f32) < density.max(0.0)
+}
 
 pub fn load_terrain_objects_system(
     mut commands: Commands,
@@ -525,6 +578,7 @@ pub fn load_terrain_objects_system(
     mut spawned: ResMut<SpawnedMapObjects>,
     mut unknown_objects: ResMut<UnknownObjectIds>,
     entities: &bevy::ecs::entity::Entities,
+    config: Res<crate::plugins::config::ClientConfig>,
 ) {
     let object_info = object_info_assets
         .get(&maps_assets.object_index)
@@ -532,7 +586,10 @@ pub fn load_terrain_objects_system(
     let Some(object_info) = &object_info.object_info_index else {
         return;
     };
-    let mut budget = OBJECT_SPAWNS_PER_FRAME;
+    // `graphics.streaming.object_spawns_per_frame` (the constant is its default)
+    let mut budget = crate::plugins::config::graphics::StreamingSettings::budget(
+        config.graphics.streaming.object_spawns_per_frame,
+    ) as i32;
     query
         .iter_mut()
         .for_each(|(terrain_entity, terrain, object_data, mut load_state)| {
@@ -607,6 +664,15 @@ pub fn load_terrain_objects_system(
                                             };
                                             let path =
                                                 format!("data://{}", object_details.path.display());
+                                            // `graphics.objects.nature_density`: a stable
+                                            // share of vegetation placements is not spawned
+                                            if !keeps_nature_placement(
+                                                &path,
+                                                obj_key,
+                                                config.graphics.objects.nature_density,
+                                            ) {
+                                                return;
+                                            }
 
                                             // Map objects are placed with a mirroring transform
                                             // (scale.x = -1). Derive whether their meshes need
@@ -734,6 +800,28 @@ mod tests {
     use crate::assets::ifo::object::ObjectInfo;
     use crate::plugins::map::terrain::TerrainId;
     use std::path::PathBuf;
+
+    #[test]
+    fn nature_density_thins_only_vegetation_and_stably() {
+        let tree = "data://res/nature/china/tree/tre_pine03.bsr";
+        let house = "data://res/bldg/china/house01.bsr";
+        assert!((0..1000).all(|key| keeps_nature_placement(house, key, 0.0)));
+        assert!((0..1000).all(|key| keeps_nature_placement(tree, key, 1.0)));
+        let kept = (0..10_000)
+            .filter(|&key| keeps_nature_placement(tree, key, 0.6))
+            .count();
+        assert!(
+            (5_700..6_300).contains(&kept),
+            "kept {kept} of 10000 at 0.6"
+        );
+        // the same placement decides the same way every time
+        for key in 0..100 {
+            assert_eq!(
+                keeps_nature_placement(tree, key, 0.6),
+                keeps_nature_placement(tree, key, 0.6)
+            );
+        }
+    }
 
     fn index(ids: &[u32]) -> ObjectInfoIndex {
         ObjectInfoIndex(

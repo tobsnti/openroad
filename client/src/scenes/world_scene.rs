@@ -139,6 +139,7 @@ pub fn setup(
     mut commands: Commands,
     origin: Res<WorldOrigin>,
     config: Res<crate::plugins::config::ClientConfig>,
+    view: Res<crate::plugins::map::view_range::ViewRange>,
     mut camera_query: Query<
         (Entity, &mut Transform),
         (With<Camera>, Without<Player>, Without<CinematicCamera>),
@@ -155,7 +156,7 @@ pub fn setup(
 
     for cam in camera_query.iter_mut() {
         commands.entity(cam.0).insert((
-            crate::plugins::map::terrain::rendering::fog(&config.graphics.fog),
+            crate::plugins::map::terrain::rendering::fog(&config.graphics.fog, &view),
             // ScreenSpaceAmbientOcclusionBundle::default(),
         ));
     }

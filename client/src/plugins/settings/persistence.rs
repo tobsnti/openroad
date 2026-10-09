@@ -27,17 +27,24 @@ pub fn user_settings_path() -> PathBuf {
 /// missing file is normal (first run); a corrupt one is logged and ignored so
 /// a bad edit can never block boot.
 pub fn load_user_settings(mut options: ResMut<GameOptions>) {
-    let path = user_settings_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    match serde_yaml::from_str::<GameOptions>(&text) {
-        Ok(loaded) => {
-            *options = loaded;
-            info!("[settings] loaded user settings from {}", path.display());
-        }
-        Err(e) => warn!("[settings] ignoring unreadable {}: {e}", path.display()),
+    if let Some(loaded) = read_user_settings() {
+        *options = loaded;
+        info!(
+            "[settings] loaded user settings from {}",
+            user_settings_path().display()
+        );
     }
+}
+
+/// The saved options, or `None` when there is no file or it cannot be read
+/// (logged). Also used by `main` before the app exists, to lay the saved
+/// graphics rows over the config (`options_video::overlay_saved_rows`).
+pub fn read_user_settings() -> Option<GameOptions> {
+    let path = user_settings_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_yaml::from_str::<GameOptions>(&text)
+        .map_err(|e| warn!("[settings] ignoring unreadable {}: {e}", path.display()))
+        .ok()
 }
 
 /// Update: write the file whenever the options actually change. The first

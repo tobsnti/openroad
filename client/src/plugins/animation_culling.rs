@@ -35,7 +35,8 @@ use crate::assets::o2::MapObject;
 use crate::commands::{AnimationLibrary, MeshIndexMap};
 use crate::plugins::dev::render_debug::RenderDebugSettings;
 use crate::plugins::effects::systems::main_world_camera;
-use crate::plugins::map::terrain::{FOG_RANGE, REGION_SIZE, VISIBLE_RANGE};
+use crate::plugins::map::terrain::REGION_SIZE;
+use crate::plugins::map::view_range::ViewRange;
 
 /// Stashed graph handle of a distance-gated animated root. Holding the
 /// strong `Handle<AnimationGraph>` keeps the graph asset alive while gated.
@@ -69,6 +70,8 @@ pub fn cull_distant_animations(
     mut commands: Commands,
     time: Res<Time>,
     settings: Res<RenderDebugSettings>,
+    view: Res<ViewRange>,
+    config: Option<Res<crate::plugins::config::ClientConfig>>,
     cameras: Query<(&Camera, &RenderTarget, &GlobalTransform), With<Camera3d>>,
     roots: Query<
         (
@@ -87,7 +90,7 @@ pub fn cull_distant_animations(
     lights: Query<&DirectionalLight>,
     mut last_seen: Local<EntityHashMap<f32>>,
 ) {
-    let pause_dist = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
+    let pause_dist = view.live_cull;
     let resume_dist = pause_dist - REGION_SIZE * 0.25;
 
     // The gate must measure from the camera the player is actually looking
@@ -106,6 +109,7 @@ pub fn cull_distant_animations(
     let camera_pos = camera.translation();
 
     let now = time.elapsed_secs();
+    let animate_props = config.is_none_or(|config| config.graphics.objects.animate);
     let shadows = lights.iter().any(|light| light.shadow_maps_enabled);
     last_seen.retain(|root, _| roots.contains(*root));
 
@@ -114,6 +118,10 @@ pub fn cull_distant_animations(
             (true, false)
         } else if exempt {
             (false, true)
+        } else if !animate_props && is_map_prop(root, &parents, &placements) {
+            // `graphics.objects.animate` (Dynamic Animation) off: map props
+            // hold still wherever they are; characters are unaffected
+            (true, false)
         } else {
             let dist_sq = global.translation().distance_squared(camera_pos);
             let (far, near) = (
@@ -177,7 +185,8 @@ pub struct AnimationCullingPlugin;
 
 impl Plugin for AnimationCullingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, cull_distant_animations);
+        app.init_resource::<ViewRange>()
+            .add_systems(Update, cull_distant_animations);
     }
 }
 
@@ -201,6 +210,7 @@ mod tests {
     fn world_with(active_pos: Vec3) -> (World, Entity) {
         let mut world = World::new();
         world.init_resource::<RenderDebugSettings>();
+        world.init_resource::<ViewRange>();
         world.init_resource::<Assets<AnimationGraph>>();
         world.init_resource::<Time>();
         let graph = world

@@ -27,8 +27,8 @@ use crate::plugins::options_camera::{refresh_sight_radios, spawn_camera_pane};
 use crate::plugins::options_game::{refresh_game_toggles, spawn_game_pane};
 use crate::plugins::options_input_tab::{build_input_pane, reset_all_bindings};
 use crate::plugins::options_video::{
-    apply_bloom_option, apply_profile_tab, refresh_extra_rows, refresh_row_values,
-    spawn_video_pane, VideoPane,
+    apply_bloom_option, apply_config_rows, apply_profile_tab, refresh_config_rows,
+    refresh_extra_rows, refresh_row_values, spawn_video_pane, VideoPane,
 };
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::small_popup::spawn_frame;
@@ -172,6 +172,7 @@ impl Plugin for OptionsWindowPlugin {
                 apply_profile_tab,
                 refresh_row_values,
                 refresh_extra_rows,
+                refresh_config_rows,
                 refresh_game_toggles,
                 refresh_sight_radios,
                 refresh_audio_rows,
@@ -182,7 +183,12 @@ impl Plugin for OptionsWindowPlugin {
         // runs regardless of whether it is open. The window mode is not here:
         // it is resolved from `config.yaml` plus the session-only override by
         // `config::window::apply_window_settings`, the single writer.
-        .add_systems(Update, apply_bloom_option);
+        .add_systems(Update, apply_bloom_option)
+        // saved config-backed rows outrank config.yaml from the first frame
+        .add_systems(
+            PreUpdate,
+            apply_config_rows.run_if(crate::plugins::settings::live::options_changed),
+        );
     }
 }
 

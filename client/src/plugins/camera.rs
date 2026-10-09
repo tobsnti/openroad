@@ -21,7 +21,8 @@ use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::cursor::GameCursorCamera;
 use crate::plugins::environment::reflections::sky_reflection_env_light;
-use crate::plugins::map::terrain::{FOG_RANGE, REGION_SIZE, VISIBLE_RANGE};
+use crate::plugins::map::terrain::REGION_SIZE;
+use crate::plugins::map::view_range::ViewRange;
 use crate::plugins::settings::options::{GameOptions, SightMode};
 use crate::plugins::world_origin::WorldOrigin;
 use crate::scenes::world_scene::SpawnPoints;
@@ -61,7 +62,8 @@ const QUARTER_VIEW_PITCH: f32 = 0.9;
 
 /// Orbit state of the third-person follow camera: zoom via the scroll wheel,
 /// yaw via right-mouse drag.
-#[derive(Resource)]
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
 pub struct CameraRig {
     /// Current distance from the character, clamped to
     /// `[CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE]`.
@@ -120,22 +122,23 @@ const DISTANCE: f32 = 40.0;
 /// parse EOF-exact (`docs/formats/camr-jmxvcamr.md`). Replaces a magic 0.5.
 const NEAR: f32 = 1.0;
 
-/// Far plane: one region past the distance at which fog reaches full opacity,
-/// so the projection can never clip geometry the fog has not already hidden.
+/// Far plane at spawn: one region past the default view distance
+/// (`graphics.view`), so the projection can never clip geometry the fog has
+/// not already hidden. [`apply_view_far`] then keeps the main-view cameras on
+/// `ViewRange::far`, which is derived the same way from the configured view
+/// distance (and the fog end never exceeds that distance).
 ///
-/// Deliberately **not** `config.ifo`'s 5500. Our fog runs from `VISIBLE_RANGE *
-/// REGION_SIZE` (3840) to `(VISIBLE_RANGE + FOG_RANGE) * REGION_SIZE` (5760),
-/// and Bevy's linear fog is `alpha = (d - start) / (end - start)`, so at 5500
-/// terrain is only ~86% opaque: a 5500 far plane would visibly cut partially
-/// transparent geometry out of the outer fog ring and break the deliberate
-/// hand-off to the horizon-matched `FOG_COLOR`. Deriving it from the streaming
-/// constants means retuning those cannot reintroduce that clip — the invariant
-/// is pinned by `the_far_plane_clears_the_fog_ceiling`.
+/// Deliberately **not** `config.ifo`'s 5500. Our default fog runs from 3840 to
+/// 5760, and Bevy's linear fog is `alpha = (d - start) / (end - start)`, so at
+/// 5500 terrain is only ~86% opaque: a 5500 far plane would visibly cut
+/// partially transparent geometry out of the outer fog ring and break the
+/// deliberate hand-off to the horizon-matched `FOG_COLOR`. The invariant is
+/// pinned by `the_far_plane_clears_the_fog_ceiling`.
 ///
 /// The old 200000 was simply wrong: against a 0.5 near plane it gave a
 /// 400,000:1 depth range. Tightening that to 7680:1 also buys depth precision
 /// for the water SSR raymarch, which reads the view uniforms.
-const FAR: f32 = (VISIBLE_RANGE + FOG_RANGE + 1) as f32 * REGION_SIZE;
+const FAR: f32 = 4.0 * REGION_SIZE;
 
 /// Vertical FOV. `config.ifo` stores 45°, which is also Bevy's own
 /// `PerspectiveProjection` default; the previous 1.0 rad (57.3°) was a magic
@@ -244,6 +247,9 @@ impl Plugin for CameraPlugin {
             // The 2d UI camera, moved here with `setup_ui_camera` (#56-C).
             .add_systems(OnEnter(GameState::Loading), setup_ui_camera)
             .init_resource::<CameraRig>()
+            // reflected so a perf capture can set the view over BRP
+            // (`world.mutate_resources`, docs/perf-remote.md)
+            .register_type::<CameraRig>()
             // Ungated: every scene that spawns the player+fly camera pair
             // (world sandbox AND the testing scenes) needs Tab to actually
             // switch them — the old `SceneState::WorldSandbox` gate left the fly
@@ -262,6 +268,8 @@ impl Plugin for CameraPlugin {
                 Update,
                 (apply_window_camera_msaa, apply_render_scale).chain(),
             )
+            .init_resource::<ViewRange>()
+            .add_systems(Update, apply_view_far)
             .add_systems(
                 Update,
                 // 4 Hz + write-on-change: rewriting the bevy_ui TextSpan
@@ -951,7 +959,8 @@ fn main_view_render_settings(
 }
 
 /// Keep every window-targeting camera on the configured sample count
-/// (`graphics.msaa`).
+/// (`graphics.msaa`), and apply the other per-camera render switches that
+/// follow from config at spawn: `depth_prepass`, `sky_reflections`, `fxaa`.
 ///
 /// This is a system rather than an insert at each spawn site on purpose. Bevy
 /// keys the shared main texture on `(target, usage, format, msaa)`, so the
@@ -969,12 +978,55 @@ fn apply_window_camera_msaa(
     mut commands: Commands,
     config: Res<ClientConfig>,
     // RenderTarget is its own component in 0.19, not a field on Camera.
-    cameras: Query<(Entity, &RenderTarget), Added<Camera>>,
+    cameras: Query<(Entity, &RenderTarget, Has<Camera3d>), Added<Camera>>,
 ) {
     let msaa = config.graphics.msaa.to_msaa();
-    for (entity, target) in &cameras {
+    for (entity, target, is_3d) in &cameras {
         if matches!(target, RenderTarget::Window(_)) {
             commands.entity(entity).insert(msaa);
+            if is_3d && config.graphics.depth_prepass {
+                commands
+                    .entity(entity)
+                    .insert(bevy::core_pipeline::prepass::DepthPrepass);
+            }
+            // `graphics.sky_reflections`: the spawn sites always attach the sky
+            // environment map; without it no lit pixel samples it at all.
+            if is_3d && !config.graphics.sky_reflections {
+                commands.entity(entity).remove::<(
+                    bevy::light::GeneratedEnvironmentMapLight,
+                    bevy::light::EnvironmentMapLight,
+                )>();
+            }
+            // `graphics.fxaa`: the spawn sites always attach the pass.
+            if is_3d && !config.graphics.fxaa.0 {
+                commands.entity(entity).remove::<Fxaa>();
+            }
+        }
+    }
+}
+
+/// Keep the main-view cameras' far plane on `ViewRange::far` (`graphics.view`).
+///
+/// Bevy's projection is infinite reverse-Z, so `far` clips no depth; it only
+/// sets the frustum's far plane for CPU culling. Following the view distance
+/// therefore matters most when it shrinks, since everything past the plane
+/// then skips culling and extraction. The cameras are picked by their `Main`
+/// render layer: the offscreen portrait and paper-doll rigs carry their own
+/// projections. Reads before writing, so an unchanged plane is not
+/// change-flagged every frame.
+fn apply_view_far(
+    view: Res<ViewRange>,
+    mut cameras: Query<(&mut Projection, &RenderLayers), With<Camera3d>>,
+) {
+    let main = RenderLayers::layer(CameraLayers::Main.into());
+    for (mut projection, layers) in &mut cameras {
+        if !layers.intersects(&main) {
+            continue;
+        }
+        if matches!(&*projection, Projection::Perspective(p) if p.far != view.far) {
+            if let Projection::Perspective(p) = &mut *projection {
+                p.far = view.far;
+            }
         }
     }
 }
@@ -1366,22 +1418,32 @@ mod test {
         }
     }
 
-    /// Bevy's linear fog is `alpha = (d - start) / (end - start)`, with
-    /// `start = VISIBLE_RANGE * REGION_SIZE` and `end = (VISIBLE_RANGE +
-    /// FOG_RANGE) * REGION_SIZE` (`map::terrain::rendering::fog`). Anything the
-    /// far plane cuts before `end` is still partly transparent, so it pops out
-    /// of view instead of finishing its fade into `FOG_COLOR`.
+    /// Bevy's linear fog is `alpha = (d - start) / (end - start)`, with both
+    /// planes from `graphics.view` (`map::terrain::rendering::fog`). Anything
+    /// the far plane cuts before `end` is still partly transparent, so it pops
+    /// out of view instead of finishing its fade into `FOG_COLOR`.
     ///
-    /// `config.ifo`'s 5500 sits 260 units inside our 5760 fog end — only ~86%
-    /// opaque — which is why #108 does not adopt it verbatim.
+    /// `config.ifo`'s 5500 sits 260 units inside our default 5760 fog end —
+    /// only ~86% opaque — which is why #108 does not adopt it verbatim.
     #[test]
     fn the_far_plane_clears_the_fog_ceiling() {
-        let fog_end = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
-
-        assert!(
-            FAR >= fog_end,
-            "far plane {FAR} clips geometry the fog has not hidden yet (fog ends at {fog_end})"
-        );
+        let view = ViewRange::default();
+        assert_eq!(FAR, view.far, "the spawn far plane is the default view's");
+        // the configured fog never ends past the view distance, which the far
+        // plane always clears by a region
+        for view_distance in [1920.0, 2880.0, 5760.0, 9600.0] {
+            let view = ViewRange::from_settings(&crate::plugins::config::graphics::ViewSettings {
+                view_distance,
+                fog_end: 9600.0,
+                ..default()
+            });
+            assert!(
+                view.far >= view.fog_end,
+                "far plane {} clips geometry the fog has not hidden yet (fog ends at {})",
+                view.far,
+                view.fog_end
+            );
+        }
     }
 
     /// The old 200000 far plane against a 0.5 near plane gave a 400,000:1 depth

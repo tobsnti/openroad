@@ -19,10 +19,10 @@ pub mod trail;
 
 use std::time::Duration;
 
-use bevy::app::{App, Plugin, PostUpdate, Update};
+use bevy::app::{App, Plugin, PostUpdate, PreUpdate, Update};
 use bevy::ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy::pbr::MaterialPlugin;
-use bevy::prelude::{Res, Resource};
+use bevy::prelude::{Res, ResMut, Resource};
 use bevy::time::common_conditions::on_timer;
 use bevy::transform::TransformSystems;
 
@@ -109,6 +109,32 @@ impl Default for LeafEmitPolicy {
     }
 }
 
+/// Share of each emitter's authored particle cap that may be alive at once
+/// (`graphics.effect_quality`; the original's Effect Quality option). Fewer
+/// live particles means less simulation on the CPU and less blended
+/// overdraw on the GPU, which is what a crowded skill fight costs an old
+/// machine. Every emitter keeps at least one particle, so no effect
+/// disappears outright.
+#[derive(Resource)]
+pub struct EffectQualityScale(pub f32);
+
+impl Default for EffectQualityScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// Follows `graphics.effect_quality` into [`EffectQualityScale`].
+fn apply_effect_quality(
+    config: Res<crate::plugins::config::ClientConfig>,
+    mut scale: ResMut<EffectQualityScale>,
+) {
+    let wanted = config.graphics.effect_quality.particle_scale();
+    if scale.0 != wanted {
+        scale.0 = wanted;
+    }
+}
+
 /// Global effect playback-rate multiplier: `< 1.0` slows every effect's
 /// simulation uniformly — node ages (graphs, lifespans, loops), emission
 /// pacing, program scheduling, velocity/rotation integration, trail aging.
@@ -137,6 +163,17 @@ impl Plugin for EffectsPlugin {
             .init_resource::<EffectAdditiveIntensity>()
             .init_resource::<EffectLdrAdditive>()
             .init_resource::<EffectPlaybackSpeed>()
+            .init_resource::<EffectQualityScale>()
+            .add_systems(
+                PreUpdate,
+                apply_effect_quality.run_if(
+                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                        crate::plugins::config::ClientConfig,
+                    >,
+                ),
+            )
+            // `cull_effect_simulation` pauses at its cull distance
+            .init_resource::<crate::plugins::map::view_range::ViewRange>()
             .add_systems(
                 Update,
                 (

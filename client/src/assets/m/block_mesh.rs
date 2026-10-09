@@ -276,6 +276,110 @@ pub fn merge_block_meshes(
     mesh
 }
 
+/// Region blocks per side (`JMXVMAPM` always holds a 6x6 grid).
+const BLOCKS_PER_SIDE: i32 = 6;
+
+/// A coarser [`merge_block_meshes`] for distance LOD, with optional skirts.
+///
+/// The idea: the splat shader derives everything it samples (tile map,
+/// lightmap) from the world position, and the mesh carries only positions
+/// and normals. A coarser grid over the same heights therefore textures
+/// exactly like the full one, and only the silhouette of the relief loses
+/// detail. `step` keeps every `step`-th vertex of each block's 17x17 grid
+/// (1, 2 or 4 give 16x16, 8x8 or 4x4 quads per block), with the same split
+/// diagonal and winding as the full mesh.
+///
+/// Neighbouring regions can be drawn at different steps, and the coarser
+/// edge then misses heights the finer one has, which opens a sliver between
+/// them. `skirt` hangs a curtain of that depth straight down from every edge
+/// of the region, on every level, so whichever side is higher covers the
+/// gap. The curtain sits directly under the neighbour's surface, so it is
+/// never seen otherwise. It is emitted with both windings, so it closes the
+/// gap seen from either side.
+pub fn merge_block_meshes_lod(
+    map: &JMXVMAPM,
+    blocks: &[(&TerrainBlock, f32, f32)],
+    reverse_winding: bool,
+    step: usize,
+    skirt: Option<f32>,
+) -> Mesh {
+    assert!(
+        matches!(step, 1 | 2 | 4),
+        "step must divide the 16-quad block"
+    );
+    let n = 16 / step + 1;
+    let mut vertices = Vec::with_capacity(blocks.len() * n * n);
+    let mut normals = Vec::with_capacity(blocks.len() * n * n);
+    let mut indices = Vec::new();
+
+    for (block, dx, dz) in blocks {
+        let base = vertices.len() as u32;
+        let idx = |x: usize, z: usize| base + (z * n + x) as u32;
+        for zi in 0..n {
+            for xi in 0..n {
+                let (x, z) = (xi * step, zi * step);
+                let v = &block.vertices[z * 17 + x];
+                vertices.push([dx + (x * 20) as f32, v.height, dz + (z * 20) as f32]);
+                let (gx, gz) = (block.x * 16 + x as i32, block.z * 16 + z as i32);
+                normals.push(region_normal(map, gx, gz).to_array());
+            }
+        }
+        // the full mesh's split, `BLOCK_INDICES`; made canonical below
+        for z in 0..n - 1 {
+            for x in 0..n - 1 {
+                indices.extend([idx(x, z + 1), idx(x, z), idx(x + 1, z + 1)]);
+                indices.extend([idx(x + 1, z + 1), idx(x, z), idx(x + 1, z)]);
+            }
+        }
+
+        let Some(depth) = skirt else { continue };
+        // the edges of this block that are edges of the region
+        let mut edges: Vec<Vec<(usize, usize)>> = Vec::new();
+        if block.x == 0 {
+            edges.push((0..n).map(|z| (0, z)).collect());
+        }
+        if block.x == BLOCKS_PER_SIDE - 1 {
+            edges.push((0..n).map(|z| (n - 1, z)).collect());
+        }
+        if block.z == 0 {
+            edges.push((0..n).map(|x| (x, 0)).collect());
+        }
+        if block.z == BLOCKS_PER_SIDE - 1 {
+            edges.push((0..n).map(|x| (x, n - 1)).collect());
+        }
+        for edge in edges {
+            let top_base = vertices.len() as u32;
+            for &(x, z) in &edge {
+                let top = vertices[idx(x, z) as usize];
+                vertices.push([top[0], top[1] - depth, top[2]]);
+                normals.push(normals[idx(x, z) as usize]);
+            }
+            for i in 0..edge.len() - 1 {
+                let (a, b) = (idx(edge[i].0, edge[i].1), idx(edge[i + 1].0, edge[i + 1].1));
+                let (a_low, b_low) = (top_base + i as u32, top_base + i as u32 + 1);
+                // both windings: the curtain closes the gap seen from either side
+                indices.extend([a, a_low, b, b, a_low, b_low]);
+                indices.extend([a, b, a_low, b, b_low, a_low]);
+            }
+        }
+    }
+
+    // canonical winding (see `canonical_block_indices`), then the placement's
+    reverse_winding_u32(&mut indices);
+    if reverse_winding {
+        reverse_winding_u32(&mut indices);
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 fn calc_normals(
     block: &TerrainBlock,
     z: usize,
@@ -455,6 +559,77 @@ mod tests {
                     "normal at ({gx}, {gz}) is {normal:?}, expected {expected:?}"
                 );
             }
+        }
+    }
+
+    /// The region's blocks laid out as `load_terrain_system` passes them.
+    fn region_blocks(map: &JMXVMAPM) -> Vec<(&TerrainBlock, f32, f32)> {
+        map.blocks
+            .iter()
+            .map(|b| (b, (b.x * 320) as f32, (b.z * 320) as f32))
+            .collect()
+    }
+
+    fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
+        match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) => p.clone(),
+            _ => panic!("positions"),
+        }
+    }
+
+    fn indices(mesh: &Mesh) -> Vec<u32> {
+        match mesh.indices() {
+            Some(Indices::U32(i)) => i.clone(),
+            _ => panic!("u32 indices"),
+        }
+    }
+
+    /// At full resolution and without a skirt, the LOD builder is the
+    /// ordinary merged mesh, vertex for vertex and triangle for triangle.
+    #[test]
+    fn full_step_lod_matches_the_merged_mesh() {
+        let map = test_region(|gx, gz| (gx * 3 + gz * 7) as f32);
+        let blocks = region_blocks(&map);
+        for reverse in [false, true] {
+            let full = merge_block_meshes(&map, &blocks, reverse);
+            let lod = merge_block_meshes_lod(&map, &blocks, reverse, 1, None);
+            assert_eq!(positions(&full), positions(&lod));
+            assert_eq!(indices(&full), indices(&lod), "reverse_winding={reverse}");
+        }
+    }
+
+    #[test]
+    fn coarser_steps_keep_every_nth_vertex() {
+        let map = test_region(|gx, gz| (gx + gz) as f32);
+        let blocks = region_blocks(&map);
+        for (step, per_side) in [(2, 9), (4, 5)] {
+            let mesh = merge_block_meshes_lod(&map, &blocks, false, step, None);
+            assert_eq!(positions(&mesh).len(), 36 * per_side * per_side);
+            let quads = (per_side - 1) * (per_side - 1);
+            assert_eq!(indices(&mesh).len(), 36 * quads * 6);
+            // every kept vertex lies on the full grid, at its own height
+            for p in positions(&mesh) {
+                assert_eq!(p[0] % (20.0 * step as f32), 0.0);
+                assert_eq!(p[1], (p[0] / 20.0 + p[2] / 20.0));
+            }
+        }
+    }
+
+    /// The skirt hangs only from the region's outer edges, straight down.
+    #[test]
+    fn the_skirt_hangs_from_the_region_edge() {
+        let map = test_region(|_, _| 100.0);
+        let blocks = region_blocks(&map);
+        let bare = positions(&merge_block_meshes_lod(&map, &blocks, false, 4, None));
+        let skirted = positions(&merge_block_meshes_lod(&map, &blocks, false, 4, Some(50.0)));
+        // 20 edge blocks, the 4 corner ones with two region edges each: 24
+        // edges of 5 vertices at the quarter grid
+        assert_eq!(skirted.len() - bare.len(), 24 * 5);
+        let low: Vec<_> = skirted.iter().filter(|p| p[1] == 50.0).collect();
+        assert_eq!(low.len(), 24 * 5);
+        for p in low {
+            let on_edge = p[0] == 0.0 || p[0] == 1920.0 || p[2] == 0.0 || p[2] == 1920.0;
+            assert!(on_edge, "{p:?} is not on the region edge");
         }
     }
 }

@@ -131,6 +131,14 @@ pub struct WindowSettings {
     /// a property of the engine, not a bug here.
     #[serde(default)]
     pub max_frame_latency: Option<u32>,
+    /// Cap on the frame rate while the window is focused; 0 = uncapped.
+    /// See `plugins::frame_pacing`. Live.
+    #[serde(default)]
+    pub fps_limit: f32,
+    /// Cap on the frame rate while the window is in the background; 0 =
+    /// Bevy's own background rate (about 60 Hz, `WinitSettings::game`). Live.
+    #[serde(default)]
+    pub unfocused_fps_limit: f32,
 }
 
 impl WindowSettings {
@@ -482,6 +490,8 @@ mod tests {
             monitor: MonitorSelection::Primary,
             present_mode: PresentModeConfig::default(),
             max_frame_latency: None,
+            fps_limit: 0.0,
+            unfocused_fps_limit: 0.0,
         };
 
         assert_eq!(
@@ -574,6 +584,8 @@ mod tests {
             monitor: MonitorSelection::Primary,
             present_mode: PresentModeConfig::default(),
             max_frame_latency: None,
+            fps_limit: 0.0,
+            unfocused_fps_limit: 0.0,
         };
 
         assert_eq!(
@@ -646,6 +658,8 @@ mod tests {
             monitor: MonitorSelection::Primary,
             present_mode: PresentModeConfig::default(),
             max_frame_latency,
+            fps_limit: 0.0,
+            unfocused_fps_limit: 0.0,
         }
     }
 }

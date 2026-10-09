@@ -518,6 +518,335 @@ so `OBJECT_SPAWNS_PER_FRAME`/`REGION_UNLOADS_PER_FRAME` (currently 64 and 2)
 have room to tune tighter if a smoother result is wanted — start there
 before looking elsewhere if this needs another pass.
 
+## GPU capability and feature switches
+
+Bevy requests every optional GPU feature the adapter offers and the adapter's own
+limits, then picks code paths from them. Three environment variables (read once at
+startup, `render_plugin` in `client/src/main.rs`) take that apart for measurement:
+
+| switch | effect |
+|---|---|
+| `OPENROAD_GPU_BASELINE=1` | WebGPU-baseline limits and no optional features except BC texture compression: roughly what a ~2014 D3D11/12 or Vulkan 1.0 GPU guarantees (see ADR 0011). Anything the client needs beyond that shows up as a validation error on a current machine. `WGPU_SETTINGS_PRIO=webgpu` alone also drops BC, which no real old PC lacks and every DDJ texture uses. |
+| `OPENROAD_WGPU_DISABLE=<list>` | Withholds features on top of the config: the groups `bindless`, `indirect` (GPU mesh preprocessing + multi-draw indirect), `mappable` (`MAPPABLE_PRIMARY_BUFFERS`, which Bevy enables on integrated GPUs), or raw wgpu feature names (`TIMESTAMP_QUERY`), comma-separated. |
+| `OPENROAD_GPU_LIMITS=webgpu` | WebGPU-default limits, features kept. Combine with `bindless` off: Bevy enables bindless by feature alone, and those limits allow no binding-array elements, so the client crashes otherwise. |
+| `OPENROAD_GPU_BASELINE=gl33` | What wgpu's GL 3.3 backend offers a DX10-class card: WebGL2-class limits (no storage buffers, storage textures or compute) but 8192 textures, BC only. Run it on Vulkan/DX12 to exercise Bevy's uniform-buffer fallbacks; `graphics.preset: auto` resolves to `low` under it. See "The GL 3.3 floor" below. |
+
+The native OpenGL backend is a build feature: `cargo build --release -p client
+--features gles`, then `WGPU_BACKEND=gl`. It is inert unless selected.
+
+Two traps: a variable set in a PowerShell window stays set for every later launch from
+that window (`Remove-Item Env:OPENROAD_GPU_BASELINE`), and the pass timers and the
+`fragment_shader_invocations` counts need timestamp and pipeline-statistics queries,
+so under `OPENROAD_GPU_BASELINE` they read 0 — compare FPS and frame time there.
+
+## Worked example: two Bevy defaults cost ~3 ms at the waterfall
+
+Facing the Jangan West waterfall (AMD integrated GPU, 1920x1080, vanilla lighting),
+`OPENROAD_GPU_BASELINE=1` ran at 82 FPS against 57-59 normally. Bisecting with the
+switches above, one launch per row, same view, window focused:
+
+| configuration | FPS | opaque pass (GPU) |
+|---|---|---|
+| normal (then-defaults) | 57-59 | 7.4-8.0 ms |
+| diagnostics tier off (`diagnostics: false`) | 59 | — |
+| `mappable` off | 59 | 7.1 ms |
+| `indirect` off | 60 | 7.8 ms |
+| `bindless` off | 63-65 | 5.8 ms |
+| `bindless` + `indirect` off | 66.5 | 6.5 ms |
+| `bindless` off + WebGPU limits | 73-77 | 5.1-5.8 ms |
+| `OPENROAD_GPU_BASELINE=1` | 82-84 | (no timers) |
+
+- **Bindless material slabs** (`StandardMaterial` binding its textures from shared
+  arrays indexed per fragment) cost ~1.7 ms with identical output. Now off by default:
+  `graphics.bindless_materials`.
+- **The WebGPU limits looked like a win but were a side effect.** They allow 4 storage
+  textures per stage; Bevy's environment-map generation needs 6, so the sky
+  environment map was never built and no pixel sampled it. Measured on its own
+  (`graphics.sky_reflections: false`, normal limits): 64 -> 71 FPS, ~1.6 ms, with no
+  visible difference in vanilla lighting — off by default.
+- GPU-driven indirect drawing, mappable buffers and the per-pass GPU timers cost
+  nothing measurable. The last ~1 ms between 76 and 82 FPS is not attributed yet.
+
+## Worked example: vegetation overdraw, attributed by hiding
+
+The same view shaded **11.8M opaque fragments for a 2.07M-pixel screen**; elsewhere the
+count is about 2x the pixels. Fragments were attributed by hiding one group of visible
+meshes at a time over BRP (`world.insert_components` with `Visibility::Hidden`,
+filtered by `MeshMaterial3d<...>` type, then by the resource name of each mesh's
+parent) and reading `render/main_opaque_pass_3d/fragment_shader_invocations` before
+and after, restoring the original `Visibility` afterwards:
+
+- Every `StandardMaterial` mesh together: -4.6M; the other material types
+  (sheen, UV-scroll, water, sky, clouds) under 0.1M each.
+- Within those, four kinds of vegetation: `c_hhm_tree` -0.93M, `tre_pine` -0.87M,
+  `tre_tree` -0.80M, `grs_weed` grass -0.78M. Everything else under 0.1M per group.
+
+They are alpha-tested cards. Their `discard` stops early depth rejection, so every
+layer is shaded in full:
+
+- **Depth prepass** (`graphics.depth_prepass`): the opaque pass dropped from 11.8M to
+  7.6M fragments and 7.1 -> 5.0 ms, but the prepass itself took 1.5 ms (it alpha-tests
+  too) — ~0.6 ms net. Opt-in.
+- **Cheaper shading** (render-debug `unlit_materials`, every `StandardMaterial` unlit
+  live): only ~0.9 ms (12.2 -> 11.4 ms). Shading math is not where the time goes; a
+  cheaper object material is not worth it on its own.
+- **Drawing fewer distant cards** is the lever. `graphics.objects.nature_view_distance`
+  caps the LOD range of every `res/nature/` resource (render-debug knob of the same
+  name to try values live):
+
+| vegetation view distance | FPS | shaded fragments | alpha-mask draws |
+|---|---|---|---|
+| unlimited (fog, 5760) | 68 | 12.6M | 22 |
+| 3000 | 72 | 11.0M | 17 |
+| 2000 | 79 | 10.1M | 14 |
+| 1200 | 86 | 7.3M | 9 |
+
+With all three changes (bindless off, sky reflections off, vegetation at 2000) the
+waterfall went from 57-59 to 75 FPS.
+
+## Worked example: per-entity CPU costs
+
+Bevy's per-frame passes (visibility, transforms, extraction, scheduling) cost per
+entity and per system, so a lot of the CPU wins came from doing less of either.
+Measured at the waterfall or a busy town with the levers each change introduced:
+
+| change | where | measured |
+|---|---|---|
+| effect particles drawn GPU-instanced, one transparent item per (effect, mesh, material) | `plugins/effects/instanced.rs` | transparent draws added by effects ~2,000-2,700 -> ~330-450; their render-thread CPU ~2.8 -> ~1 ms |
+| instance gather across the compute pool, one flat sort | `instanced.rs` | effects' main-thread cost ~2.5-3.5 -> ~1.5 ms |
+| closed windows' content parked under a non-UI holder | `plugins/hud/ui_parking.rs` | main thread 9.3 -> 8.2 ms with all windows closed (~1,900 of ~2,800 UI nodes) |
+| one packet dispatcher instead of one system per opcode | `packets/src/lib.rs` | ~0.4 ms; ~250 idle systems fewer |
+| directional-light shadow visibility only with shadow maps on | `plugins/environment/light_visibility.rs` | ~0.37 ms/frame in vanilla mode (it rebuilt a world query over ~2,500 archetypes) |
+| off-screen map-prop animation paused | `plugins/animation_culling.rs` | bones animated per frame 1,668 -> 138 |
+| single-resource map objects anchored on their placement | `plugins/map/objects.rs` | ~3,500 fewer entities in a loaded area |
+
+The per-system numbers came from a chrome trace (`--features profile-chrome`,
+`trace_summary`); self time per system summed per crate/module is the quickest way to
+see that engine passes, not game systems, dominate (game systems were ~16% of system
+time at the waterfall).
+
+## Worked example: view distance is a memory and entity lever
+
+`graphics.view.view_distance` decides how many regions are streamed: `ceil(view /
+1920)` rings around the camera's region, plus one ring of head start. In the
+`SCENE=world` sandbox at Jangan (2026-10-07, AMD integrated GPU, debug build):
+
+| `view_distance` | regions streamed | `world_counts/terrain_tiles` | `world_counts/map_objects` |
+|---|---|---|---|
+| 5760 (default, `high`) | 9x9 | 4068 | 4823 |
+| 2880 (`low`) | 7x7 | 2016 | 4174 |
+| 3840 (`medium`) | 7x7 | 2016 | 4174 |
+
+Map objects fall less than terrain here because the sandbox pins a 7x7 preload
+around Jangan until the camera reaches it (`scenes/world_scene.rs`). Medium and
+low stream the same ring; they differ in fog, cull distance and the per-part
+LOD. Read `process/mem_usage` and the `render_asset/*` counters the same way
+to see what a ring costs on a given machine.
+
+## Worked example: GPU light clustering, off by default
+
+Bevy clusters point lights with a compute and raster pass, every frame for
+every 3D view, whenever the GPU has compute shaders and storage buffers, even
+with no point light anywhere. The overworld in vanilla lighting has none: the
+sun is directional, and directional lights are never clustered. A/B/A in
+`SCENE=world` (2026-10-07, AMD integrated GPU, debug build, 75 s settle):
+
+| GPU clustering | `frame_time.avg` | `fps.avg` | `render/clustering/elapsed_gpu` |
+|---|---|---|---|
+| on (Bevy default) | 9.84 ms | 102.8 | 0.23 ms |
+| off | 9.32 ms | 108.5 | (no pass) |
+| on | 9.93 ms | 102.7 | 0.22 ms |
+
+About 0.5 ms per frame, more than the pass's own timer shows. Off is now the
+default (`graphics.gpu_light_clustering: false`). Bevy then assigns the few
+dungeon lights on the CPU. The setting applies live.
+
+## Worked example: terrain LOD, and why draw calls are not the lever here
+
+`graphics.view.terrain_lod: normal` (the medium preset) against `"off"`, in
+`SCENE=world` at Jangan with the camera pitched to the horizon over BRP
+(`CameraRig` is reflected for this: `world.mutate_resources`, path `pitch` =
+0.1, `distance` = 400), 2026-10-07, AMD integrated GPU, debug build:
+
+| terrain LOD | opaque `vertex_shader_invocations` | opaque pass GPU | `frame_time.avg` |
+|---|---|---|---|
+| off | 163,045 | 2.52 ms | 10.22 ms |
+| normal | 138,027 | 2.44 ms | 10.10 ms |
+
+That is 15 % fewer vertices for ~0.1 ms. At these view distances the city
+walls and the fog leave little far terrain on screen, and this GPU is not
+vertex-bound. LOD is worth more at `ultra` distances and on old cards with
+weak vertex throughput, which is where the presets use it.
+
+The same captures read 23-54 `render_phase/opaque_3d/draws` for the whole
+view. Bevy's GPU-driven multi-draw indirect already folds thousands of mesh
+instances into a few dozen draws, so merging static map objects into bigger
+meshes would buy nothing on a Vulkan or DX12 GPU. It only matters for the GL
+tier, which has no indirect draws and pays one call per instance.
+
+## Worked example: drawing the sky last
+
+The sky cube used to be an opaque mesh, binned with the rest of the opaque
+phase in no particular order. It shaded the whole screen before the terrain
+drew over it. It is now drawn first in the transparent phase, depth-tested
+against the opaque scene, so it shades only the pixels nothing covers
+(`plugins/skybox.rs`). Same `SCENE=world` view (2026-10-07, AMD integrated
+GPU, debug build):
+
+| view | | opaque fragments | transparent fragments | opaque pass GPU | `frame_time.avg` |
+|---|---|---|---|---|---|
+| top-down (default) | before | 6.92M | 0.05M | 2.77 ms | 9.22 ms |
+| | after | 4.84M | 0.05M | 2.73 ms | 9.13 ms |
+| horizon (pitch 0.1) | before | 6.05M | 0.63M | 2.79 ms | 10.56 ms |
+| | after | 3.97M | 1.07M | 2.50 ms | 10.01 ms |
+
+The 2.07M opaque fragments removed are exactly one 1920x1080 screen. Looking
+down, the sky shader was cheap enough to cost almost nothing. Toward the
+horizon the frame is 0.55 ms faster, and on a card with little fill rate the
+same 2M fragments are worth proportionally more. One sky-last run of the
+top-down view read 9.70 ms, and a repeat read 9.13 ms. Single runs on an
+integrated GPU vary by about that much, so repeat a reading before trusting a
+small difference.
+
+## Levers studied but not built yet
+
+Two options came up in the old-hardware work, were looked at closely, and
+were left for later. Each section says why, and what would make it worth
+doing.
+
+### Merging static map objects
+
+**Idea.** Combine the static, unanimated parts of a region's map objects
+that share a material into one mesh at spawn, the way the terrain already
+merges a region's 36 blocks into one ground mesh (`merge_block_meshes`).
+Fewer meshes means fewer draw items and less per-entity work.
+
+**Why not now.** On Vulkan or DX12 the whole view already draws in 23–54
+opaque draw calls (`render_phase/opaque_3d/draws`, see the terrain LOD
+example above). Bevy's GPU-driven multi-draw indirect folds the instances,
+so merging would save almost nothing there. It would cost:
+- the per-part distance LOD (`commands::mesh_visibility_range`), which works
+  per mesh. Merging could only combine parts in the same LOD band.
+- the per-object culls and picking, which work per placement.
+- the mesh deduplication that lets a common tree share one GPU mesh across
+  regions. Merged meshes are unique per region, so memory goes up.
+
+**When it would pay.** The GL 3.3 tier has no indirect drawing and pays one
+draw call per mesh instance, which is exactly what merging removes. Measure
+`render_phase/*/draws` under `WGPU_BACKEND=gl` in a busy town first. If draw
+submission dominates the CPU frame there, build it for that tier only
+(e.g. behind `GpuPreprocessingSupport::None`).
+
+### Pausing off-screen effects
+
+**Idea.** `cull_effect_simulation` (`effects/systems.rs`) pauses effects
+past the cull distance. Map-prop animation is also paused while off screen
+(`animation_culling.rs`, after `OFFSCREEN_GRACE_SECS`). Doing the same for
+effects would stop simulating torches and glows behind the camera.
+
+**Why not now.** Pausing an effect stamps `EffectSimPaused` on its whole
+node subtree, which moves every one of those entities to another archetype,
+and unpausing moves them back. Effects have no visibility signal of their
+own while paused (they are hidden), so the test would be a frustum check
+on an estimated bounding sphere. Turning the camera would then churn
+hundreds of entities between archetypes, which could cost more than the
+simulation it saves. The animation cull avoids the same trap with its grace
+period, but a prop's pause is one component on one root.
+
+**What would make it worth it.** First, a chrome trace in a dense town that
+shows effect simulation (`tick_effect_nodes`, `emit_particles`) as a real
+share of the frame. Second, a pause that does not restructure the subtree:
+for example a per-root "paused" flag the simulation systems read, instead of
+a marker component on every node.
+
+## Worked example: texture memory
+
+GPU memory of the client process, read from Windows' `\GPU Process
+Memory(pid_*)` counters (dedicated plus shared), same `SCENE=world` view,
+70 s after launch (2026-10-07, AMD integrated GPU, debug build):
+
+| change | GPU memory |
+|---|---|
+| before: every ground tile also uploaded as its own texture | 1,142 MB |
+| ground tiles only in the tile arrays (the per-tile asset is a 1x1 placeholder) | 885 MB |
+| plus `graphics.texture_detail: half` | 821 MB |
+
+The ground tiles were uploaded twice: once into the texture arrays the splat
+shader samples, and once more as one never-sampled texture per tile. wgpu
+suballocates textures from large memory blocks, so the counter moves in coarse
+steps. Read single readings as bounds, not exact sizes.
+
+## The GL 3.3 floor
+
+Radeon HD 5000/6000 and GeForce 8 to 200 cards have no Vulkan or DX12 driver.
+wgpu's GL backend (`--features gles`, `WGPU_BACKEND=gl`) is their only path,
+and their GL 3.3 offers no compute shaders and no storage buffers.
+`OPENROAD_GPU_BASELINE=gl33` reproduces those limits on a current GPU.
+`graphics.preset: auto` then resolves to `low`, and `FpsOverlayPlugin` is left
+out, because its frame-time graph material binds a storage buffer even when the
+graph is hidden.
+
+What happened under it (2026-10-07, `SCENE=world`):
+
+- Bevy gates its own compute features. The log reports SSAO, the atmosphere
+  and OIT as "not loaded", and GPU light clustering checks the same limits in
+  code before it registers (`bevy_pbr` `cluster/mod.rs`).
+- **One Bevy 0.19 bug stops the client:** `pbr_opaque_mesh_pipeline` fails
+  validation at mesh-view binding 14 (`visibility_ranges`). Without storage
+  buffers the shader declares it as a 64-element uniform array (1024 bytes),
+  but the bind-group layout keeps the storage path's `min_binding_size` of one
+  `Vec4` (16 bytes) (`bevy_pbr` `render/mesh_view_bindings.rs`, the `(14, …)`
+  entry). wgpu validates this on every backend, so a real GL 3.3 card fails the
+  same way. Bevy's error policy then quits.
+- With that one size corrected, the world scene loads and renders correctly,
+  with no other validation error. The fix is not carried in the repository,
+  because without the runtime WebGL paths below it makes no player's GPU
+  work. To re-apply it, vendor `bevy_pbr` 0.19.1 and wire it in with
+  `[patch.crates-io]`. Then, in its `src/render/mesh_view_bindings.rs`, give
+  the `(14, buffer_layout(...))` entry a `min_binding_size` of
+  `64 * Vec4::min_size()` when the binding type is `BufferBindingType::Uniform`,
+  instead of `Vec4::min_size()`. Until then `OPENROAD_GPU_BASELINE=gl33`
+  stops at this validation error.
+
+The **real** GL backend (`cargo build -p client --features gles`, then
+`WGPU_BACKEND=gl`, on a current AMD driver, 2026-10-07) goes further, and
+stops short of a playable picture:
+
+- SSAO's compute shader does not translate to GLSL (`textureGatherOffset`),
+  so Bevy quits. Fixed: under the GL backend `render_plugin` caps storage
+  textures at 4, and Bevy then skips SSAO, as it would on a real GL 3.3 card
+  that has none. `graphics.preset: auto` resolves to `low` there.
+- The world then runs (~50 FPS on this iGPU) and the terrain and characters
+  draw, but **every map object is missing**, and wgpu logs thousands of "view
+  dimension heuristics" errors. wgpu's GL backend picks a texture's GL type
+  from its layer count when the texture is created: 1 layer is a 2D texture,
+  6 is a cube, any other count a 2D array. A *cube array* is never possible.
+  Bevy binds its shadow maps to every PBR material as a 2D array and a cube
+  array. With no shadow-casting light those textures hold 1 and 6 layers,
+  and a cube array cannot exist on GL anyway.
+- Bevy already has the non-array shader path for exactly this
+  (`NO_ARRAY_TEXTURES_SUPPORT`, `NO_CUBE_ARRAY_TEXTURES_SUPPORT`). But it is
+  chosen by compile-time `cfg(feature = "webgl", target_arch = "wasm32")`,
+  so a native build never takes it. Making it a runtime choice means changing
+  ~52 `cfg` sites across `bevy_pbr` (34), `bevy_core_pipeline` (11),
+  `bevy_render` (6) and `bevy_light` (1): the shader defs, the bind-group
+  layouts, the shadow texture views and the WebGL-only light limits. That is
+  a fork of Bevy's renderer to maintain, not a local fix, so it has not been
+  done.
+- Our own part is fixed: the ground-tile arrays are never created with
+  exactly one layer (`tile_arrays.rs`), so GL makes them arrays.
+
+So on Windows the floor stays at DX12/Vulkan GPUs (ADR 0011). A GL 3.3 tier
+needs either Bevy to choose its WebGL2 paths at runtime, upstream, or that
+fork.
+
+## Gotcha: Windows caps an unfocused window at 60 FPS
+
+Readings of exactly 60.0 FPS / 16.67 ms with `render/pipeline/acquire_ms` near 1 ms
+mean the game window was not in the foreground — typing into a terminal next to it is
+enough. The cap hides any improvement above 60. Keep the game window focused while
+sampling, and treat a flat 16.67 ms as "capped", not as a result.
+
 ## Gotcha: a background `cargo`/`rustc` build skews every reading
 
 Discovered mid-session the hard way: a `make perf fps`/`snapshot` reading can

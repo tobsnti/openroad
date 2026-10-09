@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::plugins::config::graphics::FogGraphicsSettings;
-use crate::plugins::map::terrain::{FOG_RANGE, REGION_SIZE, VISIBLE_RANGE};
+use crate::plugins::map::view_range::ViewRange;
 
 /// Default fog color, shared with the sky gradient's horizon band (`plugins/skybox.rs`)
 /// so the fully-fogged terrain horizon and the sky backdrop meet in the same color.
@@ -13,15 +13,15 @@ pub const FOG_COLOR: Srgba = Srgba::new(0.1, 0.2, 0.4, 1.0);
 /// sun color every frame; this is just the pre-profile default.
 const FOG_SUN_TINT: Srgba = Srgba::new(1.0, 0.95, 0.75, 1.0);
 
-pub fn fog(settings: &FogGraphicsSettings) -> DistanceFog {
-    // Keep everything clear out to the edge of the visible streaming area, then fade
-    // linearly to fully fogged by VISIBLE_RANGE + FOG_RANGE. Regions are only actually
-    // despawned a further `UNLOAD_BUFFER + UNLOAD_HYSTERESIS` rings out (see
-    // `load_terrain_dynamically`),
-    // so by the time a region disappears it has been fully hidden by fog for a while
-    // and the unload is imperceptible.
-    let fog_start = VISIBLE_RANGE as f32 * REGION_SIZE;
-    let fog_end = (VISIBLE_RANGE + FOG_RANGE) as f32 * REGION_SIZE;
+pub fn fog(settings: &FogGraphicsSettings, view: &ViewRange) -> DistanceFog {
+    // Clear out to `fog_start`, then a linear fade to fully fogged at `fog_end`
+    // (`graphics.view`; the environment profiles take over once one is active).
+    // Regions are streamed out to at least the view distance plus
+    // `UNLOAD_BUFFER` rings and despawned one hysteresis ring beyond that (see
+    // `load_terrain_dynamically`), so by the time a region disappears it has
+    // been fully hidden by fog for a while and the unload is imperceptible.
+    let fog_start = view.fog_start;
+    let fog_end = view.fog_end;
 
     DistanceFog {
         color: FOG_COLOR.into(),

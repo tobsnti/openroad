@@ -266,10 +266,7 @@ impl AttachResource {
                 .is_some_and(|defaults| defaults.rim.is_some());
             // Per-part LOD tuning (`graphics.objects`), same read as the
             // resource-spawn path in `mod.rs`.
-            let lod = world
-                .get_resource::<crate::plugins::config::ClientConfig>()
-                .map(|config| config.graphics.objects.clone())
-                .unwrap_or_default();
+            let lod = super::PartLodContext::from_world(world, None);
             let variant_sources = VariantSources::from_world(world);
             let variants = world.get_resource::<SroMaterialVariants>();
             let mesh_groups = PreparedMeshGroups::prepare(

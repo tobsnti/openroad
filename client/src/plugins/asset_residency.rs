@@ -39,22 +39,35 @@ pub const RESIDENCY_GRACE: Duration = Duration::from_secs(30);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Released handles, keyed by asset id, with the time they were parked.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct AssetResidency {
     parked: HashMap<UntypedAssetId, (UntypedHandle, Duration)>,
+    /// How long a parked asset stays: [`RESIDENCY_GRACE`] unless
+    /// `graphics.streaming.residency_grace_secs` says otherwise.
+    grace: Duration,
+}
+
+impl Default for AssetResidency {
+    fn default() -> Self {
+        Self {
+            parked: HashMap::default(),
+            grace: RESIDENCY_GRACE,
+        }
+    }
 }
 
 impl AssetResidency {
-    /// Keep `handle`'s asset loaded for [`RESIDENCY_GRACE`] from `now`
+    /// Keep `handle`'s asset loaded for the grace period from `now`
     /// (parking an already-parked asset restarts its window).
     pub fn park(&mut self, handle: UntypedHandle, now: Duration) {
         self.parked.insert(handle.id(), (handle, now));
     }
 
-    /// Drop every entry parked longer than [`RESIDENCY_GRACE`] ago.
+    /// Drop every entry parked longer than the grace period ago.
     fn sweep(&mut self, now: Duration) {
+        let grace = self.grace;
         self.parked
-            .retain(|_, (_, parked_at)| now.saturating_sub(*parked_at) < RESIDENCY_GRACE);
+            .retain(|_, (_, parked_at)| now.saturating_sub(*parked_at) < grace);
     }
 
     pub fn len(&self) -> usize {
@@ -68,7 +81,31 @@ impl Plugin for AssetResidencyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AssetResidency>()
             .add_observer(park_released_resource)
-            .add_systems(Update, sweep_residency.run_if(on_timer(SWEEP_INTERVAL)));
+            .add_systems(Update, sweep_residency.run_if(on_timer(SWEEP_INTERVAL)))
+            .add_systems(
+                PreUpdate,
+                apply_residency_grace
+                    .run_if(resource_exists_and_changed::<crate::plugins::config::ClientConfig>),
+            );
+    }
+}
+
+/// Follows `graphics.streaming.residency_grace_secs`. A shorter grace frees
+/// a departed area's meshes and textures sooner, which matters on a 4 GB
+/// machine, at the cost of re-decoding them on a quick return. Negative or
+/// non-finite values keep the default.
+fn apply_residency_grace(
+    config: Res<crate::plugins::config::ClientConfig>,
+    mut residency: ResMut<AssetResidency>,
+) {
+    let secs = config.graphics.streaming.residency_grace_secs;
+    let grace = if secs.is_finite() && secs >= 0.0 {
+        Duration::from_secs_f32(secs)
+    } else {
+        RESIDENCY_GRACE
+    };
+    if residency.grace != grace {
+        residency.grace = grace;
     }
 }
 
