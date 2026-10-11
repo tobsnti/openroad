@@ -453,38 +453,13 @@ pub fn on_char_selection_action_response(
                     continue;
                 };
                 let offset = (dir / (characters.count as f32 + 1.0)) * (i as f32 + 1.0);
-                let path = char_data.resource_path();
-                // Characters are mirrored on X (scale.x = -1) like every other
-                // SRO resource so they render with the correct handedness (weapon
-                // in the right hand). The mirror makes the placement determinant
-                // negative, so the shared winding rule reverses their meshes.
-                // The scale byte is two nibbles, not one number: low =
-                // Height, high = Volume, each 0..4 with 2 as the factory
-                // middle (`LobbyCharacter::scale`, pinned by its own tests).
-                // Reading it as `1.0 + byte/255` made the factory 0x22 a
-                // 1.133 giant and left Volume with no effect at all.
-                let scale = lobby_body_scale(char.scale);
-                let transform = Transform::from_translation(start + offset)
-                    .with_scale(Vec3::new(-scale, scale, scale))
-                    .with_rotation(Quat::from_rotation_y(PI));
-                let mut char_commands = commands.spawn((
-                    transform,
-                    Visibility::default(),
-                    SelectableCharacterV2,
-                    Hovered::default(),
-                    CharacterInfoV2(char.clone()),
-                    Name::from(char.name.as_str()),
-                ));
-                if let Some(path) = path {
-                    char_commands.insert(UnloadedResource(asset_server.load(path)));
-                }
-                if needs_winding_reversal(&transform.to_matrix()) {
-                    char_commands.insert(MirroredResource);
-                }
-                // picking events on the (asynchronously spawned) leaf meshes
-                // bubble up the hierarchy to this root
-                char_commands.observe(on_character_clicked);
-                let char_entity = char_commands.id();
+                let char_entity = spawn_lobby_character(
+                    &mut commands,
+                    &asset_server,
+                    char,
+                    char_data.resource_path(),
+                    start + offset,
+                );
 
                 attach_equipment(
                     &mut commands,
@@ -1511,6 +1486,52 @@ pub fn disconnect_from_agent_server(
     };
 
     commands.entity(entity).despawn();
+}
+
+/// Spawn one lobby character, ready for the asynchronous resource loader.
+///
+/// IDEA. Pulled out of the character-list handler so the offline preview can
+/// build the same entity the live path does. A preview that constructs its own
+/// character proves only that the preview works; this way a regression in the
+/// real spawn shows up in the window gallery.
+///
+/// Characters are mirrored on X like every other SRO resource so they render
+/// with the correct handedness (weapon in the right hand). The mirror makes the
+/// placement determinant negative, so the shared winding rule reverses their
+/// meshes.
+pub fn spawn_lobby_character(
+    commands: &mut Commands,
+    asset_server: &AssetServer,
+    character: &LobbyCharacter,
+    resource_path: Option<String>,
+    translation: Vec3,
+) -> Entity {
+    // The scale byte is two nibbles, not one number: low = Height, high =
+    // Volume, each 0..4 with 2 as the factory middle (`LobbyCharacter::scale`,
+    // pinned by its own tests). Reading it as `1.0 + byte/255` made the
+    // factory 0x22 a 1.133 giant and left Volume with no effect at all.
+    let scale = lobby_body_scale(character.scale);
+    let transform = Transform::from_translation(translation)
+        .with_scale(Vec3::new(-scale, scale, scale))
+        .with_rotation(Quat::from_rotation_y(PI));
+    let mut char_commands = commands.spawn((
+        transform,
+        Visibility::default(),
+        SelectableCharacterV2,
+        Hovered::default(),
+        CharacterInfoV2(character.clone()),
+        Name::from(character.name.as_str()),
+    ));
+    if let Some(path) = resource_path {
+        char_commands.insert(UnloadedResource(asset_server.load(path)));
+    }
+    if needs_winding_reversal(&transform.to_matrix()) {
+        char_commands.insert(MirroredResource);
+    }
+    // picking events on the (asynchronously spawned) leaf meshes bubble up the
+    // hierarchy to this root
+    char_commands.observe(on_character_clicked);
+    char_commands.id()
 }
 
 #[cfg(test)]
