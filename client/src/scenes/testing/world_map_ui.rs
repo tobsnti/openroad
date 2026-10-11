@@ -8,7 +8,9 @@
 use bevy::prelude::*;
 
 use crate::plugins::hud::world_map::model::WorldMapState;
+use crate::plugins::player::{Player, PlayerConfig};
 use crate::plugins::world_origin::WorldOrigin;
+use crate::scenes::testing::preview_player::ensure_preview_player;
 use crate::scenes::SceneState;
 
 pub struct WorldMapUiPreviewPlugin;
@@ -19,7 +21,19 @@ impl Plugin for WorldMapUiPreviewPlugin {
     }
 }
 
-fn seed_world_map_preview(mut origin: ResMut<WorldOrigin>, mut state: ResMut<WorldMapState>) {
+fn seed_world_map_preview(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    config: Res<PlayerConfig>,
+    existing: Query<(), With<Player>>,
+    mut origin: ResMut<WorldOrigin>,
+    mut state: ResMut<WorldMapState>,
+) {
+    // The arrow and the one-shot centring both read the player. Without one
+    // the canvas stays at (0,0) — the north-west corner of a 4224x1408 sheet,
+    // which looks like a map that did not load rather than one that is not
+    // centred.
+    ensure_preview_player(&mut commands, &asset_server, &config, &existing);
     // Jangan, region 169x96 (matches the minimap preview's anchor).
     *origin = WorldOrigin(Vec3::new(-(169.0 * 1920.0), 0.0, 96.0 * 1920.0));
     state.current_map = 0;

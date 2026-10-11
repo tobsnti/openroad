@@ -9,7 +9,8 @@
 use bevy::prelude::*;
 
 use crate::plugins::hud::player_mini_info::{spawn_mini_info, PlayerVitals};
-use crate::plugins::player::{spawn_player_character, PlayerConfig};
+use crate::plugins::player::{Player, PlayerConfig};
+use crate::scenes::testing::preview_player::ensure_preview_player;
 use crate::scenes::SceneState;
 
 pub struct MiniInfoUiPreviewPlugin;
@@ -28,6 +29,7 @@ fn spawn_mock_data(
     asset_server: Res<AssetServer>,
     config: Res<PlayerConfig>,
     mut vitals: ResMut<PlayerVitals>,
+    existing: Query<(), With<Player>>,
 ) {
     *vitals = PlayerVitals {
         name: "Testchar".to_string(),
@@ -39,6 +41,7 @@ fn spawn_mock_data(
         berserk_pips: 3,
         hwan_level: 0,
     };
-    // a real character for the portrait camera to shoot
-    spawn_player_character(&mut commands, &asset_server, &config, Transform::IDENTITY);
+    // a real character for the portrait camera to shoot — shared with the
+    // map previews, so whichever runs first spawns it
+    ensure_preview_player(&mut commands, &asset_server, &config, &existing);
 }

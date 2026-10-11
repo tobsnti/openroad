@@ -14,6 +14,7 @@ pub(crate) mod new_asset_loading;
 pub(crate) mod npc_dialog_ui;
 pub(crate) mod particles;
 pub(crate) mod party_ui;
+pub(crate) mod preview_player;
 pub(crate) mod quest_reward_ui;
 pub(crate) mod skills;
 pub(crate) mod stall_ui;
