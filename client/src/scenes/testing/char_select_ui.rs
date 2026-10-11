@@ -9,8 +9,10 @@ use bevy::prelude::*;
 use packets::agent::prelude::LobbyCharacter;
 
 use crate::assets::FontAssets;
-use crate::plugins::textdata::{ClientLevelData, ClientUiStrings};
+use crate::plugins::camera::{spawn_player_camera, DebugCamera, PlayerCamera};
+use crate::plugins::textdata::{ClientCharacterData, ClientLevelData, ClientUiStrings};
 use crate::scenes::intro_v2::assets::IntroV2Assets;
+use crate::scenes::intro_v2::character_select::spawn_lobby_character;
 use crate::scenes::intro_v2::{character_select, chrome, fade};
 use crate::scenes::SceneState;
 
@@ -18,7 +20,16 @@ pub struct CharSelectUiPreviewPlugin;
 
 impl Plugin for CharSelectUiPreviewPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(SceneState::UiTesting), spawn_preview);
+        app.add_systems(
+            OnEnter(SceneState::UiTesting),
+            (
+                spawn_preview,
+                spawn_player_camera,
+                spawn_preview_figure,
+                frame_figure,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -100,5 +111,43 @@ fn spawn_preview(
         commands
             .spawn_scene(character_select::selected_control_buttons(&assets, &fonts))
             .insert(UiTargetCamera(camera));
+    }
+}
+
+/// The figure itself, through the **same** call the live character list uses —
+/// so a regression in that spawn shows up in the window gallery instead of
+/// only in a session against a server.
+fn spawn_preview_figure(
+    asset_server: Res<AssetServer>,
+    char_data: Res<ClientCharacterData>,
+    mut commands: Commands,
+) {
+    let character = dummy_character();
+    // 1907 is the first playable row in `characterdata_5000.txt`
+    // (`char\china\chinaman_adventurer.bsr`); every shipped corpus has it.
+    let path = char_data
+        .get(&(character.ref_obj_id as i32))
+        .and_then(|row| row.resource_path());
+    if path.is_none() {
+        warn!(
+            "char-select preview: no characterdata row for ref {} — the figure will not render",
+            character.ref_obj_id
+        );
+    }
+    spawn_lobby_character(&mut commands, &asset_server, &character, path, Vec3::ZERO);
+}
+
+/// Frame the single figure the way the live scene frames a clicked one.
+///
+/// The eye sits on **+Z**: `spawn_lobby_character` turns the character by `PI`
+/// about Y, so a camera on -Z photographs its back. The distance is the live
+/// scene's own zoom (`CAMERA_ZOOM_DISTANCE`), pulled back by the figure's own
+/// height so the whole character stands in the plate rather than its torso
+/// filling it — the selection screen shows the figure, the zoom shows the face.
+fn frame_figure(mut cameras: Query<&mut Transform, Or<(With<PlayerCamera>, With<DebugCamera>)>>) {
+    let look_at = Vec3::new(0.0, 11.0, 0.0);
+    let eye = Vec3::new(0.0, 13.0, 34.0);
+    for mut transform in cameras.iter_mut() {
+        *transform = Transform::from_translation(eye).looking_at(look_at, Vec3::Y);
     }
 }
