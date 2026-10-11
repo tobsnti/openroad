@@ -3,14 +3,16 @@
 //! tile grid orientation, arrow rotation and zoom buttons can be iterated
 //! without a live server. Run with `SCENE=ui_testing`. The minimap's own
 //! Update systems are already gated to also run in `SceneState::UiTesting`;
-//! the local `Player` entity comes from the mini-info preview, so this only
-//! anchors the world origin and spawns the mock dot entities.
+//! the local `Player` entity is requested through `preview_player` so this
+//! preview also stands on its own under `UI_ONLY`.
 
 use bevy::prelude::*;
 
 use crate::plugins::hud::minimap::spawn_minimap;
 use crate::plugins::net::entities::{RemoteEntity, UniqueMonster};
+use crate::plugins::player::{Player, PlayerConfig};
 use crate::plugins::world_origin::WorldOrigin;
+use crate::scenes::testing::preview_player::ensure_preview_player;
 use crate::scenes::SceneState;
 
 pub struct MinimapUiPreviewPlugin;
@@ -29,7 +31,17 @@ impl Plugin for MinimapUiPreviewPlugin {
 /// the 168..170 x 95..97 tiles load and the readout shows ~(6528, 768).
 /// Render -X is server east (the mirrored X), so the monster pack sits east
 /// of the player, the NPCs west, and one unique north.
-fn spawn_mock_map_data(mut commands: Commands, mut origin: ResMut<WorldOrigin>) {
+fn spawn_mock_map_data(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    config: Res<PlayerConfig>,
+    existing: Query<(), With<Player>>,
+    mut origin: ResMut<WorldOrigin>,
+) {
+    // Asked for rather than assumed: this preview used to read the player the
+    // mini-info preview happened to spawn, which only held while every preview
+    // was registered at once.
+    ensure_preview_player(&mut commands, &asset_server, &config, &existing);
     *origin = WorldOrigin(Vec3::new(-(169.0 * 1920.0), 0.0, 96.0 * 1920.0));
 
     let mock = [
