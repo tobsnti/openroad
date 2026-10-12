@@ -63,7 +63,10 @@ const ARROW_SIZE: f32 = 16.0;
 const WORLD_BTN_DDJ: &str = "media://interface/worldmap/wmap_button_world";
 const FOLLOW_BTN_DDJ: &str = "media://interface/ifcommon/com_mid_button";
 
-const LABEL_COLOR: Color = Color::srgb_u8(235, 225, 190);
+/// Marker labels — the player's party and the teleporter sign strip — are not
+/// `worldmap_localinfo` rows, so they have no colour column to read. They keep
+/// a single tone until their own source is found; the icons' `0,0,0` is not it.
+const MARKER_LABEL_COLOR: Color = Color::srgb_u8(235, 225, 190);
 
 /// `wmap_sign_location.ddj` is not one sign: it is a 432x36 strip of twelve
 /// 36x36 frames. Drawn whole into the 16x16 marker box it collapses into a
@@ -330,7 +333,7 @@ pub fn sync_world_map_window(
                                                 WmMarkerLabel,
                                                 Text::new(marker.name.clone()),
                                                 text_font(7.0),
-                                                TextColor(LABEL_COLOR),
+                                                TextColor(MARKER_LABEL_COLOR),
                                                 Node {
                                                     position_type: PositionType::Absolute,
                                                     left: Val::Px(0.0),
@@ -630,7 +633,7 @@ fn spawn_pois(
                 canvas.spawn((
                     Text::new(name.to_string()),
                     text_font(7.0),
-                    TextColor(LABEL_COLOR),
+                    TextColor(Color::srgb_u8(poi.color[0], poi.color[1], poi.color[2])),
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(px.x),
