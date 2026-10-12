@@ -6,7 +6,7 @@ use crossbeam::channel::{Receiver, TryRecvError};
 use mac_address::get_mac_address;
 
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
-use packets::login::{describe_login_error, LoginFailure, LoginRequest, LoginResponse};
+use packets::login::{LoginFailure, LoginRequest, LoginResponse};
 use packets::Packet;
 
 use crate::net::connection::{PendingConnection, SilkroadConnection};
@@ -15,9 +15,11 @@ use crate::plugins::net::agent::AgentConnectionBundle;
 use crate::plugins::net::gateway::{GatewayConnection, GatewayConnectionStatus};
 use crate::plugins::net::plugin::NetworkState;
 use crate::plugins::settings::options::GameOptions;
+use crate::plugins::textdata::ClientUiStrings;
 
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
+use super::error_text::login_failure_line;
 use super::fade::{FadeToBlack, FadeToBlackTimer};
 use super::login_form::{ConnectButton, IdInput, PwInput};
 use super::server_select::SelectedShardV2;
@@ -144,6 +146,7 @@ pub fn on_gateway_login_response(
     gateway_query: Query<Entity, With<GatewayConnection>>,
     connect_button_query: Query<Entity, With<ConnectButton>>,
     division: Res<DivisionInfo>,
+    ui_strings: Res<ClientUiStrings>,
 ) {
     let Some(credentials) = credentials else {
         return;
@@ -183,20 +186,14 @@ pub fn on_gateway_login_response(
             info_text_writer.write(InfoTextV2Update(msg));
         }
 
-        // Codes with a payload rendered their own message above; everything
-        // else used to render nothing at all (#465). The original shows one
-        // textuisystem string per code — until those are wired, name the code.
+        // Codes with a payload rendered their own message above; the rest now
+        // read the original's own row for the code instead of our prose.
         match err.failure() {
-            LoginFailure::AlreadyConnected => {
-                info_text_writer.write(InfoTextV2Update(String::from(
-                    "This user is already connected. The user may still be connected because of an error that forced the game to close. Please try again in 5 minutes.",
-                )));
-            }
             LoginFailure::WrongPassword(_) | LoginFailure::Blocked(_) => {}
             _ => {
-                info_text_writer.write(InfoTextV2Update(String::from(describe_login_error(
-                    err.error_code,
-                ))));
+                if let Some(line) = login_failure_line(&ui_strings, err.error_code) {
+                    info_text_writer.write(InfoTextV2Update(line));
+                }
             }
         }
     } else {

@@ -36,6 +36,7 @@ use crate::util::mesh::needs_winding_reversal;
 use super::assets::IntroV2Assets;
 use super::character_select;
 use super::chrome::InfoTextV2Update;
+use super::error_text::lobby_failure_line;
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{IntroV2State, IntroV2Ui};
@@ -1517,7 +1518,13 @@ pub fn on_check_name_response(
         text.0 = if res.result == 1 {
             ui_strings.get_plain_or("UIO_MSG_ERROR_ADMISSON", "Valid ID")
         } else {
-            ui_strings.get_plain_or("UIO_MSG_ERROR_ID", "This ID already exists.")
+            // "already exists" was printed for every rejection, including the
+            // 0x0410 "not allowed" our captures carry — the one case where the
+            // old wording told the player something untrue.
+            let code = res.error_code.unwrap_or_default();
+            lobby_failure_line(&ui_strings, code).unwrap_or_else(|| {
+                ui_strings.get_plain_or("UIO_MSG_ERROR_ID", "This ID already exists.")
+            })
         };
     }
 }
@@ -1724,20 +1731,14 @@ pub fn on_character_create_response(
         if res.result == 1 {
             next_state.set(IntroV2State::CharacterList);
         } else {
-            // the per-code error catalogue is an open R6 item; the code goes
-            // to the log, the UI shows the original generic failure text
-            warn!(
-                "character create rejected (error {})",
-                res.error_code.unwrap_or_default()
-            );
-            info_text_writer.write(InfoTextV2Update(
-                ui_strings
-                    .get_or(
-                        "UIO_SMERR_FAILED_TO_CREATE_CHARACTER",
-                        "Failed to create a character. Please try to connect again.",
-                    )
-                    .to_string(),
-            ));
+            let code = res.error_code.unwrap_or_default();
+            warn!("character create rejected (error {code})");
+            // The original's own row for the code. Two of these are in our
+            // captures (0x0403, 0x0410); the generic sentence used to answer
+            // every one of them.
+            if let Some(line) = lobby_failure_line(&ui_strings, code) {
+                info_text_writer.write(InfoTextV2Update(line));
+            }
             for entity in create_buttons.iter() {
                 commands.entity(entity).remove::<InteractionDisabled>();
             }
