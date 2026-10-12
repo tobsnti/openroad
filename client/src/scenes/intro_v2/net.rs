@@ -344,6 +344,28 @@ pub fn on_agent_login_response(
     }
 }
 
+/// Enter presses Connect on the login form.
+///
+/// IDEA. The same trick the HUD uses for its dialogs (`hud::focus`): the key
+/// does not re-implement what the button does, it triggers `Activate` on the
+/// button itself. Connect already carries the whole login path, so the key and
+/// the click cannot drift apart. Without this the pre-game had exactly one
+/// key handler in fourteen files, and the tab ring could not reach Connect at
+/// all — you could not log in without a mouse.
+pub fn enter_presses_connect(
+    keys: Res<ButtonInput<KeyCode>>,
+    connect_button: Query<Entity, (With<ConnectButton>, Without<InteractionDisabled>)>,
+    mut commands: Commands,
+) {
+    if !keys.just_pressed(KeyCode::Enter) && !keys.just_pressed(KeyCode::NumpadEnter) {
+        return;
+    }
+    let Ok(entity) = connect_button.single() else {
+        return;
+    };
+    commands.trigger(Activate { entity });
+}
+
 #[cfg(test)]
 mod login_deadend_test {
     use super::*;
