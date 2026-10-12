@@ -31,6 +31,7 @@ pub mod character_create;
 pub mod character_select;
 pub mod chrome;
 pub mod dev_fast_login;
+pub mod error_text;
 pub mod fade;
 pub mod login_form;
 pub mod net;

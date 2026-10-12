@@ -35,6 +35,7 @@ use crate::util::tweening_ext::keyframe_tween;
 
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
+use super::error_text::lobby_failure_line;
 use super::fade::{FadeToBlack, FadeToBlackTimer};
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
@@ -1227,6 +1228,7 @@ pub fn on_character_delete_response(
     assets: Res<IntroV2Assets>,
     origin: Res<WorldOrigin>,
     options: Res<GameOptions>,
+    ui_strings: Res<ClientUiStrings>,
     mut commands: Commands,
 ) {
     for res in reader.read() {
@@ -1247,9 +1249,12 @@ pub fn on_character_delete_response(
             }
         } else {
             let code = res.error_code.unwrap_or_default();
-            info_text_writer.write(InfoTextV2Update(format!(
-                "Character {action} failed (error {code})."
-            )));
+            warn!("character {action} rejected (error {code})");
+            // The original's own row for the code, not a decimal. A code it
+            // routes to its silent arm prints nothing here either.
+            if let Some(line) = lobby_failure_line(&ui_strings, code) {
+                info_text_writer.write(InfoTextV2Update(line));
+            }
             if let Some(playback) = options.audio.fx_playback() {
                 commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
             }
