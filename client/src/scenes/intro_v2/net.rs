@@ -5,7 +5,7 @@ use bevy::ui_widgets::Activate;
 use crossbeam::channel::{Receiver, TryRecvError};
 use mac_address::get_mac_address;
 
-use packets::agent::{AgentLoginRequest, AgentLoginResponse};
+use packets::agent::{describe_agent_auth_error, AgentLoginRequest, AgentLoginResponse};
 use packets::login::{LoginFailure, LoginRequest, LoginResponse};
 use packets::Packet;
 
@@ -312,15 +312,56 @@ pub fn on_agent_login_response(
     mut reader: MessageReader<AgentLoginResponse>,
     mut info_text_writer: MessageWriter<InfoTextV2Update>,
     mut fade_writer: MessageWriter<FadeToBlack>,
+    connect_button_query: Query<Entity, With<ConnectButton>>,
     mut commands: Commands,
 ) {
     for res in reader.read() {
         if let Some(e) = &res.error_code {
             error!("[Agent]: Login failed because of {:?}", e);
+            // A failed agent login used to end here. The screen then kept the
+            // "requesting user confirmation" line and a Connect button that
+            // stays disabled — the re-enable lives in the *gateway* branch,
+            // and the gateway login had succeeded. Nothing but Alt+F4 got the
+            // player out, while the headless netcheck named the code all
+            // along.
+            info_text_writer.write(InfoTextV2Update(format!(
+                "Login to the game server failed: {}.",
+                describe_agent_auth_error(*e)
+            )));
+            if let Ok(connect_button) = connect_button_query.single() {
+                commands
+                    .entity(connect_button)
+                    .remove::<InteractionDisabled>();
+            }
         } else {
             info_text_writer.write(InfoTextV2Update(String::new()));
             commands.insert_resource(FadeToBlackTimer::to(IntroV2State::CharacterList));
             fade_writer.write(FadeToBlack);
         }
+    }
+}
+
+#[cfg(test)]
+mod login_deadend_test {
+    use super::*;
+
+    /// The dead end this slice closes: a failed agent login used to leave the
+    /// Connect button disabled, because the only re-enable sits in the gateway
+    /// branch — and the gateway login had succeeded. Asserting the message
+    /// path here would need a full app; what is worth pinning is that every
+    /// code the client can receive produces a line with content, so the player
+    /// never gets an empty info bar in place of a frozen one.
+    #[test]
+    fn every_agent_auth_code_names_something() {
+        for code in 0u8..=16 {
+            let text = describe_agent_auth_error(code);
+            assert!(!text.is_empty(), "code {code} has no description");
+        }
+        // The three the packet crate classifies, so a renamed arm shows up here
+        // rather than silently degrading to "unknown error" on screen.
+        assert_eq!(describe_agent_auth_error(3), "already connected");
+        assert_eq!(describe_agent_auth_error(4), "server full");
+        assert_eq!(describe_agent_auth_error(5), "IP limit reached");
+        assert_eq!(describe_agent_auth_error(2), "unknown error");
     }
 }
