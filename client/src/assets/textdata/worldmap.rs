@@ -212,6 +212,13 @@ pub struct PoiDef {
     pub pz: f32,
     pub w: f32,
     pub h: f32,
+    /// Label text colour, `worldmap_localinfo` columns 15..17. Vanilla gives
+    /// every label row its own colour — white for shops and small points, warm
+    /// gold for city districts, pale green for field regions, pale yellow for
+    /// the five capitals, pale blue for dungeon entrances. Icon rows carry
+    /// `0,0,0` here and are not styled by it, so only `PoiKind::Label` reads
+    /// this.
+    pub color: [u8; 3],
 }
 
 impl PoiDef {
@@ -389,6 +396,16 @@ impl WorldMapTable {
                     .and_then(|f| f.parse::<f32>().ok())
                     .unwrap_or(0.0)
             };
+            // A handful of label rows are truncated and carry no style
+            // fields at all. White is the file's own dominant value and what
+            // their neighbours use, so it is the fallback rather than a
+            // colour of our choosing.
+            let channel = |index: usize| {
+                fields
+                    .get(index)
+                    .and_then(|f| f.parse::<u8>().ok())
+                    .unwrap_or(255)
+            };
             table.pois.push(PoiDef {
                 map_id,
                 kind,
@@ -398,6 +415,7 @@ impl WorldMapTable {
                 pz: num(12),
                 w: num(13),
                 h: num(14),
+                color: [channel(15), channel(16), channel(17)],
             });
         }
         table
@@ -484,6 +502,25 @@ mod test {
 
         // Unknown region → empty, no panic.
         assert!(table.dungeon_floors(0x8FFF).is_empty());
+    }
+
+    // Verbatim rows: a capital (pale yellow), a dungeon entrance (pale blue),
+    // and a truncated label that carries no style fields at all.
+    const LOCALINFO_COLOURS: &str = "1\t22001\t1\tSN_ZONE_22001\tCH\tJangan\tworld\t0\t0\t168\t97\t15\t10\t0\t0\t255\t247\t182\t0\t1\t1\txxx\n\
+        1\t23001\t1\tSN_ZONE_23001\tCH\tTomb\tworld\t0\t0\t172\t102\t20\t27\t0\t0\t196\t231\t255\t0\t1\t1\txxx\n\
+        1\t11002\t1\tSN_ZONE_11002\tJ\tStall\tlocal\t0\t1\t-1\t-1\t200\t200\t0\t0\n";
+
+    #[test]
+    fn label_colour_comes_from_the_row() {
+        let table = WorldMapTable::parse(MAPINFO, LOCALINFO_COLOURS);
+        assert_eq!(table.pois.len(), 3);
+        // Vanilla gives each label row its own colour; one house colour for
+        // all of them is what this replaces.
+        assert_eq!(table.pois[0].color, [255, 247, 182]);
+        assert_eq!(table.pois[1].color, [196, 231, 255]);
+        assert_ne!(table.pois[0].color, table.pois[1].color);
+        // Truncated row: white, the file's own dominant value.
+        assert_eq!(table.pois[2].color, [255, 255, 255]);
     }
 
     #[test]
