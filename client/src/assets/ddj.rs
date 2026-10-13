@@ -4,7 +4,7 @@ use std::io::Cursor;
 use bevy::asset::RenderAssetUsages;
 use bevy::asset::{io::Reader, Asset, AssetLoader, LoadContext};
 use bevy::color::Srgba;
-use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats, ImageSampler, ImageType};
 use bevy::log::warn;
 use bevy::prelude::Image;
 use bevy::reflect::TypePath;
@@ -109,7 +109,11 @@ impl JMXVDDJ {
     /// through an sRGB view decodes their stored mid-gray 128 to 0.216
     /// linear instead of the intended 0.5, halving the whole term (see
     /// `DdjSettings::non_color`).
-    pub fn to_image(&self, srgb: bool) -> Option<Image> {
+    /// `supported` is what the GPU actually accepts, not what bevy can parse.
+    /// Passing the device's truth is the point: a compressed buffer handed to a
+    /// device without that format is a wgpu validation error, whereas an
+    /// unsupported format reported here falls back to CPU decoding.
+    pub fn to_image(&self, srgb: bool, supported: CompressedImageFormats) -> Option<Image> {
         //println!("Data size {:?}", self.dds.data.len());
         //println!("Pixels {:?}", self.dds.data.len() / 2);
         //println!("WxH {:?}", self.dds.header.width * self.dds.header.height);
@@ -146,7 +150,7 @@ impl JMXVDDJ {
                 Image::from_buffer(
                     &self.texture_buffer,
                     ImageType::Extension("dds"),
-                    CompressedImageFormats::all(),
+                    supported,
                     srgb,
                     ImageSampler::Default,
                     usages,
@@ -260,7 +264,7 @@ fn ground_tile_placeholder() -> Image {
 /// payload with the identical `size`/`type`/DDS-bytes tail as JMXVDDJ, so it decodes through
 /// here rather than duplicating the format match. `is_terrain_texture` is false: lightmaps are
 /// GPU-only and are not foliage tint sources.
-pub fn dds_buffer_to_image(dds_bytes: &[u8]) -> Option<Image> {
+pub fn dds_buffer_to_image(dds_bytes: &[u8], supported: CompressedImageFormats) -> Option<Image> {
     let mut cursor = dds_bytes;
     let dds = Dds::read(&mut cursor).ok()?;
     JMXVDDJ {
@@ -272,7 +276,7 @@ pub fn dds_buffer_to_image(dds_bytes: &[u8]) -> Option<Image> {
         is_terrain_texture: false,
         dds,
     }
-    .to_image(true)
+    .to_image(true, supported)
 }
 
 /// A minimal, deliberately synthetic 1x1 magenta `.ddj` file. Substituted by
@@ -967,6 +971,7 @@ pub struct DDJLoader {
     tile_tints: crate::assets::tile_tint::TerrainTileTints,
     tile_layers: crate::assets::tile_layers::TerrainTileLayers,
     texture_detail: crate::assets::texture_detail::TextureDetailLevel,
+    supported_compressed_formats: CompressedImageFormats,
 }
 
 impl bevy::prelude::FromWorld for DDJLoader {
@@ -984,8 +989,21 @@ impl bevy::prelude::FromWorld for DDJLoader {
             tile_layers: world
                 .resource::<crate::assets::tile_layers::TerrainTileLayers>()
                 .clone(),
+            supported_compressed_formats: supported_compressed_formats(world),
         }
     }
+}
+
+/// What the render device accepts, or everything bevy can parse when there is no
+/// device. `RenderPlugin::finish` inserts [`CompressedImageFormatSupport`] into
+/// the main world from `device.features()`; the headless harnesses (netcheck,
+/// tests) build no renderer, and there the value is unused because nothing is
+/// uploaded — so the absent resource keeps the previous behaviour rather than
+/// forcing every DXTn file down the CPU path.
+pub(crate) fn supported_compressed_formats(world: &bevy::prelude::World) -> CompressedImageFormats {
+    world
+        .get_resource::<CompressedImageFormatSupport>()
+        .map_or_else(CompressedImageFormats::all, |support| support.0)
 }
 
 impl AssetLoader for DDJLoader {
@@ -1053,7 +1071,7 @@ impl AssetLoader for DDJLoader {
                 None => warn!("ddj: {path}: ground tile cannot become a texture-array layer"),
             }
         }
-        match ddj_file.to_image(!settings.non_color) {
+        match ddj_file.to_image(!settings.non_color, self.supported_compressed_formats) {
             None => Err(DDJLoaderErrors::PROBLEM),
             Some(image) => {
                 if ddj_file.is_terrain_texture {
@@ -1164,7 +1182,7 @@ mod tests {
                 if !terrain && !fallback && !hand_decoded {
                     continue;
                 }
-                let Some(image) = ddj.to_image(true) else {
+                let Some(image) = ddj.to_image(true, CompressedImageFormats::all()) else {
                     rejected += 1;
                     continue;
                 };
@@ -1196,7 +1214,9 @@ mod tests {
         let red = [0, 0xF8, 0, 0, 0, 0, 0, 0];
         let blue = [0x1F, 0, 0, 0, 0, 0, 0, 0];
         source.dds.data = [punch, red, blue].concat();
-        let image = source.to_image(true).unwrap();
+        let image = source
+            .to_image(true, CompressedImageFormats::all())
+            .unwrap();
         assert_eq!(image.texture_descriptor.mip_level_count, 3);
         let data = image.data.unwrap();
         assert_eq!(data.len(), (16 + 4 + 1) * 4);
@@ -1210,13 +1230,17 @@ mod tests {
         let mut source = synthetic_ddj(D3DFormat::A4R4G4B4, 2);
         source.dds.data = vec![255; 32];
         source.dds.data.extend([0, 0xF0].repeat(4));
-        let image = source.to_image(true).unwrap();
+        let image = source
+            .to_image(true, CompressedImageFormats::all())
+            .unwrap();
         assert_eq!(image.texture_descriptor.mip_level_count, 2);
         assert!(image.data.unwrap()[64..]
             .chunks_exact(4)
             .all(|p| p == [0, 0, 0, 255]));
         source.dds.data.pop();
-        assert!(source.to_image(true).is_none());
+        assert!(source
+            .to_image(true, CompressedImageFormats::all())
+            .is_none());
     }
 
     #[test]
@@ -1298,7 +1322,9 @@ mod tests {
     fn placeholder_ddj_bytes_decode_to_a_1x1_magenta_image() {
         let bytes = placeholder_ddj_bytes();
         let ddj = JMXVDDJ::try_from(&mut Bytes::from(bytes)).expect("must parse as a DDJ");
-        let image = ddj.to_image(true).expect("must decode to an image");
+        let image = ddj
+            .to_image(true, CompressedImageFormats::all())
+            .expect("must decode to an image");
         assert_eq!(image.texture_descriptor.size.width, 1);
         assert_eq!(image.texture_descriptor.size.height, 1);
         assert_eq!(image.data.as_deref(), Some([255, 0, 255, 255].as_slice()));
