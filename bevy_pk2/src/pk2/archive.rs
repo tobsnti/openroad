@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,62 +17,22 @@ use crate::pk2::errors::Error;
 use crate::pk2::header::Header;
 use crate::pk2::key::Pk2Key;
 use crate::pk2::read_stats;
+use crate::pk2::source::Pk2Source;
 
 /// A structure to access an SRO PK2 archive.
 #[derive(TypePath, Clone)]
 #[allow(dead_code)]
 pub struct Archive {
-    /// Shared without a lock: after indexing, all reads are positioned
-    /// (`read_exact_at`), so concurrent asset loads from one archive don't
-    /// serialize on a mutex around a shared file cursor.
-    file: Arc<File>,
+    /// Shared without a lock: every read is positioned
+    /// ([`Pk2Source::read_exact_at`]), so concurrent asset loads from one
+    /// archive don't serialize on a mutex around a shared cursor. The source is
+    /// type-erased so that a file, a buffer in memory or (later) a byte range
+    /// over HTTP all reach the same index and the same reader.
+    source: Arc<dyn Pk2Source>,
     blowfish: Blowfish,
     strip_prefix: OsString,
     pub root: Directory,
     entries: HashMap<PathBuf, Entry>,
-}
-
-/// Reads `buf.len()` bytes at `offset` without touching a shared cursor, so
-/// concurrent readers of the same [`File`] need no synchronization.
-#[cfg(unix)]
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buf, offset)
-}
-
-/// Windows has no true positional read; `seek_read` moves the file cursor,
-/// which is fine here because nothing reads through the cursor after the
-/// archive index is built.
-#[cfg(windows)]
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    let mut pos = 0;
-    while pos < buf.len() {
-        let read = file.seek_read(&mut buf[pos..], offset + pos as u64)?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                ErrorKind::UnexpectedEof,
-                "failed to fill whole buffer",
-            ));
-        }
-        pos += read;
-    }
-    Ok(())
-}
-
-/// Neither `FileExt` exists outside unix and windows, so on any other target
-/// the two arms above leave `read_exact_at` undefined and the crate does not
-/// compile at all — `wasm32-unknown-unknown` hit exactly that. The positional
-/// read is the archive's only I/O primitive, so the arm reports it as missing
-/// rather than faking a seek: a browser path has to supply a different source
-/// (the reader is already half-abstracted over `Cursor<Bytes>`), not a worse
-/// `File`.
-#[cfg(not(any(unix, windows)))]
-fn read_exact_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        ErrorKind::Unsupported,
-        "PK2 positional read needs a platform with FileExt; supply an in-memory source instead",
-    ))
 }
 
 /// PK2 archive lookups are case-insensitive — the original Windows client
@@ -92,23 +52,31 @@ impl Archive {
     /// treated as potentially hostile — so a malformed header, a short read or
     /// a cyclic block chain must be reportable, not fatal.
     pub fn open<P: AsRef<Path>>(path: P, key: &Pk2Key) -> Result<Archive, Error> {
-        let path = path.as_ref();
+        let file = File::open(path.as_ref()).map_err(Error::IO)?;
+        Archive::from_source(Arc::new(file), key)
+    }
+
+    /// Index an archive from any [`Pk2Source`]: the header, the index blocks
+    /// and the file bodies are all read by offset, so nothing here needs a
+    /// file. That is what makes an archive in memory — a test fixture, or a
+    /// byte range fetched over the network — the same thing as one on disk.
+    pub fn from_source(source: Arc<dyn Pk2Source>, key: &Pk2Key) -> Result<Archive, Error> {
         let blowfish = Blowfish::from_key(key)
             .map_err(|_| Error::InvalidHeader("PK2 key rejected by the cipher (bad length?)"))?;
         let mut header_buf: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
-        let mut file = File::open(path).map_err(Error::IO)?;
-        file.read_exact(&mut header_buf)
+        source
+            .read_exact_at(&mut header_buf, 0)
             .map_err(|_| Error::InvalidHeader("header shorter than 256 bytes"))?;
         let header = Header::from(header_buf);
         header.verify(&blowfish)?;
-        let root = Directory::index(&mut file, &blowfish)?;
+        let root = Directory::index(&*source, &blowfish)?;
         let entries = root
             .get_all_entries()
             .into_iter()
             .map(|(k, v)| (normalize(&k), v))
             .collect();
         Ok(Archive {
-            file: Arc::new(file),
+            source,
             blowfish,
             strip_prefix: "".into(),
             root,
@@ -181,7 +149,7 @@ impl AssetReader for Archive {
                 // reader: no lock (a burst of loads from one archive used to
                 // serialize on it) and no intermediate copy of the bytes.
                 let mut bytes = vec![0u8; entry.size as usize];
-                read_exact_at(&self.file, &mut bytes, entry.position)?;
+                self.source.read_exact_at(&mut bytes, entry.position)?;
                 // #434 step 1: count what a cache would have served. Inert
                 // unless PK2_READ_STATS is set.
                 read_stats::record(&stripped_path, entry.size as u64);
@@ -284,7 +252,7 @@ impl Archive {
             return None;
         }
         let mut buf = vec![0u8; entry.size as usize];
-        read_exact_at(&self.file, &mut buf, entry.position).ok()?;
+        self.source.read_exact_at(&mut buf, entry.position).ok()?;
         read_stats::record(&normalize(path), entry.size as u64);
         Some(buf)
     }
@@ -293,5 +261,84 @@ impl Archive {
         self.entries.iter().for_each(|(k, _v)| {
             info!("Entry: {}", k.display());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pk2::constants::{BLOCK_SIZE, CHECKSUM, ENTRY_SIZE, SIGNATURE, VERSION};
+    use bytes::Bytes;
+
+    /// A fixture key, not the real archive key: the fixture is encrypted and
+    /// read back with the same cipher, so any valid key exercises the path.
+    fn test_key() -> Pk2Key {
+        Pk2Key::from_config("testkey", "00112233445566778899").expect("fixture key is valid")
+    }
+
+    /// The smallest thing that is still a real archive: a header that verifies,
+    /// one index block carrying the root `.` entry and one file entry, and that
+    /// file's bytes behind the block. Offsets are absolute, as in a real PK2.
+    fn tiny_archive(blowfish: &Blowfish, name: &str, body: &[u8]) -> Bytes {
+        let mut header = [0u8; HEADER_SIZE];
+        header[..30].copy_from_slice(SIGNATURE);
+        header[30..34].copy_from_slice(&VERSION.to_le_bytes());
+        header[34] = 1; // encrypted -> the checksum is checked
+        let mut checksum = *CHECKSUM;
+        blowfish.encrypt(&mut checksum);
+        header[35..51].copy_from_slice(&checksum);
+
+        let mut block = [0u8; BLOCK_SIZE];
+        // entry 0: the root directory, which every archive names "."
+        block[0] = 1;
+        block[1] = b'.';
+        block[106..114].copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+        // entry 1: the file, its bytes stored plain right after the block
+        block[ENTRY_SIZE] = 2;
+        block[ENTRY_SIZE + 1..ENTRY_SIZE + 1 + name.len()].copy_from_slice(name.as_bytes());
+        let body_at = (HEADER_SIZE + BLOCK_SIZE) as u64;
+        block[ENTRY_SIZE + 106..ENTRY_SIZE + 114].copy_from_slice(&body_at.to_le_bytes());
+        block[ENTRY_SIZE + 114..ENTRY_SIZE + 118]
+            .copy_from_slice(&(body.len() as u32).to_le_bytes());
+        blowfish.encrypt(&mut block);
+
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + BLOCK_SIZE + body.len());
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&block);
+        bytes.extend_from_slice(body);
+        Bytes::from(bytes)
+    }
+
+    /// The point of the abstraction in one test: an archive that never touches
+    /// the filesystem is indexed and served through the same code as a file.
+    #[test]
+    fn an_archive_is_indexed_and_read_straight_out_of_memory() {
+        let key = test_key();
+        let blowfish = Blowfish::from_key(&key).expect("fixture key is valid");
+        let source = tiny_archive(&blowfish, "a.txt", b"hello pk2");
+
+        let archive = Archive::from_source(Arc::new(source), &key).expect("indexes from memory");
+
+        assert_eq!(
+            archive.read_file_bytes(Path::new("a.txt")).as_deref(),
+            Some(&b"hello pk2"[..])
+        );
+        assert!(
+            archive.read_file_bytes(Path::new("missing.txt")).is_none(),
+            "an absent entry is None, not a panic"
+        );
+    }
+
+    /// A truncated archive must fail the same way whatever the source is: the
+    /// header read is positioned too, so a short buffer is reported, not
+    /// zero-filled.
+    #[test]
+    fn a_source_shorter_than_the_header_is_rejected() {
+        let key = test_key();
+        let short = Bytes::from_static(b"JoyMax File Manager!");
+        assert!(matches!(
+            Archive::from_source(Arc::new(short), &key),
+            Err(Error::InvalidHeader(_))
+        ));
     }
 }
