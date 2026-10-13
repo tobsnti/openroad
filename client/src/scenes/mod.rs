@@ -171,7 +171,7 @@ impl Plugin for SceneManagerPlugin {
 fn add_ui_previews(app: &mut App) {
     let only = std::env::var("UI_ONLY").ok();
     let only = only.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let mut wanted = |name: &str| match only {
+    let wanted = |name: &str| match only {
         None => true,
         Some(filter) => filter.eq_ignore_ascii_case(name),
     };
