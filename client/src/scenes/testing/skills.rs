@@ -118,7 +118,7 @@ impl Default for SkillsSceneState {
             degree: 1,
             level: 20,
             spawned_character: None,
-            monster_filter: String::from("ch_mangyang"),
+            monster_filter: String::from("ch_mangnyang"),
             monster_ref: None,
             spawned_dummy: None,
             // synthetic uid space far away from anything a server would send
