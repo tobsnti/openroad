@@ -361,10 +361,14 @@ pub fn on_char_selection_action_response(
     mut reader: MessageReader<CharacterSelectionActionResponse>,
     mut commands: Commands,
     origin: Res<WorldOrigin>,
+    existing_characters: Query<Entity, With<SelectableCharacterV2>>,
 ) {
     for res in reader.read() {
         if let Some(err) = res.error_code {
             error!("[CharacterSelectionAction] Error : {}", err);
+            // A rejected list request carries no roster. Rendering on past it
+            // used to build the lineup from whatever the last frame held.
+            continue;
         }
 
         // Characters are lined up between the start and end offsets on the
@@ -376,6 +380,14 @@ pub fn on_char_selection_action_response(
         let start =
             origin.to_render(char_select_scene.0.cam_base() * Vec3::new(-1.0, 1.0, 1.0)) + begin;
         if let Some(characters) = &res.characters {
+            // The server sends a list response more than once — a failed
+            // action can arrive twice byte-identical, 20 ms apart, and the
+            // packet model says so (`CharacterSelectionActionResponse`).
+            // Spawning without clearing first stacked a second lineup on top
+            // of the first; the delete path has always cleared.
+            for entity in existing_characters.iter() {
+                commands.entity(entity).despawn();
+            }
             for (i, char) in characters.characters.iter().enumerate() {
                 // Passive RE evidence (EP-RE #239): log every lobby char's
                 // server-sent scale byte + stats. Growing the scale corpus is
@@ -408,7 +420,12 @@ pub fn on_char_selection_action_response(
                 // SRO resource so they render with the correct handedness (weapon
                 // in the right hand). The mirror makes the placement determinant
                 // negative, so the shared winding rule reverses their meshes.
-                let scale = 1.0 + (char.scale as f32 / 255.0);
+                // The scale byte is two nibbles, not one number: low =
+                // Height, high = Volume, each 0..4 with 2 as the factory
+                // middle (`LobbyCharacter::scale`, pinned by its own tests).
+                // Reading it as `1.0 + byte/255` made the factory 0x22 a
+                // 1.133 giant and left Volume with no effect at all.
+                let scale = lobby_body_scale(char.scale);
                 let transform = Transform::from_translation(start + offset)
                     .with_scale(Vec3::new(-scale, scale, scale))
                     .with_rotation(Quat::from_rotation_y(PI));
@@ -629,6 +646,22 @@ pub fn on_character_clicked(
             CAMERA_ZOOM_DURATION,
         )));
     commands.insert_resource(SelectedCharacterV2(root));
+}
+
+/// Body scale from the lobby's two-nibble byte.
+///
+/// IDEA. `LobbyCharacter::scale` packs Height in the low nibble and Volume in
+/// the high one, each `0..4` with `2` as the factory middle. There is no
+/// measured curve for the two steps, so this keeps the one thing the data does
+/// state — the middle is unscaled — and spreads the remaining steps evenly
+/// either side. Volume has no separate axis in our renderer yet, so both
+/// nibbles feed the uniform scale and Height carries the weight; a per-axis
+/// split is a later slice, not a guess made here.
+fn lobby_body_scale(byte: u8) -> f32 {
+    const STEP: f32 = 0.05;
+    let height = (byte & 0x0F).min(4) as f32 - 2.0;
+    let volume = (byte >> 4).min(4) as f32 - 2.0;
+    1.0 + (height + volume * 0.5) * STEP
 }
 
 fn zoom_out_camera(
@@ -1472,5 +1505,29 @@ mod tests {
         assert!(shown.contains('\n'), "literal \\n must become a real break");
         assert!(!shown.contains("\\n"), "no escapes may survive");
         assert_eq!(shown.lines().count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod lineup_test {
+    use super::*;
+
+    /// The byte is two nibbles (`LobbyCharacter::scale`), and the factory
+    /// frame `0x22` is the middle of both. Reading it as one number made that
+    /// middle a 1.133 giant and gave Volume no effect at all — this pins the
+    /// three facts the packet model states, not a curve we invented.
+    #[test]
+    fn body_scale_reads_the_byte_as_two_nibbles() {
+        // factory middle: unscaled
+        assert!((lobby_body_scale(0x22) - 1.0).abs() < 1e-6);
+        // Height one step up and one step down move in opposite directions
+        assert!(lobby_body_scale(0x23) > lobby_body_scale(0x22));
+        assert!(lobby_body_scale(0x21) < lobby_body_scale(0x22));
+        // Volume moves at all — the old formula could not see it
+        assert_ne!(lobby_body_scale(0x32), lobby_body_scale(0x22));
+        // the stops stay inside a sane range
+        assert!(lobby_body_scale(0x20) > 0.5 && lobby_body_scale(0x44) < 1.5);
+        // the old reading made the factory byte a 13 % giant
+        assert!((1.0 + 0x22 as f32 / 255.0) > 1.13);
     }
 }
