@@ -57,6 +57,10 @@ allow = ["GPL-2.0-only"]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"   # would have caught launcher's `icons = "0.X"`
+# ... but a `path` dependency inside this workspace has no version to pin, so the
+# rule above fires on our own crates, not on registry wildcards. Registry
+# wildcards are still denied.
+allow-wildcard-paths = true
 
 [advisories]
 yanked = "deny"
