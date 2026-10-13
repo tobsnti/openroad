@@ -8,8 +8,9 @@
 // https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/JMXVMAPT
 
 use bevy::asset::{io::Reader, Asset, AssetLoader, Handle, LoadContext};
-use bevy::image::Image;
+use bevy::image::{CompressedImageFormats, Image};
 use bevy::log::warn;
+use bevy::prelude::{FromWorld, World};
 use bevy::reflect::TypePath;
 use thiserror::Error;
 
@@ -95,8 +96,18 @@ fn parse_bytes(buf: &[u8]) -> Result<Parsed<'_>, TLoaderError> {
     })
 }
 
-#[derive(Default, TypePath)]
-pub struct TLoader;
+#[derive(TypePath)]
+pub struct TLoader {
+    supported_compressed_formats: CompressedImageFormats,
+}
+
+impl FromWorld for TLoader {
+    fn from_world(world: &mut World) -> Self {
+        Self {
+            supported_compressed_formats: crate::assets::ddj::supported_compressed_formats(world),
+        }
+    }
+}
 
 impl AssetLoader for TLoader {
     type Asset = JMXVMAPT;
@@ -114,7 +125,7 @@ impl AssetLoader for TLoader {
         let parsed = parse_bytes(&buf)?;
         let lightmap = parsed
             .dds_bytes
-            .and_then(dds_buffer_to_image)
+            .and_then(|dds| dds_buffer_to_image(dds, self.supported_compressed_formats))
             .map(|image| load_context.add_labeled_asset("lightmap".to_string(), image));
         Ok(JMXVMAPT {
             tile_light: parsed.tile_light,
