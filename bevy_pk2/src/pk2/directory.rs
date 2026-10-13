@@ -1,17 +1,15 @@
 use bevy::asset::io::AssetReaderError;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::Cursor;
 use std::path::PathBuf;
 
 use bevy::prelude::info;
-use bytes::Bytes;
 
 use crate::pk2::blowfish::Blowfish;
 use crate::pk2::constants::{HEADER_SIZE, MAX_CHAIN_BLOCKS, MAX_DIR_DEPTH};
 use crate::pk2::entry::Entry;
 use crate::pk2::errors::Error;
-use crate::pk2::util::{read_block, CursorExt};
+use crate::pk2::source::Pk2Source;
+use crate::pk2::util::read_block;
 
 /// Represents a directory entry in the PK2 archive.
 #[derive(Clone)]
@@ -42,14 +40,18 @@ impl Directory {
     /// hostile or corrupt archive can point a subdirectory back at an ancestor,
     /// which used to recurse until the stack died. An already-expanded position
     /// is skipped, and errors propagate instead of `unwrap`-ing.
-    pub fn expand(&mut self, cursor: &mut Cursor<Bytes>, blowfish: &Blowfish) -> Result<(), Error> {
+    ///
+    /// One walk for every source: the file-backed and the in-memory traversal
+    /// were the same recursion twice, differing only in the reader they passed
+    /// down, and a positioned read is all either of them needed.
+    pub fn expand(&mut self, source: &dyn Pk2Source, blowfish: &Blowfish) -> Result<(), Error> {
         let mut visited = HashSet::new();
-        self.expand_guarded(cursor, blowfish, &mut visited, 0)
+        self.expand_guarded(source, blowfish, &mut visited, 0)
     }
 
     fn expand_guarded(
         &mut self,
-        cursor: &mut Cursor<Bytes>,
+        source: &dyn Pk2Source,
         blowfish: &Blowfish,
         visited: &mut HashSet<u64>,
         depth: usize,
@@ -64,7 +66,7 @@ impl Directory {
             // already expanded from this block - a cycle in the tree
             return Ok(());
         }
-        let entries = cursor.read_block(self.entry.position, blowfish)?;
+        let entries = read_block(source, self.entry.position, blowfish)?;
         let mapped_entries: HashMap<PathBuf, Entry> = entries
             .iter()
             .filter(|e| !e.is_empty())
@@ -82,7 +84,7 @@ impl Directory {
             .collect();
 
         for d in dirs.values_mut() {
-            d.expand_guarded(cursor, blowfish, visited, depth + 1)?;
+            d.expand_guarded(source, blowfish, visited, depth + 1)?;
         }
 
         self.directories.extend(dirs);
@@ -91,8 +93,8 @@ impl Directory {
     }
 
     /// Indexes all archive entries recursively
-    pub fn index(file: &mut File, blowfish: &Blowfish) -> Result<Directory, Error> {
-        let entries = read_block(file, HEADER_SIZE as u64, blowfish)?;
+    pub fn index(source: &dyn Pk2Source, blowfish: &Blowfish) -> Result<Directory, Error> {
+        let entries = read_block(source, HEADER_SIZE as u64, blowfish)?;
         // 0x2E -> "."
         let mut root_dir_entry = *entries
             .iter()
@@ -100,61 +102,8 @@ impl Directory {
             .ok_or(Error::InvalidBlock("archive has no root directory entry"))?;
         root_dir_entry.name[0] = 0;
         let mut root_dir = Directory::from(root_dir_entry);
-        root_dir.expand_from_file(file, blowfish)?;
+        root_dir.expand(source, blowfish)?;
         Ok(root_dir)
-    }
-
-    /// File-backed counterpart of [`Self::expand`], with the same cycle guard.
-    pub fn expand_from_file(&mut self, file: &mut File, blowfish: &Blowfish) -> Result<(), Error> {
-        let mut visited = HashSet::new();
-        self.expand_from_file_guarded(file, blowfish, &mut visited, 0)
-    }
-
-    fn expand_from_file_guarded(
-        &mut self,
-        file: &mut File,
-        blowfish: &Blowfish,
-        visited: &mut HashSet<u64>,
-        depth: usize,
-    ) -> Result<(), Error> {
-        if depth >= MAX_DIR_DEPTH {
-            return Err(Error::DirectoryTooDeep(self.entry.position));
-        }
-        if visited.len() >= MAX_CHAIN_BLOCKS {
-            return Err(Error::ChainLoop(self.entry.position));
-        }
-        if !visited.insert(self.entry.position) {
-            return Ok(());
-        }
-        let entries = read_block(file, self.entry.position, blowfish)?;
-        let path = self.entry.path_buf().clone();
-        let mapped_entries: HashMap<PathBuf, Entry> = entries
-            .iter()
-            .filter(|e| !e.is_empty())
-            .filter(|e| e.name[0] != 0x2E)
-            .map(|entry| {
-                let mut cloned_path = path.clone();
-                cloned_path.push(entry.path_buf());
-                (entry.path_buf(), *entry)
-            })
-            .collect();
-        self.entries.extend(mapped_entries);
-
-        let mut dirs: HashMap<PathBuf, Directory> = entries
-            .iter()
-            .filter(|e| e.is_dir())
-            .filter(|e| e.name[0] != 0x2E) // 0x2E -> "."
-            .map(|e| Directory::from(*e))
-            .map(|d| (d.entry.path_buf(), d))
-            .collect();
-
-        for d in dirs.values_mut() {
-            d.expand_from_file_guarded(file, blowfish, visited, depth + 1)?;
-        }
-
-        self.directories.extend(dirs);
-
-        Ok(())
     }
 
     /// Prints out all entries of a directory recursively.
@@ -237,6 +186,7 @@ mod tests {
     use super::*;
     use crate::pk2::constants::{BLOCK_SIZE, ENTRY_SIZE};
     use crate::pk2::key::Pk2Key;
+    use bytes::Bytes;
 
     /// A fixture key, not the real archive key: these tests encrypt and
     /// decrypt with the same cipher, so any valid key exercises the walk.
@@ -290,11 +240,11 @@ mod tests {
             };
             bytes.extend_from_slice(&dir_block(child, &blowfish));
         }
-        let mut cursor = Cursor::new(Bytes::from(bytes));
+        let source = Bytes::from(bytes);
         let mut root = Directory::from(Entry::from(&dir_entry_bytes(BLOCK_SIZE as u64)[..]));
 
         assert!(matches!(
-            root.expand(&mut cursor, &blowfish),
+            root.expand(&source, &blowfish),
             Err(Error::DirectoryTooDeep(_))
         ));
     }
@@ -314,10 +264,10 @@ mod tests {
             };
             bytes.extend_from_slice(&dir_block(child, &blowfish));
         }
-        let mut cursor = Cursor::new(Bytes::from(bytes));
+        let source = Bytes::from(bytes);
         let mut root = Directory::from(Entry::from(&dir_entry_bytes(BLOCK_SIZE as u64)[..]));
 
-        assert!(root.expand(&mut cursor, &blowfish).is_ok());
+        assert!(root.expand(&source, &blowfish).is_ok());
         assert_eq!(root.directories.len(), 1);
     }
 }
