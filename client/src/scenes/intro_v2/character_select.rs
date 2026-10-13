@@ -218,6 +218,26 @@ pub(crate) fn selected_control_buttons(assets: &IntroV2Assets, fonts: &FontAsset
     }
 }
 
+/// How long the soft-deletion window still has to run, as the player reads it.
+///
+/// IDEA. `LobbyCharacter::deletion_time` is the remaining window **in minutes**
+/// (a fresh delete carries `60 27 00 00` = 10080 = 7 days). Nothing read it:
+/// the only cue a pending character gave was that its button row had changed
+/// to Restore + Cancel. Days and hours are what a 7-day window is about;
+/// minutes are shown only in the last hour, where they are the whole story.
+fn deletion_countdown(minutes: u32) -> String {
+    let days = minutes / (24 * 60);
+    let hours = (minutes % (24 * 60)) / 60;
+    let mins = minutes % 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
 /// Control row for a character inside the deletion-pending window: the
 /// original swaps Start/Delete for **Restore + Cancel**
 /// (`UIO_CTL_CHARACTER_DELETE_CONDITION`, `resinfo/pscharacterselect.txt`), so
@@ -227,7 +247,10 @@ pub(crate) fn deleting_control_buttons(
     assets: &IntroV2Assets,
     fonts: &FontAssets,
     ui_strings: &ClientUiStrings,
+    deletion_time: Option<u32>,
 ) -> impl Scene {
+    let countdown_font = fonts.nine.clone();
+    let countdown = deletion_time.map(deletion_countdown).unwrap_or_default();
     let restore_font = fonts.nine.clone();
     let cancel_font = fonts.nine.clone();
     let restore_sound = assets.sound_button_sound_a.clone();
@@ -249,6 +272,12 @@ pub(crate) fn deleting_control_buttons(
             column_gap: px(15),
         }
         Children [
+            (
+                label(&countdown, countdown_font, 16.0)
+                TextColor(Color::srgb_u8(255, 200, 120))
+                Node { align_self: AlignSelf::Center }
+                Pickable::IGNORE
+            ),
             (
                 image_button(main_button_style(assets), 91.0, 41.0)
                 ButtonSound({restore_sound})
@@ -961,7 +990,12 @@ pub fn spawn_selection_ui(
     // Start/Delete/Cancel (#202).
     if info.0.is_deleting {
         commands
-            .spawn_scene(deleting_control_buttons(&assets, &fonts, &ui_strings))
+            .spawn_scene(deleting_control_buttons(
+                &assets,
+                &fonts,
+                &ui_strings,
+                info.0.deletion_time,
+            ))
             .insert((UiTargetCamera(camera), IntroV2Ui));
     } else {
         commands
@@ -1548,6 +1582,19 @@ mod lineup_test {
     /// frame `0x22` is the middle of both. Reading it as one number made that
     /// middle a 1.133 giant and gave Volume no effect at all — this pins the
     /// three facts the packet model states, not a curve we invented.
+    /// `deletion_time` is minutes, and a fresh delete carries 10080 of them
+    /// (`60 27 00 00` on the wire = 7 days). Nothing read it before: the only
+    /// cue a pending character gave was that its button row had changed.
+    #[test]
+    fn the_deletion_countdown_reads_minutes_as_days_and_hours() {
+        assert_eq!(deletion_countdown(10080), "7d 0h");
+        assert_eq!(deletion_countdown(10080 - 90), "6d 22h");
+        // under a day the hours matter, under an hour only the minutes do
+        assert_eq!(deletion_countdown(125), "2h 5m");
+        assert_eq!(deletion_countdown(45), "45m");
+        assert_eq!(deletion_countdown(0), "0m");
+    }
+
     #[test]
     fn body_scale_reads_the_byte_as_two_nibbles() {
         // factory middle: unscaled
