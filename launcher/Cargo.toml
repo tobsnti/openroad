@@ -1,6 +1,7 @@
 [package]
 name = "launcher"
 version.workspace = true
+publish = false
 edition = "2024"
 authors.workspace = true
 repository.workspace = true
