@@ -1,2 +1,6 @@
 [toolchain]
 channel = "stable"
+# The browser target is part of the build surface, not a local setup step: without
+# it listed here, `cargo check --target wasm32-unknown-unknown` depends on whoever
+# happened to run `rustup target add`.
+targets = ["wasm32-unknown-unknown"]

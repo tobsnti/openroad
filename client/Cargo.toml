@@ -77,7 +77,6 @@ objc2-app-kit = { version = "0.2", features = ["NSEvent"] }
 workspace = true
 features = [
     "dds",
-    "file_watcher",
     "vorbis",
     "bevy_render",
     "bevy_pbr",
@@ -88,6 +87,21 @@ features = [
     "bevy_remote",
     "bevy_dev_tools",
 ]
+
+# Hot reload stays on every target that can have it. `file_watcher` is a
+# `compile_error!` on wasm32 (bevy_asset/src/io/mod.rs), so it cannot live in the
+# unconditional list above; cargo unions the features of both entries.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.bevy]
+workspace = true
+features = ["file_watcher"]
+
+# `getrandom` reaches us three times and only two of them build for wasm32:
+# 0.3 via `rand`, 0.4 via `bevy_egui`. (0.2 arrives through the `const-random`
+# proc macro, which compiles for the host.) Neither has a browser backend unless
+# its `wasm_js` feature is on, and nothing in our graph turns it on.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [features]
 default = ["skinned_meshes"]
