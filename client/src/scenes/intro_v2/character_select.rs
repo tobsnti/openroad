@@ -218,6 +218,26 @@ pub(crate) fn selected_control_buttons(assets: &IntroV2Assets, fonts: &FontAsset
     }
 }
 
+/// How long the soft-deletion window still has to run, as the player reads it.
+///
+/// IDEA. `LobbyCharacter::deletion_time` is the remaining window **in minutes**
+/// (a fresh delete carries `60 27 00 00` = 10080 = 7 days). Nothing read it:
+/// the only cue a pending character gave was that its button row had changed
+/// to Restore + Cancel. Days and hours are what a 7-day window is about;
+/// minutes are shown only in the last hour, where they are the whole story.
+fn deletion_countdown(minutes: u32) -> String {
+    let days = minutes / (24 * 60);
+    let hours = (minutes % (24 * 60)) / 60;
+    let mins = minutes % 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
+    }
+}
+
 /// Control row for a character inside the deletion-pending window: the
 /// original swaps Start/Delete for **Restore + Cancel**
 /// (`UIO_CTL_CHARACTER_DELETE_CONDITION`, `resinfo/pscharacterselect.txt`), so
@@ -227,7 +247,10 @@ pub(crate) fn deleting_control_buttons(
     assets: &IntroV2Assets,
     fonts: &FontAssets,
     ui_strings: &ClientUiStrings,
+    deletion_time: Option<u32>,
 ) -> impl Scene {
+    let countdown_font = fonts.nine.clone();
+    let countdown = deletion_time.map(deletion_countdown).unwrap_or_default();
     let restore_font = fonts.nine.clone();
     let cancel_font = fonts.nine.clone();
     let restore_sound = assets.sound_button_sound_a.clone();
@@ -249,6 +272,12 @@ pub(crate) fn deleting_control_buttons(
             column_gap: px(15),
         }
         Children [
+            (
+                label(&countdown, countdown_font, 16.0)
+                TextColor(Color::srgb_u8(255, 200, 120))
+                Node { align_self: AlignSelf::Center }
+                Pickable::IGNORE
+            ),
             (
                 image_button(main_button_style(assets), 91.0, 41.0)
                 ButtonSound({restore_sound})
@@ -370,10 +399,14 @@ pub fn on_char_selection_action_response(
     mut reader: MessageReader<CharacterSelectionActionResponse>,
     mut commands: Commands,
     origin: Res<WorldOrigin>,
+    existing_characters: Query<Entity, With<SelectableCharacterV2>>,
 ) {
     for res in reader.read() {
         if let Some(err) = res.error_code {
             error!("[CharacterSelectionAction] Error : {}", err);
+            // A rejected list request carries no roster. Rendering on past it
+            // used to build the lineup from whatever the last frame held.
+            continue;
         }
 
         // Characters are lined up between the start and end offsets on the
@@ -385,6 +418,14 @@ pub fn on_char_selection_action_response(
         let start =
             origin.to_render(char_select_scene.0.cam_base() * Vec3::new(-1.0, 1.0, 1.0)) + begin;
         if let Some(characters) = &res.characters {
+            // The server sends a list response more than once — a failed
+            // action can arrive twice byte-identical, 20 ms apart, and the
+            // packet model says so (`CharacterSelectionActionResponse`).
+            // Spawning without clearing first stacked a second lineup on top
+            // of the first; the delete path has always cleared.
+            for entity in existing_characters.iter() {
+                commands.entity(entity).despawn();
+            }
             for (i, char) in characters.characters.iter().enumerate() {
                 // Passive RE evidence (EP-RE #239): log every lobby char's
                 // server-sent scale byte + stats. Growing the scale corpus is
@@ -618,6 +659,22 @@ pub fn on_character_clicked(
             CAMERA_ZOOM_DURATION,
         )));
     commands.insert_resource(SelectedCharacterV2(root));
+}
+
+/// Body scale from the lobby's two-nibble byte.
+///
+/// IDEA. `LobbyCharacter::scale` packs Height in the low nibble and Volume in
+/// the high one, each `0..4` with `2` as the factory middle. There is no
+/// measured curve for the two steps, so this keeps the one thing the data does
+/// state — the middle is unscaled — and spreads the remaining steps evenly
+/// either side. Volume has no separate axis in our renderer yet, so both
+/// nibbles feed the uniform scale and Height carries the weight; a per-axis
+/// split is a later slice, not a guess made here.
+fn lobby_body_scale(byte: u8) -> f32 {
+    const STEP: f32 = 0.05;
+    let height = (byte & 0x0F).min(4) as f32 - 2.0;
+    let volume = (byte >> 4).min(4) as f32 - 2.0;
+    1.0 + (height + volume * 0.5) * STEP
 }
 
 fn zoom_out_camera(
@@ -908,7 +965,12 @@ pub fn spawn_selection_ui(
     // Start/Delete/Cancel (#202).
     if info.0.is_deleting {
         commands
-            .spawn_scene(deleting_control_buttons(&assets, &fonts, &ui_strings))
+            .spawn_scene(deleting_control_buttons(
+                &assets,
+                &fonts,
+                &ui_strings,
+                info.0.deletion_time,
+            ))
             .insert((UiTargetCamera(camera), IntroV2Ui));
     } else {
         commands
@@ -1444,7 +1506,11 @@ pub fn spawn_lobby_character(
     resource_path: Option<String>,
     translation: Vec3,
 ) -> Entity {
-    let scale = 1.0 + (character.scale as f32 / 255.0);
+    // The scale byte is two nibbles, not one number: low = Height, high =
+    // Volume, each 0..4 with 2 as the factory middle (`LobbyCharacter::scale`,
+    // pinned by its own tests). Reading it as `1.0 + byte/255` made the
+    // factory 0x22 a 1.133 giant and left Volume with no effect at all.
+    let scale = lobby_body_scale(character.scale);
     let transform = Transform::from_translation(translation)
         .with_scale(Vec3::new(-scale, scale, scale))
         .with_rotation(Quat::from_rotation_y(PI));
@@ -1526,5 +1592,42 @@ mod tests {
         assert!(shown.contains('\n'), "literal \\n must become a real break");
         assert!(!shown.contains("\\n"), "no escapes may survive");
         assert_eq!(shown.lines().count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod lineup_test {
+    use super::*;
+
+    /// The byte is two nibbles (`LobbyCharacter::scale`), and the factory
+    /// frame `0x22` is the middle of both. Reading it as one number made that
+    /// middle a 1.133 giant and gave Volume no effect at all — this pins the
+    /// three facts the packet model states, not a curve we invented.
+    /// `deletion_time` is minutes, and a fresh delete carries 10080 of them
+    /// (`60 27 00 00` on the wire = 7 days). Nothing read it before: the only
+    /// cue a pending character gave was that its button row had changed.
+    #[test]
+    fn the_deletion_countdown_reads_minutes_as_days_and_hours() {
+        assert_eq!(deletion_countdown(10080), "7d 0h");
+        assert_eq!(deletion_countdown(10080 - 90), "6d 22h");
+        // under a day the hours matter, under an hour only the minutes do
+        assert_eq!(deletion_countdown(125), "2h 5m");
+        assert_eq!(deletion_countdown(45), "45m");
+        assert_eq!(deletion_countdown(0), "0m");
+    }
+
+    #[test]
+    fn body_scale_reads_the_byte_as_two_nibbles() {
+        // factory middle: unscaled
+        assert!((lobby_body_scale(0x22) - 1.0).abs() < 1e-6);
+        // Height one step up and one step down move in opposite directions
+        assert!(lobby_body_scale(0x23) > lobby_body_scale(0x22));
+        assert!(lobby_body_scale(0x21) < lobby_body_scale(0x22));
+        // Volume moves at all — the old formula could not see it
+        assert_ne!(lobby_body_scale(0x32), lobby_body_scale(0x22));
+        // the stops stay inside a sane range
+        assert!(lobby_body_scale(0x20) > 0.5 && lobby_body_scale(0x44) < 1.5);
+        // the old reading made the factory byte a 13 % giant
+        assert!((1.0 + 0x22 as f32 / 255.0) > 1.13);
     }
 }

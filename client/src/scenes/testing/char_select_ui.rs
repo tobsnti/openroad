@@ -101,10 +101,13 @@ fn spawn_preview(
         .insert(UiTargetCamera(camera));
     if deleting {
         commands
+            // A preview must seed the value it is meant to show: 10080
+            // minutes is the fresh 7-day window the wire carries.
             .spawn_scene(character_select::deleting_control_buttons(
                 &assets,
                 &fonts,
                 &ui_strings,
+                Some(10080),
             ))
             .insert(UiTargetCamera(camera));
     } else {
