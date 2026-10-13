@@ -60,6 +60,21 @@ fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()
     Ok(())
 }
 
+/// Neither `FileExt` exists outside unix and windows, so on any other target
+/// the two arms above leave `read_exact_at` undefined and the crate does not
+/// compile at all — `wasm32-unknown-unknown` hit exactly that. The positional
+/// read is the archive's only I/O primitive, so the arm reports it as missing
+/// rather than faking a seek: a browser path has to supply a different source
+/// (the reader is already half-abstracted over `Cursor<Bytes>`), not a worse
+/// `File`.
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(_file: &File, _buf: &mut [u8], _offset: u64) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "PK2 positional read needs a platform with FileExt; supply an in-memory source instead",
+    ))
+}
+
 /// PK2 archive lookups are case-insensitive — the original Windows client
 /// relies on it: textdata routinely references files in a different case than
 /// the archive stores them (e.g. `char\china\chinaman_adventurer.bsr` for the
