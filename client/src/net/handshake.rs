@@ -1,6 +1,7 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use bevy::log::error;
 use bevy::prelude::debug;
@@ -42,6 +43,11 @@ pub enum HandshakeError {
     Io(#[from] std::io::Error),
     #[error("parsing a handshake frame failed: {0}")]
     Frame(#[from] SilkroadFrameError),
+    /// Our own buffer, not a protocol limit: a frame carries a 16-bit length
+    /// field, but the handshake's frames measure 43/15/26 bytes on the wire, so
+    /// 4 KiB is generous for this one reader.
+    #[error("a handshake frame did not fit in our {0}-byte handshake buffer")]
+    FrameTooLarge(usize),
 }
 
 /// The handshake flag byte, as the original branches on it
@@ -113,19 +119,71 @@ pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeEr
     Ok(flags)
 }
 
+/// How long the rest of a frame already in flight may take to arrive.
+///
+/// Not a value from the original: the peer has already sent this frame's head,
+/// so its tail is one round trip away, and the number's only job is to end a
+/// stall — not to time the network.
+const FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reads one whole frame, carrying a frame that TCP split across segments.
+///
+/// `SilkroadFrame::parse` answers `Incomplete` while a frame's bytes are still
+/// on their way. The in-game loop replies to that by keeping the tail and
+/// reading again (`plugins/net/plugin.rs`, `FrameStep::Incomplete => break`);
+/// the handshake was the only reader that gave up instead, so a split 43-byte
+/// setup frame failed the login. Re-parsing the growing buffer is sound here
+/// because a handshake frame is never encrypted: `parse` only inspects these
+/// bytes, it does not decrypt them in place.
+///
+/// Reading until the peer is done would be the next defect, so three bounds end
+/// the loop: end of stream, a frame that does not fit the buffer (ours, not the
+/// protocol's), and [`FRAME_COMPLETION_TIMEOUT`] on the continuation reads. The first read keeps
+/// the socket's own blocking behaviour, as before. A read that carries more
+/// than this frame still drops the surplus, also as before — the handshake is
+/// strictly one request per response.
+fn read_frame(
+    stream: &mut TcpStream,
+    security: Arc<RwLock<SilkroadSecurityState>>,
+) -> Result<SilkroadFrame, HandshakeError> {
+    let mut buf = [0; 4096];
+    let mut filled = stream.read(&mut buf)?;
+    loop {
+        match SilkroadFrame::parse(&mut buf[..filled], security.clone()) {
+            Ok((_, frame)) => return Ok(frame),
+            Err(SilkroadFrameError::Incomplete) => {
+                if filled == buf.len() {
+                    return Err(HandshakeError::FrameTooLarge(buf.len()));
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+        let read = read_continuation(stream, &mut buf[filled..])?;
+        if read == 0 {
+            return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
+        }
+        filled += read;
+    }
+}
+
+/// One continuation read, bounded in time so a peer that stops mid-frame cannot
+/// hold the connect thread. The previous timeout is put back before returning:
+/// the module-identification read that follows the handshake keeps its own
+/// behaviour.
+fn read_continuation(stream: &mut TcpStream, buf: &mut [u8]) -> Result<usize, HandshakeError> {
+    let previous = stream.read_timeout()?;
+    stream.set_read_timeout(Some(FRAME_COMPLETION_TIMEOUT))?;
+    let read = stream.read(buf);
+    let _ = stream.set_read_timeout(previous);
+    Ok(read?)
+}
+
 pub(crate) fn initialize(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    // A short read is a peer's doing, not a bug here: TCP may split the 43-byte
-    // setup frame, and `parse` says so with `Incomplete`. Reported as an error
-    // the caller can surface, because `expect` here killed the connect thread
-    // (`connection.rs` catches the unwind and reports "handshake panicked").
-    let read_bytes = stream.read(&mut buf)?;
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())?;
+    let frame = read_frame(stream, security.clone())?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -255,10 +313,7 @@ pub(crate) fn finalize(
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
-    let sec = security.clone();
-    let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf)?;
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())?;
+    let frame = read_frame(stream, security.clone())?;
     return match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -699,5 +754,71 @@ mod test {
             "expected a reported read/parse error, got {error}"
         );
         peer.join().expect("listener thread");
+    }
+
+    /// The same frame, but the peer does send the rest: TCP is allowed to split
+    /// it, so the handshake has to wait for the tail instead of failing the
+    /// login. This is the case a relay reproduced by cutting the first server
+    /// payload into 20 + 23 bytes.
+    #[test]
+    fn a_setup_frame_split_across_two_segments_still_initializes() {
+        let frame = setup_frame_full_flags();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let peer = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("accept the client");
+            peer.write_all(&frame[..20])
+                .expect("write the first segment");
+            // Two sends with a gap, so they cannot coalesce into one segment.
+            std::thread::sleep(Duration::from_millis(20));
+            peer.write_all(&frame[20..])
+                .expect("write the second segment");
+            // Drain the client's reply, or dropping the socket resets the
+            // connection while it is still writing.
+            let mut reply = [0; 64];
+            let _ = peer.read(&mut reply);
+        });
+
+        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let state = initialize(&mut stream, security).expect("a split setup frame initializes");
+        assert!(matches!(state.state, SilkroadSecurity::Initialized));
+        peer.join().expect("listener thread");
+    }
+
+    /// The bound that keeps waiting for the tail from becoming the next defect:
+    /// a `0x7FFF` content length can never be satisfied out of the handshake's
+    /// own buffer, so `parse` answers `Incomplete` for every read. The asserted
+    /// variant is the point — without the bound this peer, which is still
+    /// sending, gets blamed for an "unexpected end of file" instead.
+    #[test]
+    fn a_length_prefix_larger_than_the_handshake_buffer_is_rejected() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let peer = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("accept the client");
+            // content length 0x7FFF, unencrypted, then opcode/count/crc
+            let mut head = vec![0xFF, 0x7F];
+            head.extend_from_slice(&[0; 6]);
+            let _ = peer.write_all(&head);
+            // Keep feeding: the reader has to stop on the bound, not on silence.
+            let filler = [0; 1024];
+            for _ in 0..8 {
+                if peer.write_all(&filler).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let Err(error) = initialize(&mut stream, security) else {
+            panic!("an oversized frame cannot initialize");
+        };
+        assert!(
+            matches!(error, HandshakeError::FrameTooLarge(4096)),
+            "expected the buffer bound to fire, got {error}"
+        );
+        let _ = peer.join();
     }
 }
