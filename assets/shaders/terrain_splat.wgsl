@@ -429,14 +429,40 @@ fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>,
 // Tile `id` is layer `id % 256` of `tile_array_<id / 256>`. The array varies per fragment, so
 // each branch samples with explicit gradients (legal in non-uniform control flow, unlike an
 // implicit-derivative `textureSample`).
+//
+// The layer is clamped against the array's OWN depth, asked for per branch rather than passed
+// in: `build_tile_arrays` sizes each array to its highest *defined* tile id, so on a drop whose
+// `tile2d.ifo` stops before 1024 the ids above it address past the end, and WGSL leaves an
+// out-of-range array layer indeterminate. Asking the bound texture means the clamp cannot drift
+// from what was actually built -- and it is why there is no uniform to keep in step here.
 fn sample_tile(tile: u32, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
-    let layer = i32(tile & 255u);
+    let slot = tile & 255u;
     switch (min(tile, 1023u) >> 8u) {
-        case 0u: { return textureSampleGrad(tile_array_0, tile_sampler, uv, layer, ddx, ddy); }
-        case 1u: { return textureSampleGrad(tile_array_1, tile_sampler, uv, layer, ddx, ddy); }
-        case 2u: { return textureSampleGrad(tile_array_2, tile_sampler, uv, layer, ddx, ddy); }
-        default: { return textureSampleGrad(tile_array_3, tile_sampler, uv, layer, ddx, ddy); }
+        case 0u: {
+            let layer = existing_layer(slot, textureNumLayers(tile_array_0));
+            return textureSampleGrad(tile_array_0, tile_sampler, uv, layer, ddx, ddy);
+        }
+        case 1u: {
+            let layer = existing_layer(slot, textureNumLayers(tile_array_1));
+            return textureSampleGrad(tile_array_1, tile_sampler, uv, layer, ddx, ddy);
+        }
+        case 2u: {
+            let layer = existing_layer(slot, textureNumLayers(tile_array_2));
+            return textureSampleGrad(tile_array_2, tile_sampler, uv, layer, ddx, ddy);
+        }
+        default: {
+            let layer = existing_layer(slot, textureNumLayers(tile_array_3));
+            return textureSampleGrad(tile_array_3, tile_sampler, uv, layer, ddx, ddy);
+        }
     }
+}
+
+// Turns an id past the end of a trimmed array into the last layer it really has. That is
+// defined-but-arbitrary rather than correct: the tile has no texture either way, and the
+// `build_tile_arrays` warning is what says so. Landing on the white fallback instead would mean
+// building one extra layer per gapped array -- a separate choice, not needed for correctness.
+fn existing_layer(slot: u32, layers: u32) -> i32 {
+    return i32(min(slot, max(layers, 1u) - 1u));
 }
 
 // Code -> repeat factor, all five from the shared params buffer so every
