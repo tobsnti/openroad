@@ -13,6 +13,7 @@ use crate::plugins::textdata::{ClientEffectSounds, ClientUiStrings};
 use style::{ButtonSound, ImageButtonStyle, PasswordEcho};
 
 pub mod choice_confirm;
+pub mod focus_ring;
 pub mod style;
 pub mod widgets;
 
@@ -29,6 +30,7 @@ impl Plugin for UiV2Plugin {
                 Update,
                 (
                     update_image_button_visuals,
+                    focus_ring::update_focus_ring,
                     play_button_press_sound,
                     update_password_echo,
                     // The dialog needs the loaded font/string tables, and
