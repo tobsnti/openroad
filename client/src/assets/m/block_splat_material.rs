@@ -41,8 +41,15 @@ use bevy::shader::ShaderRef;
 /// Size of [`TerrainTileAtlas`]'s CPU-side registry, mapping every tile id the map format can
 /// express to its texture handle. `JMXVMAPM` packs a vertex's tile id into 10 bits
 /// (`assets/m/mod.rs`: `flags & 0b0000_0011_1111_1111`), so 1024 covers the entire id space by
-/// construction. The shipped `tile2d.ifo` defines 719 ids (dense 0..718), of which 685 are
-/// referenced by some region (Map.pk2 census 2026-08-08).
+/// construction.
+///
+/// How many of those ids a `tile2d.ifo` actually defines is a property of the *drop*, not of the
+/// format, so nothing here may assume it. Measured on one Map.pk2 (2026-10-14, 4644 regions):
+/// `tile2d.ifo` defines 603 ids (dense 0..602), while the regions reference 685 distinct ids with
+/// 718 the highest — 116 ids the map names and the file does not. That 685 matches the earlier
+/// census exactly, so its "719 ids (dense 0..718)" was most likely the referenced *span* (718 + 1)
+/// read as a definition count. `build_tile_arrays` therefore reports the ids it holds no layer
+/// for, instead of trusting a number written down here.
 ///
 /// The GPU side is `TerrainTileArrays` (`tile_arrays.rs`): four `texture_2d_array`s of 256
 /// layers covering exactly this id space, built once from every tile's normalized layer and
