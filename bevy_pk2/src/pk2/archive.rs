@@ -16,6 +16,7 @@ use crate::pk2::entry::Entry;
 use crate::pk2::errors::Error;
 use crate::pk2::header::Header;
 use crate::pk2::key::Pk2Key;
+use crate::pk2::lazy_index::{self, LazyIndex};
 use crate::pk2::read_stats;
 use crate::pk2::source::Pk2Source;
 
@@ -33,6 +34,10 @@ pub struct Archive {
     strip_prefix: OsString,
     pub root: Directory,
     entries: HashMap<PathBuf, Entry>,
+    /// Set only by [`Archive::from_source_lazy`]. An eagerly indexed archive
+    /// answers every lookup from `entries`; a lazy one has that map empty and
+    /// resolves a path by walking just the directories on it.
+    lazy: Option<Arc<LazyIndex>>,
 }
 
 /// PK2 archive lookups are case-insensitive — the original Windows client
@@ -61,14 +66,7 @@ impl Archive {
     /// file. That is what makes an archive in memory — a test fixture, or a
     /// byte range fetched over the network — the same thing as one on disk.
     pub fn from_source(source: Arc<dyn Pk2Source>, key: &Pk2Key) -> Result<Archive, Error> {
-        let blowfish = Blowfish::from_key(key)
-            .map_err(|_| Error::InvalidHeader("PK2 key rejected by the cipher (bad length?)"))?;
-        let mut header_buf: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
-        source
-            .read_exact_at(&mut header_buf, 0)
-            .map_err(|_| Error::InvalidHeader("header shorter than 256 bytes"))?;
-        let header = Header::from(header_buf);
-        header.verify(&blowfish)?;
+        let blowfish = verified_cipher(&*source, key)?;
         let root = Directory::index(&*source, &blowfish)?;
         let entries = root
             .get_all_entries()
@@ -81,8 +79,68 @@ impl Archive {
             strip_prefix: "".into(),
             root,
             entries,
+            lazy: None,
         })
     }
+
+    /// Index nothing: resolve each path by walking only the directories on it.
+    ///
+    /// This is the same archive, read the other way round, and it exists for
+    /// the case where the index is the expensive part — a PK2 over HTTP, where
+    /// the eager walk of the user's 3,3 GB `Data.pk2` costs 5 024 ranged
+    /// requests before any file can be read, and one named file costs 5
+    /// (see [`crate::pk2::lazy_index`]).
+    ///
+    /// It is **additive**: [`Archive::from_source`] and `root.get_all_entries()`
+    /// are untouched, because listing the whole tree is what every caller
+    /// outside this crate wants. What a lazy archive does *not* have is that
+    /// listing — `root` is the unexpanded root and `get_all_entries()` on it is
+    /// empty by construction.
+    pub fn from_source_lazy(source: Arc<dyn Pk2Source>, key: &Pk2Key) -> Result<Archive, Error> {
+        let blowfish = verified_cipher(&*source, key)?;
+        Ok(Archive {
+            source,
+            blowfish,
+            strip_prefix: "".into(),
+            root: Directory::from(lazy_index::root_entry()),
+            entries: HashMap::new(),
+            lazy: Some(Arc::new(LazyIndex::new())),
+        })
+    }
+
+    /// The one entry lookup both index modes go through: the eager map first
+    /// (a lazy archive's is empty), then the path walk.
+    fn entry_for(&self, path: &Path) -> Option<Entry> {
+        let path = normalize(path);
+        if let Some(entry) = self.entries.get(&path) {
+            return Some(*entry);
+        }
+        match self
+            .lazy
+            .as_ref()?
+            .lookup(&*self.source, &self.blowfish, &path)
+        {
+            Ok(entry) => entry,
+            Err(e) => {
+                error!("lazy lookup of {} failed: {e:?}", path.display());
+                None
+            }
+        }
+    }
+}
+
+/// The key and the header, checked before anything is read as structure. Shared
+/// by both index modes so a malformed archive is reported identically.
+fn verified_cipher(source: &dyn Pk2Source, key: &Pk2Key) -> Result<Blowfish, Error> {
+    let blowfish = Blowfish::from_key(key)
+        .map_err(|_| Error::InvalidHeader("PK2 key rejected by the cipher (bad length?)"))?;
+    let mut header_buf: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
+    source
+        .read_exact_at(&mut header_buf, 0)
+        .map_err(|_| Error::InvalidHeader("header shorter than 256 bytes"))?;
+    let header = Header::from(header_buf);
+    header.verify(&blowfish)?;
+    Ok(blowfish)
 }
 
 impl Archive {
@@ -142,7 +200,7 @@ impl AssetReader for Archive {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader>, AssetReaderError> {
         let stripped_path = normalize(path);
         debug!("reading path: {}", stripped_path.display());
-        match self.entries.get(&stripped_path) {
+        match self.entry_for(path) {
             None => Err(AssetReaderError::NotFound(stripped_path)),
             Some(entry) => {
                 // Positioned read straight into the buffer handed to the
@@ -196,7 +254,7 @@ impl AssetReader for Archive {
         let stripped_path = normalize(path);
         debug!("reading dir path: {}", stripped_path.display());
 
-        let entry = match self.entries.get(&stripped_path) {
+        let entry = match self.entry_for(path) {
             None => return Err(AssetReaderError::NotFound(path.to_path_buf())),
             Some(entry) => entry,
         };
@@ -206,6 +264,27 @@ impl AssetReader for Archive {
                 ErrorKind::NotADirectory,
                 format!("{}", path.display()),
             ))));
+        }
+
+        // A lazy archive has no expanded tree to ask, so the one directory is
+        // walked out on demand. Listing is not on the load-by-path hot path,
+        // which is why it may pay the whole chain.
+        if let Some(lazy) = self.lazy.as_ref() {
+            let listed = lazy
+                .list(&*self.source, &self.blowfish, &stripped_path)
+                .map_err(|e| {
+                    AssetReaderError::Io(Arc::new(std::io::Error::other(format!("{e:?}"))))
+                })?
+                .ok_or_else(|| AssetReaderError::NotFound(path.to_path_buf()))?;
+            let entries: Vec<PathBuf> = listed
+                .iter()
+                .map(|e| {
+                    let mut pb = path.to_path_buf();
+                    pb.push(e.path_buf());
+                    pb
+                })
+                .collect();
+            return Ok(Box::new(futures::stream::iter(entries)));
         }
 
         // `root.directories` is keyed by the archive's original casing, so a
@@ -231,10 +310,9 @@ impl AssetReader for Archive {
     }
 
     async fn is_directory<'a>(&'a self, path: &'a Path) -> Result<bool, AssetReaderError> {
-        let stripped_path = normalize(path);
-        debug!("is dir path: {}", stripped_path.display());
+        debug!("is dir path: {}", normalize(path).display());
 
-        let entry = match self.entries.get(&stripped_path) {
+        let entry = match self.entry_for(path) {
             None => return Err(AssetReaderError::NotFound(path.to_path_buf())),
             Some(entry) => entry,
         };
@@ -247,7 +325,7 @@ impl Archive {
     /// Synchronously reads a contained file's bytes, for callers outside the
     /// asset system (e.g. test-scene tooling reading textdata directly).
     pub fn read_file_bytes(&self, path: &Path) -> Option<Vec<u8>> {
-        let entry = self.entries.get(&normalize(path))?;
+        let entry = self.entry_for(path)?;
         if !entry.is_file() {
             return None;
         }
