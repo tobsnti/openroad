@@ -38,6 +38,10 @@ pub enum HandshakeError {
     },
     #[error("handshake challenge arrived without a preceding key exchange (flags {0:#04x})")]
     MissingKeyExchange(u8),
+    #[error("reading a handshake frame failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("parsing a handshake frame failed: {0}")]
+    Frame(#[from] SilkroadFrameError),
 }
 
 /// The handshake flag byte, as the original branches on it
@@ -116,9 +120,12 @@ pub(crate) fn initialize(
     debug!("initializing handshake");
     let sec = security.clone();
     let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
+    // A short read is a peer's doing, not a bug here: TCP may split the 43-byte
+    // setup frame, and `parse` says so with `Incomplete`. Reported as an error
+    // the caller can surface, because `expect` here killed the connect thread
+    // (`connection.rs` catches the unwind and reports "handshake panicked").
+    let read_bytes = stream.read(&mut buf)?;
+    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -250,9 +257,8 @@ pub(crate) fn finalize(
     debug!("finalizing handshake");
     let sec = security.clone();
     let mut buf = [0; 4096];
-    let read_bytes = stream.read(&mut buf).expect("failed to read frame");
-    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())
-        .expect("failed to read handshake setup packet");
+    let read_bytes = stream.read(&mut buf)?;
+    let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], sec.clone())?;
     return match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -430,6 +436,8 @@ pub fn g_pow_x_mod_p(generator: u32, private: u32, prime: u32) -> u32 {
 
 #[cfg(test)]
 mod test {
+    use std::net::TcpListener;
+
     use super::*;
 
     /// A session mid-handshake: the client has computed B and K from the
@@ -633,5 +641,63 @@ mod test {
             .unwrap(),
             FLAG_CHALLENGE
         );
+    }
+
+    /// A `0x5000` phase-1 frame as a gateway sends it: the 6-byte frame header
+    /// plus the 37-byte body that flag byte `0x0E` announces
+    /// ([`expected_body_len`]) — 43 bytes, the size measured on the wire.
+    ///
+    /// The field values are a recorded handshake's, not round numbers: the CRC
+    /// seed in particular has to fit a byte, because `CRC::calculate` indexes
+    /// `seed + byte` into a 256x256 table.
+    fn setup_frame_full_flags() -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u8(FLAG_BLOWFISH | FLAG_SECURITY_BYTES | FLAG_KEY_EXCHANGE);
+        body.put_u64_le(0x2c47_84d7_180c_3b2d); // handshake blowfish key
+        body.put_u32_le(0xde20_6f6c); // sequence seed
+        body.put_u32_le(0xb9); // crc seed
+        body.put_u64_le(0x4180_cc82_3187_35b4); // handshake key
+        body.put_u32_le(8662); // generator
+        body.put_u32_le(2_622_084_571); // prime
+        body.put_u32_le(2_043_001_406); // server public
+        let body = body.freeze();
+
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x5000);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+
+    /// A peer that stops in the middle of the setup frame makes `parse` report
+    /// `Incomplete`, and that has to reach the caller. The `.expect` this
+    /// replaces panicked the `sro-connect` thread instead, which the ECS could
+    /// only report as "connection handshake panicked".
+    #[test]
+    fn a_setup_frame_cut_short_by_a_closing_peer_is_an_error() {
+        let frame = setup_frame_full_flags();
+        assert_eq!(frame.len(), 43, "flag byte 0x0E announces a 43-byte frame");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let peer = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("accept the client");
+            // Half a frame, then the stream ends with the dropped socket.
+            peer.write_all(&frame[..20]).expect("write the first half");
+        });
+
+        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        // `let Err(..) else`, not `expect_err`: the Ok type is not `Debug`.
+        let Err(error) = initialize(&mut stream, security) else {
+            panic!("half a frame cannot initialize");
+        };
+        assert!(
+            matches!(error, HandshakeError::Frame(_) | HandshakeError::Io(_)),
+            "expected a reported read/parse error, got {error}"
+        );
+        peer.join().expect("listener thread");
     }
 }
