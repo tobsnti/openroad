@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy::text::{EditableText, FontSourceTemplate, TextCursorStyle};
 use bevy::ui_widgets::Button;
 
+use super::focus_ring::FocusRing;
 use super::style::{ImageButtonStyle, PasswordEcho, TargetColor};
 
 /// A game-styled image button built on the headless widget button: emits
@@ -19,6 +20,7 @@ pub fn image_button(style: ImageButtonStyle, width: f32, height: f32) -> impl Sc
     bsn! {
         Button
         Hovered
+        FocusRing
         Node {
             width: px(width),
             height: px(height),
@@ -63,6 +65,7 @@ const INPUT_PAD_TOP: f32 = 3.0;
 pub fn text_input(font: Handle<Font>, tab: i32) -> impl Scene {
     bsn! {
         EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
+        FocusRing
         Node {
             width: percent(100),
             height: percent(100),
@@ -86,6 +89,9 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
 ) -> impl Scene {
     let echo_font = font.clone();
     bsn! {
+        // the ring belongs to the wrapper, not to the inner `EditableText`
+        // that carries the `TabIndex` — see `focus_ring::update_focus_ring`
+        FocusRing
         Node { width: percent(100), height: percent(100) }
         Children [
             (
