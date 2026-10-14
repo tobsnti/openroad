@@ -6,6 +6,9 @@ pub(crate) mod entry;
 pub(crate) mod errors;
 pub(crate) mod header;
 pub(crate) mod key;
+/// Resolving one path by walking only the directories on it, instead of
+/// indexing the whole archive first.
+pub(crate) mod lazy_index;
 pub(crate) mod read_stats;
 pub(crate) mod source;
 /// Reading the archive over the network instead of from a file. Off by
