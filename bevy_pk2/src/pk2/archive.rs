@@ -265,21 +265,21 @@ impl Archive {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pk2::constants::{BLOCK_SIZE, CHECKSUM, ENTRY_SIZE, SIGNATURE, VERSION};
     use bytes::Bytes;
 
     /// A fixture key, not the real archive key: the fixture is encrypted and
     /// read back with the same cipher, so any valid key exercises the path.
-    fn test_key() -> Pk2Key {
+    pub(crate) fn test_key() -> Pk2Key {
         Pk2Key::from_config("testkey", "00112233445566778899").expect("fixture key is valid")
     }
 
     /// The smallest thing that is still a real archive: a header that verifies,
     /// one index block carrying the root `.` entry and one file entry, and that
     /// file's bytes behind the block. Offsets are absolute, as in a real PK2.
-    fn tiny_archive(blowfish: &Blowfish, name: &str, body: &[u8]) -> Bytes {
+    pub(crate) fn tiny_archive(blowfish: &Blowfish, name: &str, body: &[u8]) -> Bytes {
         let mut header = [0u8; HEADER_SIZE];
         header[..30].copy_from_slice(SIGNATURE);
         header[30..34].copy_from_slice(&VERSION.to_le_bytes());

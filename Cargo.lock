@@ -1708,6 +1708,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_yaml",
+ "ureq",
 ]
 
 [[package]]
