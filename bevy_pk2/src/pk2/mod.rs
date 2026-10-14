@@ -8,4 +8,8 @@ pub(crate) mod header;
 pub(crate) mod key;
 pub(crate) mod read_stats;
 pub(crate) mod source;
+/// Reading the archive over the network instead of from a file. Off by
+/// default: it is the only thing in this crate that needs an HTTP client.
+#[cfg(feature = "http-source")]
+pub mod source_http;
 pub(crate) mod util;
