@@ -58,6 +58,7 @@ pub(super) fn build_tile_arrays(
     let skip_bytes = crate::assets::texture_detail::bc1_top_levels_len(TILE_LAYER_SIZE, skip);
     let white = white_tile_layer();
     let mut missing = 0usize;
+    let mut counts = [0usize; TILE_ARRAY_COUNT];
     let arrays = std::array::from_fn(|array| {
         let first = array * TILE_ARRAY_LAYERS as usize;
         let ids = &atlas.slots[first..first + TILE_ARRAY_LAYERS as usize];
@@ -70,6 +71,7 @@ pub(super) fn build_tile_arrays(
             .rposition(Option::is_some)
             .map_or(1, |i| i + 1)
             .max(2);
+        counts[array] = count;
         let mut data = Vec::with_capacity(count * (tile_layer_len() - skip_bytes));
         for slot in &ids[..count] {
             let layer = slot
@@ -90,9 +92,43 @@ pub(super) fn build_tile_arrays(
     if missing > 0 {
         warn!("{missing} ground tiles have no texture-array layer and render white");
     }
-    info!("ground tile arrays built");
+    // Trimming each array to its highest defined id leaves the rest of the id
+    // space addressable but unbacked, and nothing downstream notices: the splat
+    // shader derives the layer from the raw 10-bit id alone
+    // (`terrain_splat.wgsl`, `let layer = i32(tile & 255u)`), and WGSL leaves an
+    // out-of-range array layer indeterminate. Whether any map vertex names such
+    // an id is a property of the drop, so say what is missing and let the log
+    // answer it, rather than assuming either way.
+    let defined = atlas.slots.iter().flatten().count();
+    if let Some(first) = first_unbacked_id(&counts) {
+        warn!(
+            "ground tile arrays: {} of {} tile ids have no layer, first {first} \
+             (tile2d.ifo defines {defined}); the splat shader addresses every id, and WGSL \
+             leaves an out-of-range array layer indeterminate",
+            unbacked_layers(&counts),
+            TILE_ARRAY_COUNT * TILE_ARRAY_LAYERS as usize,
+        );
+    }
+    info!("ground tile arrays built: {defined} tile ids over {counts:?} layers");
     layers.0.write().unwrap().clear();
     commands.insert_resource(TerrainTileArrays(arrays));
+}
+
+/// Layers the splat shader can address but no array holds: per array, everything
+/// from its built layer count up to [`TILE_ARRAY_LAYERS`].
+fn unbacked_layers(counts: &[usize; TILE_ARRAY_COUNT]) -> usize {
+    counts
+        .iter()
+        .map(|count| (TILE_ARRAY_LAYERS as usize).saturating_sub(*count))
+        .sum()
+}
+
+/// The lowest tile id with no layer behind it, or `None` when every id has one.
+fn first_unbacked_id(counts: &[usize; TILE_ARRAY_COUNT]) -> Option<u32> {
+    counts
+        .iter()
+        .position(|count| *count < TILE_ARRAY_LAYERS as usize)
+        .map(|array| array as u32 * TILE_ARRAY_LAYERS + counts[array] as u32)
 }
 
 /// One tile array of `layers` layers, each starting `skip` levels down the
@@ -117,4 +153,47 @@ fn tile_array_image(layers: u32, skip: u32, data: Vec<u8>) -> Image {
     });
     image.data = Some(data);
     image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A drop that defines every id leaves nothing unbacked — the log must stay
+    /// quiet there, which is the only reason the warning is trustworthy when it
+    /// does fire.
+    #[test]
+    fn a_complete_id_space_is_fully_backed() {
+        let counts = [TILE_ARRAY_LAYERS as usize; TILE_ARRAY_COUNT];
+        assert_eq!(unbacked_layers(&counts), 0);
+        assert_eq!(first_unbacked_id(&counts), None);
+    }
+
+    /// The layer counts a 603-id `tile2d.ifo` produces (dense 0..602, measured
+    /// 2026-10-14): arrays 0 and 1 full, array 2 trimmed to 91, array 3 at its
+    /// two-layer floor. The first unbacked id must come out as 603 — the first
+    /// id that file does not define, and the map does reference ids above it.
+    #[test]
+    fn a_603_id_drop_leaves_the_rest_of_the_space_unbacked() {
+        let counts = [256, 256, 91, 2];
+        assert_eq!(first_unbacked_id(&counts), Some(603));
+        assert_eq!(unbacked_layers(&counts), 419);
+    }
+
+    /// A gap in the *first* array is reported from there, not from the last one.
+    #[test]
+    fn the_lowest_gap_wins() {
+        let counts = [100, 256, 256, 256];
+        assert_eq!(first_unbacked_id(&counts), Some(100));
+        assert_eq!(unbacked_layers(&counts), 156);
+    }
+
+    /// The two-layer floor `build_tile_arrays` applies to an empty array is
+    /// itself a gap, and at the right id.
+    #[test]
+    fn the_two_layer_floor_of_an_empty_array_is_a_gap() {
+        let counts = [256, 256, 256, 2];
+        assert_eq!(first_unbacked_id(&counts), Some(768 + 2));
+        assert_eq!(unbacked_layers(&counts), 254);
+    }
 }
