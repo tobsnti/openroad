@@ -429,6 +429,73 @@ mod tests {
         }
     }
 
+    /// The other half of the measurement above: the same file, the same
+    /// server, the same archive — read through the lazy index instead of the
+    /// eager one. This is the pair that makes the claim checkable, which is
+    /// why it lives next to it rather than in its own file.
+    ///
+    /// ```text
+    /// SRO_PK2_KEY=… SRO_PK2_SALT=… PK2_HTTP_URL=http://127.0.0.1:8099/Data.pk2 \
+    ///   PK2_DISK_PATH=<dir>/Data.pk2 PK2_HTTP_ENTRY=<path inside the archive> \
+    ///   cargo test -p bevy_pk2 --features http-source -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a local server over the user's own archive"]
+    fn measure_one_file_with_a_lazy_index() {
+        let url = std::env::var("PK2_HTTP_URL").expect("PK2_HTTP_URL");
+        let entry = std::env::var("PK2_HTTP_ENTRY").expect("PK2_HTTP_ENTRY");
+        let key = Pk2Key::resolve().expect("a key in the environment or config.yaml");
+
+        let source = Arc::new(HttpSource::open(&url).expect("range-capable server"));
+        let archive = Archive::from_source_lazy(source.clone(), &key).expect("opens over HTTP");
+        let (open_requests, open_bytes) = (source.requests(), source.transferred_bytes());
+        let over_http = archive
+            .read_file_bytes(Path::new(&entry))
+            .expect("the entry is in the archive");
+        println!(
+            "archive {} bytes; open (probe + header): {open_requests} requests / {open_bytes} bytes; \
+             entry {entry}: {} bytes resolved and read in {} requests / {} bytes; \
+             TOTAL {} requests / {} bytes ({:.6}% of the archive)",
+            source.size(),
+            over_http.len(),
+            source.requests() - open_requests,
+            source.transferred_bytes() - open_bytes,
+            source.requests(),
+            source.transferred_bytes(),
+            source.transferred_bytes() as f64 * 100.0 / source.size() as f64,
+        );
+
+        // The eager index of this archive costs 5 024 block requests; a path
+        // walk costs a handful. An exact number depends on the archive, so the
+        // assertion is the order of magnitude, which is the claim.
+        assert!(
+            source.requests() < 50,
+            "a path walk must not approach the eager index: {} requests",
+            source.requests()
+        );
+
+        if let Ok(path) = std::env::var("PK2_DISK_PATH") {
+            let from_disk = Archive::open(&path, &key)
+                .expect("the same archive on disk")
+                .read_file_bytes(Path::new(&entry))
+                .expect("the same entry");
+            println!(
+                "disk {} bytes, fnv1a {:016x}",
+                from_disk.len(),
+                fnv1a(&from_disk)
+            );
+            println!(
+                "http {} bytes, fnv1a {:016x}",
+                over_http.len(),
+                fnv1a(&over_http)
+            );
+            assert_eq!(
+                from_disk, over_http,
+                "the lazy walk and the eager index must agree byte for byte"
+            );
+        }
+    }
+
     /// A hash to quote in a report; the assertion above compares the bytes
     /// themselves, which is stronger.
     fn fnv1a(bytes: &[u8]) -> u64 {
