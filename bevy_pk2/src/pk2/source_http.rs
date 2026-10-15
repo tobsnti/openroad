@@ -17,6 +17,11 @@
 //!   proxy or a buggy server answering a shifted range would feed the parser
 //!   offset data; the cipher does not catch that inside a file body. The
 //!   `Content-Range` is therefore compared against the request.
+//!
+//! NOT COMPILED FOR wasm32. `ureq` -> `rustls` -> `ring` has no
+//! `wasm32-unknown-unknown` build, so `http-source` is inert there. A browser
+//! path is not a port of this file: `fetch` is asynchronous, so it needs a
+//! `Pk2Source` whose read is a future.
 
 use std::io::{Error, ErrorKind, Read, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
