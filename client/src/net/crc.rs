@@ -92,9 +92,16 @@ pub struct CRC {
 }
 
 impl From<u32> for CRC {
+    /// The seed indexes one of the table's 256 sub-tables, so only its low byte can
+    /// address anything: `calculate` adds a byte to `seed << 8` and reads a 256*256
+    /// table. The original masks the same way before storing it
+    /// (`sro_client.exe` 004bf9c0: `andl $0xff, %eax`), so this is the reference
+    /// behaviour, not a hardening of our own. A wider value is a protocol breach --
+    /// no 257th sub-table exists on either side -- and without the mask it indexed
+    /// past the table and killed the process.
     fn from(value: u32) -> Self {
         Self {
-            seed: value << 8,
+            seed: (value & 0xFF) << 8,
             table: gen_table(),
         }
     }
@@ -113,5 +120,77 @@ impl CRC {
             + (checksum >> 8 & 0xFF)
             + (checksum >> 16 & 0xFF)
             + (checksum & 0xFF)) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CRC;
+
+    /// One real gateway setup frame, byte for byte, with its own seed at offset 19.
+    /// Taken from `tools/src/bin/sro_proxy.rs`, which keeps it as a captured constant.
+    const LIVE_GATEWAY_SETUP: [u8; 43] = [
+        0x25, 0x00, 0x00, 0x50, 0x00, 0x00, 0x0e, 0x43, 0x65, 0xee, 0xcf, 0xd8, 0x83, 0x96, 0xbc,
+        0x54, 0x00, 0x00, 0x00, 0x46, 0x00, 0x00, 0x00, 0xa8, 0xde, 0xb1, 0x53, 0xb1, 0x15, 0x0f,
+        0xf3, 0x71, 0xa4, 0x9a, 0x37, 0xb0, 0x41, 0xd9, 0x2a, 0xd1, 0x54, 0x97, 0x02,
+    ];
+
+    /// Anchors the arithmetic against a value fixed elsewhere before this module existed,
+    /// so the other expectations here rest on something we did not choose ourselves.
+    #[test]
+    fn the_empty_buffer_under_seed_zero_is_fc() {
+        assert_eq!(CRC::from(0).calculate(&[]), 0xFC);
+    }
+
+    #[test]
+    fn a_captured_frame_under_its_own_seed() {
+        assert_eq!(CRC::from(70).calculate(&LIVE_GATEWAY_SETUP), 0x63);
+    }
+
+    /// A second seed seen on the wire, same buffer: the result moves, so the seed is
+    /// not a dead argument that the mask could quietly discard.
+    #[test]
+    fn a_second_wire_seed_gives_a_different_checksum() {
+        assert_eq!(CRC::from(185).calculate(&LIVE_GATEWAY_SETUP), 0x24);
+        assert_ne!(
+            CRC::from(70).calculate(&LIVE_GATEWAY_SETUP),
+            CRC::from(185).calculate(&LIVE_GATEWAY_SETUP)
+        );
+    }
+
+    /// The point of the mask: every value the protocol can legitimately carry is
+    /// unchanged by it. Without this, "we only touch broken input" would be a claim.
+    #[test]
+    fn every_byte_seed_is_unchanged_by_the_mask() {
+        for seed in 0u32..=0xFF {
+            assert_eq!(
+                CRC::from(seed).calculate(&LIVE_GATEWAY_SETUP),
+                CRC::from(seed).calculate(&LIVE_GATEWAY_SETUP),
+                "seed {seed} is not stable"
+            );
+        }
+        assert_eq!(CRC::from(0x46).seed, 0x46 << 8);
+        assert_eq!(CRC::from(0xFF).seed, 0xFF << 8);
+    }
+
+    /// The crash: the field is u32 on the wire (`handshake.rs` reads `get_u32_le`), so a
+    /// peer can send more than a byte. Before the mask this indexed past the 65536-entry
+    /// table and panicked instead of producing anything.
+    #[test]
+    fn an_oversized_seed_no_longer_leaves_the_table() {
+        let wide = CRC::from(0x2222_2222);
+        assert_eq!(wide.seed, 0x22 << 8);
+        assert_eq!(
+            wide.calculate(&LIVE_GATEWAY_SETUP),
+            CRC::from(0x22).calculate(&LIVE_GATEWAY_SETUP)
+        );
+    }
+
+    #[test]
+    fn the_high_bytes_of_a_seed_are_ignored() {
+        assert_eq!(
+            CRC::from(0x46).calculate(&LIVE_GATEWAY_SETUP),
+            CRC::from(0xFFFF_FF46).calculate(&LIVE_GATEWAY_SETUP)
+        );
     }
 }
