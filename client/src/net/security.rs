@@ -71,7 +71,7 @@ impl SilkroadSecurityData {
             prime: 0,
             blowfish: None,
             crc: Box::new(CRC::unseeded()),
-            sequence: Sequence::from(0),
+            sequence: Sequence::unseeded(),
         }
     }
 }
