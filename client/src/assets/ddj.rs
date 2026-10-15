@@ -316,20 +316,31 @@ pub fn placeholder_ddj_bytes() -> Vec<u8> {
     bytes
 }
 
-/// CPU decode of the uncompressed D3D formats SRO ships (A1R5G5B5, R5G6B5,
-/// X8R8G8B8, A8R8G8B8) to `(width, height, RGBA8 mip 0)`. Returns `None`
-/// for compressed (DXTn) and unknown formats — callers decode those with a
-/// DDS-capable image library. Bevy-free counterpart of `JMXVDDJ::to_image`
-/// for standalone tools (bsr2glb).
+/// The DDS payload inside a DDJ container, i.e. the bytes `dds_to_rgba8`
+/// wants: the signature is checked and the 20-byte header skipped, so a file
+/// that only carries the extension (`res_ui/nifenchantwnd.ddj`) is rejected
+/// instead of being decoded as garbage pixels.
+pub fn ddj_dds_payload(bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.len() <= DDJ_HEADER_LEN || !bytes.starts_with(DDJ_SIGNATURE.as_bytes()) {
+        return None;
+    }
+    Some(&bytes[DDJ_HEADER_LEN..])
+}
+
+/// CPU decode of the D3D formats SRO ships to `(width, height, RGBA8 mip 0)`:
+/// the uncompressed ones (A1R5G5B5, R5G6B5, X8R8G8B8, A8R8G8B8, A4R4G4B4,
+/// X1R5G5B5, P8) plus DXT1 through [`decode_dxt1_rgba8`], which the loader
+/// already uses for punch-through alpha. Other compressed formats return
+/// `None` — callers decode those with a DDS-capable image library. Bevy-free
+/// counterpart of `JMXVDDJ::to_image` for standalone tools (bsr2glb,
+/// worldmap_ncc).
 pub fn dds_to_rgba8(dds_bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut cursor = dds_bytes;
     let dds = Dds::read(&mut cursor).ok()?;
     let (width, height) = (dds.header.width, dds.header.height);
     // mip 0 only; tolerate short source data like `JMXVDDJ::to_image`
-    let mip0 = |bpp: u32| {
-        let len = ((width * height * bpp) as usize).min(dds.data.len());
-        &dds.data[..len]
-    };
+    let mip0_bytes = |len: u32| &dds.data[..(len as usize).min(dds.data.len())];
+    let mip0 = |bpp: u32| mip0_bytes(width * height * bpp);
     // Palettized DDS maps to no `D3DFormat`, so it is handled before the match.
     const DDPF_PALETTEINDEXED8: u32 = 0x20;
     if dds.header.spf.flags.bits() & DDPF_PALETTEINDEXED8 != 0
@@ -344,6 +355,8 @@ pub fn dds_to_rgba8(dds_bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         D3DFormat::A8R8G8B8 => a8r8g8b8_to_rgba8(mip0(4)),
         D3DFormat::A4R4G4B4 => a4r4g4b4_to_rgba8(mip0(2)),
         D3DFormat::X1R5G5B5 => x1r5g5b5_to_rgba8(mip0(2)),
+        // BC1 packs 16 texels into 8 bytes, so mip 0 is half a byte per texel.
+        D3DFormat::DXT1 => decode_dxt1_rgba8(mip0_bytes(width * height / 2), width, height),
         _ => return None,
     };
     Some((width, height, rgba))
@@ -1328,6 +1341,47 @@ mod tests {
         assert_eq!(image.texture_descriptor.size.width, 1);
         assert_eq!(image.texture_descriptor.size.height, 1);
         assert_eq!(image.data.as_deref(), Some([255, 0, 255, 255].as_slice()));
+    }
+
+    /// The two halves of the CPU path tools use: strip the container, then
+    /// decode. Both are asserted on one buffer so a wrong header length shows
+    /// up as a decode failure rather than as silently shifted pixels.
+    #[test]
+    fn a_ddj_payload_decodes_through_the_cpu_path() {
+        let ddj = placeholder_ddj_bytes();
+        let payload = ddj_dds_payload(&ddj).expect("the placeholder is a DDJ container");
+        assert_eq!(payload.len(), ddj.len() - DDJ_HEADER_LEN);
+        let (w, h, rgba) = dds_to_rgba8(payload).expect("its format has a CPU decode");
+        assert_eq!(
+            (w, h, rgba.as_slice()),
+            (1, 1, [255, 0, 255, 255].as_slice())
+        );
+        // a file that only carries the extension is not a container
+        assert!(ddj_dds_payload(b"\x48\x00\x00\x00CNIFEnchantWnd\x00\x00").is_none());
+    }
+
+    /// DXT1 is the one compressed format `dds_to_rgba8` decodes; it used to
+    /// return `None` for it, which is what sent the world-map tiles down a
+    /// second decoder. 4x4 BC1, both endpoints black, so every texel is black
+    /// and opaque — the point is that pixels come back at all.
+    #[test]
+    fn dds_to_rgba8_decodes_dxt1() {
+        let mut dds = Dds::new_d3d(NewD3dParams {
+            height: 4,
+            width: 4,
+            depth: None,
+            format: D3DFormat::DXT1,
+            mipmap_levels: Some(1),
+            caps2: None,
+        })
+        .unwrap();
+        dds.data = vec![0u8; 8];
+        let mut buf = Vec::new();
+        dds.write(&mut buf).unwrap();
+        let (w, h, rgba) = dds_to_rgba8(&buf).expect("DXT1 must decode on the CPU path");
+        assert_eq!((w, h), (4, 4));
+        assert_eq!(rgba.len(), 4 * 4 * 4);
+        assert!(rgba.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
     }
 
     /// 4-bit channels expand by nibble replication, so 0xF -> 255 exactly and
