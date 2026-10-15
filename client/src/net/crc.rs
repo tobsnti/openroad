@@ -99,15 +99,38 @@ impl From<u32> for CRC {
     /// behaviour, not a hardening of our own. A wider value is a protocol breach --
     /// no 257th sub-table exists on either side -- and without the mask it indexed
     /// past the table and killed the process.
+    ///
+    /// The same setter also refuses a zero seed: it stores 1 instead
+    /// (`004bf9d0`), so a server that seeds a session with 0 expects sub-table 1
+    /// and we have to compute there too. See `unseeded` for why that belongs to
+    /// the wire setter and not to the handshake-less state.
     fn from(value: u32) -> Self {
+        // The substitution runs *after* the mask, exactly as the original does
+        // it: `004bf9ce` reads the flags of its own `andl`, so `0x100` is a zero
+        // seed too and lands on sub-table 1 (`004bf9d0`).
+        let masked = value & 0xFF;
+        let seed = if masked == 0 { 1 } else { masked };
         Self {
-            seed: (value & 0xFF) << 8,
+            seed: seed << 8,
             table: gen_table(),
         }
     }
 }
 
 impl CRC {
+    /// The state before a handshake: no seed, so sub-table 0. The original keeps
+    /// the same split -- its constructor (`004affdb`) calls the plain reset at
+    /// `004bf9b0`, which stores seed 0 and skips the setter's `0 -> 1`. We need
+    /// the split because `From<u32>` cannot tell a wire seed of 0 from this
+    /// state, and `frame.rs` stamps a CRC byte on every frame, negotiated EDC or
+    /// not.
+    pub(crate) fn unseeded() -> Self {
+        Self {
+            seed: 0,
+            table: gen_table(),
+        }
+    }
+
     pub(crate) fn calculate(&self, buf: &[u8]) -> u8 {
         let mut checksum = 0xFFFFFFFF_u32;
         for x in 0..buf.len() {
@@ -191,6 +214,58 @@ mod tests {
         assert_eq!(
             CRC::from(0x46).calculate(&LIVE_GATEWAY_SETUP),
             CRC::from(0xFFFF_FF46).calculate(&LIVE_GATEWAY_SETUP)
+        );
+    }
+
+    /// A seed of 0 is one in 256 sessions, and the original answers it with
+    /// sub-table 1 (`004bf9d0`). The expectation is pinned on the captured frame
+    /// rather than on `the_empty_buffer_under_seed_zero_is_fc`, because an empty
+    /// buffer never reads the table and so cannot see the seed at all: 0xFC comes
+    /// out for seed 0, 1 and 255 alike.
+    #[test]
+    fn a_zero_wire_seed_computes_on_sub_table_one() {
+        assert_eq!(CRC::from(0).seed, 1 << 8);
+        assert_eq!(CRC::from(0).calculate(&LIVE_GATEWAY_SETUP), 0x87);
+        assert_eq!(
+            CRC::from(0).calculate(&LIVE_GATEWAY_SETUP),
+            CRC::from(1).calculate(&LIVE_GATEWAY_SETUP)
+        );
+    }
+
+    /// Mask first, then substitute -- the original's `jne` reads the flags of its
+    /// own `andl`, so everything that masks to 0 is a zero seed.
+    #[test]
+    fn the_zero_substitution_runs_after_the_mask() {
+        assert_eq!(CRC::from(0x100).seed, 1 << 8);
+        assert_eq!(CRC::from(0xFFFF_FF00).seed, 1 << 8);
+    }
+
+    /// The counter-check that keeps the claim narrow: every seed the protocol can
+    /// legitimately carry except 0 stays exactly where it was.
+    #[test]
+    fn only_a_zero_seed_moves() {
+        for seed in 1u32..=0xFF {
+            assert_eq!(CRC::from(seed).seed, seed << 8, "seed {seed} was moved");
+        }
+    }
+
+    /// The handshake-less state must stay on sub-table 0, or we would stamp a
+    /// seeded CRC on frames the original stamps unseeded. 0x3F is what
+    /// `CRC::from(0)` returned before the substitution existed.
+    #[test]
+    fn the_unseeded_state_keeps_sub_table_zero() {
+        assert_eq!(CRC::unseeded().seed, 0);
+        assert_eq!(CRC::unseeded().calculate(&LIVE_GATEWAY_SETUP), 0x3F);
+    }
+
+    /// And the call site, not only the constructor: with `CRC::from(0)` back in
+    /// `security.rs` this reads `1 << 8`, which is the whole reason the split
+    /// exists.
+    #[test]
+    fn the_pre_handshake_security_state_is_unseeded() {
+        assert_eq!(
+            crate::net::security::SilkroadSecurityData::new().crc.seed,
+            0
         );
     }
 }
