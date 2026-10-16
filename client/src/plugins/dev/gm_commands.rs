@@ -17,8 +17,7 @@
 //! in `Update` the window renders but never receives input.
 
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use packets::agent::prelude::GmCommand;
 use packets::Packet;

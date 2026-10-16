@@ -4,7 +4,7 @@ use crate::plugins::net::entities::RemoteEntity;
 use bevy::asset::LoadState;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
-use bevy_inspector_egui::bevy_egui::EguiContexts;
+use bevy_egui::EguiContexts;
 
 pub mod interactions;
 

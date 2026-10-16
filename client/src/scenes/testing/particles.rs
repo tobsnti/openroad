@@ -10,8 +10,7 @@ use std::env;
 use std::path::PathBuf;
 
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use bevy_pk2::prelude::Archive;
 
 use crate::assets::bmt::sheen::{

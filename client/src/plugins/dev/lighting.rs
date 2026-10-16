@@ -7,8 +7,7 @@ use bevy::prelude::{
     ButtonInput, IntoScheduleConfigs, KeyCode, Plugin, Query, Res, ResMut, Resource, Transform,
     Update, With,
 };
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::assets::bmt::sheen::{SheenSettings, SroSheenMaterial};
 
