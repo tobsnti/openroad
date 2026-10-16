@@ -14,8 +14,7 @@
 //! placement, and the camera-driven streamer fills in around the new position.
 
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::plugins::map::terrain::Terrain;
 use crate::plugins::nav::NavLocation;

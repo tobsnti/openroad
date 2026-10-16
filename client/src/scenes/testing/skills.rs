@@ -14,8 +14,7 @@
 //! `SCENE=skills` or `scenes.startup: skills`.
 
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 use crate::plugins::camera::{spawn_player_camera, DebugCamera, PlayerCamera};
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;

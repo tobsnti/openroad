@@ -6,8 +6,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContexts, EguiPrimaryContextPass};
-use bevy_inspector_egui::egui;
+use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 
 const HISTORY_SECS: f32 = 10.0;
 const MIN_GRAPH_FPS: f32 = 30.0;

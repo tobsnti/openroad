@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use bevy_inspector_egui::bevy_egui::{EguiContext, EguiPrimaryContextPass, PrimaryEguiContext};
-use bevy_inspector_egui::{bevy_inspector, egui, DefaultInspectorConfigPlugin};
+use bevy_egui::{egui, EguiContext, EguiPrimaryContextPass, PrimaryEguiContext};
+use bevy_inspector_egui::{bevy_inspector, DefaultInspectorConfigPlugin};
 
 /// Replacement for `bevy_inspector_egui::quick::WorldInspectorPlugin`.
 ///
