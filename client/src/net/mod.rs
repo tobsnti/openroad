@@ -13,6 +13,7 @@ mod handshake;
 pub mod reader;
 pub mod security;
 pub(crate) mod sequence;
+pub mod transport;
 
 fn module_identification_frame() -> SilkroadFrame {
     let payload: Bytes = ModuleIdentification::client().into();

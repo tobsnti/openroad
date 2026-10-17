@@ -1,5 +1,5 @@
+use std::io::Error;
 use std::io::ErrorKind::InvalidData;
-use std::io::{Error, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -10,6 +10,7 @@ use packets::global::ModuleIdentification;
 
 use crate::net::frame::SilkroadFrame;
 use crate::net::security::SilkroadSecurityState;
+use crate::net::transport::SilkroadTransport;
 use crate::net::{handshake, module_identification_frame};
 
 /// Initial capacity for the inbound accumulator: a few 4 KB reads' worth, so
@@ -26,7 +27,12 @@ pub struct SilkroadConnection {
     pub o_sender: Sender<SilkroadFrame>,
     pub dc_receiver: Receiver<()>,
     pub dc_sender: Sender<()>,
-    pub stream: Arc<Mutex<TcpStream>>,
+    /// The byte pipe, behind a trait object rather than a type parameter: this
+    /// is a bevy `Component`, and 44 files name it in `Query<&SilkroadConnection>`
+    /// -- a generic would infect every one of those signatures, while the two
+    /// virtual calls per frame (`plugins/net/plugin.rs`) sit behind a
+    /// `Mutex::lock()` and a syscall anyway.
+    pub stream: Arc<Mutex<dyn SilkroadTransport>>,
     /// Inbound byte accumulator. Each TCP read is appended here and complete
     /// frames are drained off the front; a frame split across reads keeps its
     /// tail buffered instead of being discarded.
@@ -118,9 +124,12 @@ impl SilkroadConnection {
 
     fn do_handshake(
         security: &Arc<RwLock<SilkroadSecurityState>>,
-        mut stream: &mut TcpStream,
+        stream: &mut dyn SilkroadTransport,
     ) -> Result<(), Error> {
-        match handshake::initialize(&mut stream, security.clone()) {
+        // Reborrowed rather than passed on: `&mut &mut dyn Trait` is not a
+        // trait object, so the extra `&mut` the concrete-type version carried
+        // would be an unsizing error here.
+        match handshake::initialize(&mut *stream, security.clone()) {
             Ok(new_security) => {
                 let mut s = security.write().expect("security to be writable");
                 s.context = new_security.context;
@@ -129,7 +138,7 @@ impl SilkroadConnection {
             Err(e) => return Err(Error::new(InvalidData, e)),
         }
         debug!("finished handshake init");
-        match handshake::finalize(&mut stream, security.clone()) {
+        match handshake::finalize(&mut *stream, security.clone()) {
             Ok(new_security) => {
                 let mut s = security.write().expect("security to be writable");
                 s.context = new_security.context;
@@ -142,7 +151,7 @@ impl SilkroadConnection {
 
     fn send_module_identification(
         security: &Arc<RwLock<SilkroadSecurityState>>,
-        stream: &mut TcpStream,
+        stream: &mut dyn SilkroadTransport,
     ) -> Result<(), Error> {
         let frame = module_identification_frame();
         let buf = frame.serialize(Arc::clone(security)).map_err(|_| {

@@ -5,8 +5,7 @@ use bevy::prelude::{
     Resource, Time, Timer, TimerMode, Update, With,
 };
 use bytes::{Bytes, BytesMut};
-use std::io::Write;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
 
 use packets::global::{GlobalStateRequest, GlobalStateUpdate, KeepAlive};
