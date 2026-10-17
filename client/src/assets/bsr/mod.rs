@@ -24,6 +24,14 @@ pub enum BsrLoaderError {
     IO(std::io::Error),
     #[error("failed to seek to {0} offset: {1}")]
     Seek(&'static str, std::io::Error),
+    /// A mesh the resource names could not be loaded. Boxed because
+    /// `LoadDirectError` carries a whole `AssetLoadError`, which would make
+    /// every `Ok` of this loader pay for the error's size.
+    #[error("failed to load mesh {0}: {1}")]
+    Mesh(String, Box<bevy::asset::LoadDirectError>),
+    /// The named mesh loaded, but as some other asset type.
+    #[error("{0} did not load as a mesh")]
+    MeshType(String),
 }
 
 impl AssetLoader for BsrLoader {
