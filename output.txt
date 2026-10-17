@@ -1,0 +1,12 @@
+rows parsed:              5324
+rows that are digits only:   350
+rows that are exactly 0:     339
+
+DIFFERS    UIIO_CLIENT_START_CONTENT_FAIL_BILLING_FAILED
+  data:     '0'
+  fallback: 'Billing failed. Cannot establish connection.'
+DIFFERS    UIO_MSG_ERROR_CHARACTER_NAME_STRING
+  data:     'Exceeded the letter limit. \\nOnly 12 English letters are available.[Min., Max.]'
+  fallback: 'Exceeded the letter limit. \nOnly 12 English letters are available.[Min., Max.]'
+
+error-table keys: 21  identical: 19  differs: 2  missing: 0
