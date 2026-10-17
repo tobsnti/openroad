@@ -1,8 +1,13 @@
 use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::log::error;
+// NOT `std::time::Instant`: it panics on wasm32-unknown-unknown ("time not
+// implemented on this platform"), which is where this reader is headed.
+// `bevy_platform` hands out `web_time::Instant` there and `std`'s everywhere
+// else, and it is already in the tree through bevy.
+use bevy::platform::time::Instant;
 use bevy::prelude::debug;
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -607,6 +612,84 @@ pub fn g_pow_x_mod_p(generator: u32, private: u32, prime: u32) -> u32 {
     result as u32
 }
 
+/// Frames a recorded gateway sends, as fixtures. In their own `pub(crate)`
+/// module because the connection's tests drive the same handshake from the
+/// other side of the seam and must not grow a second, drifting copy.
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    use super::*;
+
+    /// A `0x5000` phase-1 frame as a gateway sends it: the 6-byte frame header
+    /// plus the 37-byte body that flag byte `0x0E` announces
+    /// ([`expected_body_len`]) — 43 bytes, the size measured on the wire.
+    ///
+    /// The field values are a recorded handshake's, not round numbers: the CRC
+    /// seed in particular has to fit a byte, because `CRC::calculate` indexes
+    /// `seed + byte` into a 256x256 table.
+    pub(crate) fn setup_frame_full_flags() -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u8(FLAG_BLOWFISH | FLAG_SECURITY_BYTES | FLAG_KEY_EXCHANGE);
+        body.put_u64_le(0x2c47_84d7_180c_3b2d); // handshake blowfish key
+        body.put_u32_le(0xde20_6f6c); // sequence seed
+        body.put_u32_le(0xb9); // crc seed
+        body.put_u64_le(0x4180_cc82_3187_35b4); // handshake key
+        body.put_u32_le(8662); // generator
+        body.put_u32_le(2_622_084_571); // prime
+        body.put_u32_le(2_043_001_406); // server public
+        let body = body.freeze();
+
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x5000);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+    /// A `0x5000` phase-2 frame: flag byte `0x10` plus the server's signature,
+    /// the 15 bytes measured on the wire. The CRC byte stays zero because
+    /// `SilkroadFrame::parse` carries it without checking it.
+    pub(crate) fn challenge_frame(challenge: u64) -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u8(FLAG_CHALLENGE);
+        body.put_u64_le(challenge);
+        let body = body.freeze();
+
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x5000);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+    /// A `0x2001` as a gateway answers it: the `u16`-prefixed module name. 13
+    /// characters plus the prefix and the 6-byte envelope is 21 bytes -- the
+    /// measured 26 of the capture carry a longer name, and the length prefix is
+    /// what the parse goes by either way.
+    pub(crate) fn module_ident_response(name: &str) -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u16_le(name.len() as u16);
+        body.put_slice(name.as_bytes());
+        let body = body.freeze();
+
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x2001);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+
+    /// The signature the server would have to send for the session now in
+    /// `security`. It cannot be a recorded constant: the private exponent is
+    /// drawn per session.
+    pub(crate) fn server_challenge_for(security: &Arc<RwLock<SilkroadSecurityState>>) -> u64 {
+        server_challenge(&security.read().expect("security to be readable").context)
+    }
+}
+
 #[cfg(test)]
 mod test {
     // `Read`/`Write` live here, not at the top of the file: the production
@@ -615,6 +698,7 @@ mod test {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
 
+    use super::test_fixtures::*;
     use super::*;
     use crate::net::connection::Handshake;
     use crate::net::transport::MemPipe;
@@ -822,52 +906,6 @@ mod test {
         );
     }
 
-    /// A `0x5000` phase-1 frame as a gateway sends it: the 6-byte frame header
-    /// plus the 37-byte body that flag byte `0x0E` announces
-    /// ([`expected_body_len`]) — 43 bytes, the size measured on the wire.
-    ///
-    /// The field values are a recorded handshake's, not round numbers: the CRC
-    /// seed in particular has to fit a byte, because `CRC::calculate` indexes
-    /// `seed + byte` into a 256x256 table.
-    fn setup_frame_full_flags() -> Vec<u8> {
-        let mut body = BytesMut::new();
-        body.put_u8(FLAG_BLOWFISH | FLAG_SECURITY_BYTES | FLAG_KEY_EXCHANGE);
-        body.put_u64_le(0x2c47_84d7_180c_3b2d); // handshake blowfish key
-        body.put_u32_le(0xde20_6f6c); // sequence seed
-        body.put_u32_le(0xb9); // crc seed
-        body.put_u64_le(0x4180_cc82_3187_35b4); // handshake key
-        body.put_u32_le(8662); // generator
-        body.put_u32_le(2_622_084_571); // prime
-        body.put_u32_le(2_043_001_406); // server public
-        let body = body.freeze();
-
-        let mut frame = BytesMut::new();
-        frame.put_u16_le(body.len() as u16);
-        frame.put_u16_le(0x5000);
-        frame.put_u8(0); // count
-        frame.put_u8(0); // crc
-        frame.extend_from_slice(&body);
-        frame.to_vec()
-    }
-
-    /// A `0x5000` phase-2 frame: flag byte `0x10` plus the server's signature,
-    /// the 15 bytes measured on the wire. The CRC byte stays zero because
-    /// `SilkroadFrame::parse` carries it without checking it.
-    fn challenge_frame(challenge: u64) -> Vec<u8> {
-        let mut body = BytesMut::new();
-        body.put_u8(FLAG_CHALLENGE);
-        body.put_u64_le(challenge);
-        let body = body.freeze();
-
-        let mut frame = BytesMut::new();
-        frame.put_u16_le(body.len() as u16);
-        frame.put_u16_le(0x5000);
-        frame.put_u8(0); // count
-        frame.put_u8(0); // crc
-        frame.extend_from_slice(&body);
-        frame.to_vec()
-    }
-
     /// Drives the reader until one frame is whole, with a poll budget so a test
     /// can never hang. `Ok(None)` means the reader was still waiting after
     /// `polls` tries -- a stall, which is no longer an error.
@@ -975,25 +1013,6 @@ mod test {
             2,
             "the frame has to have arrived in two reads"
         );
-    }
-
-    /// A `0x2001` as a gateway answers it: the `u16`-prefixed module name. 13
-    /// characters plus the prefix and the 6-byte envelope is 21 bytes -- the
-    /// measured 26 of the capture carry a longer name, and the length prefix is
-    /// what the parse goes by either way.
-    fn module_ident_response(name: &str) -> Vec<u8> {
-        let mut body = BytesMut::new();
-        body.put_u16_le(name.len() as u16);
-        body.put_slice(name.as_bytes());
-        let body = body.freeze();
-
-        let mut frame = BytesMut::new();
-        frame.put_u16_le(body.len() as u16);
-        frame.put_u16_le(0x2001);
-        frame.put_u8(0); // count
-        frame.put_u8(0); // crc
-        frame.extend_from_slice(&body);
-        frame.to_vec()
     }
 
     /// THE MACHINE, END TO END over something that is not a socket: all three

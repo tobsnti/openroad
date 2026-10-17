@@ -17,8 +17,9 @@
 //! Both are off by default, so the throughput numbers the perf workflow reads
 //! (`docs/perf-remote.md`) stay uncapped unless asked for.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use bevy::platform::time::Instant; // not `std`: it panics on wasm32
 use bevy::prelude::*;
 use bevy::winit::{UpdateMode, WinitSettings};
 

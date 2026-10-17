@@ -33,7 +33,9 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+
+// not `std::time::Instant`: it panics on wasm32-unknown-unknown.
+use bevy::platform::time::Instant;
 
 // A unit struct to help identify the FPS UI component, since there may be many Text components
 #[derive(Component)]

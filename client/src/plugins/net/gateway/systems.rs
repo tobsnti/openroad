@@ -56,12 +56,14 @@ pub(crate) fn init_gateway_service(
 /// now that the connect is asynchronous. On failure the entity is despawned and
 /// the error is surfaced via [`GatewayConnectionStatus`].
 pub(crate) fn poll_gateway_connection(
-    query: Query<(Entity, &PendingConnection), With<GatewayConnection>>,
+    mut query: Query<(Entity, &mut PendingConnection), With<GatewayConnection>>,
     mut network_state: ResMut<NetworkState>,
     mut status: ResMut<GatewayConnectionStatus>,
     mut commands: Commands,
 ) {
-    for (entity, pending) in query.iter() {
+    // `&mut`, because one arm of `PendingConnection` carries the handshake
+    // itself and advances it on every poll.
+    for (entity, mut pending) in query.iter_mut() {
         let Some(result) = pending.poll() else {
             continue;
         };
