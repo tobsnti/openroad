@@ -1,0 +1,138 @@
+assets dir: ~/or-loginfilm/assets
+PK2 directory: ~/Projects/pk2
+2026-10-16T17:32:24.650114Z  INFO bevy_diagnostic::system_information_diagnostics_plugin::internal: SystemInfo { os: "macOS 15.7.7 Sequoia", kernel: "24.6.0", cpu: "Apple M4", core_count: "10", memory: "16.0 GiB" }
+2026-10-16T17:32:24.686728Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M4", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-10-16T17:32:24.780484Z  INFO client: diagnostics tier on: BRP at http://127.0.0.1:21574 (override with BRP_EXTRAS_PORT)
+2026-10-16T17:32:24.786889Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-10-16T17:32:24.786915Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-10-16T17:32:24.792522Z  INFO client::plugins::environment::light_visibility: directional-light shadow visibility runs only while shadow maps are on
+2026-10-16T17:32:24.806033Z  INFO bevy_winit::system: Creating new window client (70v0)
+2026-10-16T17:32:24.830243Z  INFO client::plugins::net::gateway::systems: connecting to gateway service ...
+2026-10-16T17:32:24.830302Z  INFO client::scenes::loading_screen: initialized loading screen
+2026-10-16T17:32:24.831293Z  INFO client::plugins::diagnostics: render backend: Metal (Apple M4)
+2026-10-16T17:32:24.832262Z  INFO client::plugins::config: initialized network config: NetworkSettings { enabled: true, gateway_address: Some("127.0.0.1:21136"), packet_dump: false, item_use_enabled: false, outbound_encryption: false }
+2026-10-16T17:32:24.832293Z  INFO client::plugins::config: graphics preset: medium (requested auto; auto: integrated GPU 'Apple M4' (Metal)); keys set in config.yaml override it
+2026-10-16T17:32:24.832426Z  INFO bevy_brp_extras::plugin: BRP extras enabled on http://localhost:21574 (environment override from default 15702)
+2026-10-16T17:32:24.875513Z  INFO client::plugins::config::window: monitor "Monitor #1986622068": 1920x1080 physical, scale 1.00, 60.000 Hz (16.667 ms/refresh), 1 video modes
+2026-10-16T17:32:24.875617Z  INFO client::plugins::net::gateway::systems: initialized gateway service
+2026-10-16T17:32:24.941572Z  INFO client::plugins::net::gateway::shard_list: [ShardListPingResponse]: farm_id = 20, ip = 127.0.0.1
+2026-10-16T17:32:24.941646Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.941982Z  INFO client::plugins::textdata: loaded 1334 rare-item aura sets
+2026-10-16T17:32:24.944587Z  INFO client::assets::ddj: terrain tile source mips = 10 (format Some(DXT1)), first seen: tile2d/esteu_sadfld_dust_02.ddj
+2026-10-16T17:32:24.945234Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945249Z  INFO client::plugins::textdata: loaded 199 teleporters (153 linked)
+2026-10-16T17:32:24.945253Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945256Z  INFO client::plugins::textdata: loaded 21 world maps, 738 POIs
+2026-10-16T17:32:24.945259Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945262Z  INFO client::plugins::textdata: loaded 17 dungeon info rows
+2026-10-16T17:32:24.945264Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945267Z  INFO client::plugins::textdata: loaded 50 sound zones (49 with a BGM track)
+2026-10-16T17:32:24.945270Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945272Z  INFO client::plugins::textdata: loaded 5674 effect sound rows (5083 addresses, 27 mute)
+2026-10-16T17:32:24.945279Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.945281Z  INFO client::plugins::textdata: loaded 12061 itemdata rows
+2026-10-16T17:32:24.948553Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948567Z  INFO client::plugins::textdata: loaded 2168 skilleffect entries
+2026-10-16T17:32:24.948570Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948572Z  INFO client::plugins::textdata: loaded 17 masteries
+2026-10-16T17:32:24.948620Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948624Z  INFO client::plugins::textdata: loaded 106 skill-group branches
+2026-10-16T17:32:24.948627Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948630Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948632Z  INFO client::plugins::textdata: loaded 2857 zone names
+2026-10-16T17:32:24.948634Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948636Z  INFO client::plugins::textdata: loaded 695 quest reward modes, 105 quests with reward rows
+2026-10-16T17:32:24.948639Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948641Z  INFO client::plugins::textdata: loaded 706 questdata rows, 985 questcontentsdata rows
+2026-10-16T17:32:24.948644Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948646Z  INFO client::plugins::textdata: loaded 391 magic-option rows
+2026-10-16T17:32:24.948648Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948650Z  INFO client::plugins::textdata: loaded 5324 UI strings
+2026-10-16T17:32:24.948653Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948655Z  INFO client::plugins::textdata: loaded 1023 game-guide nodes
+2026-10-16T17:32:24.948670Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948673Z  INFO client::plugins::textdata: loaded 468 game-guide bodies
+2026-10-16T17:32:24.948675Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948677Z  INFO client::plugins::textdata: loaded 26 action-window commands
+2026-10-16T17:32:24.948679Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948681Z  INFO client::plugins::textdata: loaded 4 collection themes, 32 talismans
+2026-10-16T17:32:24.948683Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948685Z  INFO client::plugins::textdata: loaded 4518 speech strings
+2026-10-16T17:32:24.948687Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948689Z  INFO client::plugins::textdata: loaded 18040 display names
+2026-10-16T17:32:24.948691Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948693Z  INFO client::plugins::textdata: loaded 396 npc chat entries
+2026-10-16T17:32:24.948695Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:24.948697Z  INFO client::plugins::textdata: loaded 79 npc shops
+2026-10-16T17:32:24.953028Z  INFO client::assets::ddj: terrain tile source mips = 9 (format Some(DXT1)), first seen: tile2d/esteu_twilight_stone_01.ddj
+2026-10-16T17:32:24.968953Z  INFO client::assets::ddj: terrain tile source mips = 1 (format Some(DXT1)), first seen: tile2d/stormdesert_stone01.ddj
+2026-10-16T17:32:25.008231Z  INFO client::plugins::net::gateway::shard_list: [ShardListResponse]: farms = [FarmDetails { id: 20, name: "Silkroad_Server" }], shards = [Shard { id: 64, name: "Testserver", online_count: 0, capacity: 1000, is_operating: true, farm_id: 20 }]
+2026-10-16T17:32:25.008273Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:32:25.008282Z  INFO client::plugins::textdata: loaded 30661 skilldata rows
+2026-10-16T17:32:25.015776Z  INFO client::assets::m::block_splat_material: ground tile atlas: 603 tile ids of 1024 slots
+2026-10-16T17:32:25.025697Z  WARN client::assets::m::tile_arrays: ground tile arrays: 419 of 1024 tile ids have no layer, first 603 (tile2d.ifo defines 603); the splat shader addresses every id, and WGSL leaves an out-of-range array layer indeterminate
+2026-10-16T17:32:25.025758Z  INFO client::assets::m::tile_arrays: ground tile arrays built: 603 tile ids over [256, 256, 91, 2] layers
+2026-10-16T17:32:25.029950Z  INFO bevy_asset_loader::loading_state::systems: Loading state 'client::scenes::SceneState::Loading' is done
+2026-10-16T17:32:25.054659Z  INFO client::scenes::intro_v2: intro cutscene: script/intro/china_wharf.txt from Media.pk2 (music music://maintheme_cut.ogg)
+2026-10-16T17:32:25.085346Z  INFO client::scenes::loading_screen: all assets are loaded
+2026-10-16T17:32:25.105310Z  INFO client::plugins::map::foliage: foliage: disabled (graphics.foliage.mode = off)
+2026-10-16T17:32:25.105416Z  INFO client::plugins::environment: environment.ifo: set '', 60 profiles
+2026-10-16T17:32:36.715839Z  INFO client::scenes::intro_v2::net: [Login] user = player, shard_id = 64
+2026-10-16T17:32:37.770362Z  INFO client::scenes::intro_v2::character_select: lobby char 'Kapitel7': ref 1907, scale 0x22 (34), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:32:37.770427Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlHgt1': ref 1907, scale 0x23 (35), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:32:37.770439Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlVol1': ref 1907, scale 0x32 (50), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:32:37.770448Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlLow1': ref 1907, scale 0x20 (32), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:32:47.290678Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p1-pick3.png
+2026-10-16T17:32:47.290795Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:32:47.290856Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 19015v0
+2026-10-16T17:32:47.310160Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p1-pick3.png
+2026-10-16T17:32:47.320818Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p1-pick3.png
+2026-10-16T17:33:05.360082Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p2-pick.png
+2026-10-16T17:33:05.360139Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:33:05.360179Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 19043v0
+2026-10-16T17:33:05.389238Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p2-pick.png
+2026-10-16T17:33:05.398839Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p2-pick.png
+2026-10-16T17:33:15.560004Z  INFO client::scenes::intro_v2::character_select: lobby char 'Kapitel7': ref 1907, scale 0x22 (34), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:15.560105Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlHgt1': ref 1907, scale 0x23 (35), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:15.560125Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlVol1': ref 1907, scale 0x32 (50), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:33.157698Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p3-restore.png
+2026-10-16T17:33:33.157791Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:33:33.157814Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 3266v2
+2026-10-16T17:33:33.178495Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p3-restore.png
+2026-10-16T17:33:33.187850Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p3-restore.png
+2026-10-16T17:33:48.826786Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p4-restore.png
+2026-10-16T17:33:48.826826Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:33:48.826876Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 3272v2
+2026-10-16T17:33:48.848938Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p4-restore.png
+2026-10-16T17:33:48.858400Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p4-restore.png
+2026-10-16T17:33:58.777658Z  INFO client::scenes::intro_v2::character_select: lobby char 'Kapitel7': ref 1907, scale 0x22 (34), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:58.777738Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlHgt1': ref 1907, scale 0x23 (35), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:58.777750Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlVol1': ref 1907, scale 0x32 (50), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:33:58.777758Z  INFO client::scenes::intro_v2::character_select: lobby char 'orlLow1': ref 1907, scale 0x20 (32), level 1, str 20, int 20, hp 200, mp 200
+2026-10-16T17:34:14.512930Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p5-create.png
+2026-10-16T17:34:14.512992Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:34:14.513012Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 19033v2
+2026-10-16T17:34:14.531032Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p5-create.png
+2026-10-16T17:34:14.540763Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p5-create.png
+2026-10-16T17:34:27.594842Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p6-creation.png
+2026-10-16T17:34:27.594957Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:34:27.594993Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 3956v4
+2026-10-16T17:34:27.613935Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p6-creation.png
+2026-10-16T17:34:27.625226Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p6-creation.png
+2026-10-16T17:34:51.786252Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p7-namecheck.png
+2026-10-16T17:34:51.786290Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:34:51.786308Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 3145v4
+2026-10-16T17:34:51.804628Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p7-namecheck.png
+2026-10-16T17:34:51.816105Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p7-namecheck.png
+2026-10-16T17:35:07.603735Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p8-create.png
+2026-10-16T17:35:07.603776Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:35:07.603792Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 2210v2
+2026-10-16T17:35:07.621814Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p8-create.png
+2026-10-16T17:35:07.632417Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p8-create.png
+2026-10-16T17:35:17.903485Z  WARN client::plugins::ui_v2: ui_v2: disabled button has no `disable` art, falling back to `normal` (Some(media://interface/outer/warning_button.ddj))
+2026-10-16T17:35:17.916082Z  WARN client::scenes::intro_v2::character_create: character create rejected (error 1040)
+2026-10-16T17:35:21.307622Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/p9-createfail.png
+2026-10-16T17:35:21.307656Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:35:21.307673Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 1661v4
+2026-10-16T17:35:21.325838Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/p9-createfail.png
+2026-10-16T17:35:21.337063Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/p9-createfail.png

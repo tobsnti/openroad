@@ -1,0 +1,55 @@
+sro_peer: fixture 0xa106 = 6 byte(s) from ~/or-loginfilm-dreh/fixtures/0xa106.log
+sro_peer: fixture 0xa101 = 42 byte(s) from ~/or-loginfilm-dreh/fixtures/0xa101.log
+sro_peer: fixture 0xa323 = 1 byte(s) from ~/or-loginfilm-dreh/fixtures/0xa323.log
+sro_peer: fixture 0xa103 = 1 byte(s) from ~/or-loginfilm-dreh/fixtures/0xa103.log
+sro_peer: fixture 0xb007 = 247 byte(s) from ~/or-loginfilm-dreh/fixtures/proxy/0xb007.log
+sro_peer: fixture 0xb001 = 1 byte(s) from ~/or-loginfilm-dreh/fixtures/0xb001.log
+sro_peer: fixture 0x34a5 = 0 byte(s) from ~/or-loginfilm-dreh/fixtures/0x34a5.log
+sro_peer: fixture 0x3013 = 2984 byte(s) from ~/or-loginfilm-dreh/fixtures/0x3013.log
+sro_peer: fixture 0x34a6 = 0 byte(s) from ~/or-loginfilm-dreh/fixtures/0x34a6.log
+sro_peer: fixture 0x3020 = 8 byte(s) from ~/or-loginfilm-dreh/fixtures/0x3020.log
+sro_peer: fixture 0xb50e = 2 byte(s) from ~/or-loginfilm-dreh/fixtures/proxy/0xb50e.log (optional)
+sro_peer: fixture 0x2005 = 10 byte(s) from ~/or-loginfilm-dreh/fixtures/0x2005.log (optional)
+sro_peer: fixture 0x6005 = 5 byte(s) from ~/or-loginfilm-dreh/fixtures/0x6005.log (optional)
+sro_peer: fixture 0xb007 += 48 recorded variant(s) from ~/or-loginfilm-dreh/fixtures/proxy/0xb007.log
+sro_peer: fixture 0x3013 += 122 recorded variant(s) from ~/or-loginfilm-dreh/fixtures/0x3013.log
+sro_peer: fixture 0x3013 += 13 recorded variant(s) from ~/or-loginfilm-dreh/fixtures/proxy/0x3013.log
+sro_peer: fixture 0xa102 += 396 recorded variant(s) from ~/or-loginfilm-dreh/fixtures/0xa102.log
+sro_peer: fixture 0xa102 += 31 recorded variant(s) from ~/or-loginfilm-dreh/fixtures/proxy/0xa102.log
+2026-10-16T17:28:55.880Z sro_peer: gateway 127.0.0.1:21136, agent 127.0.0.1:21745, 0xA102 advertises 127.0.0.1:21745
+2026-10-16T17:28:55.880Z sro_peer[gateway]: listening on 127.0.0.1:21136
+2026-10-16T17:28:55.880Z sro_peer[agent]: listening on 127.0.0.1:21745
+2026-10-16T17:28:58.484Z sro_peer[gateway]: client connected from 127.0.0.1:56790
+2026-10-16T17:28:58.484Z sro_peer[gateway]: sent 0x5000 setup (43 bytes)
+2026-10-16T17:28:58.486Z sro_peer[gateway]: handshake accepted
+2026-10-16T17:28:58.486Z sro_peer[gateway]: c2s 0x2001 (12 bytes)
+2026-10-16T17:28:58.486Z sro_peer[gateway]: s2c 0x2001 (16 body bytes)
+2026-10-16T17:28:58.531Z sro_peer[gateway]: c2s 0x6106 (0 bytes)
+2026-10-16T17:28:58.532Z sro_peer[gateway]: s2c 0xa106 (6 body bytes)
+2026-10-16T17:28:58.595Z sro_peer[gateway]: c2s 0x6101 (0 bytes)
+2026-10-16T17:28:58.595Z sro_peer[gateway]: s2c 0xa101 (42 body bytes)
+2026-10-16T17:29:09.939Z sro_peer[gateway]: c2s 0x6102 (21 bytes)
+2026-10-16T17:29:09.939Z sro_peer[gateway]: login for 'player' on shard 64
+2026-10-16T17:29:09.940Z sro_peer[gateway]: s2c 0xa102 (18 body bytes)
+2026-10-16T17:29:09.952Z sro_peer[gateway]: client closed the connection
+2026-10-16T17:29:09.952Z sro_peer[agent]: client connected from 127.0.0.1:56813
+2026-10-16T17:29:09.952Z sro_peer[agent]: sent 0x5000 setup (43 bytes)
+2026-10-16T17:29:09.953Z sro_peer[agent]: handshake accepted
+2026-10-16T17:29:09.953Z sro_peer[agent]: c2s 0x2001 (12 bytes)
+2026-10-16T17:29:09.953Z sro_peer[agent]: s2c 0x2001 (14 body bytes)
+2026-10-16T17:29:09.958Z sro_peer[agent]: c2s 0x6103 (29 bytes)
+2026-10-16T17:29:09.958Z sro_peer[agent]: token 0x3e5d26da accepted for 'player'
+2026-10-16T17:29:09.958Z sro_peer[agent]: s2c 0xa103 (1 body bytes)
+2026-10-16T17:29:10.982Z sro_peer[agent]: c2s 0x7007 (1 bytes)
+2026-10-16T17:29:10.982Z sro_peer[agent]: ACTION 2 (List) body=02
+2026-10-16T17:29:10.982Z sro_peer[agent]: ANSWER 0xB007 0201047307000008004b61706974656c3722010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c4867743123010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c566f6c3132010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c4c6f773120010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb0000000000
+2026-10-16T17:29:10.983Z sro_peer[agent]: s2c 0xb007 (336 body bytes)
+2026-10-16T17:29:59.829Z sro_peer[agent]: c2s 0x7007 (11 bytes)
+2026-10-16T17:29:59.829Z sro_peer[agent]: ACTION 3 (Delete) body=0308004b61706974656c37
+2026-10-16T17:29:59.829Z sro_peer[agent]: ANSWER 0xB007 0301
+2026-10-16T17:29:59.829Z sro_peer[agent]: s2c 0xb007 (2 body bytes)
+2026-10-16T17:29:59.841Z sro_peer[agent]: c2s 0x7007 (1 bytes)
+2026-10-16T17:29:59.841Z sro_peer[agent]: ACTION 2 (List) body=02
+2026-10-16T17:29:59.841Z sro_peer[agent]: ANSWER 0xB007 0201047307000008004b61706974656c3722010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c4867743123010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c566f6c3132010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb00000000007307000007006f726c4c6f773120010000000000000000140014000000c8000000c800000000000000081f010000008b010000006701000000d301000000af01000000f7010000004700000000fb0000000000
+2026-10-16T17:29:59.841Z sro_peer[agent]: s2c 0xb007 (336 body bytes)
+2026-10-16T17:31:29.974Z sro_peer[agent]: client closed the connection

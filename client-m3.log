@@ -1,0 +1,85 @@
+assets dir: ~/or-loginfilm/assets
+PK2 directory: ~/Projects/pk2
+2026-10-16T17:28:16.508259Z  INFO bevy_diagnostic::system_information_diagnostics_plugin::internal: SystemInfo { os: "macOS 15.7.7 Sequoia", kernel: "24.6.0", cpu: "Apple M4", core_count: "10", memory: "16.0 GiB" }
+2026-10-16T17:28:16.546932Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M4", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-10-16T17:28:16.640534Z  INFO client: diagnostics tier on: BRP at http://127.0.0.1:21574 (override with BRP_EXTRAS_PORT)
+2026-10-16T17:28:16.646936Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-10-16T17:28:16.646962Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-10-16T17:28:16.652538Z  INFO client::plugins::environment::light_visibility: directional-light shadow visibility runs only while shadow maps are on
+2026-10-16T17:28:16.667949Z  INFO bevy_winit::system: Creating new window client (70v0)
+2026-10-16T17:28:16.691657Z  INFO client::plugins::net::gateway::systems: connecting to gateway service ...
+2026-10-16T17:28:16.691787Z  INFO client::scenes::loading_screen: initialized loading screen
+2026-10-16T17:28:16.692154Z  INFO client::plugins::diagnostics: render backend: Metal (Apple M4)
+2026-10-16T17:28:16.692952Z  INFO client::plugins::config: initialized network config: NetworkSettings { enabled: true, gateway_address: Some("127.0.0.1:21136"), packet_dump: true, item_use_enabled: false, outbound_encryption: false }
+2026-10-16T17:28:16.692971Z  INFO client::plugins::config: graphics preset: medium (requested auto; auto: integrated GPU 'Apple M4' (Metal)); keys set in config.yaml override it
+2026-10-16T17:28:16.693221Z  INFO bevy_brp_extras::plugin: BRP extras enabled on http://localhost:21574 (environment override from default 15702)
+2026-10-16T17:28:16.736965Z  INFO client::plugins::net::gateway::systems: initialized gateway service
+2026-10-16T17:28:16.737021Z  INFO client::plugins::config::window: monitor "Monitor #1986622068": 1920x1080 physical, scale 1.00, 60.000 Hz (16.667 ms/refresh), 1 video modes
+2026-10-16T17:28:16.784755Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.784772Z  INFO client::plugins::textdata: loaded 17 masteries
+2026-10-16T17:28:16.784776Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.784779Z  INFO client::plugins::textdata: loaded 106 skill-group branches
+2026-10-16T17:28:16.784786Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.784789Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.784791Z  INFO client::plugins::textdata: loaded 2857 zone names
+2026-10-16T17:28:16.784794Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.784796Z  INFO client::plugins::textdata: loaded 695 quest reward modes, 105 quests with reward rows
+2026-10-16T17:28:16.806401Z  INFO client::plugins::net::gateway::shard_list: [ShardListPingResponse]: farm_id = 20, ip = 127.0.0.1
+2026-10-16T17:28:16.806447Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806463Z  INFO client::plugins::textdata: loaded 706 questdata rows, 985 questcontentsdata rows
+2026-10-16T17:28:16.806471Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806477Z  INFO client::plugins::textdata: loaded 18040 display names
+2026-10-16T17:28:16.806484Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806490Z  INFO client::plugins::textdata: loaded 391 magic-option rows
+2026-10-16T17:28:16.806496Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806502Z  INFO client::plugins::textdata: loaded 5324 UI strings
+2026-10-16T17:28:16.806508Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806513Z  INFO client::plugins::textdata: loaded 1023 game-guide nodes
+2026-10-16T17:28:16.806566Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806612Z  INFO client::plugins::textdata: loaded 468 game-guide bodies
+2026-10-16T17:28:16.806620Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806627Z  INFO client::plugins::textdata: loaded 26 action-window commands
+2026-10-16T17:28:16.806634Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806640Z  INFO client::plugins::textdata: loaded 4 collection themes, 32 talismans
+2026-10-16T17:28:16.806646Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806652Z  INFO client::plugins::textdata: loaded 4518 speech strings
+2026-10-16T17:28:16.806658Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806664Z  INFO client::plugins::textdata: loaded 396 npc chat entries
+2026-10-16T17:28:16.806671Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806676Z  INFO client::plugins::textdata: loaded 79 npc shops
+2026-10-16T17:28:16.806681Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806687Z  INFO client::plugins::textdata: loaded 199 teleporters (153 linked)
+2026-10-16T17:28:16.806693Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806701Z  INFO client::plugins::textdata: loaded 21 world maps, 738 POIs
+2026-10-16T17:28:16.806706Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806712Z  INFO client::plugins::textdata: loaded 17 dungeon info rows
+2026-10-16T17:28:16.806726Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806733Z  INFO client::plugins::textdata: loaded 50 sound zones (49 with a BGM track)
+2026-10-16T17:28:16.806741Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.806748Z  INFO client::plugins::textdata: loaded 5674 effect sound rows (5083 addresses, 27 mute)
+2026-10-16T17:28:16.806755Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.807147Z  INFO client::plugins::textdata: loaded 1334 rare-item aura sets
+2026-10-16T17:28:16.808750Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.808764Z  INFO client::plugins::textdata: loaded 2168 skilleffect entries
+2026-10-16T17:28:16.808768Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.808771Z  INFO client::plugins::textdata: loaded 12061 itemdata rows
+2026-10-16T17:28:16.809730Z  INFO client::assets::ddj: terrain tile source mips = 10 (format Some(DXT1)), first seen: tile2d/wc_dust_don_06.ddj
+2026-10-16T17:28:16.811301Z  INFO client::assets::ddj: terrain tile source mips = 9 (format Some(DXT1)), first seen: tile2d/central asia_stone_07.ddj
+2026-10-16T17:28:16.835703Z  INFO client::assets::ddj: terrain tile source mips = 1 (format Some(DXT1)), first seen: tile2d/stormdesert_stone01.ddj
+2026-10-16T17:28:16.870896Z  INFO client::plugins::net::gateway::shard_list: [ShardListResponse]: farms = [FarmDetails { id: 20, name: "Silkroad_Server" }], shards = [Shard { id: 64, name: "Testserver", online_count: 0, capacity: 1000, is_operating: true, farm_id: 20 }]
+2026-10-16T17:28:16.875814Z  INFO client::plugins::textdata: updated textdata
+2026-10-16T17:28:16.875837Z  INFO client::plugins::textdata: loaded 30661 skilldata rows
+2026-10-16T17:28:16.876151Z  INFO client::assets::m::block_splat_material: ground tile atlas: 603 tile ids of 1024 slots
+2026-10-16T17:28:16.885042Z  WARN client::assets::m::tile_arrays: ground tile arrays: 419 of 1024 tile ids have no layer, first 603 (tile2d.ifo defines 603); the splat shader addresses every id, and WGSL leaves an out-of-range array layer indeterminate
+2026-10-16T17:28:16.885072Z  INFO client::assets::m::tile_arrays: ground tile arrays built: 603 tile ids over [256, 256, 91, 2] layers
+2026-10-16T17:28:16.889570Z  INFO bevy_asset_loader::loading_state::systems: Loading state 'client::scenes::SceneState::Loading' is done
+2026-10-16T17:28:16.915279Z  INFO client::scenes::intro_v2: intro cutscene: script/intro/china_wharf.txt from Media.pk2 (music music://maintheme_cut.ogg)
+2026-10-16T17:28:16.951841Z  INFO client::scenes::loading_screen: all assets are loaded
+2026-10-16T17:28:16.974390Z  INFO client::plugins::map::foliage: foliage: disabled (graphics.foliage.mode = off)
+2026-10-16T17:28:16.974486Z  INFO client::plugins::environment: environment.ifo: set '', 60 profiles
+2026-10-16T17:28:28.122323Z  INFO client::scenes::intro_v2::net: [Login] user = player, shard_id = 64
+2026-10-16T17:28:41.219794Z  INFO bevy_brp_extras::screenshot: Screenshot requested for: ~/or-loginfilm-dreh/shots/n2.png
+2026-10-16T17:28:41.219831Z  INFO bevy_brp_extras::screenshot: Found window - resolution: WindowResolution { physical_width: 1280, physical_height: 720, scale_factor_override: Some(1.0), scale_factor: 1.0 }, visible: true
+2026-10-16T17:28:41.219866Z  INFO bevy_brp_extras::screenshot: Screenshot entity spawned with ID: 4059v0
+2026-10-16T17:28:41.238734Z  INFO bevy_brp_extras::screenshot: Screenshot captured! Starting async save to: ~/or-loginfilm-dreh/shots/n2.png
+2026-10-16T17:28:41.249042Z  INFO bevy_brp_extras::screenshot: Screenshot successfully saved to: ~/or-loginfilm-dreh/shots/n2.png
