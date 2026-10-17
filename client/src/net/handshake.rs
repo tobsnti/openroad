@@ -734,6 +734,42 @@ mod test {
         frame.to_vec()
     }
 
+    /// A `0x5000` phase-2 frame: flag byte `0x10` plus the server's signature,
+    /// the 15 bytes measured on the wire. The CRC byte stays zero because
+    /// `SilkroadFrame::parse` carries it without checking it.
+    fn challenge_frame(challenge: u64) -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u8(FLAG_CHALLENGE);
+        body.put_u64_le(challenge);
+        let body = body.freeze();
+
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x5000);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+
+    /// Phase 1 over the pipe, published into the shared cell the way
+    /// `do_handshake` does it: `finalize` reads the state from there, so a test
+    /// that skips the publishing step is rejected as `NotYetInitialized` and
+    /// proves nothing about phase 2. Returns the signature the server would have
+    /// to send for THIS session -- there is no recorded constant that could,
+    /// because the private exponent is drawn per session.
+    fn session_after_phase_one() -> (Arc<RwLock<SilkroadSecurityState>>, u64) {
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut pipe = MemPipe::new([setup_frame_full_flags()]);
+        let state = initialize(&mut pipe, security.clone()).expect("phase 1 initializes");
+        let expected = server_challenge(&state.context);
+        let mut s = security.write().expect("security to be writable");
+        s.context = state.context;
+        s.state = state.state;
+        drop(s);
+        (security, expected)
+    }
+
     /// A peer that stops in the middle of the setup frame makes `parse` report
     /// `Incomplete`, and that has to reach the caller. The `.expect` this
     /// replaces panicked the `sro-connect` thread instead, which the ECS could
@@ -948,5 +984,62 @@ mod test {
             assert_eq!(state.context.remote_public, 2_043_001_406);
             assert_eq!(state.context.handshake_key, 0x4180_cc82_3187_35b4);
         }
+    }
+
+    /// Phase 2 over the socket-free pipe, which it had no test for at all --
+    /// every pipe test so far stopped after `initialize`. This is the phase that
+    /// authenticates the server (`server_challenge`) and writes the `0x9000` the
+    /// gateway waits for, and it is split 6 + 9 bytes so the continuation path
+    /// carries this phase too, not only phase 1.
+    #[test]
+    fn the_challenge_phase_also_runs_over_a_pipe() {
+        let (security, expected) = session_after_phase_one();
+        let frame = challenge_frame(expected);
+        let mut pipe = MemPipe::new([frame[..6].to_vec(), frame[6..].to_vec()]);
+
+        let state = finalize(&mut pipe, security).expect("phase 2 finalizes");
+
+        assert!(matches!(state.state, SilkroadSecurity::Established));
+        assert_eq!(pipe.handed_out(), 15, "the phase-2 0x5000 is 15 bytes");
+        assert_eq!(pipe.reads(), 2, "it has to have arrived in two reads");
+        // The answer is an empty `0x9000`: 6 bytes of envelope, no body.
+        let reply = pipe.written();
+        assert_eq!(reply.len(), 6);
+        assert_eq!(u16::from_le_bytes([reply[0], reply[1]]), 0, "no body");
+        assert_eq!(&reply[2..4], &0x9000u16.to_le_bytes());
+    }
+
+    /// The contract as it stands today, and the one sentence of it that a
+    /// poll-shaped reader has to change: a gap mid-frame is an ERROR named
+    /// `WouldBlock`, the half frame dies with the reader's stack, and no
+    /// `0x9000` is sent. Phase 2 is held to the same rule as phase 1
+    /// (`a_peer_that_stalls_mid_frame_is_not_an_end_of_stream`).
+    ///
+    /// **This test is meant to be rewritten**, and it names what the rewrite
+    /// must establish: a stall becomes a pause instead of a failure, and the
+    /// bytes already read survive it. Leaving it green would mean the handshake
+    /// never became poll-shaped.
+    #[test]
+    fn a_gap_in_the_challenge_phase_is_an_error_today_not_a_pause() {
+        let (security, expected) = session_after_phase_one();
+        let frame = challenge_frame(expected);
+        let mut pipe = MemPipe::new([frame[..6].to_vec(), vec![], frame[6..].to_vec()]);
+
+        let Err(error) = finalize(&mut pipe, security) else {
+            panic!("a gap mid-frame cannot be survived today");
+        };
+        let HandshakeError::Io(io) = &error else {
+            panic!("expected the read to be reported, got {error}");
+        };
+        assert_eq!(
+            io.kind(),
+            ErrorKind::WouldBlock,
+            "a gap is a stall, not an end of file"
+        );
+        assert_eq!(pipe.empty_reads(), 1, "the gap has to have been reached");
+        assert!(
+            pipe.written().is_empty(),
+            "a handshake that did not finish must not have answered"
+        );
     }
 }
