@@ -53,3 +53,170 @@ impl SilkroadTransport for TcpStream {
         self.set_read_timeout(deadline)
     }
 }
+
+/// A scripted byte pipe with no socket behind it, used to run the real handshake
+/// over a second transport.
+///
+/// It hands out the peer's bytes in the chunks the script lists, so a frame the
+/// peer split across two segments is seen split here too -- the case that used
+/// to fail the login (#107). Everything the client writes is kept for the
+/// comparison, and the byte counts are exposed so a test can assert that the
+/// pipe really carried something: a fixture that silently carried nothing looks
+/// exactly like a pass.
+///
+/// Exhausting the script does NOT mean end of stream. A peer that stops in the
+/// middle of a frame without closing is what the handshake's 5-second
+/// continuation bound exists for, and `std::net` reports that bound firing as
+/// `WouldBlock` on unix -- so that is what an open, empty pipe answers. Reporting
+/// `Ok(0)` instead would blame a peer that is still there for an "unexpected end
+/// of file", which is the mistake the bound was added to avoid.
+#[cfg(test)]
+pub(crate) struct MemPipe {
+    inbound: std::collections::VecDeque<Vec<u8>>,
+    outbound: Vec<u8>,
+    handed_out: usize,
+    reads: usize,
+    closed: bool,
+    /// Red control only: answer an exhausted-but-open script with `Ok(0)`, so a
+    /// test can show that the distinction between a closed peer and a stalled
+    /// one is really being measured.
+    report_eof_when_empty: bool,
+}
+
+#[cfg(test)]
+impl MemPipe {
+    /// `chunks` is what the peer sends, one `read` per chunk.
+    pub(crate) fn new(chunks: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        Self {
+            inbound: chunks.into_iter().collect(),
+            outbound: Vec::new(),
+            handed_out: 0,
+            reads: 0,
+            closed: false,
+            report_eof_when_empty: false,
+        }
+    }
+
+    /// The peer hangs up once its script runs out.
+    pub(crate) fn closing(mut self) -> Self {
+        self.closed = true;
+        self
+    }
+
+    pub(crate) fn reporting_eof_when_empty(mut self) -> Self {
+        self.report_eof_when_empty = true;
+        self
+    }
+
+    /// Everything the client wrote, in order.
+    pub(crate) fn written(&self) -> &[u8] {
+        &self.outbound
+    }
+
+    /// How many bytes the pipe handed to the client. Zero means the fixture
+    /// never ran, whatever the rest of the test says.
+    pub(crate) fn handed_out(&self) -> usize {
+        self.handed_out
+    }
+
+    /// How many reads the client needed. This, not the byte count, is what says
+    /// a split really happened: a pipe that merged its script into one chunk
+    /// hands out the same bytes and would pass a byte-count assertion.
+    pub(crate) fn reads(&self) -> usize {
+        self.reads
+    }
+}
+
+#[cfg(test)]
+impl Read for MemPipe {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(chunk) = self.inbound.front_mut() else {
+            return if self.closed || self.report_eof_when_empty {
+                Ok(0)
+            } else {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            };
+        };
+        let n = chunk.len().min(buf.len());
+        buf[..n].copy_from_slice(&chunk[..n]);
+        chunk.drain(..n);
+        if chunk.is_empty() {
+            self.inbound.pop_front();
+        }
+        self.handed_out += n;
+        self.reads += 1;
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
+impl Write for MemPipe {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.outbound.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SilkroadTransport for MemPipe {
+    /// A scripted pipe has no deadline to keep: it never has to wait.
+    fn read_deadline(&mut self) -> std::io::Result<Option<Duration>> {
+        Ok(None)
+    }
+
+    fn set_read_deadline(&mut self, _deadline: Option<Duration>) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// The pipe hands out the peer's chunks one read at a time -- that is what
+    /// reproduces a split frame -- and keeps the tail of a chunk the caller's
+    /// buffer was too small for.
+    #[test]
+    fn a_scripted_pipe_hands_out_one_chunk_per_read() {
+        let mut pipe = MemPipe::new([vec![1, 2, 3], vec![4, 5]]);
+        let mut buf = [0u8; 8];
+
+        assert_eq!(pipe.read(&mut buf).expect("first chunk"), 3);
+        assert_eq!(&buf[..3], &[1, 2, 3]);
+        assert_eq!(pipe.read(&mut buf).expect("second chunk"), 2);
+        assert_eq!(&buf[..2], &[4, 5]);
+        assert_eq!(pipe.handed_out(), 5);
+
+        let mut small = [0u8; 2];
+        let mut pipe = MemPipe::new([vec![1, 2, 3]]);
+        assert_eq!(pipe.read(&mut small).expect("short buffer"), 2);
+        assert_eq!(pipe.read(&mut small).expect("the kept tail"), 1);
+        assert_eq!(pipe.reads(), 2);
+    }
+
+    /// The distinction the handshake's continuation bound rests on: a peer that
+    /// closed is end of stream, a peer that merely stopped is not.
+    #[test]
+    fn an_exhausted_script_is_a_stall_unless_the_peer_closed() {
+        let mut buf = [0u8; 4];
+
+        let mut stalled = MemPipe::new([]);
+        let err = stalled.read(&mut buf).expect_err("a stall is not a read");
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+
+        let mut hung_up = MemPipe::new([]).closing();
+        assert_eq!(hung_up.read(&mut buf).expect("end of stream"), 0);
+    }
+
+    #[test]
+    fn the_pipe_keeps_everything_the_client_wrote() {
+        let mut pipe = MemPipe::new([]);
+        pipe.write_all(&[7, 8]).expect("write");
+        pipe.write_all(&[9]).expect("write");
+        assert_eq!(pipe.written(), &[7, 8, 9]);
+    }
+}
