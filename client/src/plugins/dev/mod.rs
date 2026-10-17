@@ -133,9 +133,12 @@ impl Plugin for DevPlugin {
             // components are inserted, nothing draws them, and the compiler
             // only says `unused import: WireframePlugin`.
             .add_plugins(WireframePlugin::default())
-            // The auto-screenshot harness stays off — it is a capture tool, not
-            // part of these toggles.
-            // .add_plugins(auto_screenshot::AutoScreenshotPlugin)
+            // The capture harness is a tool, not a toggle — but it has to be
+            // in the app before it can capture anything, and commented out it
+            // was unreachable at every build of this tree. It is inert without
+            // `OPENROAD_SCREENSHOT`: `build` returns before adding a system
+            // or a resource when the variable is unset.
+            .add_plugins(auto_screenshot::AutoScreenshotPlugin)
             // Always on: the mode switch (Tab — the way *into* debug mode),
             // which claims no letter a vanilla HUD toggle wants. The dev-window
             // button moved into the gated block: it is chrome for tooling that
