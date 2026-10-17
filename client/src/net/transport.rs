@@ -8,51 +8,31 @@
 // without touching any of them -- and the handshake gains a second, socket-free
 // caller to be tested with, which is the point of doing it now.
 //
-// `io::Read + io::Write` already covers 8 of those 14 sites (`write_all` is a
-// provided method of `Write`). The two verbs below are everything else that is
-// called THROUGH the seam, and they are here because a browser `WebSocket` has
-// no equivalent for them: it has no socket deadline at all, so both become
-// no-ops there. Named `*_deadline` rather than `*_timeout` so the trait method
-// stays apart from `TcpStream`'s inherent one.
+// `io::Read + io::Write` is now the whole seam, and that is the point. The two
+// deadline verbs this trait used to carry existed for the handshake's
+// continuation read; a poll-shaped reader measures its own wait instead
+// (`handshake.rs`, `FrameReader::waiting_since`). The blocking driver still
+// bounds its socket, but it does that on the `TcpStream` it owns, before the
+// socket ever becomes a transport -- so nothing a browser `WebSocket` lacks is
+// called through here any more.
 //
-// `set_nonblocking` is deliberately NOT here, although it is one of the 14
-// sites: its single caller switches the socket before it ever becomes a
-// transport, so it is a concern of whatever constructs the connection, not of
-// the pipe. Having it in the trait only produced a dead method, which is how
-// this was found (`clippy --all-targets`: "method `set_nonblocking` is never
-// used").
-//
-// This does NOT make the handshake browser-ready: `handshake::read_frame` still
-// blocks, and a blocking read on a browser's main thread can never finish --
-// the bytes arrive in a callback that cannot run while the thread is blocked.
-// That is a separate, larger change (the handshake becomes poll-shaped); this
-// trait is its precondition, not its substitute.
+// `set_nonblocking` is deliberately NOT here either, for the same reason: its
+// single caller switches the socket while it is still a `TcpStream`. Having it
+// in the trait only produced a dead method, which is how this was found
+// (`clippy --all-targets`: "method `set_nonblocking` is never used") -- and the
+// same clippy line is what retired the two deadline verbs once the poll-shaped
+// reader stopped calling them.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
 
 /// A bidirectional, ordered byte pipe. Ordered is not a detail: every frame
 /// carries a sequence byte and a CRC chained off the handshake seeds
 /// (`frame.rs`), so a transport that may drop or reorder bytes desynchronises
 /// every later frame.
-pub trait SilkroadTransport: Read + Write + Send + 'static {
-    /// The current bound on how long a read may wait, so a caller that sets one
-    /// can put the previous value back.
-    fn read_deadline(&mut self) -> std::io::Result<Option<Duration>>;
+pub trait SilkroadTransport: Read + Write + Send + 'static {}
 
-    fn set_read_deadline(&mut self, deadline: Option<Duration>) -> std::io::Result<()>;
-}
-
-impl SilkroadTransport for TcpStream {
-    fn read_deadline(&mut self) -> std::io::Result<Option<Duration>> {
-        self.read_timeout()
-    }
-
-    fn set_read_deadline(&mut self, deadline: Option<Duration>) -> std::io::Result<()> {
-        self.set_read_timeout(deadline)
-    }
-}
+impl SilkroadTransport for TcpStream {}
 
 /// A scripted byte pipe with no socket behind it, used to run the real handshake
 /// over a second transport.
@@ -103,6 +83,13 @@ impl MemPipe {
             closed: false,
             report_eof_when_empty: false,
         }
+    }
+
+    /// Appends to the script after the fact. A round trip whose bytes depend on
+    /// what the client just sent -- the handshake's challenge does -- cannot be
+    /// written down when the pipe is built.
+    pub(crate) fn push(&mut self, chunk: Vec<u8>) {
+        self.inbound.push_back(chunk);
     }
 
     /// The peer hangs up once its script runs out.
@@ -191,16 +178,7 @@ impl Write for MemPipe {
 }
 
 #[cfg(test)]
-impl SilkroadTransport for MemPipe {
-    /// A scripted pipe has no deadline to keep: it never has to wait.
-    fn read_deadline(&mut self) -> std::io::Result<Option<Duration>> {
-        Ok(None)
-    }
-
-    fn set_read_deadline(&mut self, _deadline: Option<Duration>) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+impl SilkroadTransport for MemPipe {}
 
 #[cfg(test)]
 mod test {

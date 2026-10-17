@@ -1,6 +1,6 @@
 use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bevy::log::error;
 use bevy::prelude::debug;
@@ -124,69 +124,177 @@ pub(crate) fn check_body(data: &[u8], setup_flags: u8) -> Result<u8, HandshakeEr
 /// Not a value from the original: the peer has already sent this frame's head,
 /// so its tail is one round trip away, and the number's only job is to end a
 /// stall — not to time the network.
-const FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Used twice now: as the reader's own wall-clock bound, and as the socket
+/// deadline the blocking driver sets so a poll on a blocking socket comes back
+/// at all (`connection.rs`).
+pub(crate) const FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Reads one whole frame, carrying a frame that TCP split across segments.
+/// One poll of [`FrameReader`]: a whole frame, or "not yet".
 ///
-/// `SilkroadFrame::parse` answers `Incomplete` while a frame's bytes are still
-/// on their way. The in-game loop replies to that by keeping the tail and
-/// reading again (`plugins/net/plugin.rs`, `FrameStep::Incomplete => break`);
-/// the handshake was the only reader that gave up instead, so a split 43-byte
-/// setup frame failed the login. Re-parsing the growing buffer is sound here
-/// because a handshake frame is never encrypted: `parse` only inspects these
-/// bytes, it does not decrypt them in place.
+/// `Pending` is deliberately not an error. A reader that reports "nothing
+/// arrived" as a failure cannot be driven by a transport whose bytes come from a
+/// callback -- there, nothing arriving between two polls is the normal case --
+/// and it cannot be driven from an ECS schedule either, which has to return to
+/// the frame loop.
+pub(crate) enum FrameStep {
+    Ready(SilkroadFrame),
+    Pending,
+}
+
+/// Our own buffer bound, not the protocol's: see [`HandshakeError::FrameTooLarge`].
+const HANDSHAKE_BUF_LEN: usize = 4096;
+
+/// The handshake's frame reader, in poll shape: the partial frame lives in a
+/// field between calls instead of on the stack of a blocking read.
 ///
-/// Reading until the peer is done would be the next defect, so three bounds end
-/// the loop: end of stream, a frame that does not fit the buffer (ours, not the
-/// protocol's), and [`FRAME_COMPLETION_TIMEOUT`] on the continuation reads. The first read keeps
-/// the socket's own blocking behaviour, as before. A read that carries more
-/// than this frame still drops the surplus, also as before — the handshake is
-/// strictly one request per response.
-fn read_frame(
-    stream: &mut dyn SilkroadTransport,
-    security: Arc<RwLock<SilkroadSecurityState>>,
-) -> Result<SilkroadFrame, HandshakeError> {
-    let mut buf = [0; 4096];
-    let mut filled = stream.read(&mut buf)?;
-    loop {
-        match SilkroadFrame::parse(&mut buf[..filled], security.clone()) {
-            Ok((_, frame)) => return Ok(frame),
-            Err(SilkroadFrameError::Incomplete) => {
-                if filled == buf.len() {
-                    return Err(HandshakeError::FrameTooLarge(buf.len()));
+/// Idea. `SilkroadFrame::parse` answers `Incomplete` while a frame's bytes are
+/// still on their way, and the in-game loop already replies to that by keeping
+/// the tail and reading again (`plugins/net/plugin.rs`, `next_packet` +
+/// `FrameStep::Incomplete => break`). This is that same accumulate-and-drain
+/// shape, with the buffer and its fill level moved into fields, so a caller may
+/// stop between any two reads and come back later. That is what a browser
+/// `WebSocket` forces -- its bytes arrive in a callback that cannot run while a
+/// thread blocks -- and what an ECS system needs anyway.
+///
+/// Re-parsing the growing buffer is sound because `parse` reports `Incomplete`
+/// *before* it touches a byte (`frame.rs`: the short-buffer check precedes the
+/// in-place decrypt), so a frame can be offered to it as often as needed and is
+/// only ever decrypted once, when it is whole.
+///
+/// Three bounds still end the wait, the same three as before: end of stream, a
+/// frame that does not fit the buffer, and [`FRAME_COMPLETION_TIMEOUT`] once a
+/// frame is partly here. The bound is a wall clock in `waiting_since` rather
+/// than a socket deadline, because a callback-fed transport has no socket to set
+/// one on -- and a reader that is polled has to measure its own wait. Waiting
+/// for the FIRST byte stays unbounded, as before: the gateway may take its time
+/// and nothing is half-read yet.
+pub(crate) struct FrameReader {
+    buf: Vec<u8>,
+    filled: usize,
+    /// When the frame now being assembled first arrived in part. `None` while
+    /// nothing is buffered, so a quiet connection is never timed out.
+    waiting_since: Option<Instant>,
+    bound: Duration,
+}
+
+impl FrameReader {
+    pub(crate) fn new() -> Self {
+        Self {
+            buf: vec![0; HANDSHAKE_BUF_LEN],
+            filled: 0,
+            waiting_since: None,
+            bound: FRAME_COMPLETION_TIMEOUT,
+        }
+    }
+
+    /// A reader with a shorter completion bound, so a test does not have to wait
+    /// five seconds to see the bound fire. The production constant stays the
+    /// only one in the wire path.
+    #[cfg(test)]
+    pub(crate) fn with_bound(bound: Duration) -> Self {
+        Self {
+            bound,
+            ..Self::new()
+        }
+    }
+
+    /// Everything read past the last frame handed out. The handshake is one
+    /// request per response, so this is normally empty -- but a transport that
+    /// delivers whole messages can carry the next frame in the same read, and
+    /// those bytes belong to whoever reads next (`SilkroadConnection::read_buf`).
+    /// Dropping them only looked harmless while every read went into a fresh
+    /// stack buffer that died with the call.
+    pub(crate) fn take_tail(&mut self) -> Vec<u8> {
+        let tail = self.buf[..self.filled].to_vec();
+        self.filled = 0;
+        self.waiting_since = None;
+        tail
+    }
+
+    /// One step: hand out a buffered frame if there is one, otherwise read once
+    /// and try again. Never blocks longer than the transport's own read does.
+    pub(crate) fn poll(
+        &mut self,
+        stream: &mut dyn SilkroadTransport,
+        security: Arc<RwLock<SilkroadSecurityState>>,
+    ) -> Result<FrameStep, HandshakeError> {
+        // Parse before reading: the previous poll may already have carried this
+        // frame's bytes.
+        if let Some(frame) = self.take_frame(security.clone())? {
+            return Ok(FrameStep::Ready(frame));
+        }
+        if self.filled == self.buf.len() {
+            // No room to read into, so the frame announced by the length prefix
+            // can never arrive here. Checked before the read, because a
+            // zero-length read answers `Ok(0)` and would be read as end of
+            // stream.
+            return Err(HandshakeError::FrameTooLarge(self.buf.len()));
+        }
+        match stream.read(&mut self.buf[self.filled..]) {
+            Ok(0) => Err(std::io::Error::from(ErrorKind::UnexpectedEof).into()),
+            Ok(read) => {
+                if self.waiting_since.is_none() {
+                    self.waiting_since = Some(Instant::now());
+                }
+                self.filled += read;
+                match self.take_frame(security)? {
+                    Some(frame) => Ok(FrameStep::Ready(frame)),
+                    None => Ok(FrameStep::Pending),
                 }
             }
-            Err(e) => return Err(e.into()),
+            Err(e) if is_pending(&e) => {
+                // Nothing arrived. Only a frame that is already partly here is
+                // bounded in time; an idle connection is not.
+                match self.waiting_since {
+                    Some(since) if since.elapsed() >= self.bound => {
+                        Err(std::io::Error::from(ErrorKind::TimedOut).into())
+                    }
+                    _ => Ok(FrameStep::Pending),
+                }
+            }
+            Err(e) => Err(e.into()),
         }
-        let read = read_continuation(stream, &mut buf[filled..])?;
-        if read == 0 {
-            return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
+    }
+
+    /// Takes one whole frame off the front of the buffer, keeping the rest.
+    /// `wire_len` is the frame's length on the wire, as `next_packet` uses it --
+    /// `parse`'s own count excludes the two-byte size prefix.
+    fn take_frame(
+        &mut self,
+        security: Arc<RwLock<SilkroadSecurityState>>,
+    ) -> Result<Option<SilkroadFrame>, HandshakeError> {
+        let Some(frame_len) = SilkroadFrame::wire_len(&self.buf[..self.filled]) else {
+            return Ok(None); // fewer than 2 bytes: the length prefix is not here yet
+        };
+        if frame_len > self.filled {
+            return Ok(None); // partial tail -- keep it for the next poll
         }
-        filled += read;
+        let (_, frame) = SilkroadFrame::parse(&mut self.buf[..frame_len], security)?;
+        self.buf.copy_within(frame_len..self.filled, 0);
+        self.filled -= frame_len;
+        self.waiting_since = None;
+        Ok(Some(frame))
     }
 }
 
-/// One continuation read, bounded in time so a peer that stops mid-frame cannot
-/// hold the connect thread. The previous timeout is put back before returning:
-/// the module-identification read that follows the handshake keeps its own
-/// behaviour.
-fn read_continuation(
-    stream: &mut dyn SilkroadTransport,
-    buf: &mut [u8],
-) -> Result<usize, HandshakeError> {
-    let previous = stream.read_deadline()?;
-    stream.set_read_deadline(Some(FRAME_COMPLETION_TIMEOUT))?;
-    let read = stream.read(buf);
-    let _ = stream.set_read_deadline(previous);
-    Ok(read?)
+/// A read that answered "nothing right now". A non-blocking socket with no bytes
+/// ready reports `WouldBlock`; a read deadline firing reports `WouldBlock` on
+/// unix and `TimedOut` on windows. To a reader that is polled all three are the
+/// same thing, and none of them is a failure.
+fn is_pending(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
+/// Phase 1, on a frame the caller has already read. The read moved out so the
+/// caller can be a poll: everything below runs between the read and the answer
+/// without touching the transport again, except to write.
 pub(crate) fn initialize(
+    frame: SilkroadFrame,
     stream: &mut dyn SilkroadTransport,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
-    let frame = read_frame(stream, security.clone())?;
     match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -311,12 +419,19 @@ fn setup_handshake(
     })
 }
 
+/// Phase 2, on a frame the caller has already read.
+///
+/// The write lock is taken AFTER the frame is in hand, and that order is not
+/// incidental: a poll that returns `Pending` must not be holding this lock, or
+/// the first `receive_packets` tick that reads the same cell deadlocks against
+/// it (`plugins/net/plugin.rs`). Reading first keeps the lock inside one poll
+/// step.
 pub(crate) fn finalize(
+    frame: SilkroadFrame,
     stream: &mut dyn SilkroadTransport,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
-    let frame = read_frame(stream, security.clone())?;
     return match frame {
         SilkroadFrame::Packet { opcode, data, .. } => {
             if opcode != 0x5000 {
@@ -501,6 +616,7 @@ mod test {
     use std::net::{TcpListener, TcpStream};
 
     use super::*;
+    use crate::net::connection::Handshake;
     use crate::net::transport::MemPipe;
 
     /// A session mid-handshake: the client has computed B and K from the
@@ -752,16 +868,51 @@ mod test {
         frame.to_vec()
     }
 
-    /// Phase 1 over the pipe, published into the shared cell the way
-    /// `do_handshake` does it: `finalize` reads the state from there, so a test
-    /// that skips the publishing step is rejected as `NotYetInitialized` and
-    /// proves nothing about phase 2. Returns the signature the server would have
-    /// to send for THIS session -- there is no recorded constant that could,
-    /// because the private exponent is drawn per session.
+    /// Drives the reader until one frame is whole, with a poll budget so a test
+    /// can never hang. `Ok(None)` means the reader was still waiting after
+    /// `polls` tries -- a stall, which is no longer an error.
+    fn read_frame_within(
+        reader: &mut FrameReader,
+        pipe: &mut MemPipe,
+        security: &Arc<RwLock<SilkroadSecurityState>>,
+        polls: usize,
+    ) -> Result<Option<SilkroadFrame>, HandshakeError> {
+        for _ in 0..polls {
+            if let FrameStep::Ready(frame) = reader.poll(pipe, security.clone())? {
+                return Ok(Some(frame));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Phase 1 over a scripted pipe: read one frame, then run the phase on it.
+    /// `Ok(None)` is the reader still waiting, so a test says which of the two
+    /// it expects instead of both arriving as `Err`.
+    fn initialize_over(
+        pipe: &mut MemPipe,
+    ) -> Result<Option<SilkroadSecurityState>, HandshakeError> {
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut reader = FrameReader::new();
+        let Some(frame) = read_frame_within(&mut reader, pipe, &security, 16)? else {
+            return Ok(None);
+        };
+        initialize(frame, pipe, security).map(Some)
+    }
+
+    /// Phase 1 over the pipe, published into the shared cell the way the
+    /// handshake machine does it: `finalize` reads the state from there, so a
+    /// test that skips the publishing step is rejected as `NotYetInitialized`
+    /// and proves nothing about phase 2. Returns the signature the server would
+    /// have to send for THIS session -- there is no recorded constant that
+    /// could, because the private exponent is drawn per session.
     fn session_after_phase_one() -> (Arc<RwLock<SilkroadSecurityState>>, u64) {
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
         let mut pipe = MemPipe::new([setup_frame_full_flags()]);
-        let state = initialize(&mut pipe, security.clone()).expect("phase 1 initializes");
+        let mut reader = FrameReader::new();
+        let frame = read_frame_within(&mut reader, &mut pipe, &security, 4)
+            .expect("the setup frame reads")
+            .expect("the setup frame is whole");
+        let state = initialize(frame, &mut pipe, security.clone()).expect("phase 1 initializes");
         let expected = server_challenge(&state.context);
         let mut s = security.write().expect("security to be writable");
         s.context = state.context;
@@ -786,9 +937,8 @@ mod test {
 
         // Half a frame, then the peer hangs up.
         let mut pipe = MemPipe::new([frame[..20].to_vec()]).closing();
-        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
         // `let Err(..) else`, not `expect_err`: the Ok type is not `Debug`.
-        let Err(error) = initialize(&mut pipe, security) else {
+        let Err(error) = initialize_over(&mut pipe) else {
             panic!("half a frame cannot initialize");
         };
         assert!(
@@ -811,8 +961,9 @@ mod test {
         let frame = setup_frame_full_flags();
         let mut pipe = MemPipe::new([frame[..20].to_vec(), frame[20..].to_vec()]);
 
-        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let state = initialize(&mut pipe, security).expect("a split setup frame initializes");
+        let state = initialize_over(&mut pipe)
+            .expect("a split setup frame initializes")
+            .expect("both segments make one frame");
         assert!(matches!(state.state, SilkroadSecurity::Initialized));
         assert_eq!(pipe.handed_out(), 43, "both segments have to have arrived");
         // The read COUNT, not the byte count, is what says the split happened:
@@ -826,28 +977,216 @@ mod test {
         );
     }
 
-    /// A peer that stalls mid-frame without closing is NOT end of stream, and
-    /// the two must not be reported as the same thing: the continuation bound
-    /// exists so a peer that is still there is not blamed for an "unexpected end
-    /// of file" (`read_frame`'s third bound). On unix `std::net` surfaces a read
-    /// deadline firing as `WouldBlock`, which is what the pipe answers once its
-    /// script runs out while still open.
-    #[test]
-    fn a_peer_that_stalls_mid_frame_is_not_an_end_of_stream() {
-        let frame = setup_frame_full_flags();
-        let mut stalled = MemPipe::new([frame[..20].to_vec()]);
+    /// A `0x2001` as a gateway answers it: the `u16`-prefixed module name. 13
+    /// characters plus the prefix and the 6-byte envelope is 21 bytes -- the
+    /// measured 26 of the capture carry a longer name, and the length prefix is
+    /// what the parse goes by either way.
+    fn module_ident_response(name: &str) -> Vec<u8> {
+        let mut body = BytesMut::new();
+        body.put_u16_le(name.len() as u16);
+        body.put_slice(name.as_bytes());
+        let body = body.freeze();
 
+        let mut frame = BytesMut::new();
+        frame.put_u16_le(body.len() as u16);
+        frame.put_u16_le(0x2001);
+        frame.put_u8(0); // count
+        frame.put_u8(0); // crc
+        frame.extend_from_slice(&body);
+        frame.to_vec()
+    }
+
+    /// THE MACHINE, END TO END over something that is not a socket: all three
+    /// round trips, driven one poll at a time, with the pipe empty between them.
+    ///
+    /// This is what the blocking line could never be asked: each `poll` that
+    /// finds nothing returns `false` ("call me again") instead of blocking, and
+    /// the machine remembers which round trip it is in. The script is fed round
+    /// by round, because the server's signature depends on the private exponent
+    /// this very session drew -- it cannot be written down in advance.
+    #[test]
+    fn the_whole_handshake_runs_poll_by_poll_over_a_pipe() {
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let Err(error) = initialize(&mut stalled, security) else {
-            panic!("a stalled peer cannot initialize");
+        let mut machine = Handshake::new(security.clone());
+        let mut pipe = MemPipe::new([setup_frame_full_flags()]);
+
+        // Round 1: the setup frame arrives, the 0x5000 answer goes out, and the
+        // machine is not finished.
+        assert!(
+            !machine.poll(&mut pipe).expect("phase 1 is handled"),
+            "the handshake is not over after phase 1"
+        );
+        assert_eq!(pipe.written().len(), 18, "the 0x5000 answer is 18 bytes");
+
+        // Nothing arrives for two polls. Neither is a failure.
+        for _ in 0..2 {
+            assert!(
+                !machine
+                    .poll(&mut pipe)
+                    .expect("an empty pipe is not a failure"),
+                "still waiting for the challenge"
+            );
+        }
+        // Three, not two: after handling a frame the machine looks once more
+        // before reporting back, because one read can carry two frames.
+        assert_eq!(pipe.empty_reads(), 3);
+
+        // Round 2: the challenge, computed from the session the machine built.
+        let expected = server_challenge(&security.read().expect("readable").context);
+        pipe.push(challenge_frame(expected));
+        assert!(
+            !machine.poll(&mut pipe).expect("phase 2 is handled"),
+            "the handshake is not over until the peer identified itself"
+        );
+        assert_eq!(
+            pipe.written().len(),
+            18 + 6 + 18,
+            "the 0x5000 answer, the 0x9000, and our own module identification \
+             (12 bytes of body, padded to the blowfish block)"
+        );
+
+        // Round 3: the gateway identifies itself, and the handshake is done.
+        pipe.push(module_ident_response("GatewayServer"));
+        assert!(
+            machine
+                .poll(&mut pipe)
+                .expect("the module identification is handled"),
+            "the handshake is complete"
+        );
+        assert!(matches!(
+            security.read().expect("readable").state,
+            SilkroadSecurity::Established
+        ));
+        assert!(
+            machine.take_tail().is_empty(),
+            "one request per response leaves nothing over"
+        );
+    }
+
+    /// THE CASE THE POLL SHAPE EXISTS FOR: between two polls nothing arrives.
+    /// The reader keeps the half frame and answers `Pending`; the handshake then
+    /// finishes out of that same reader once the tail turns up.
+    ///
+    /// This replaces `a_peer_that_stalls_mid_frame_is_not_an_end_of_stream`,
+    /// which asserted the opposite -- that a stall reaches the caller as
+    /// `Err(WouldBlock)`. That was the contract while the reader blocked, and it
+    /// is the one sentence this change rewrites: **a stall is a state, not a
+    /// failure.** A peer that CLOSED is still an error
+    /// (`a_setup_frame_cut_short_by_a_closing_peer_is_an_error`), which is the
+    /// distinction the old test was really protecting.
+    #[test]
+    fn a_stall_between_two_polls_is_survived_and_the_handshake_finishes() {
+        let frame = setup_frame_full_flags();
+        // 20 bytes, then two polls that carry nothing at all, then the tail.
+        let mut pipe = MemPipe::new([
+            frame[..20].to_vec(),
+            Vec::new(),
+            Vec::new(),
+            frame[20..].to_vec(),
+        ]);
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut reader = FrameReader::new();
+
+        for expected in ["the head", "the first gap", "the second gap"] {
+            let step = reader
+                .poll(&mut pipe, security.clone())
+                .unwrap_or_else(|e| panic!("{expected} is not a failure: {e}"));
+            assert!(
+                matches!(step, FrameStep::Pending),
+                "{expected} is not a frame"
+            );
+        }
+        assert_eq!(
+            pipe.empty_reads(),
+            2,
+            "the two gaps have to have been reached"
+        );
+
+        let FrameStep::Ready(frame) = reader
+            .poll(&mut pipe, security.clone())
+            .expect("the tail arrives")
+        else {
+            panic!("the tail completes the frame the reader was holding");
         };
-        let HandshakeError::Io(io) = &error else {
-            panic!("expected the read to be reported, got {error}");
+        let state = initialize(frame, &mut pipe, security).expect("the stalled handshake finishes");
+
+        assert!(matches!(state.state, SilkroadSecurity::Initialized));
+        assert_eq!(pipe.handed_out(), 43, "both segments have to have arrived");
+        assert_eq!(
+            pipe.reads(),
+            2,
+            "in two reads, with two empty polls between them"
+        );
+    }
+
+    /// The bound that keeps "wait for the tail" from becoming the next defect: a
+    /// peer that goes quiet mid-frame is waited for, but not forever. The
+    /// production bound would make this test take five seconds, so the reader is
+    /// built with a short one; `FRAME_COMPLETION_TIMEOUT` stays the only bound on
+    /// the wire path.
+    #[test]
+    fn a_frame_that_never_completes_times_out_instead_of_waiting_forever() {
+        let frame = setup_frame_full_flags();
+        let mut pipe = MemPipe::new([frame[..20].to_vec()]);
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut reader = FrameReader::with_bound(Duration::ZERO);
+
+        let step = reader.poll(&mut pipe, security.clone()).expect("the head");
+        assert!(matches!(step, FrameStep::Pending));
+
+        let Err(HandshakeError::Io(io)) = reader.poll(&mut pipe, security) else {
+            panic!("the completion bound has to fire on a frame that is half here");
         };
         assert_eq!(
             io.kind(),
-            ErrorKind::WouldBlock,
-            "a stalled peer is a timeout, not an end of file"
+            ErrorKind::TimedOut,
+            "a frame that never completes is a timeout"
+        );
+    }
+
+    /// Waiting for the FIRST byte is deliberately NOT bounded: nothing is
+    /// half-read, so a gateway that takes its time is waited for rather than
+    /// failed. Same zero bound as the test above, which is what makes this one
+    /// say something: without the `waiting_since` guard it would time out on the
+    /// first poll.
+    #[test]
+    fn an_idle_connection_is_not_timed_out_before_its_first_byte() {
+        let mut pipe = MemPipe::new([]);
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut reader = FrameReader::with_bound(Duration::ZERO);
+
+        for _ in 0..3 {
+            let step = reader
+                .poll(&mut pipe, security.clone())
+                .expect("an idle pipe is not an error");
+            assert!(matches!(step, FrameStep::Pending));
+        }
+        assert_eq!(pipe.empty_reads(), 3);
+    }
+
+    /// The hand-over at the end of the handshake: a read that carried more than
+    /// the frame keeps its surplus, and that surplus is what
+    /// `SilkroadConnection::read_buf` starts with. Dropping it was invisible
+    /// while the buffer was a stack array that died with the call; with the
+    /// buffer in a field it would be a byte loss.
+    #[test]
+    fn bytes_read_past_the_frame_are_kept_for_the_next_reader() {
+        let mut script = setup_frame_full_flags();
+        script.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // the start of whatever comes next
+        let mut pipe = MemPipe::new([script]);
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut reader = FrameReader::new();
+
+        let FrameStep::Ready(_) = reader
+            .poll(&mut pipe, security)
+            .expect("the setup frame arrives whole")
+        else {
+            panic!("46 bytes carry the whole 43-byte frame");
+        };
+        assert_eq!(
+            reader.take_tail(),
+            vec![0xAA, 0xBB, 0xCC],
+            "the surplus belongs to the next reader, not to the floor"
         );
     }
 
@@ -866,8 +1205,7 @@ mod test {
         script.extend((0..8).map(|_| vec![0u8; 1024]));
 
         let mut pipe = MemPipe::new(script);
-        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let Err(error) = initialize(&mut pipe, security) else {
+        let Err(error) = initialize_over(&mut pipe) else {
             panic!("an oversized frame cannot initialize");
         };
         assert!(
@@ -886,8 +1224,7 @@ mod test {
         let frame = setup_frame_full_flags();
         let mut pipe = MemPipe::new([frame[..20].to_vec()]).reporting_eof_when_empty();
 
-        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let Err(HandshakeError::Io(io)) = initialize(&mut pipe, security) else {
+        let Err(HandshakeError::Io(io)) = initialize_over(&mut pipe) else {
             panic!("an eof-reporting pipe cannot initialize");
         };
         assert_eq!(
@@ -932,14 +1269,28 @@ mod test {
         });
         let mut socket = TcpStream::connect(addr).expect("connect to the listener");
         let socket_security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let over_socket =
-            initialize(&mut socket, socket_security).expect("the socket path initializes");
+        let mut socket_reader = FrameReader::new();
+        let socket_frame = loop {
+            if let FrameStep::Ready(frame) = socket_reader
+                .poll(&mut socket, socket_security.clone())
+                .expect("the socket carries the setup frame")
+            {
+                break frame;
+            }
+        };
+        let over_socket = initialize(socket_frame, &mut socket, socket_security)
+            .expect("the socket path initializes");
         let socket_reply = peer.join().expect("listener thread");
 
         // Transport 2: the same bytes, no socket anywhere.
         let mut pipe = MemPipe::new([frame.clone()]);
         let pipe_security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let over_pipe = initialize(&mut pipe, pipe_security).expect("the pipe path initializes");
+        let mut pipe_reader = FrameReader::new();
+        let pipe_frame = read_frame_within(&mut pipe_reader, &mut pipe, &pipe_security, 4)
+            .expect("the pipe carries the setup frame")
+            .expect("the frame is whole");
+        let over_pipe =
+            initialize(pipe_frame, &mut pipe, pipe_security).expect("the pipe path initializes");
         let pipe_reply = pipe.written().to_vec();
 
         assert_eq!(
@@ -996,8 +1347,12 @@ mod test {
         let (security, expected) = session_after_phase_one();
         let frame = challenge_frame(expected);
         let mut pipe = MemPipe::new([frame[..6].to_vec(), frame[6..].to_vec()]);
+        let mut reader = FrameReader::new();
 
-        let state = finalize(&mut pipe, security).expect("phase 2 finalizes");
+        let frame = read_frame_within(&mut reader, &mut pipe, &security, 4)
+            .expect("the challenge frame reads")
+            .expect("both segments make one frame");
+        let state = finalize(frame, &mut pipe, security).expect("phase 2 finalizes");
 
         assert!(matches!(state.state, SilkroadSecurity::Established));
         assert_eq!(pipe.handed_out(), 15, "the phase-2 0x5000 is 15 bytes");
@@ -1009,37 +1364,26 @@ mod test {
         assert_eq!(&reply[2..4], &0x9000u16.to_le_bytes());
     }
 
-    /// The contract as it stands today, and the one sentence of it that a
-    /// poll-shaped reader has to change: a gap mid-frame is an ERROR named
-    /// `WouldBlock`, the half frame dies with the reader's stack, and no
-    /// `0x9000` is sent. Phase 2 is held to the same rule as phase 1
-    /// (`a_peer_that_stalls_mid_frame_is_not_an_end_of_stream`).
-    ///
-    /// **This test is meant to be rewritten**, and it names what the rewrite
-    /// must establish: a stall becomes a pause instead of a failure, and the
-    /// bytes already read survive it. Leaving it green would mean the handshake
-    /// never became poll-shaped.
+    /// The rewrite the previous commit announced, in its own words: *a stall
+    /// becomes a pause, not a failure, and the bytes already read survive it.*
+    /// Same script as before -- 6 bytes, a gap, then the tail -- but the
+    /// asserted outcome is the opposite: where this used to be
+    /// `Err(WouldBlock)` with an unanswered gateway, the `0x9000` now goes out
+    /// after the gap.
     #[test]
-    fn a_gap_in_the_challenge_phase_is_an_error_today_not_a_pause() {
+    fn a_gap_in_the_challenge_phase_is_survived_too() {
         let (security, expected) = session_after_phase_one();
         let frame = challenge_frame(expected);
-        let mut pipe = MemPipe::new([frame[..6].to_vec(), vec![], frame[6..].to_vec()]);
+        let mut pipe = MemPipe::new([frame[..6].to_vec(), Vec::new(), frame[6..].to_vec()]);
+        let mut reader = FrameReader::new();
 
-        let Err(error) = finalize(&mut pipe, security) else {
-            panic!("a gap mid-frame cannot be survived today");
-        };
-        let HandshakeError::Io(io) = &error else {
-            panic!("expected the read to be reported, got {error}");
-        };
-        assert_eq!(
-            io.kind(),
-            ErrorKind::WouldBlock,
-            "a gap is a stall, not an end of file"
-        );
+        let frame = read_frame_within(&mut reader, &mut pipe, &security, 8)
+            .expect("a gap is not a failure")
+            .expect("the tail completes the challenge frame");
+        let state = finalize(frame, &mut pipe, security).expect("phase 2 finishes after the gap");
+
+        assert!(matches!(state.state, SilkroadSecurity::Established));
         assert_eq!(pipe.empty_reads(), 1, "the gap has to have been reached");
-        assert!(
-            pipe.written().is_empty(),
-            "a handshake that did not finish must not have answered"
-        );
+        assert_eq!(pipe.written().len(), 6, "the 0x9000 went out after the gap");
     }
 }
