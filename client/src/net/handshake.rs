@@ -1,5 +1,4 @@
-use std::io::{ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -18,6 +17,7 @@ use crate::net::handshake::HandshakeError::{
 };
 use crate::net::security::{SilkroadSecurity, SilkroadSecurityData, SilkroadSecurityState};
 use crate::net::sequence::Sequence;
+use crate::net::transport::SilkroadTransport;
 
 #[derive(Error, Debug)]
 pub enum HandshakeError {
@@ -143,7 +143,7 @@ const FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 /// than this frame still drops the surplus, also as before — the handshake is
 /// strictly one request per response.
 fn read_frame(
-    stream: &mut TcpStream,
+    stream: &mut dyn SilkroadTransport,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadFrame, HandshakeError> {
     let mut buf = [0; 4096];
@@ -170,16 +170,19 @@ fn read_frame(
 /// hold the connect thread. The previous timeout is put back before returning:
 /// the module-identification read that follows the handshake keeps its own
 /// behaviour.
-fn read_continuation(stream: &mut TcpStream, buf: &mut [u8]) -> Result<usize, HandshakeError> {
-    let previous = stream.read_timeout()?;
-    stream.set_read_timeout(Some(FRAME_COMPLETION_TIMEOUT))?;
+fn read_continuation(
+    stream: &mut dyn SilkroadTransport,
+    buf: &mut [u8],
+) -> Result<usize, HandshakeError> {
+    let previous = stream.read_deadline()?;
+    stream.set_read_deadline(Some(FRAME_COMPLETION_TIMEOUT))?;
     let read = stream.read(buf);
-    let _ = stream.set_read_timeout(previous);
+    let _ = stream.set_read_deadline(previous);
     Ok(read?)
 }
 
 pub(crate) fn initialize(
-    stream: &mut TcpStream,
+    stream: &mut dyn SilkroadTransport,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("initializing handshake");
@@ -211,7 +214,7 @@ pub(crate) fn initialize(
 /// ([`check_body`]), so the `get_*` reads below cannot run off the end.
 fn setup_handshake(
     mut data: Bytes,
-    write: &mut TcpStream,
+    write: &mut dyn SilkroadTransport,
 ) -> Result<SilkroadSecurityState, SilkroadFrameError> {
     let flags = data.get_u8();
     let opts = SilkroadEncodingOptions::from(flags);
@@ -309,7 +312,7 @@ fn setup_handshake(
 }
 
 pub(crate) fn finalize(
-    stream: &mut TcpStream,
+    stream: &mut dyn SilkroadTransport,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     debug!("finalizing handshake");
@@ -332,7 +335,7 @@ pub(crate) fn finalize(
 
 fn derive_final_key(
     data: Bytes,
-    write: &mut TcpStream,
+    write: &mut dyn SilkroadTransport,
     security: &mut SilkroadSecurityState,
 ) -> Result<SilkroadSecurityState, HandshakeError> {
     // Trust boundary (#470): the challenge decides whether we talk to the peer
@@ -491,7 +494,11 @@ pub fn g_pow_x_mod_p(generator: u32, private: u32, prime: u32) -> u32 {
 
 #[cfg(test)]
 mod test {
-    use std::net::TcpListener;
+    // `Read`/`Write` live here, not at the top of the file: the production
+    // code reaches them through the transport trait's supertraits, only the
+    // loopback peer in the seam test uses them directly.
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
 
     use super::*;
 
