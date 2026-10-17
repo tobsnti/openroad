@@ -70,16 +70,23 @@ impl SilkroadTransport for TcpStream {
 /// `WouldBlock` on unix -- so that is what an open, empty pipe answers. Reporting
 /// `Ok(0)` instead would blame a peer that is still there for an "unexpected end
 /// of file", which is the mistake the bound was added to avoid.
+///
+/// An **empty chunk** in the script is a gap: the peer is still there and said
+/// nothing in this poll. That is the one thing a callback-fed transport does
+/// between two polls, so it has to be expressible here -- and it answers like an
+/// exhausted-but-open script rather than handing out zero bytes, which every
+/// caller reads as end of stream.
 #[cfg(test)]
 pub(crate) struct MemPipe {
     inbound: std::collections::VecDeque<Vec<u8>>,
     outbound: Vec<u8>,
     handed_out: usize,
     reads: usize,
+    empty_reads: usize,
     closed: bool,
-    /// Red control only: answer an exhausted-but-open script with `Ok(0)`, so a
-    /// test can show that the distinction between a closed peer and a stalled
-    /// one is really being measured.
+    /// Red control only: answer an exhausted-but-open script -- or a gap --
+    /// with `Ok(0)`, so a test can show that the distinction between a closed
+    /// peer and a stalled one is really being measured.
     report_eof_when_empty: bool,
 }
 
@@ -92,6 +99,7 @@ impl MemPipe {
             outbound: Vec::new(),
             handed_out: 0,
             reads: 0,
+            empty_reads: 0,
             closed: false,
             report_eof_when_empty: false,
         }
@@ -125,17 +133,38 @@ impl MemPipe {
     pub(crate) fn reads(&self) -> usize {
         self.reads
     }
+
+    /// How many polls carried no bytes at all -- a gap, or an exhausted script.
+    /// Kept apart from [`Self::reads`] because that one counts only reads that
+    /// delivered something, so a test asserting on it cannot tell whether the
+    /// gap it scripted was ever reached.
+    pub(crate) fn empty_reads(&self) -> usize {
+        self.empty_reads
+    }
 }
 
 #[cfg(test)]
 impl Read for MemPipe {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let Some(chunk) = self.inbound.front_mut() else {
+        // A gap and an exhausted script answer the same thing, so they share one
+        // branch: an empty chunk is consumed here, and from there on this is the
+        // "nothing arrived, the peer is still there" case. Copying an empty
+        // chunk instead would return `Ok(0)` -- end of stream -- in the middle
+        // of a peer that is still sending.
+        let gap = self.inbound.front().is_some_and(Vec::is_empty);
+        if gap {
+            self.inbound.pop_front();
+        }
+        if gap || self.inbound.is_empty() {
+            self.empty_reads += 1;
             return if self.closed || self.report_eof_when_empty {
                 Ok(0)
             } else {
                 Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
             };
+        }
+        let Some(chunk) = self.inbound.front_mut() else {
+            unreachable!("the exhausted script and the gap both returned above");
         };
         let n = chunk.len().min(buf.len());
         buf[..n].copy_from_slice(&chunk[..n]);
@@ -218,5 +247,47 @@ mod test {
         pipe.write_all(&[7, 8]).expect("write");
         pipe.write_all(&[9]).expect("write");
         assert_eq!(pipe.written(), &[7, 8, 9]);
+    }
+
+    /// The case a poll-shaped reader has to survive, scripted: an empty chunk
+    /// between two full ones. The gap answers like a stall, and -- the part that
+    /// makes it a gap rather than an end -- what the peer sends afterwards still
+    /// arrives.
+    #[test]
+    fn a_gap_in_the_script_stalls_and_the_rest_still_arrives() {
+        let mut pipe = MemPipe::new([vec![1, 2], vec![], vec![3]]);
+        let mut buf = [0u8; 4];
+
+        assert_eq!(pipe.read(&mut buf).expect("the first chunk"), 2);
+        let err = pipe.read(&mut buf).expect_err("a gap is not a read");
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(pipe.read(&mut buf).expect("the chunk behind the gap"), 1);
+        assert_eq!(&buf[..1], &[3]);
+
+        // Two reads carried bytes, one carried nothing. The empty count is the
+        // only witness that the gap was reached at all: `reads` cannot show it,
+        // and a pipe whose gap was silently skipped passes every assertion above
+        // except this one.
+        assert_eq!(pipe.reads(), 2);
+        assert_eq!(pipe.empty_reads(), 1);
+        assert_eq!(pipe.handed_out(), 3);
+    }
+
+    /// Red control for the gap, kept as a test rather than run once: with the
+    /// eof mode on, the same script reports the gap as end of stream. That is
+    /// what an empty chunk did before it meant anything -- `Ok(0)` in the middle
+    /// of a peer that is still sending.
+    #[test]
+    fn a_gap_reported_as_eof_ends_the_stream_mid_script() {
+        let mut pipe = MemPipe::new([vec![1, 2], vec![], vec![3]]).reporting_eof_when_empty();
+        let mut buf = [0u8; 4];
+
+        assert_eq!(pipe.read(&mut buf).expect("the first chunk"), 2);
+        assert_eq!(
+            pipe.read(&mut buf).expect("the gap, reported as eof"),
+            0,
+            "this is the wrong answer the WouldBlock contract avoids"
+        );
+        assert_eq!(pipe.empty_reads(), 1);
     }
 }
