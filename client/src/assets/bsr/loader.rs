@@ -39,15 +39,22 @@ impl AssetLoader for BsrLoaderV2 {
             .map_err(BsrLoaderError::IO)?;
         let parsed = parse_bsr(&buf)?;
 
+        // A resource that names a mesh the data does not hold is a defect of
+        // the data, not of the program: it is answered with this loader's
+        // error type, so the handle fails and the message carries the path.
+        // Panicking here killed the whole load task instead - measured in a
+        // browser on 2026-10-17, where ten `.bsr` of the loading screen took
+        // the loading task down with `RuntimeError: unreachable`.
         let mut mesh = Vec::with_capacity(parsed.mesh_paths.len());
         for (i, path) in parsed.mesh_paths.iter().enumerate() {
+            let dependency = format!("data://{}", path.display());
             let a = load_context
                 .load_builder()
-                .load_untyped_value(format!("data://{}", path.display()))
+                .load_untyped_value(dependency.clone())
                 .await
-                .expect("failed to load mesh")
+                .map_err(|err| BsrLoaderError::Mesh(dependency.clone(), Box::new(err)))?
                 .take::<JMXVBMS>()
-                .unwrap();
+                .ok_or(BsrLoaderError::MeshType(dependency))?;
             let a = load_context.add_labeled_asset(format!("bms{}", i), a);
             mesh.push(a);
         }
@@ -215,5 +222,102 @@ impl AssetLoader for BsrLoaderV2 {
 
     fn extensions(&self) -> &[&str] {
         &["bsr"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::app::App;
+    use bevy::asset::io::memory::{Dir, MemoryAssetReader};
+    use bevy::asset::io::{AssetSourceBuilder, ErasedAssetReader};
+    use bevy::asset::{AssetApp, AssetServer, LoadState};
+    use std::path::Path;
+
+    /// A `.bsr` whose mesh section names exactly one file and whose every
+    /// other section is empty. Assembled here, byte by byte, so the fixture
+    /// carries nothing out of anyone's archive: 12-byte signature, the
+    /// 13-u32 `ResourceHeader`, then the sections its offsets point at
+    /// (`parse_bsr`).
+    fn bsr_naming_one_mesh(mesh_path: &str) -> Vec<u8> {
+        const MESH: usize = 0x100;
+        const EMPTY: usize = 0x400; // zeroes: every other section reads count 0
+        let mut buf = vec![0u8; 0x800];
+        buf[..12].copy_from_slice(b"JMXVRES 1100");
+        fn put(buf: &mut [u8], pos: usize, v: u32) {
+            buf[pos..pos + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        // material, mesh, skeleton, animation, prim_mesh_group,
+        // prim_animation_group, mod_palette, collision
+        for (i, off) in [EMPTY, MESH, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY, EMPTY]
+            .into_iter()
+            .enumerate()
+        {
+            put(&mut buf, 12 + i * 4, off as u32);
+        }
+        put(&mut buf, MESH, 1);
+        put(&mut buf, MESH + 4, mesh_path.len() as u32);
+        buf[MESH + 8..MESH + 8 + mesh_path.len()].copy_from_slice(mesh_path.as_bytes());
+        buf
+    }
+
+    /// Measured in a browser on 2026-10-17: ten of the loading screen's
+    /// resources name a mesh the served data does not hold, and each one
+    /// panicked at `failed to load mesh: LoadError { .. NotFound }`, taking
+    /// the load task with it. The handle must fail instead, with the missing
+    /// path in the message.
+    #[test]
+    fn a_missing_mesh_fails_the_handle_instead_of_the_task() {
+        let dir = Dir::default();
+        dir.insert_asset(
+            Path::new("obj.bsr"),
+            bsr_naming_one_mesh("prim/mesh/absent.bms"),
+        );
+
+        // `TaskPoolPlugin` before `AssetPlugin`, as `MinimalPlugins` orders
+        // them: loading by path reaches the process-global `IoTaskPool`
+        // (`assets/mod.rs` test fixtures say the same). The two asset types
+        // are registered here rather than through `SroAssetStructsPlugin`,
+        // which lives outside this crate's lib surface.
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default());
+        app.register_asset_source(
+            "data",
+            AssetSourceBuilder::new(move || -> Box<dyn ErasedAssetReader> {
+                Box::new(MemoryAssetReader { root: dir.clone() })
+            }),
+        );
+        app.add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<SroResource>()
+            .init_asset_loader::<BsrLoaderV2>()
+            .init_asset::<JMXVBMS>()
+            .init_asset_loader::<crate::assets::bms::BmsLoader>();
+
+        let handle: Handle<SroResource> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("data://obj.bsr");
+
+        let mut state = LoadState::NotLoaded;
+        for _ in 0..600 {
+            app.update();
+            state = app
+                .world()
+                .resource::<AssetServer>()
+                .load_state(&handle);
+            if matches!(state, LoadState::Failed(_) | LoadState::Loaded) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let LoadState::Failed(err) = state else {
+            panic!("the handle never failed: {state:?}");
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("prim/mesh/absent.bms"),
+            "the error must name the mesh that is missing: {text}"
+        );
     }
 }
