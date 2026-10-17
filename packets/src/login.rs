@@ -184,9 +184,9 @@ pub fn describe_login_error(code: u8) -> &'static str {
 ///   its own formatted line with a bare template.
 /// * `0xB`'s row `UIIO_CLIENT_START_CONTENT_FAIL_BILLING_FAILED` exists but its
 ///   English column is literally `"0"` in this data set, i.e. an unfilled
-///   placeholder; the fallback below is our prose, and the client's
-///   `get_plain_or` will still prefer the (empty-ish) shipped row if present.
-///   That is the data's problem, not a missing key.
+///   placeholder, so the fallback below is our prose. The client treats such a
+///   row as a miss on its message path (`ClientUiStrings::get_message_or`);
+///   without that it would explain a failed login with the digit `0`.
 pub fn login_error_text(code: u8) -> Option<(&'static str, &'static str)> {
     Some(match code {
         // rendered by the caller from the payload, see the doc comment
