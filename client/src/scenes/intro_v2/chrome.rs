@@ -47,10 +47,17 @@ const BAR_H_PCT: f32 = 100.0 * BAR_H / DESIGN_H;
 const NOTICE_COLOR: Color = Color::srgb_u8(255, 103, 29);
 /// **openroad choice.** Id 500's `Rect="0,0,0,0"` — the notice line's placement
 /// and size are code-side in the original, and `FontIndex=0` carries no size
-/// (the lane-wide FontIndex -> face mapping is UNKNOWN). Both numbers below are
-/// ours, kept as they were rather than re-invented.
+/// (the lane-wide FontIndex -> face mapping is UNKNOWN), so the size below is
+/// ours.
 const NOTICE_FONT_SIZE: f32 = 16.0;
-const NOTICE_BOTTOM_PCT: f32 = 10.0;
+/// The offset is **derived, not chosen**: the footer bar is anchored to the
+/// bottom edge and is `BAR_H_PCT` tall, so any notice whose bottom edge sits
+/// below that is laid out *inside* the bar and never reaches the player. One
+/// text line of clearance above the bar is the smallest offset that keeps the
+/// whole line visible, and both terms come from the trees' own 1200-unit
+/// design space. The literal `10.0` it replaces was ours and was never
+/// checked against the bar.
+const NOTICE_BOTTOM_PCT: f32 = BAR_H_PCT + 100.0 * NOTICE_FONT_SIZE / DESIGN_H;
 
 /// Marker for the top bar.
 #[derive(Component, Default, Clone)]
@@ -206,6 +213,27 @@ mod test {
         assert_ne!(BAR_H_PCT, 15.0);
         // the authored bottom bar starts at 1030 and overruns the canvas by 2px
         assert_eq!(1030.0 + BAR_H - DESIGN_H, 2.0);
+    }
+
+    /// The notice line and the footer bar are both laid out from the bottom
+    /// edge, so the notice offset has to clear the bar height — otherwise the
+    /// sentence is composed into a region the bar covers and never reaches the
+    /// player. Measured at 720p with the old literal `10.0`: node y 628..648,
+    /// bar from y 616.8.
+    #[test]
+    fn the_notice_clears_the_footer_bar() {
+        let clearance_pct = NOTICE_BOTTOM_PCT - BAR_H_PCT;
+        assert!(
+            clearance_pct > 0.0,
+            "notice at {NOTICE_BOTTOM_PCT}% sits inside a {BAR_H_PCT}% bar"
+        );
+        // exactly one text line of clearance, not a hair: the line is placed
+        // by its bottom edge, so anything less clips it back into the bar
+        let clearance_px = clearance_pct / 100.0 * DESIGN_H;
+        assert!(
+            (clearance_px - NOTICE_FONT_SIZE).abs() < 0.01,
+            "{clearance_px}px clearance for a {NOTICE_FONT_SIZE}px line"
+        );
     }
 
     /// Three trees, three bar pairs — and the create screen's are RED. A
