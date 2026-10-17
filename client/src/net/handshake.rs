@@ -501,6 +501,7 @@ mod test {
     use std::net::{TcpListener, TcpStream};
 
     use super::*;
+    use crate::net::transport::MemPipe;
 
     /// A session mid-handshake: the client has computed B and K from the
     /// server's g/p/A and keyed the handshake blowfish.
@@ -737,30 +738,32 @@ mod test {
     /// `Incomplete`, and that has to reach the caller. The `.expect` this
     /// replaces panicked the `sro-connect` thread instead, which the ECS could
     /// only report as "connection handshake panicked".
+    ///
+    /// Driven over a [`MemPipe`] rather than a loopback socket: the three cases
+    /// below are about what the reader does with the bytes it is handed, not
+    /// about TCP, and a scripted pipe says exactly which bytes arrive in which
+    /// read instead of relying on a `sleep` to keep two segments apart.
     #[test]
     fn a_setup_frame_cut_short_by_a_closing_peer_is_an_error() {
         let frame = setup_frame_full_flags();
         assert_eq!(frame.len(), 43, "flag byte 0x0E announces a 43-byte frame");
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
-        let addr = listener.local_addr().expect("listener address");
-        let peer = std::thread::spawn(move || {
-            let (mut peer, _) = listener.accept().expect("accept the client");
-            // Half a frame, then the stream ends with the dropped socket.
-            peer.write_all(&frame[..20]).expect("write the first half");
-        });
-
-        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        // Half a frame, then the peer hangs up.
+        let mut pipe = MemPipe::new([frame[..20].to_vec()]).closing();
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
         // `let Err(..) else`, not `expect_err`: the Ok type is not `Debug`.
-        let Err(error) = initialize(&mut stream, security) else {
+        let Err(error) = initialize(&mut pipe, security) else {
             panic!("half a frame cannot initialize");
         };
         assert!(
             matches!(error, HandshakeError::Frame(_) | HandshakeError::Io(_)),
             "expected a reported read/parse error, got {error}"
         );
-        peer.join().expect("listener thread");
+        assert_eq!(
+            pipe.handed_out(),
+            20,
+            "the pipe has to have carried the half frame"
+        );
     }
 
     /// The same frame, but the peer does send the rest: TCP is allowed to split
@@ -770,27 +773,46 @@ mod test {
     #[test]
     fn a_setup_frame_split_across_two_segments_still_initializes() {
         let frame = setup_frame_full_flags();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
-        let addr = listener.local_addr().expect("listener address");
-        let peer = std::thread::spawn(move || {
-            let (mut peer, _) = listener.accept().expect("accept the client");
-            peer.write_all(&frame[..20])
-                .expect("write the first segment");
-            // Two sends with a gap, so they cannot coalesce into one segment.
-            std::thread::sleep(Duration::from_millis(20));
-            peer.write_all(&frame[20..])
-                .expect("write the second segment");
-            // Drain the client's reply, or dropping the socket resets the
-            // connection while it is still writing.
-            let mut reply = [0; 64];
-            let _ = peer.read(&mut reply);
-        });
+        let mut pipe = MemPipe::new([frame[..20].to_vec(), frame[20..].to_vec()]);
 
-        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let state = initialize(&mut stream, security).expect("a split setup frame initializes");
+        let state = initialize(&mut pipe, security).expect("a split setup frame initializes");
         assert!(matches!(state.state, SilkroadSecurity::Initialized));
-        peer.join().expect("listener thread");
+        assert_eq!(pipe.handed_out(), 43, "both segments have to have arrived");
+        // The read COUNT, not the byte count, is what says the split happened:
+        // a pipe that merged its script into one chunk hands out the same 43
+        // bytes and would satisfy the assertion above. Found by running that
+        // merge as a red control.
+        assert_eq!(
+            pipe.reads(),
+            2,
+            "the frame has to have arrived in two reads"
+        );
+    }
+
+    /// A peer that stalls mid-frame without closing is NOT end of stream, and
+    /// the two must not be reported as the same thing: the continuation bound
+    /// exists so a peer that is still there is not blamed for an "unexpected end
+    /// of file" (`read_frame`'s third bound). On unix `std::net` surfaces a read
+    /// deadline firing as `WouldBlock`, which is what the pipe answers once its
+    /// script runs out while still open.
+    #[test]
+    fn a_peer_that_stalls_mid_frame_is_not_an_end_of_stream() {
+        let frame = setup_frame_full_flags();
+        let mut stalled = MemPipe::new([frame[..20].to_vec()]);
+
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let Err(error) = initialize(&mut stalled, security) else {
+            panic!("a stalled peer cannot initialize");
+        };
+        let HandshakeError::Io(io) = &error else {
+            panic!("expected the read to be reported, got {error}");
+        };
+        assert_eq!(
+            io.kind(),
+            ErrorKind::WouldBlock,
+            "a stalled peer is a timeout, not an end of file"
+        );
     }
 
     /// The bound that keeps waiting for the tail from becoming the next defect:
@@ -800,32 +822,131 @@ mod test {
     /// sending, gets blamed for an "unexpected end of file" instead.
     #[test]
     fn a_length_prefix_larger_than_the_handshake_buffer_is_rejected() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
-        let addr = listener.local_addr().expect("listener address");
-        let peer = std::thread::spawn(move || {
-            let (mut peer, _) = listener.accept().expect("accept the client");
-            // content length 0x7FFF, unencrypted, then opcode/count/crc
-            let mut head = vec![0xFF, 0x7F];
-            head.extend_from_slice(&[0; 6]);
-            let _ = peer.write_all(&head);
-            // Keep feeding: the reader has to stop on the bound, not on silence.
-            let filler = [0; 1024];
-            for _ in 0..8 {
-                if peer.write_all(&filler).is_err() {
-                    break;
-                }
-            }
-        });
+        // content length 0x7FFF, unencrypted, then opcode/count/crc
+        let mut head = vec![0xFF, 0x7F];
+        head.extend_from_slice(&[0; 6]);
+        // Keep feeding: the reader has to stop on the bound, not on silence.
+        let mut script = vec![head];
+        script.extend((0..8).map(|_| vec![0u8; 1024]));
 
-        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        let mut pipe = MemPipe::new(script);
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
-        let Err(error) = initialize(&mut stream, security) else {
+        let Err(error) = initialize(&mut pipe, security) else {
             panic!("an oversized frame cannot initialize");
         };
         assert!(
             matches!(error, HandshakeError::FrameTooLarge(4096)),
             "expected the buffer bound to fire, got {error}"
         );
-        let _ = peer.join();
+    }
+
+    /// The red control for the fixture, kept as a test rather than run once: if
+    /// the pipe reported an exhausted script as end of stream, the stalled peer
+    /// above would be reported as an "unexpected end of file" instead of a
+    /// timeout. The mode exists only to show that the distinction is really
+    /// being measured.
+    #[test]
+    fn a_pipe_that_reports_eof_turns_the_stall_into_an_end_of_file() {
+        let frame = setup_frame_full_flags();
+        let mut pipe = MemPipe::new([frame[..20].to_vec()]).reporting_eof_when_empty();
+
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let Err(HandshakeError::Io(io)) = initialize(&mut pipe, security) else {
+            panic!("an eof-reporting pipe cannot initialize");
+        };
+        assert_eq!(
+            io.kind(),
+            ErrorKind::UnexpectedEof,
+            "this is the wrong answer the WouldBlock contract avoids"
+        );
+    }
+
+    /// THE SEAM, MEASURED: the same recorded setup frame is answered the same way
+    /// whether it arrives over a socket or over something that is not a socket.
+    ///
+    /// Shape borrowed from #104 ("same file, two ways, byte-equal"), with one
+    /// honest difference: byte-equality cannot cover the whole reply, because
+    /// `setup_handshake` draws a fresh private exponent per session
+    /// (`rand::random::<u32>() & 0x7FFF_FFFF`, a deliberate deviation whose
+    /// rationale is written at the draw). A test that demanded byte-equality
+    /// there would be demanding a security defect. So the comparison is masked,
+    /// and the mask is named: of the 18 reply bytes, `frame.rs` writes
+    /// `len(2) | opcode(2) | sequence.next()(1) | crc(1) | body`, and only the
+    /// CRC (computed over the random body) and the body itself may differ.
+    /// Everything the two transports must agree on is checked — the 5-byte
+    /// envelope, the reply length, and the six session fields the frame carried.
+    #[test]
+    fn the_same_setup_frame_over_two_transports_answers_the_same_bytes() {
+        let frame = setup_frame_full_flags();
+
+        // Transport 1: a real loopback socket.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let sent = frame.clone();
+        let peer = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("accept the client");
+            peer.write_all(&sent).expect("write the setup frame");
+            // `read_exact`, not `read`: 18 bytes on loopback arrive in one
+            // segment in practice, but a short read would be a flaky test
+            // rather than a finding.
+            let mut reply = [0; 18];
+            peer.read_exact(&mut reply)
+                .expect("read the client's reply");
+            reply.to_vec()
+        });
+        let mut socket = TcpStream::connect(addr).expect("connect to the listener");
+        let socket_security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let over_socket =
+            initialize(&mut socket, socket_security).expect("the socket path initializes");
+        let socket_reply = peer.join().expect("listener thread");
+
+        // Transport 2: the same bytes, no socket anywhere.
+        let mut pipe = MemPipe::new([frame.clone()]);
+        let pipe_security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let over_pipe = initialize(&mut pipe, pipe_security).expect("the pipe path initializes");
+        let pipe_reply = pipe.written().to_vec();
+
+        assert_eq!(
+            pipe.handed_out(),
+            43,
+            "the pipe has to have carried the frame"
+        );
+        assert_eq!(
+            socket_reply.len(),
+            18,
+            "the 0x5000 reply is 4 + 8 bytes of body"
+        );
+        assert_eq!(pipe_reply.len(), socket_reply.len());
+        assert_eq!(
+            &pipe_reply[..5],
+            &socket_reply[..5],
+            "len, opcode and sequence byte are the same on both transports"
+        );
+        assert_eq!(
+            &pipe_reply[2..4],
+            &0x5000u16.to_le_bytes(),
+            "the reply is a 0x5000 frame"
+        );
+        // The masked remainder, stated rather than compared: byte 5 is the CRC
+        // over the random body, bytes 6..18 are `local_public` + the challenge.
+        assert_eq!(
+            pipe_reply.len() - 5,
+            13,
+            "13 bytes are session-random by design"
+        );
+
+        // What both transports must agree on beyond the envelope: everything the
+        // frame carried. These are the recorded values from the capture the
+        // fixture is built from, so this is also the assertion that the fixture
+        // reached the parser intact.
+        for state in [&over_socket, &over_pipe] {
+            assert!(matches!(state.state, SilkroadSecurity::Initialized));
+            assert_eq!(state.context.sequence_seed, 0xde20_6f6c);
+            assert_eq!(state.context.crc_seed, 0xb9u32 << 8);
+            assert_eq!(state.context.generator, 8662);
+            assert_eq!(state.context.prime, 2_622_084_571);
+            assert_eq!(state.context.remote_public, 2_043_001_406);
+            assert_eq!(state.context.handshake_key, 0x4180_cc82_3187_35b4);
+        }
     }
 }
