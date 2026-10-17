@@ -32,7 +32,6 @@ encoding = {version = "0.2"}
 futures = "0.3"
 futures-lite = "2.5"
 iyes_progress = "0.17"
-mac_address = "1.1.7"
 num_enum = "0.7.3"
 pk2 = "0.1.0"
 rand = "0.9"
@@ -91,6 +90,11 @@ features = [
 # Hot reload stays on every target that can have it. `file_watcher` is a
 # `compile_error!` on wasm32 (bevy_asset/src/io/mod.rs), so it cannot live in the
 # unconditional list above; cargo unions the features of both entries.
+# A browser has no network interface to read a MAC from, and the crate has no
+# wasm32 arm at all (`unresolved import 'internal'`, 4 errors).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mac_address = "1.1.7"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.bevy]
 workspace = true
 features = ["file_watcher"]
