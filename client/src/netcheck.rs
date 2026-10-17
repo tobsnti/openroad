@@ -29,7 +29,24 @@ use bevy::app::ScheduleRunnerPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use mac_address::get_mac_address;
+
+/// A browser has no MAC address, and `mac_address` has no wasm32 build. The
+/// agent login sends zeros there, exactly as a machine whose lookup fails does.
+#[cfg(target_arch = "wasm32")]
+fn get_mac_address() -> Result<Option<mac_stub::Mac>, ()> {
+    Ok(None)
+}
+#[cfg(target_arch = "wasm32")]
+mod mac_stub {
+    pub struct Mac;
+    impl Mac {
+        pub fn bytes(&self) -> [u8; 6] {
+            [0; 6]
+        }
+    }
+}
 
 use packets::agent::character_data::parse_character_data;
 use packets::agent::prelude::{

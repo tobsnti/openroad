@@ -21,6 +21,41 @@ pub struct SroAssetPlugin;
 
 impl Plugin for SroAssetPlugin {
     fn build(&self, app: &mut App) {
+        // A browser has no file system and no PK2 reader: `Pk2Source` reads
+        // synchronously (`bevy_pk2/src/pk2/source.rs`) and a `fetch` is
+        // asynchronous, so the archives cannot be opened from a `Plugin::build`
+        // that may not await. What a browser CAN do is read unpacked files over
+        // HTTP, which is what bevy's own `HttpWasmAssetReader` does -- so the
+        // five named sources point at five directories next to the page, and
+        // the archives stay out of the web build entirely.
+        //
+        // The placeholder wrapper is not optional here: with files served one
+        // by one, every absent `.ddj` would be a `Failed` handle, and one of
+        // those freezes the loading gate forever (`fallback_reader` docs).
+        #[cfg(target_arch = "wasm32")]
+        {
+            use bevy::asset::io::wasm::HttpWasmAssetReader;
+            use bevy::asset::io::AssetSourceBuilder;
+
+            use super::fallback_reader::FallbackOverHttp;
+
+            for (name, dir) in [
+                ("media", "media_files"),
+                ("map", "map_files"),
+                ("data", "data_files"),
+                ("music", "music_files"),
+                ("particles", "particles_files"),
+            ] {
+                app.register_asset_source(
+                    name,
+                    AssetSourceBuilder::new(move || {
+                        Box::new(FallbackOverHttp(HttpWasmAssetReader::new(dir)))
+                    }),
+                );
+            }
+            return;
+        }
+        #[allow(unreachable_code)]
         let sro_path = env::var_os("SRO_PK2_PATH")
             .or_else(|| env::var_os("SRO_PATH"))
             .map(PathBuf::from)

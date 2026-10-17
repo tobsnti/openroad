@@ -176,7 +176,14 @@ fn render_plugin(
 }
 
 fn main() {
+    // `env::current_dir()` is `Unsupported` on wasm32 -- it is std's
+    // `unsupported` shim there and always answers `Err` -- so this `unwrap`,
+    // the first statement of the program, is where a browser build used to die.
+    // The path only feeds `assets_dir`, which a browser reaches over HTTP.
+    #[cfg(not(target_arch = "wasm32"))]
     let working_dir = env::current_dir().unwrap();
+    #[cfg(target_arch = "wasm32")]
+    let working_dir = std::path::PathBuf::from(".");
     let mut assets_dir = working_dir.clone();
     assets_dir.push("assets");
     println!("assets dir: {}", assets_dir.display());

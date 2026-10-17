@@ -3,7 +3,24 @@ use bevy::text::EditableText;
 use bevy::ui::{InteractionDisabled, Pressed};
 use bevy::ui_widgets::Activate;
 use crossbeam::channel::{Receiver, TryRecvError};
+#[cfg(not(target_arch = "wasm32"))]
 use mac_address::get_mac_address;
+
+/// A browser has no MAC address, and `mac_address` has no wasm32 build. The
+/// agent login sends zeros there, exactly as a machine whose lookup fails does.
+#[cfg(target_arch = "wasm32")]
+fn get_mac_address() -> Result<Option<mac_stub::Mac>, ()> {
+    Ok(None)
+}
+#[cfg(target_arch = "wasm32")]
+mod mac_stub {
+    pub struct Mac;
+    impl Mac {
+        pub fn bytes(&self) -> [u8; 6] {
+            [0; 6]
+        }
+    }
+}
 
 use packets::agent::{describe_agent_auth_error, AgentLoginRequest, AgentLoginResponse};
 use packets::login::{LoginFailure, LoginRequest, LoginResponse};

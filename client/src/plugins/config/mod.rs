@@ -168,14 +168,28 @@ impl ClientConfig {
     /// (dev tools, networking) is decided by config values, so the resource
     /// must exist in the world before any `Plugin::build` runs.
     pub fn load() -> Self {
-        // A readable message, not a bare `unwrap`: this runs before the window
-        // exists, so this string is the only thing a user with a broken
-        // `config.yaml` ever sees (#539).
-        Self::from_file("config").unwrap_or_else(|err| {
-            panic!(
-                "failed to load config.yaml: {err}\nsee config.example.yaml for the expected shape"
-            )
-        })
+        // A browser has no file system to read `config.yaml` from, and this
+        // runs before the `App` exists, so there is nowhere to await a fetch
+        // either. The shipped example is compiled in instead: a web build
+        // carries its configuration the way it carries its code, and the one
+        // value that must not be shipped -- the archive key -- is not in the
+        // example.
+        #[cfg(target_arch = "wasm32")]
+        {
+            return serde_yaml::from_str(include_str!("../../../../config.example.yaml"))
+                .expect("the shipped config.example.yaml parses into ClientConfig");
+        }
+        #[allow(unreachable_code)]
+        {
+            // A readable message, not a bare `unwrap`: this runs before the window
+            // exists, so this string is the only thing a user with a broken
+            // `config.yaml` ever sees (#539).
+            Self::from_file("config").unwrap_or_else(|err| {
+                panic!(
+                    "failed to load config.yaml: {err}\nsee config.example.yaml for the expected shape"
+                )
+            })
+        }
     }
 
     /// Load and deserialize one config file (name without extension, as

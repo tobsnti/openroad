@@ -35,6 +35,71 @@ pub struct FallbackAssetReader {
     pub inner: Archive,
 }
 
+/// The same substitution over a reader that is not an [`Archive`]: a browser
+/// reads its files over HTTP (`HttpWasmAssetReader`), and a 404 there has to
+/// become the same placeholder a missing archive entry does -- otherwise the
+/// first missing `.ddj` freezes the loading gate for the reason written above.
+///
+/// Separate from [`FallbackAssetReader`] rather than generic over both: the
+/// `Archive` path hands out `Box<dyn Reader>` already, while this one has to
+/// read the body out first (a fetch holds it in memory anyway) because the
+/// HTTP reader yields a borrowed reader and `Box<dyn Reader>` is `'static`.
+#[cfg(target_arch = "wasm32")]
+pub struct FallbackOverHttp(pub bevy::asset::io::wasm::HttpWasmAssetReader);
+
+#[cfg(target_arch = "wasm32")]
+impl AssetReader for FallbackOverHttp {
+    async fn read<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader>, AssetReaderError> {
+        use futures_lite::AsyncReadExt;
+        match self.0.read(path).await {
+            Ok(mut reader) => {
+                let mut buf = Vec::new();
+                AsyncReadExt::read_to_end(&mut reader, &mut buf)
+                    .await
+                    .map_err(|e| AssetReaderError::Io(std::sync::Arc::new(e)))?;
+                Ok(Box::new(VecReader::new(buf)))
+            }
+            Err(AssetReaderError::NotFound(_)) => match path.extension().and_then(|e| e.to_str()) {
+                Some("ddj") => {
+                    warn!(
+                        "asset missing, using placeholder texture: {}",
+                        path.display()
+                    );
+                    Ok(Box::new(VecReader::new(placeholder_ddj_bytes())))
+                }
+                Some("wav") => {
+                    warn!(
+                        "asset missing, using silent placeholder audio: {}",
+                        path.display()
+                    );
+                    Ok(Box::new(VecReader::new(placeholder_wav_bytes())))
+                }
+                _ => Err(AssetReaderError::NotFound(path.to_path_buf())),
+            },
+            Err(other) => Err(other),
+        }
+    }
+
+    async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader>, AssetReaderError> {
+        // Nothing serves `.meta` files next to the page, and `NotFound` is what
+        // bevy expects for an asset that has none.
+        Err(AssetReaderError::NotFound(path.to_path_buf()))
+    }
+
+    async fn read_directory<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Result<Box<PathStream>, AssetReaderError> {
+        // HTTP cannot list a directory; the inner reader logs and returns an
+        // empty stream, this says the same thing without the log.
+        Err(AssetReaderError::NotFound(path.to_path_buf()))
+    }
+
+    async fn is_directory<'a>(&'a self, _path: &'a Path) -> Result<bool, AssetReaderError> {
+        Ok(false)
+    }
+}
+
 impl AssetReader for FallbackAssetReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader>, AssetReaderError> {
         match self.inner.read(path).await {
