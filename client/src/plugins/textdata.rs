@@ -362,6 +362,36 @@ impl ClientUiStrings {
     pub fn get_plain_or(&self, key: &str, fallback: &str) -> String {
         plain_text(self.get_or(key, fallback))
     }
+
+    /// [`Self::get_plain_or`] for rows that have to read as a **sentence**:
+    /// an unfilled row is treated as a miss, not as the message.
+    ///
+    /// Idea: this data set leaves unfilled rows as a bare `0` rather than as an
+    /// empty column — 339 of its 5324 rows resolve to exactly `"0"`, among them
+    /// `UIIO_CLIENT_START_CONTENT_FAIL_BILLING_FAILED`, the text for login
+    /// error `0x0B`. Preferring the row there hands the player the digit `0` as
+    /// the explanation of a failed login. Labels keep [`Self::get_plain_or`],
+    /// because a bare number is a perfectly good label.
+    pub fn get_message_or(&self, key: &str, fallback: &str) -> String {
+        match self.get(key) {
+            Some(value) if !is_unfilled_row(value) => plain_text(value),
+            Some(value) => {
+                bevy::log::debug!(
+                    "textuisystem: {key} is unfilled ({value:?}), using the fallback"
+                );
+                plain_text(fallback)
+            }
+            None => self.get_plain_or(key, fallback),
+        }
+    }
+}
+
+/// A row that carries no sentence: empty, or digits only — the shape this data
+/// set uses for an unfilled entry. Deliberately narrow: anything with a letter
+/// in it is the data's message, however odd it looks, and stays untouched.
+fn is_unfilled_row(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Flatten one textuisystem row's markup into text a Bevy `Text` node can show.
@@ -1040,6 +1070,29 @@ mod tests {
             strings.get_plain_or("NO_SUCH_KEY", "verbatim <fallback"),
             "verbatim <fallback"
         );
+    }
+
+    /// The message path and the label path part company on an unfilled row:
+    /// the message path treats it as a miss, the label path keeps it, because
+    /// a bare number is a perfectly good label (a count, a level, a price).
+    #[test]
+    fn only_the_message_path_steps_over_an_unfilled_row() {
+        let strings = ClientUiStrings::from_rows(&[("UNFILLED", "0"), ("EMPTY", "  ")]);
+        assert_eq!(
+            strings.get_message_or("UNFILLED", "a sentence"),
+            "a sentence"
+        );
+        assert_eq!(strings.get_message_or("EMPTY", "a sentence"), "a sentence");
+        assert_eq!(strings.get_plain_or("UNFILLED", "a sentence"), "0");
+    }
+
+    /// The rule stops at the first letter: an odd-looking row that carries one
+    /// is still the data's message and must not be replaced by our prose.
+    #[test]
+    fn a_row_with_letters_is_never_treated_as_unfilled() {
+        let strings = ClientUiStrings::from_rows(&[("ODD", "0 of 6"), ("SHORT", "OK")]);
+        assert_eq!(strings.get_message_or("ODD", "ours"), "0 of 6");
+        assert_eq!(strings.get_message_or("SHORT", "ours"), "OK");
     }
 
     /// The dialect is a closed tag set in shipped data, so anything malformed is
