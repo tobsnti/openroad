@@ -68,3 +68,9 @@ yanked = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The one git dependency in the tree, and it is temporary: bevy_tweening 0.16.0
+# on crates.io still requires bevy ^0.19, while upstream `main` carries the
+# finished 0.20 migration (djeedai/bevy_tweening#176). REMOVE THIS ENTRY
+# together with the pin in client/Cargo.toml as soon as bevy_tweening 0.17 is
+# published.
+allow-git = ["https://github.com/djeedai/bevy_tweening"]
