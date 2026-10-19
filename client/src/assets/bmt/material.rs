@@ -450,7 +450,7 @@ impl SroMaterial {
                 // The original engine renders non-EnvMap, non-flag-0x4
                 // materials purely diffuse (fixed-function, no specular);
                 // only the sheen variant's masked texels turn specular
-                // (sro_sheen.wgsl mixes toward its own reflectance by the
+                // (sro_sheen.wesl mixes toward its own reflectance by the
                 // mask). Any base reflectance makes skin/cloth catch
                 // env-map highlights.
                 material.reflectance = 0.0;

@@ -164,7 +164,7 @@ the waterfall corpus.
 Openroad runtime: the loader keeps always-on ("ambient" set) entries whose
 `UnkUInt06` is 0 (see below) as `SroResource::texani_mods`; spawn resolves them to mesh indices via the
 .bmt material names and `plugins/texani.rs` swaps those meshes onto
-`SroUvScrollMaterial` (`shaders/sro_uv_scroll.wgsl`, shader-clock UV
+`SroUvScrollMaterial` (`shaders/sro_uv_scroll.wesl`, shader-clock UV
 offset).
 
 **EnvMap** (tag `0x00040000`, only in the `"ambient"` system set — weapons,
@@ -198,7 +198,7 @@ Particle mod (attached .efp), shield_12/15/16/17/21 with a Material mod —
 so detection must scan the set's whole mod span (see caveat below).
 
 Openroad runtime note: the cutout is a shader `discard` in
-`sro_sheen.wgsl`, and because every camera runs a **depth prepass**, the
+`sro_sheen.wesl`, and because every camera runs a **depth prepass**, the
 cutout variant's base `StandardMaterial` must be `AlphaMode::Mask(1/255)`
 (not Opaque) so the stock prepass/shadow shaders discard the same texels —
 an opaque base writes prepass depth for the discarded texels, blocking

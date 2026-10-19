@@ -1,33 +1,29 @@
-#import bevy_pbr::{
-    pbr_types::{
-        STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT,
-        STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT,
-        pbr_input_new,
-        PbrInput
-    },
-    pbr_bindings,
-    prepass_utils,
-    mesh_functions::{get_world_from_local, mesh_normal_local_to_world, mesh_position_local_to_world, mesh_tangent_local_to_world},
-    skinning::{skin_model, skin_normals},
-    morph::morph,
-    view_transformations::position_world_to_clip,
-    forward_io::{Vertex, VertexOutput, FragmentOutput},
-    pbr_functions::{
-        apply_normal_mapping,
-        apply_pbr_lighting,
-        alpha_discard,
-        calculate_view,
-        main_pass_post_lighting_processing,
-        prepare_world_normal,
-        calculate_tbn_mikktspace,
-        sample_texture
-    },
-    mesh_view_bindings::{view, lights},
-    mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
-    shadows::fetch_directional_shadow,
-    mesh_bindings::mesh,
-}
-#import bevy_core_pipeline::tonemapping::tone_mapping
+import bevy_pbr::render::pbr_types::{
+    STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT,
+    STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT,
+    pbr_input_new,
+    PbrInput,
+};
+import bevy_pbr::prepass::utils as prepass_utils;
+import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_normal_local_to_world, mesh_position_local_to_world, mesh_tangent_local_to_world};
+import bevy_pbr::render::skinning::{skin_model, skin_normals};
+import bevy_pbr::render::morph::morph;
+import bevy_pbr::render::view_transformations::position_world_to_clip;
+import bevy_pbr::render::forward_io::{Vertex, VertexOutput, FragmentOutput};
+import bevy_pbr::render::pbr_functions::{
+    apply_normal_mapping,
+    apply_pbr_lighting,
+    alpha_discard,
+    calculate_view,
+    main_pass_post_lighting_processing,
+    prepare_world_normal,
+    calculate_tbn_mikktspace,
+};
+import bevy_pbr::render::mesh_view_bindings::{view, lights};
+import bevy_pbr::render::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT;
+import bevy_pbr::render::shadows::fetch_directional_shadow;
+import bevy_pbr::render::mesh_bindings::mesh;
+import bevy_core_pipeline::tonemapping::tone_mapping;
 
 @vertex
 fn vertex(
@@ -35,43 +31,41 @@ fn vertex(
     vertex_no_morph: Vertex
 ) -> VertexOutput {
     var out: VertexOutput;
-#ifdef MORPH_TARGETS
+    @if(MORPH_TARGETS)
     var vertex = morph_vertex(vertex_no_morph);
-#else
+    @if(!MORPH_TARGETS)
     var vertex = vertex_no_morph;
-#endif
 
-#ifdef SKINNED
-    var model = skin_model(vertex.joint_indices, vertex.joint_weights);
-#else
+    @if(SKINNED)
+    var model = skin_model(
+        vertex.joint_indices,
+        vertex.joint_weights,
+        vertex_no_morph.instance_index,
+    );
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416 .
+    @if(!SKINNED)
     var model = get_world_from_local(vertex_no_morph.instance_index);
-#endif
 
-#ifdef VERTEX_NORMALS
-#ifdef SKINNED
+    @if(VERTEX_NORMALS && SKINNED)
     out.world_normal = skin_normals(model, vertex.normal);
-#else
+    @if(VERTEX_NORMALS && !SKINNED)
     out.world_normal = mesh_normal_local_to_world(
         vertex.normal,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
         vertex_no_morph.instance_index
     );
-#endif
-#endif
 
-#ifdef VERTEX_POSITIONS
+    @if(VERTEX_POSITIONS)
     out.world_position = mesh_position_local_to_world(model, vec4<f32>(vertex.position, 1.0));
+    @if(VERTEX_POSITIONS)
     out.position = position_world_to_clip(out.world_position.xyz);
-#endif
 
-#ifdef VERTEX_UVS
+    @if(VERTEX_UVS)
     out.uv = vertex.uv;
-#endif
 
-#ifdef VERTEX_TANGENTS
+    @if(VERTEX_TANGENTS)
     out.world_tangent = mesh_tangent_local_to_world(
         model,
         vertex.tangent,
@@ -79,17 +73,14 @@ fn vertex(
         // See https://github.com/gfx-rs/naga/issues/2416
         vertex_no_morph.instance_index
     );
-#endif
 
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     out.color = vertex.color;
-#endif
 
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
     out.instance_index = vertex_no_morph.instance_index;
-#endif
     return out;
 }
 
@@ -125,25 +116,25 @@ const BLOCK_VERTS: u32 = 17u;
 // covering the 10-bit id space, not a texture *binding array*: per-fragment indexing of a binding
 // array is bindless sampling, which pre-2016 GPUs and WebGPU/WebGL2-class devices lack (see
 // client/src/assets/tile_layers.rs). The shared params are uniform buffers for the same reason.
-@group(#{MATERIAL_BIND_GROUP}) @binding(0)
+@group(constants::MATERIAL_BIND_GROUP) @binding(0)
 var tile_map: texture_2d<u32>;
 // Clamp+filtering sampler, used for the lightmap (`tile_map` is only ever `textureLoad`ed).
-@group(#{MATERIAL_BIND_GROUP}) @binding(1)
+@group(constants::MATERIAL_BIND_GROUP) @binding(1)
 var clamp_sampler: sampler;
 // Ground tiles with ids 0..255; 256.. are bindings 7, 8, 9.
-@group(#{MATERIAL_BIND_GROUP}) @binding(2)
+@group(constants::MATERIAL_BIND_GROUP) @binding(2)
 var tile_array_0: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(3)
+@group(constants::MATERIAL_BIND_GROUP) @binding(3)
 var tile_sampler: sampler;
 // Per-channel ratio of SRO's terrain ambient to the global (object) ambient — one GPU
 // buffer shared by ALL splat materials, updated in place by `TerrainAmbientRatioPlugin`
 // (see `TerrainAmbientRatio` in block_splat_material.rs). w unused.
-@group(#{MATERIAL_BIND_GROUP}) @binding(4)
+@group(constants::MATERIAL_BIND_GROUP) @binding(4)
 var<uniform> ambient_ratio: vec4<f32>;
 // Baked per-region terrain lightmap (JMXVMAPT, see assets/t.rs): SRO's pre-baked static sun and
 // cast shadows on the ground. Sampled at region-local UV with `clamp_sampler` (binding 1).
 // A white 1x1 texture stands in for regions with no `.t`, making the multiply a no-op.
-@group(#{MATERIAL_BIND_GROUP}) @binding(5)
+@group(constants::MATERIAL_BIND_GROUP) @binding(5)
 var lightmap_tex: texture_2d<f32>;
 // Global terrain render params, one shared buffer like `ambient_ratio` (see
 // `TerrainRenderParams` in block_splat_material.rs):
@@ -162,13 +153,13 @@ var lightmap_tex: texture_2d<f32>;
 //   [2].w  = extra sun-shadow darkening (vanilla player-shadow boost, 0 = off/PBR):
 //            multiplies the lit ground by 1-[2].w where the shadow map is fully
 //            occluded, sampled manually below so it works in every lighting mode.
-@group(#{MATERIAL_BIND_GROUP}) @binding(6)
+@group(constants::MATERIAL_BIND_GROUP) @binding(6)
 var<uniform> terrain_params: array<vec4<f32>, 3>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(7)
+@group(constants::MATERIAL_BIND_GROUP) @binding(7)
 var tile_array_1: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(8)
+@group(constants::MATERIAL_BIND_GROUP) @binding(8)
 var tile_array_2: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(9)
+@group(constants::MATERIAL_BIND_GROUP) @binding(9)
 var tile_array_3: texture_2d_array<f32>;
 
 @fragment
@@ -217,7 +208,11 @@ fn fragment(
 
     // prepare pbr input
     var pbr_input = prepare_pbr(in, is_front, color);
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
     // Lighting model A/B (`terrain_params[1].x`, uniform across the draw). Both the mobile
     // port and (probably) the original render ground as albedo × baked lightmap with no
     // dynamic response at all, so both variants stay selectable for the playtest
@@ -292,7 +287,11 @@ fn prepare_pbr(in: VertexOutput, is_front: bool, color: vec4<f32>) -> PbrInput {
     pbr_input.material.base_color = color;
 //
 //    // alpha discard
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 //
     let double_sided = (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
     pbr_input.frag_coord = in.position;
@@ -314,11 +313,10 @@ fn prepare_pbr(in: VertexOutput, is_front: bool, color: vec4<f32>) -> PbrInput {
 //    pbr_input.material.specular_transmission = 0.0;
 //
     pbr_input.is_orthographic = view.clip_from_view[3].w == 1.0;
-#ifdef LOAD_PREPASS_NORMALS
+    @if(LOAD_PREPASS_NORMALS)
     pbr_input.N = prepass_utils::prepass_normal(in.position, 0u);
-#else
+    @if(!LOAD_PREPASS_NORMALS)
     pbr_input.N = normalize(pbr_input.world_normal);
-#endif
 
     pbr_input.V = calculate_view(in.world_position, pbr_input.is_orthographic);
     return pbr_input;

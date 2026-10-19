@@ -7,33 +7,29 @@
 // culling are configured per material via pipeline specialization in
 // `plugins/effects/material.rs`.
 
-#import bevy_pbr::{
-    mesh_functions::{get_world_from_local, mesh_position_local_to_world, get_tag},
-    view_transformations::position_world_to_clip,
-}
+import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, get_tag};
+import bevy_pbr::render::view_transformations::position_world_to_clip;
 
 struct SroEffectUniform {
     // xy = UV offset, zw = UV scale
     uv_offset_scale: vec4<f32>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: SroEffectUniform;
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var effect_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var effect_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> material: SroEffectUniform;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var effect_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var effect_sampler: sampler;
 // x = color multiplier, y = alpha multiplier — the fixed-function texture-stage
 // color/alpha op scale (MODULATE2X = 2, MODULATE4X = 4) times the additive HDR
 // intensity; zw unused
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> effect_params: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var<uniform> effect_params: vec4<f32>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     @location(2) uv: vec2<f32>,
-#endif
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     @location(5) color: vec4<f32>,
-#endif
 }
 
 struct VertexOutput {
@@ -66,16 +62,14 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let world_from_local = get_world_from_local(vertex.instance_index);
     let world_position = mesh_position_local_to_world(world_from_local, vec4(vertex.position, 1.0));
     out.clip_position = position_world_to_clip(world_position.xyz);
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     out.uv = vertex.uv * material.uv_offset_scale.zw + material.uv_offset_scale.xy;
-#else
+    @if(!VERTEX_UVS_A)
     out.uv = vec2(0.5, 0.5);
-#endif
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     out.color = vertex.color * tag_tint(vertex.instance_index);
-#else
+    @if(!VERTEX_COLORS)
     out.color = tag_tint(vertex.instance_index);
-#endif
     return out;
 }
 

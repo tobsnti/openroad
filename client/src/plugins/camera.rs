@@ -333,14 +333,14 @@ pub fn spawn_player_camera(
     // spawn camera
     // TODO: ThirdPersonCamera removed - no Bevy 0.16 compatible version; re-add when available
     // DepthPrepass feeds the high-quality water's screen-space reflection raymarch (see
-    // water_hq.wgsl). MSAA stays at the Bevy default (Sample4): forcing it off breaks
+    // water_hq.wesl). MSAA stays at the Bevy default (Sample4): forcing it off breaks
     // this project's main view render entirely (terrain/objects vanish, only the skybox
     // draws — verified by bisecting DepthPrepass vs Msaa::Off independently), and a
     // Sample2 experiment (2026-07-15, to remove the redundancy with the Fxaa post pass)
     // coincided with broken rendering + egui artifacts — reverted pending isolation.
     // The raymarcher's depth read compiles fine against a multisampled prepass texture
     // in this material-shader context (see the comment on `DEPTH_PREPASS` in
-    // water_hq.wgsl).
+    // water_hq.wesl).
     // Bloom (and the `Hdr` marker it requires) is layered on top of that Sample4 +
     // DepthPrepass combination; it changes the main texture's *format*, not its
     // sample count, so the caveat above is unaffected. See `attach_bloom`.

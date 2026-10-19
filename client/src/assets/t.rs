@@ -1,7 +1,7 @@
 // Terrain lightmap (JMXVMAPT). SRO bakes per-region terrain lighting — static sun plus cast
 // shadows from map geometry — into two payloads: a 96×96 per-tile byte grid (originally used to
 // gate whether dynamic objects cast terrain shadows) and a DDS texture holding the high-res baked
-// lighting the terrain splat shader samples (see terrain_splat.wgsl). The DDS tail is byte-identical
+// lighting the terrain splat shader samples (see terrain_splat.wesl). The DDS tail is byte-identical
 // to JMXVDDJ minus its signature, so it decodes through the shared `ddj::dds_buffer_to_image` path.
 // We expose the decoded texture as a labeled `lightmap` sub-asset; the tile grid is parsed but not
 // yet consumed.
@@ -184,7 +184,7 @@ mod tests {
     /// alpha carries such an exponent — or anything at all — was never
     /// recorded (see docs/rendering-mobile-shader-comparison.md §"The
     /// lightmap is RGBM-encoded" and `sample_lightmap` in
-    /// terrain_splat.wgsl, which discards `.a`). Run:
+    /// terrain_splat.wesl, which discards `.a`). Run:
     /// cargo test -p client probe_t_lightmap_format_census -- --ignored --nocapture
     #[test]
     #[ignore = "diagnostic; needs real assets/Map.pk2"]

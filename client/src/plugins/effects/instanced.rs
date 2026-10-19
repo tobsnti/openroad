@@ -9,7 +9,7 @@
 //! sorted back to front inside each group. The render world uploads that list as
 //! one instance-rate vertex buffer and draws each group with a single
 //! `Transparent3d` item through a small custom pipeline
-//! (`sro_effect_instanced.wgsl`, blend state shared with the material path via
+//! (`sro_effect_instanced.wesl`, blend state shared with the material path via
 //! `material::apply_effect_render_state`).
 //!
 //! Why: a waterfall's mist is ~2,300 particles, and as separate mesh entities
@@ -59,7 +59,7 @@ use crate::plugins::effects::components::{EffectNode, EffectVisual};
 use crate::plugins::effects::material::{apply_effect_render_state, SroEffectMaterial};
 use crate::plugins::effects::systems::main_world_camera;
 
-const SHADER_PATH: &str = "shaders/sro_effect_instanced.wgsl";
+const SHADER_PATH: &str = "shaders/sro_effect_instanced.wesl";
 
 /// The render half of an instanced effect node: which mesh and (shared)
 /// material its instance is drawn with. Replaces `Mesh3d` + `MeshMaterial3d`
@@ -72,7 +72,7 @@ pub struct EffectInstanced {
 }
 
 /// One particle as the instanced shader reads it (locations 8–13 in
-/// `sro_effect_instanced.wgsl`).
+/// `sro_effect_instanced.wesl`).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct EffectInstance {

@@ -66,7 +66,7 @@ pub(crate) const BLOCK_VERTS: usize = 17;
 pub(crate) const REGION_BLOCKS_PER_SIDE: usize = 6;
 /// `tile_map` is one 102x102 texture per region: 6 blocks of 17 vertices per axis, with each
 /// block keeping its own duplicated edge vertices so a fragment never gathers across a block
-/// boundary (see the header comment in `terrain_splat.wgsl`).
+/// boundary (see the header comment in `terrain_splat.wesl`).
 pub(crate) const TILE_MAP_SIZE: usize = REGION_BLOCKS_PER_SIDE * BLOCK_VERTS;
 
 /// Every ground tile texture in the game, indexed by the map's 10-bit tile id — the CPU-side
@@ -106,7 +106,7 @@ pub struct TerrainBlockSplatMaterial {
 
     /// Baked terrain lightmap for this group's region, decoded from the region's `.t`
     /// (JMXVMAPT, see `assets/t.rs`). Sampled at region-local UV and multiplied into the ground
-    /// albedo in `terrain_splat.wgsl`, adding SRO's static baked sun/shadow on top of the dynamic
+    /// albedo in `terrain_splat.wesl`, adding SRO's static baked sun/shadow on top of the dynamic
     /// lighting. Regions without a `.t` get a shared 1×1 white handle, making the multiply a no-op.
     pub lightmap: Handle<Image>,
 }
@@ -328,7 +328,7 @@ pub struct TerrainRenderParams {
     /// Extra sun-shadow darkening on the lit ground. Always 0 now — it stood
     /// in for a vanilla-mode player shadow that vanilla no longer casts at
     /// all (vanilla fully disables the Sun's shadow maps). Kept as a no-op
-    /// GPU-layout slot rather than reworking `terrain_splat.wgsl`'s uniform
+    /// GPU-layout slot rather than reworking `terrain_splat.wesl`'s uniform
     /// layout for its removal.
     pub shadow_strength: f32,
     /// Tiling repeat factors for the five splat-scale codes `8·i`
@@ -398,7 +398,7 @@ impl TerrainRenderParams {
 pub struct TerrainRenderParamsBuffer(pub Buffer);
 
 /// Shared 1×1 white texture used as the lightmap for regions that ship no `.t` file (or whose
-/// lightmap failed to decode): white multiplies to a no-op in `terrain_splat.wgsl`, so such terrain
+/// lightmap failed to decode): white multiplies to a no-op in `terrain_splat.wesl`, so such terrain
 /// renders unmodulated. Created once at startup; every lightmap-less material clones this handle.
 #[derive(Resource)]
 pub struct TerrainLightmapFallback(pub Handle<Image>);
@@ -586,11 +586,11 @@ fn write_terrain_ambient_ratio(
 
 impl Material for TerrainBlockSplatMaterial {
     fn vertex_shader() -> ShaderRef {
-        "shaders/terrain_splat.wgsl".into()
+        "shaders/terrain_splat.wesl".into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        "shaders/terrain_splat.wgsl".into()
+        "shaders/terrain_splat.wesl".into()
     }
 
     #[inline]

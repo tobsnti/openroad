@@ -9,7 +9,7 @@
   non-obvious system interaction), lead with a short comment stating the *idea* of the
   implementation — what it's built on top of and why, not what each line does. A reader should
   understand the approach before reading the code. Example: `water_hq_material.rs` and
-  `water_hq.wgsl` both open with why the water is a `StandardMaterial` extension rather than a
+  `water_hq.wesl` both open with why the water is a `StandardMaterial` extension rather than a
   standalone material, and what each of its three visual tricks is doing.
 
 ## Reference doctrine (ADR 0009 — clone, not replica)

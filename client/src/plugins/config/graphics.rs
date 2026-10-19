@@ -2,7 +2,7 @@
 //!
 //! Currently only bloom. The idea: the renderer already writes genuine HDR
 //! values — emissive BMT props at 2.0 (`assets/bmt/material.rs`) and the `+N`
-//! enhancement shine at 4.0-8.0 (`assets/bmt/sheen.rs`, `sro_sheen.wgsl`) — but
+//! enhancement shine at 4.0-8.0 (`assets/bmt/sheen.rs`, `sro_sheen.wesl`) — but
 //! the cameras historically had no `Hdr` marker, so all of it clipped flat at
 //! 1.0. Enabling bloom flips the main pass to a float target, which is what
 //! actually lets those emitters read as "glowing" instead of "white".
@@ -933,7 +933,7 @@ impl Default for ShadowSettings {
     }
 }
 
-/// Terrain lighting options (`terrain_splat.wgsl`). The lighting *model*
+/// Terrain lighting options (`terrain_splat.wesl`). The lighting *model*
 /// (dynamic PBR vs. baked) follows [`RenderMode`] — see
 /// [`TerrainGraphicsSettings::to_render_params`] — not a field here; the
 /// third A/B option (`flat_baked`, no N·L but keeps the time-of-day tint) is
@@ -1048,7 +1048,7 @@ pub enum RimMode {
 }
 
 /// Metallic-sheen rendering options (weapons/metal armor,
-/// `assets/bmt/sheen.rs` + `sro_sheen.wgsl`). The defaults adopt the
+/// `assets/bmt/sheen.rs` + `sro_sheen.wesl`). The defaults adopt the
 /// mobile port's look (see `docs/rendering-mobile-shader-comparison.md`);
 /// each field's faithful-1.188 value is documented so one config line
 /// restores the original behavior.

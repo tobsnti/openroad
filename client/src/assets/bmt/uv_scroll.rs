@@ -24,7 +24,7 @@ pub struct UvScrollExtension {
 }
 
 /// Std140 layout, field order must match the `UvScrollSettings` struct in
-/// `sro_uv_scroll.wgsl`.
+/// `sro_uv_scroll.wesl`.
 #[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct UvScrollSettings {
     /// UV scroll speed in uv/sec, from the TexAni matrix translation
@@ -35,6 +35,6 @@ pub struct UvScrollSettings {
 
 impl MaterialExtension for UvScrollExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/sro_uv_scroll.wgsl".into()
+        "shaders/sro_uv_scroll.wesl".into()
     }
 }

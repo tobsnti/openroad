@@ -8,9 +8,9 @@
 // old StandardMaterial sky got this "for free" by being entirely beyond the fog far
 // plane and thus rendering as pure fog color everywhere. Tonemapped in-shader so it
 // matches the StandardMaterial-based look it replaces.
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::view
-#import bevy_core_pipeline::tonemapping::tone_mapping
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_view_bindings::view;
+import bevy_core_pipeline::tonemapping::tone_mapping;
 
 struct SkyGradient {
     top_color: vec4<f32>,
@@ -20,7 +20,7 @@ struct SkyGradient {
     params: vec4<f32>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0)
+@group(constants::MATERIAL_BIND_GROUP) @binding(0)
 var<uniform> gradient: SkyGradient;
 
 fn hash31(p: vec3<f32>) -> f32 {
@@ -63,8 +63,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     color = mix(gradient.fog_color.rgb, color, horizon);
     color += vec3(stars(dir, gradient.params.x));
     var out = vec4(color, 1.0);
-#ifdef TONEMAP_IN_SHADER
+    @if(TONEMAP_IN_SHADER)
     out = tone_mapping(out, view.color_grading);
-#endif
     return out;
 }

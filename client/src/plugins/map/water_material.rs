@@ -35,7 +35,7 @@ pub struct WaterLowExtension {
     pub settings: WaterLowSettings,
 }
 
-/// Std140 layout; field order must match `WaterLowSettings` in `water.wgsl`.
+/// Std140 layout; field order must match `WaterLowSettings` in `water.wesl`.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct WaterLowSettings {
     /// UV/sec scroll of the base diffuse. Matches the HQ tier's primary octave
@@ -56,7 +56,7 @@ impl Default for WaterLowSettings {
 
 impl MaterialExtension for WaterLowExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/water.wgsl".into()
+        "shaders/water.wesl".into()
     }
 
     // Note the contrast with the HQ tier, which must opt *out* of the prepass because its

@@ -26,24 +26,23 @@
 //      a non-multisampled `textureSampleLevel` call) is never defined here — the raymarcher's
 //      `textureLoad`-based fallback path handles a multisampled depth prepass texture fine by
 //      reading MSAA sample 0.
-// The low-graphics tier intentionally skips all of this (see `water.wgsl`).
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    mesh_view_bindings::{globals, view_transmission_texture, view_transmission_sampler},
-}
+// The low-graphics tier intentionally skips all of this (see `water.wesl`).
+import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
+import bevy_pbr::render::mesh_view_bindings::{globals, view_transmission_texture, view_transmission_sampler};
 
-#ifdef DEPTH_PREPASS
-#import bevy_pbr::mesh_view_bindings::depth_prepass_texture
-#import bevy_pbr::view_transformations::position_world_to_ndc
-#import bevy_pbr::raymarch::{
+@if(DEPTH_PREPASS)
+import bevy_pbr::render::mesh_view_bindings::depth_prepass_texture;
+@if(DEPTH_PREPASS)
+import bevy_pbr::render::view_transformations::position_world_to_ndc;
+@if(DEPTH_PREPASS)
+import bevy_pbr::ssr::raymarch::{
     depth_ray_march_new_from_depth,
     depth_ray_march_from_cs,
     depth_ray_march_to_ws_dir,
     depth_ray_march_march,
-}
-#endif  // DEPTH_PREPASS
+};
 
 struct WaterHqSettings {
     sky_tint: vec4<f32>,
@@ -55,27 +54,30 @@ struct WaterHqSettings {
     _padding: f32,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
+@group(constants::MATERIAL_BIND_GROUP) @binding(100)
 var<uniform> water_settings: WaterHqSettings;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101)
+@group(constants::MATERIAL_BIND_GROUP) @binding(101)
 var normal_map: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102)
+@group(constants::MATERIAL_BIND_GROUP) @binding(102)
 var normal_map_sampler: sampler;
 
-#ifdef DEPTH_PREPASS
 // March parameters mirror `ScreenSpaceReflections::default()` (10 linear + 5 bisection steps,
 // secant refinement). The assumed surface thickness is in world units, so unlike bevy's
 // meter-scale 0.25 default it's scaled up for this game's world (one terrain block = 320
 // units); too thin and rays leak through terrain, too thick and reflections smear under
 // ledges.
+@if(DEPTH_PREPASS)
 const SSR_LINEAR_STEPS: u32 = 10u;
+@if(DEPTH_PREPASS)
 const SSR_BISECTION_STEPS: u32 = 5u;
+@if(DEPTH_PREPASS)
 const SSR_DEPTH_THICKNESS: f32 = 4.0;
 
 // Reflected scene color for the ray `P_world + t*R_world`, or `fallback` (the sky tint) if
 // the ray leaves the screen or hits nothing. Hits sample the view transmission texture — the
 // opaque-scene snapshot the transmissive phase already gets — so reflections and refraction
 // read from the same, consistent image of the world.
+@if(DEPTH_PREPASS)
 fn reflect_scene(R_world: vec3<f32>, P_world: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
     let depth_size = vec2<f32>(textureDimensions(depth_prepass_texture));
 
@@ -95,7 +97,6 @@ fn reflect_scene(R_world: vec3<f32>, P_world: vec3<f32>, fallback: vec3<f32>) ->
     }
     return fallback;
 }
-#endif  // DEPTH_PREPASS
 
 @fragment
 fn fragment(
@@ -104,13 +105,17 @@ fn fragment(
 ) -> FragmentOutput {
     // WGSL forbids `var in = in;` (a body-level declaration can't shadow a parameter of the
     // same name — naga: "redefinition of `in`"), so the parameter gets a different name and
-    // `in` is declared as the mutable copy, same as Bevy's own pbr.wgsl does it.
+    // `in` is declared as the mutable copy, same as Bevy's own pbr.wesl does it.
     var in = vertex_output;
     let t = globals.time;
     in.uv = in.uv + water_settings.scroll_speed_a * t;
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     // Two octaves of the same tileable normal map, scrolling independently so their ripples
     // don't lock together into an obviously repeating pattern. Combine by summing the
@@ -138,13 +143,13 @@ fn fragment(
     // Fresnel: reflections dominate at grazing angles, refraction when looking straight down.
     let n_dot_v = max(dot(pbr_input.N, pbr_input.V), 0.0001);
     let fresnel = pow(1.0 - n_dot_v, water_settings.fresnel_power) * water_settings.sky_tint.a;
-#ifdef DEPTH_PREPASS
+    @if(DEPTH_PREPASS)
     let reflect_dir = reflect(-pbr_input.V, pbr_input.N);
+    @if(DEPTH_PREPASS)
     let reflected = reflect_scene(reflect_dir, pbr_input.world_position.xyz, water_settings.sky_tint.rgb);
-#else
     // No depth prepass on this camera — fall back to the flat sky tint.
+    @if(!DEPTH_PREPASS)
     let reflected = water_settings.sky_tint.rgb;
-#endif
     out.color = vec4(mix(out.color.rgb, reflected, fresnel), out.color.a);
 
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);

@@ -39,7 +39,7 @@ pub struct CloudMaterials {
     pub far: Handle<CloudMaterial>,
 }
 
-/// Uniform block of `shaders/cloud_layer.wgsl` — see there for the field semantics.
+/// Uniform block of `shaders/cloud_layer.wesl` — see there for the field semantics.
 #[derive(ShaderType, Clone, Copy, Debug)]
 pub struct CloudSettings {
     pub tint: Vec4,
@@ -70,7 +70,7 @@ pub struct CloudMaterial {
 
 impl Material for CloudMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/cloud_layer.wgsl".into()
+        "shaders/cloud_layer.wesl".into()
     }
 
     fn alpha_mode(&self) -> AlphaMode {
@@ -96,7 +96,7 @@ impl Material for CloudMaterial {
 #[derive(Resource)]
 pub struct SkyboxMaterial(pub Handle<SkyGradientMaterial>);
 
-/// Vertical sky gradient (see `shaders/sky_gradient.wgsl`): horizon (bottom) → zenith
+/// Vertical sky gradient (see `shaders/sky_gradient.wesl`): horizon (bottom) → zenith
 /// (top), plus the scene's distance-fog color that the lowest band blends into so the
 /// fully-fogged terrain horizon meets the sky seamlessly. Colors in linear RGB. Driven
 /// at runtime by `plugins/environment` from the ENVI SkyTopColor/SkyBottomColor/FogColor
@@ -119,7 +119,7 @@ pub struct SkyGradientMaterial {
 
 impl Material for SkyGradientMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/sky_gradient.wgsl".into()
+        "shaders/sky_gradient.wesl".into()
     }
 
     /// The sky is drawn *after* the opaque world, not with it. As an opaque

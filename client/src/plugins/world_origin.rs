@@ -10,7 +10,7 @@
 //! Invariants / notes:
 //! - `O` MUST be a multiple of `REGION_SIZE` (1920 = 2^7 * 15, exactly
 //!   representable in f32) *while overworld terrain is resident*:
-//!   `terrain_splat.wgsl` recovers block indices from `world_position % span`
+//!   `terrain_splat.wesl` recovers block indices from `world_position % span`
 //!   (span divides 1920), which only survives translation by exact multiples
 //!   of the span. Dungeon interiors render no splat terrain, so a dungeon
 //!   anchor ([`set_dungeon_origin`]) is exempt and anchors unsnapped on the

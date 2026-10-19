@@ -25,12 +25,10 @@
 // (`shine_color.a > 0`) uses the per-tier highlight/streak texture with
 // the pulsing two-color TFACTOR, added post-lighting in scene-linear HDR
 // so it punches through tonemapping like an emissive.
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-    mesh_view_bindings::{globals, view},
-}
+import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing};
+import bevy_pbr::render::mesh_view_bindings::{globals, view};
 
 struct SheenSettings {
     strength: f32,
@@ -52,7 +50,7 @@ struct SheenSettings {
     env_strength: f32,
     // always-on rim light (rgb = color, a = strength; 0 disables) with
     // its fresnel exponent — the mobile port applies this to every
-    // character/equipment material (see sro_rim.wgsl for the original
+    // character/equipment material (see sro_rim.wesl for the original
     // selection-only variant this mirrors)
     rim_color: vec4<f32>,
     rim_power: f32,
@@ -64,15 +62,15 @@ struct SheenSettings {
     rim_mode: f32,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
+@group(constants::MATERIAL_BIND_GROUP) @binding(100)
 var<uniform> sheen_settings: SheenSettings;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101)
+@group(constants::MATERIAL_BIND_GROUP) @binding(101)
 var shine_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102)
+@group(constants::MATERIAL_BIND_GROUP) @binding(102)
 var shine_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103)
+@group(constants::MATERIAL_BIND_GROUP) @binding(103)
 var env_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104)
+@group(constants::MATERIAL_BIND_GROUP) @binding(104)
 var env_sampler: sampler;
 
 @fragment
@@ -141,7 +139,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     }
 
     // always-on rim (mobile-port parity): the identical fresnel term as
-    // sro_rim.wgsl, so weapons/armor match the character body's rim; the
+    // sro_rim.wesl, so weapons/armor match the character body's rim; the
     // selection highlight overrides these fields with its stronger color.
     // rim_mode 1 = relative (lit x (1 + rim)) — the mobile 0.353 is a
     // fraction of their flat LDR lighting, so an absolute add of it into

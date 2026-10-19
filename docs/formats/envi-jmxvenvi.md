@@ -94,14 +94,14 @@ both lighting models — `EnvironmentSettings.enabled` only switches the ambient
 | DiffuseColor | `DirectionalLight` (sun) color, and the fog's directional-light tint |
 | SunColor | Sun disc billboard tint (`plugins/environment/celestial.rs`) |
 | ObjectAmbientColor | `GlobalAmbientLight` color |
-| TerrainAmbientColor | Terrain-specific ambient, applied as a ratio to the object ambient via an `ambient_ratio` uniform in `terrain_splat.wgsl` |
+| TerrainAmbientColor | Terrain-specific ambient, applied as a ratio to the object ambient via an `ambient_ratio` uniform in `terrain_splat.wesl` |
 | FogColor | `DistanceFog` color |
 | FogNearPlane / FogFarPlane | `DistanceFog` falloff. All FloatGraphs in this format are normalized to [-1, 1]; the fog planes are fractions of a view range (long clear noons, short fogged nights), mapped in `envi_fog_range`, stretched by `EnvironmentSettings::fog_distance_scale` (default 1.5 — the raw mapping reads short vs the original client), with the terrain streaming end as a hard ceiling |
 | SkyTopColor / SkyBottomColor | Sky gradient (zenith/horizon) in `SkyGradientMaterial`; the bottom color also feeds the HQ water reflection tint |
 | WaterColor | HQ water material base color |
 | Graph4 → CloudColor *(inferred)* | Cloud layer tint — white at noon, warm at dawn/dusk, dark navy at night, near-black in dungeon profiles |
 | Graph10 / Graph11 → CloudNearAlpha / CloudFarAlpha *(inferred)* | Per-layer cloud opacity: Graph10 (authoring default 0.5) varies with daylight — the cloud1.ddj layer; Graph11 (default 0.9) hovers near 1.0 — the cloud99.ddj layer |
-| Graph15 → NightIntensity *(inferred)* | +1 at midnight, -1 at noon in every outdoor profile — star/night-sky factor. Drives the procedural star field in `sky_gradient.wgsl` (the archives ship no star texture) |
+| Graph15 → NightIntensity *(inferred)* | +1 at midnight, -1 at noon in every outdoor profile — star/night-sky factor. Drives the procedural star field in `sky_gradient.wesl` (the archives ship no star texture) |
 | TerrainShadowColor | Unused — would tint terrain in shadow; needs terrain shadow rendering to be meaningful |
 | Graph12 | Still unknown: oscillates between -1 and 1 with many keys, no day-cycle correlation (gentle in towns, wild in some wilderness profiles) — possibly wind / cloud-scroll modulation |
 
