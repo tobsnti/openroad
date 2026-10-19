@@ -486,123 +486,123 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             // The map, in the two measured bands that add up to the frame's
             // round hole (see VIEWPORT_BANDS). The black backdrop shows where
             // tiles are missing (world edge) or still streaming in.
-                MinimapViewport { band: 0 }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(b0_l),
-                    top: px(b0_t),
-                    width: px(b0_w),
-                    height: px(b0_h),
-                    overflow: {Overflow::clip()},
-                }
-                BackgroundColor(Color::BLACK)
-                Pickable::IGNORE
-            --
-                MinimapViewport { band: 1 }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(b1_l),
-                    top: px(b1_t),
-                    width: px(b1_w),
-                    height: px(b1_h),
-                    overflow: {Overflow::clip()},
-                }
-                BackgroundColor(Color::BLACK)
-                Pickable::IGNORE
-            --
+            MinimapViewport { band: 0 }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(b0_l),
+                top: px(b0_t),
+                width: px(b0_w),
+                height: px(b0_h),
+                overflow: {Overflow::clip()},
+            }
+            BackgroundColor(Color::BLACK)
+            Pickable::IGNORE
+        --
+            MinimapViewport { band: 1 }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(b1_l),
+                top: px(b1_t),
+                width: px(b1_w),
+                height: px(b1_h),
+                overflow: {Overflow::clip()},
+            }
+            BackgroundColor(Color::BLACK)
+            Pickable::IGNORE
+        --
             // the markers on top of both bands, in one square layer
-                MinimapMarkerLayer
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(ml_l),
-                    top: px(ml_t),
-                    width: px(ml_w),
-                    height: px(ml_h),
-                    overflow: {Overflow::clip()},
-                }
-                Pickable::IGNORE
-            --
+            MinimapMarkerLayer
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(ml_l),
+                top: px(ml_t),
+                width: px(ml_w),
+                height: px(ml_h),
+                overflow: {Overflow::clip()},
+            }
+            Pickable::IGNORE
+        --
             // the frame on top: the ring whose round hole the bands fill
-                ImageNode { image: {frame}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(0),
-                    top: px(0),
-                    width: px(FRAME_W * s),
-                    height: px(FRAME_H * s),
-                }
-                Pickable::IGNORE
-            --
-                @label("", area_font, AREA_FONT_SIZE * s)
-                MinimapAreaText
-                TextColor({AREA_NAME_COLOR})
-                Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
-            --
-                @label("", x_font, POS_FONT_SIZE * s)
-                MinimapPosXText
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
-            --
-                @label("", z_font, POS_FONT_SIZE * s)
-                MinimapPosZText
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
-            --
-                @image_button(zoom_in_style, zi_w, zi_h)
-                Node { position_type: PositionType::Absolute, left: px(zi_l), top: px(zi_t) }
-                on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
-                    state.zoom_idx = (state.zoom_idx + 1).min(ZOOM_LEVELS.len() - 1);
-                })
-            --
-                @image_button(zoom_out_style, zo_w, zo_h)
-                Node { position_type: PositionType::Absolute, left: px(zo_l), top: px(zo_t) }
-                on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
-                    state.zoom_idx = state.zoom_idx.saturating_sub(1);
-                })
-            --
+            ImageNode { image: {frame}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                top: px(0),
+                width: px(FRAME_W * s),
+                height: px(FRAME_H * s),
+            }
+            Pickable::IGNORE
+        --
+            @label("", area_font, AREA_FONT_SIZE * s)
+            MinimapAreaText
+            TextColor({AREA_NAME_COLOR})
+            Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
+        --
+            @label("", x_font, POS_FONT_SIZE * s)
+            MinimapPosXText
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
+        --
+            @label("", z_font, POS_FONT_SIZE * s)
+            MinimapPosZText
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
+        --
+            @image_button(zoom_in_style, zi_w, zi_h)
+            Node { position_type: PositionType::Absolute, left: px(zi_l), top: px(zi_t) }
+            on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
+                state.zoom_idx = (state.zoom_idx + 1).min(ZOOM_LEVELS.len() - 1);
+            })
+        --
+            @image_button(zoom_out_style, zo_w, zo_h)
+            Node { position_type: PositionType::Absolute, left: px(zo_l), top: px(zo_t) }
+            on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
+                state.zoom_idx = state.zoom_idx.saturating_sub(1);
+            })
+        --
             // dungeon floor badge (art + number), shown only inside dungeons
-                MinimapFloorBadge
-                ImageNode { image: {floor_badge}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(fb_l),
-                    top: px(fb_t),
-                    width: px(fb_w),
-                    height: px(fb_h),
-                }
-                Visibility::Hidden
-                Pickable::IGNORE
-            --
-                @label("", floor_font, POS_FONT_SIZE * s)
-                MinimapFloorText
-                TextColor(Color::WHITE)
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(fb_l),
-                    top: px(fb_t),
-                    width: px(fb_w),
-                    height: px(fb_h),
-                }
-                Visibility::Hidden
-            --
+            MinimapFloorBadge
+            ImageNode { image: {floor_badge}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(fb_l),
+                top: px(fb_t),
+                width: px(fb_w),
+                height: px(fb_h),
+            }
+            Visibility::Hidden
+            Pickable::IGNORE
+        --
+            @label("", floor_font, POS_FONT_SIZE * s)
+            MinimapFloorText
+            TextColor(Color::WHITE)
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(fb_l),
+                top: px(fb_t),
+                width: px(fb_w),
+                height: px(fb_h),
+            }
+            Visibility::Hidden
+        --
             // world-map toggle (same behavior as the M key)
-                @image_button(map_button_style, mb_w, mb_h)
-                Node { position_type: PositionType::Absolute, left: px(mb_l), top: px(mb_t) }
-                on(|_activate: On<Activate>,
-                    origin: Res<crate::plugins::world_origin::WorldOrigin>,
-                    worldmap: Res<crate::plugins::textdata::ClientWorldMap>,
-                    dungeon: Option<Res<MinimapDungeonContext>>,
-                    player: Query<&Transform, With<Player>>,
-                    mut state: ResMut<crate::plugins::hud::world_map::model::WorldMapState>| {
-                    if state.open {
-                        state.open = false;
-                    } else {
-                        crate::plugins::hud::world_map::model::open_for_player_region(
-                            &origin, &worldmap, &player, dungeon.as_deref(), &mut state,
-                        );
-                    }
-                })
-        ]
+            @image_button(map_button_style, mb_w, mb_h)
+            Node { position_type: PositionType::Absolute, left: px(mb_l), top: px(mb_t) }
+            on(|_activate: On<Activate>,
+                origin: Res<crate::plugins::world_origin::WorldOrigin>,
+                worldmap: Res<crate::plugins::textdata::ClientWorldMap>,
+                dungeon: Option<Res<MinimapDungeonContext>>,
+                player: Query<&Transform, With<Player>>,
+                mut state: ResMut<crate::plugins::hud::world_map::model::WorldMapState>| {
+                if state.open {
+                    state.open = false;
+                } else {
+                    crate::plugins::hud::world_map::model::open_for_player_region(
+                        &origin, &worldmap, &player, dungeon.as_deref(), &mut state,
+                    );
+                }
+            })
+    ]
     }
 }
 

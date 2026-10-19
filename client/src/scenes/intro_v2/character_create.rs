@@ -671,52 +671,52 @@ fn create_panel(
         ImageNode { image: {panel_art} }
         TabGroup::new(0)
         Children [
-                @label(name_text, name_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(nlx), top: px(nly), width: px(nlw), height: px(nlh) }
-            --
+            @label(name_text, name_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(nlx), top: px(nly), width: px(nlw), height: px(nlh) }
+        --
             // `GDR_EDIT_NAME` has no DDJ of its own: the slot is painted into
             // the panel art, so there is no background node here any more.
-                Node { position_type: PositionType::Absolute, left: px(nex), top: px(ney), width: px(new_), height: px(neh) }
-                Children [ @text_input(input_font, 0) NameInput ]
-            --
-                @image_button(check_style, cbw, cbh)
-                ButtonSound({check_sound})
-                Node { position_type: PositionType::Absolute, left: px(cbx), top: px(cby), width: px(cbw), height: px(cbh) }
-                Children [ @label(check_text, check_font, 11.0) TextColor(Color::WHITE) ]
-                on(on_check_name_activate)
-            --
-                @label(sex_text, sex_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(slx), top: px(sly), width: px(slw), height: px(slh) }
-            --
-                @image_button(male_style, mw, mh)
-                GenderOption(Gender::Male)
-                ButtonSound({male_sound})
-                Node { position_type: PositionType::Absolute, left: px(mx), top: px(my), width: px(mw), height: px(mh) }
-                Children [ @label(male_text, male_font, 11.0) TextColor(Color::WHITE) ]
-                on(|_a: On<Activate>, mut sel: ResMut<CharCreateSelection>| {
-                    if sel.gender != Gender::Male {
-                        sel.gender = Gender::Male;
-                        sel.figure = 0;
-                    }
-                })
-            --
-                @image_button(female_style, fw, fh)
-                GenderOption(Gender::Female)
-                ButtonSound({female_sound})
-                Node { position_type: PositionType::Absolute, left: px(fx), top: px(fy), width: px(fw), height: px(fh) }
-                Children [ @label(female_text, female_font, 11.0) TextColor(Color::WHITE) ]
-                on(|_a: On<Activate>, mut sel: ResMut<CharCreateSelection>| {
-                    if sel.gender != Gender::Female {
-                        sel.gender = Gender::Female;
-                        sel.figure = 0;
-                    }
-                })
-            --
+            Node { position_type: PositionType::Absolute, left: px(nex), top: px(ney), width: px(new_), height: px(neh) }
+            Children [ @text_input(input_font, 0) NameInput ]
+        --
+            @image_button(check_style, cbw, cbh)
+            ButtonSound({check_sound})
+            Node { position_type: PositionType::Absolute, left: px(cbx), top: px(cby), width: px(cbw), height: px(cbh) }
+            Children [ @label(check_text, check_font, 11.0) TextColor(Color::WHITE) ]
+            on(on_check_name_activate)
+        --
+            @label(sex_text, sex_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(slx), top: px(sly), width: px(slw), height: px(slh) }
+        --
+            @image_button(male_style, mw, mh)
+            GenderOption(Gender::Male)
+            ButtonSound({male_sound})
+            Node { position_type: PositionType::Absolute, left: px(mx), top: px(my), width: px(mw), height: px(mh) }
+            Children [ @label(male_text, male_font, 11.0) TextColor(Color::WHITE) ]
+            on(|_a: On<Activate>, mut sel: ResMut<CharCreateSelection>| {
+                if sel.gender != Gender::Male {
+                    sel.gender = Gender::Male;
+                    sel.figure = 0;
+                }
+            })
+        --
+            @image_button(female_style, fw, fh)
+            GenderOption(Gender::Female)
+            ButtonSound({female_sound})
+            Node { position_type: PositionType::Absolute, left: px(fx), top: px(fy), width: px(fw), height: px(fh) }
+            Children [ @label(female_text, female_font, 11.0) TextColor(Color::WHITE) ]
+            on(|_a: On<Activate>, mut sel: ResMut<CharCreateSelection>| {
+                if sel.gender != Gender::Female {
+                    sel.gender = Gender::Female;
+                    sel.figure = 0;
+                }
+            })
+        --
             // The five rows, all on the one `Section = Slider` template.
             // Row 1 — `GDR_SLI_FIGURE` (`:352-370`).
-                @label(figure_text, figure_caption_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_FIGURE_TOP), width: px(LABEL_W), height: px(LABEL_H) }
-            --
+            @label(figure_text, figure_caption_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_FIGURE_TOP), width: px(LABEL_W), height: px(LABEL_H) }
+        --
              @slider_row(assets, SliderRow::Figure, ROW_FIGURE_TOP) --
             // Rows 2 and 3 — `GDR_SLI_HEIGHT` / `_VOLUME`. The slider CHROME is
             // data, but the wire encoding is not: the nibble packing of the
@@ -724,37 +724,37 @@ fn create_panel(
             // sending the capture-verified default (see DEFAULT_SCALE). A
             // working-looking slider that cannot be transmitted would be worse
             // than an honest stub, so these two rows stay the dimmed readout.
-                @label(height_text, height_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_HEIGHT_TOP), width: px(LABEL_W), height: px(LABEL_H) }
-            --
-                @label("\u{b7} default \u{b7}", height_value_font, 11.0) TextColor(DISABLED_COLOR)
-                Node { position_type: PositionType::Absolute, left: px(ROW_X), top: px(ROW_HEIGHT_TOP), width: px(ROW_W), height: px(ROW_H) }
-            --
-                @label(volume_text, volume_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_VOLUME_TOP), width: px(LABEL_W), height: px(LABEL_H) }
-            --
-                @label("\u{b7} default \u{b7}", volume_value_font, 11.0) TextColor(DISABLED_COLOR)
-                Node { position_type: PositionType::Absolute, left: px(ROW_X), top: px(ROW_VOLUME_TOP), width: px(ROW_W), height: px(ROW_H) }
-            --
+            @label(height_text, height_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_HEIGHT_TOP), width: px(LABEL_W), height: px(LABEL_H) }
+        --
+            @label("\u{b7} default \u{b7}", height_value_font, 11.0) TextColor(DISABLED_COLOR)
+            Node { position_type: PositionType::Absolute, left: px(ROW_X), top: px(ROW_HEIGHT_TOP), width: px(ROW_W), height: px(ROW_H) }
+        --
+            @label(volume_text, volume_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(LABEL_VOLUME_TOP), width: px(LABEL_W), height: px(LABEL_H) }
+        --
+            @label("\u{b7} default \u{b7}", volume_value_font, 11.0) TextColor(DISABLED_COLOR)
+            Node { position_type: PositionType::Absolute, left: px(ROW_X), top: px(ROW_VOLUME_TOP), width: px(ROW_W), height: px(ROW_H) }
+        --
             // The two gear rows: `protector_row`/`weapon_row` carry the race's
             // authored order, so CH reads Protector-then-Weapon and EU reads
             // Weapon-then-Protector without a second layout.
-                @label(protector_text, garment_caption_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(protector_label), width: px(LABEL_W), height: px(LABEL_H) }
-            --
+            @label(protector_text, garment_caption_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(protector_label), width: px(LABEL_W), height: px(LABEL_H) }
+        --
              @slider_row(assets, SliderRow::Protector, protector_row) --
-                @label(weapon_text, weapon_caption_font, 12.0) TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(weapon_label), width: px(LABEL_W), height: px(LABEL_H) }
-            --
+            @label(weapon_text, weapon_caption_font, 12.0) TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(weapon_label), width: px(LABEL_W), height: px(LABEL_H) }
+        --
              @slider_row(assets, SliderRow::Weapon, weapon_row) --
             // Name-check feedback. `GDR_TEXT_MESSAGE` (`:196-214`) is the
             // original's message sink and its rect is `0,0,0,0` — placed by
             // client code, so UNKNOWN. **openroad choice:** the line goes in
             // the panel's free strip below the last row, next to the field it
             // is about, rather than into an invented floating box.
-                @label("", feedback_font, 11.0) TextColor(Color::WHITE) NameFeedback
-                Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(FEEDBACK_TOP), width: px(FEEDBACK_W), height: px(LABEL_H) }
-        ]
+            @label("", feedback_font, 11.0) TextColor(Color::WHITE) NameFeedback
+            Node { position_type: PositionType::Absolute, left: px(LABEL_X), top: px(FEEDBACK_TOP), width: px(FEEDBACK_W), height: px(LABEL_H) }
+    ]
     }
 }
 
@@ -796,26 +796,26 @@ fn slider_row(assets: &IntroV2Assets, row: SliderRow, top: f32) -> impl Scene {
             height: px(ROW_H),
         }
         Children [
-                @image_button(prev_style, pw, ph)
-                SliderStep(row, {-1})
-                ButtonSound({prev_sound})
-                Node { position_type: PositionType::Absolute, left: px(px_), top: px(py), width: px(pw), height: px(ph) }
-                on(on_slider_step)
-            --
+            @image_button(prev_style, pw, ph)
+            SliderStep(row, {-1})
+            ButtonSound({prev_sound})
+            Node { position_type: PositionType::Absolute, left: px(px_), top: px(py), width: px(pw), height: px(ph) }
+            on(on_slider_step)
+        --
                 // The thumb is a `CIFButton` in the data, but dragging it is
                 // not something the tree describes; it reads the row's index
                 // and is moved by `update_slider_thumbs`.
-                ImageNode { image: {thumb_style.normal.clone()}, image_mode: NodeImageMode::Stretch }
-                SliderThumb(row)
-                Node { position_type: PositionType::Absolute, left: px(tx), top: px(ty), width: px(tw), height: px(th) }
-                Pickable::IGNORE
-            --
-                @image_button(next_style, nw, nh)
-                SliderStep(row, 1)
-                ButtonSound({next_sound})
-                Node { position_type: PositionType::Absolute, left: px(nx), top: px(ny), width: px(nw), height: px(nh) }
-                on(on_slider_step)
-        ]
+            ImageNode { image: {thumb_style.normal.clone()}, image_mode: NodeImageMode::Stretch }
+            SliderThumb(row)
+            Node { position_type: PositionType::Absolute, left: px(tx), top: px(ty), width: px(tw), height: px(th) }
+            Pickable::IGNORE
+        --
+            @image_button(next_style, nw, nh)
+            SliderStep(row, 1)
+            ButtonSound({next_sound})
+            Node { position_type: PositionType::Absolute, left: px(nx), top: px(ny), width: px(nw), height: px(nh) }
+            on(on_slider_step)
+    ]
     }
 }
 
@@ -972,38 +972,38 @@ fn create_rotate_window(assets: &IntroV2Assets) -> impl Scene {
         }
         ImageNode { image: {window} }
         Children [
-                @image_button(left_style, lw, lh)
-                PreviewRotateButton({-PREVIEW_ROTATE_STEP})
-                ButtonSound({left_sound})
-                Node { position_type: PositionType::Absolute, left: px(lx), top: px(ly), width: px(lw), height: px(lh) }
-                on(|activate: On<Activate>,
-                    buttons: Query<&PreviewRotateButton>,
-                    mut view: ResMut<CharCreatePreviewView>| {
-                    if let Ok(button) = buttons.get(activate.entity) {
-                        view.yaw += button.0;
-                    }
-                })
-            --
-                @image_button(zoom_style, zw, zh)
-                PreviewZoomButton
-                ButtonSound({zoom_sound})
-                Node { position_type: PositionType::Absolute, left: px(zx), top: px(zy), width: px(zw), height: px(zh) }
-                on(|_a: On<Activate>, mut view: ResMut<CharCreatePreviewView>| {
-                    view.zoomed_in = !view.zoomed_in;
-                })
-            --
-                @image_button(right_style, rw, rh)
-                PreviewRotateButton(PREVIEW_ROTATE_STEP)
-                ButtonSound({right_sound})
-                Node { position_type: PositionType::Absolute, left: px(rx), top: px(ry), width: px(rw), height: px(rh) }
-                on(|activate: On<Activate>,
-                    buttons: Query<&PreviewRotateButton>,
-                    mut view: ResMut<CharCreatePreviewView>| {
-                    if let Ok(button) = buttons.get(activate.entity) {
-                        view.yaw += button.0;
-                    }
-                })
-        ]
+            @image_button(left_style, lw, lh)
+            PreviewRotateButton({-PREVIEW_ROTATE_STEP})
+            ButtonSound({left_sound})
+            Node { position_type: PositionType::Absolute, left: px(lx), top: px(ly), width: px(lw), height: px(lh) }
+            on(|activate: On<Activate>,
+                buttons: Query<&PreviewRotateButton>,
+                mut view: ResMut<CharCreatePreviewView>| {
+                if let Ok(button) = buttons.get(activate.entity) {
+                    view.yaw += button.0;
+                }
+            })
+        --
+            @image_button(zoom_style, zw, zh)
+            PreviewZoomButton
+            ButtonSound({zoom_sound})
+            Node { position_type: PositionType::Absolute, left: px(zx), top: px(zy), width: px(zw), height: px(zh) }
+            on(|_a: On<Activate>, mut view: ResMut<CharCreatePreviewView>| {
+                view.zoomed_in = !view.zoomed_in;
+            })
+        --
+            @image_button(right_style, rw, rh)
+            PreviewRotateButton(PREVIEW_ROTATE_STEP)
+            ButtonSound({right_sound})
+            Node { position_type: PositionType::Absolute, left: px(rx), top: px(ry), width: px(rw), height: px(rh) }
+            on(|activate: On<Activate>,
+                buttons: Query<&PreviewRotateButton>,
+                mut view: ResMut<CharCreatePreviewView>| {
+                if let Ok(button) = buttons.get(activate.entity) {
+                    view.yaw += button.0;
+                }
+            })
+    ]
     }
 }
 
@@ -1056,19 +1056,19 @@ fn create_controls(
             column_gap: px(15),
         }
         Children [
-                @image_button(main_button_style(assets), 91.0, 41.0)
-                CreateButton
-                ButtonSound({create_sound})
-                Children [ @label(create_text, create_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_create_activate)
-            --
-                @image_button(main_button_style(assets), 91.0, 41.0)
-                ButtonSound({back_sound})
-                Children [ @label(back_text, back_font, 16.0) TextColor(Color::WHITE) ]
-                on(|_a: On<Activate>, mut next_state: ResMut<NextState<IntroV2State>>| {
-                    next_state.set(IntroV2State::CharacterList);
-                })
-        ]
+            @image_button(main_button_style(assets), 91.0, 41.0)
+            CreateButton
+            ButtonSound({create_sound})
+            Children [ @label(create_text, create_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_create_activate)
+        --
+            @image_button(main_button_style(assets), 91.0, 41.0)
+            ButtonSound({back_sound})
+            Children [ @label(back_text, back_font, 16.0) TextColor(Color::WHITE) ]
+            on(|_a: On<Activate>, mut next_state: ResMut<NextState<IntroV2State>>| {
+                next_state.set(IntroV2State::CharacterList);
+            })
+    ]
     }
 }
 
@@ -1549,41 +1549,41 @@ fn create_confirm_modal(
         }
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75))
         Children [
-                ImageNode { image: {window}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: px(WCREATE_W),
-                    height: px(WCREATE_H),
-                    margin: {UiRect::all(Val::Auto)},
-                }
-                Children [
-                        // @label() starts transparent for the intro fade
-                        // systems, which never run on this modal.
-                        @label(&name_text, name_font, 12.0) TextColor(Color::WHITE)
-                        Node { position_type: PositionType::Absolute, left: px(nx), top: px(ny), width: px(nw), height: px(nh) }
-                    --
-                        @label(&message, msg_font, 11.0) TextColor(Color::WHITE)
-                        Node { position_type: PositionType::Absolute, left: px(mx), top: px(my), width: px(mw), height: px(mh) }
-                    --
-                        @image_button(character_select::warning_button_style(assets), ow, oh)
-                        ButtonSound({ok_sound})
-                        Node { position_type: PositionType::Absolute, left: px(ox), top: px(oy), width: px(ow), height: px(oh) }
-                        Children [ @label(ok_text, ok_font, 11.0) TextColor(Color::WHITE) ]
-                        on(on_create_confirm_activate)
-                    --
-                        @image_button(character_select::warning_button_style(assets), cw, chh)
-                        ButtonSound({cancel_sound})
-                        Node { position_type: PositionType::Absolute, left: px(cx), top: px(cy), width: px(cw), height: px(chh) }
-                        Children [ @label(cancel_text, cancel_font, 11.0) TextColor(Color::WHITE) ]
-                        on(|_a: On<Activate>,
-                            modal_query: Query<Entity, With<CreateConfirmModal>>,
-                            mut commands: Commands| {
-                            for modal in modal_query.iter() {
-                                commands.entity(modal).despawn();
-                            }
-                        })
-                ]
+            ImageNode { image: {window}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                width: px(WCREATE_W),
+                height: px(WCREATE_H),
+                margin: {UiRect::all(Val::Auto)},
+            }
+            Children [
+                    // @label() starts transparent for the intro fade
+                    // systems, which never run on this modal.
+                @label(&name_text, name_font, 12.0) TextColor(Color::WHITE)
+                Node { position_type: PositionType::Absolute, left: px(nx), top: px(ny), width: px(nw), height: px(nh) }
+            --
+                @label(&message, msg_font, 11.0) TextColor(Color::WHITE)
+                Node { position_type: PositionType::Absolute, left: px(mx), top: px(my), width: px(mw), height: px(mh) }
+            --
+                @image_button(character_select::warning_button_style(assets), ow, oh)
+                ButtonSound({ok_sound})
+                Node { position_type: PositionType::Absolute, left: px(ox), top: px(oy), width: px(ow), height: px(oh) }
+                Children [ @label(ok_text, ok_font, 11.0) TextColor(Color::WHITE) ]
+                on(on_create_confirm_activate)
+            --
+                @image_button(character_select::warning_button_style(assets), cw, chh)
+                ButtonSound({cancel_sound})
+                Node { position_type: PositionType::Absolute, left: px(cx), top: px(cy), width: px(cw), height: px(chh) }
+                Children [ @label(cancel_text, cancel_font, 11.0) TextColor(Color::WHITE) ]
+                on(|_a: On<Activate>,
+                    modal_query: Query<Entity, With<CreateConfirmModal>>,
+                    mut commands: Commands| {
+                    for modal in modal_query.iter() {
+                        commands.entity(modal).despawn();
+                    }
+                })
         ]
+    ]
     }
 }
 

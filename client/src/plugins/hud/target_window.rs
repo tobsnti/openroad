@@ -289,103 +289,103 @@ pub fn spawn_target_window(
         Pickable::IGNORE
         Children [
             // the gem in the gold ring socket (level gap / npc / player)
-                TwGemIcon
-                ImageNode { image: {gem_image}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(gem_l),
-                    top: px(gem_t),
-                    width: px(gem_w),
-                    height: px(gem_h),
-                }
-                Pickable::IGNORE
-            --
+            TwGemIcon
+            ImageNode { image: {gem_image}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(gem_l),
+                top: px(gem_t),
+                width: px(gem_w),
+                height: px(gem_h),
+            }
+            Pickable::IGNORE
+        --
             // centered name on the plate
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(row_l),
-                    top: px(row_t),
-                    width: px(row_w),
-                    height: px(row_h),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                }
-                Pickable::IGNORE
-                Children [
-                        @label("", name_font.clone(), NAME_FONT_SIZE * s)
-                        TwNameText
-                        TextColor(Color::WHITE)
-                ]
-            --
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(row_l),
+                top: px(row_t),
+                width: px(row_w),
+                height: px(row_h),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+            }
+            Pickable::IGNORE
+            Children [
+                @label("", name_font.clone(), NAME_FONT_SIZE * s)
+                TwNameText
+                TextColor(Color::WHITE)
+        ]
+        --
             // close (X) button top-right (GDR_TW_CLOSE); NOT Pickable::IGNORE
-                TwCloseButton
-                Button
-                Hovered
-                ImageNode { image: {close_normal}, image_mode: NodeImageMode::Stretch }
-                ImageButtonStyle { normal: {close_n}, hover: {close_f}, press: {close_p} }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(close_l),
-                    top: px(close_t),
-                    width: px(close_w),
-                    height: px(close_h),
-                }
-            --
+            TwCloseButton
+            Button
+            Hovered
+            ImageNode { image: {close_normal}, image_mode: NodeImageMode::Stretch }
+            ImageButtonStyle { normal: {close_n}, hover: {close_f}, press: {close_p} }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(close_l),
+                top: px(close_t),
+                width: px(close_w),
+                height: px(close_h),
+            }
+        --
             // centered "[icon] Class" row on the special frame's lower strip
-                TwRarityRow
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(rar_l),
-                    top: px(rar_t),
-                    width: px(rar_w),
-                    height: px(rar_h),
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    column_gap: px(3.0 * s),
-                }
-                Visibility::Hidden
+            TwRarityRow
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(rar_l),
+                top: px(rar_t),
+                width: px(rar_w),
+                height: px(rar_h),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                column_gap: px(3.0 * s),
+            }
+            Visibility::Hidden
+            Pickable::IGNORE
+            Children [
+                TwRarityIcon
+                ImageNode { image: {icon_image}, image_mode: NodeImageMode::Stretch }
+                Node { width: px(ICON_SIZE * s), height: px(ICON_SIZE * s) }
                 Pickable::IGNORE
-                Children [
-                        TwRarityIcon
-                        ImageNode { image: {icon_image}, image_mode: NodeImageMode::Stretch }
-                        Node { width: px(ICON_SIZE * s), height: px(ICON_SIZE * s) }
-                        Pickable::IGNORE
-                    --
-                        @label("", name_font, NAME_FONT_SIZE * s)
-                        TwRarityText
-                        TextColor(Color::WHITE)
-                ]
             --
+                @label("", name_font, NAME_FONT_SIZE * s)
+                TwRarityText
+                TextColor(Color::WHITE)
+        ]
+        --
             // GDR_TW_BUFF: no width, no slot count — the row is whatever its
             // children are (see BUFF_ROW_TOP)
-                TwBuffRow
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(buff_l),
-                    top: px(buff_t),
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::FlexStart,
-                }
-                Pickable::IGNORE
-            --
+            TwBuffRow
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(buff_l),
+                top: px(buff_t),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::FlexStart,
+            }
+            Pickable::IGNORE
+        --
             // HP line: track sized to the groove -> `@gauge()` crop -> art at
             // its native size, so `tw_hp.ddj`'s 1-texel rounded corners stay
             // on the bar's ends instead of riding the fill front (#630).
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(bar_l),
-                    top: px(bar_t),
-                    width: px(bar_w),
-                    height: px(bar_h),
-                    overflow: {Overflow::clip()},
-                }
-                Pickable::IGNORE
-                Children [
-                        TwBarFill
-                        @gauge(hp_image, bar_w, bar_h)
-                ]
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bar_l),
+                top: px(bar_t),
+                width: px(bar_w),
+                height: px(bar_h),
+                overflow: {Overflow::clip()},
+            }
+            Pickable::IGNORE
+            Children [
+                TwBarFill
+                @gauge(hp_image, bar_w, bar_h)
         ]
+    ]
     };
     commands.spawn_scene(scene).insert(UiTargetCamera(camera));
     commands.insert_resource(assets);

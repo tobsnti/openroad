@@ -135,39 +135,39 @@ pub fn control_buttons(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene
             column_gap: px(15),
         }
         Children [
-                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
-                ImageNode { color: Color::NONE }
-                ButtonSound({button_sound})
-                Children [ @label("Create", font, 16.0) ]
-                on(|_activate: On<Activate>,
-                    fade_timer: Option<Res<FadeToBlackTimer>>,
-                    mut next_state: ResMut<NextState<IntroV2State>>,
-                    mut commands: Commands| {
-                    // Ignore the click while the Cancel fade is in flight: the
-                    // fade overlay doesn't block picking, and the queued
-                    // LoginForm switch would then fire from inside
-                    // CharacterCreate, skipping the CharacterList exit chain
-                    // that restores camera/origin/connection.
-                    if fade_timer.is_some() {
-                        return;
-                    }
-                    // Keep the agent connection across the sub-state switch so
-                    // Create/CheckName can use it (see disconnect_from_agent_server).
-                    commands.insert_resource(super::character_create::EnteringCharacterCreate);
-                    next_state.set(IntroV2State::RegionSelect);
-                })
-            --
-                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
-                ImageNode { color: Color::NONE }
-                ButtonSound({cancel_sound})
-                Children [ @label("Cancel", cancel_font, 16.0) ]
-                on(|_activate: On<Activate>,
-                    mut fade_writer: MessageWriter<FadeToBlack>,
-                    mut commands: Commands| {
-                    fade_writer.write(FadeToBlack);
-                    commands.insert_resource(FadeToBlackTimer::to(IntroV2State::LoginForm));
-                })
-        ]
+            @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+            ImageNode { color: Color::NONE }
+            ButtonSound({button_sound})
+            Children [ @label("Create", font, 16.0) ]
+            on(|_activate: On<Activate>,
+                fade_timer: Option<Res<FadeToBlackTimer>>,
+                mut next_state: ResMut<NextState<IntroV2State>>,
+                mut commands: Commands| {
+                // Ignore the click while the Cancel fade is in flight: the
+                // fade overlay doesn't block picking, and the queued
+                // LoginForm switch would then fire from inside
+                // CharacterCreate, skipping the CharacterList exit chain
+                // that restores camera/origin/connection.
+                if fade_timer.is_some() {
+                    return;
+                }
+                // Keep the agent connection across the sub-state switch so
+                // Create/CheckName can use it (see disconnect_from_agent_server).
+                commands.insert_resource(super::character_create::EnteringCharacterCreate);
+                next_state.set(IntroV2State::RegionSelect);
+            })
+        --
+            @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+            ImageNode { color: Color::NONE }
+            ButtonSound({cancel_sound})
+            Children [ @label("Cancel", cancel_font, 16.0) ]
+            on(|_activate: On<Activate>,
+                mut fade_writer: MessageWriter<FadeToBlack>,
+                mut commands: Commands| {
+                fade_writer.write(FadeToBlack);
+                commands.insert_resource(FadeToBlackTimer::to(IntroV2State::LoginForm));
+            })
+    ]
     }
 }
 
@@ -193,22 +193,22 @@ pub(crate) fn selected_control_buttons(assets: &IntroV2Assets, fonts: &FontAsset
             column_gap: px(15),
         }
         Children [
-                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
-                StartButton
-                ButtonSound({start_sound})
-                Children [ @label("Start", start_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_start_activate)
-            --
-                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
-                ButtonSound({delete_sound})
-                Children [ @label("Delete", delete_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_delete_activate)
-            --
-                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
-                ButtonSound({cancel_sound})
-                Children [ @label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_selection_cancel_activate)
-        ]
+            @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+            StartButton
+            ButtonSound({start_sound})
+            Children [ @label("Start", start_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_start_activate)
+        --
+            @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+            ButtonSound({delete_sound})
+            Children [ @label("Delete", delete_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_delete_activate)
+        --
+            @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+            ButtonSound({cancel_sound})
+            Children [ @label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_selection_cancel_activate)
+    ]
     }
 }
 
@@ -243,16 +243,16 @@ pub(crate) fn deleting_control_buttons(
             column_gap: px(15),
         }
         Children [
-                @image_button(main_button_style(assets), 91.0, 41.0)
-                ButtonSound({restore_sound})
-                Children [ @label(&restore_label, restore_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_restore_activate)
-            --
-                @image_button(main_button_style(assets), 91.0, 41.0)
-                ButtonSound({cancel_sound})
-                Children [ @label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE) ]
-                on(on_selection_cancel_activate)
-        ]
+            @image_button(main_button_style(assets), 91.0, 41.0)
+            ButtonSound({restore_sound})
+            Children [ @label(&restore_label, restore_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_restore_activate)
+        --
+            @image_button(main_button_style(assets), 91.0, 41.0)
+            ButtonSound({cancel_sound})
+            Children [ @label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE) ]
+            on(on_selection_cancel_activate)
+    ]
     }
 }
 
@@ -772,10 +772,10 @@ pub(crate) fn info_box(
         }
         Children [
                 // the character name goes into the window's sunken slot
-                @label(&name, name_font, font_size)
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(row_h) }
-            --
+            @label(&name, name_font, font_size)
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(row_h) }
+        --
             // HP/MP gauges. A vanilla `CIFGauge` with `Style=0` CROPS its art
             // along X at 1:1 texel scale, it does not stretch it to the fill
             // width (`docs/re/ui/hp-mp-gauge-widget.md`), so the percentage
@@ -785,88 +785,88 @@ pub(crate) fn info_box(
             // Here the two models happen to render identically — `hp.ddj` and
             // `mp.ddj` are 136x8 with no X structure — so this is for
             // consistency, not for the pixels.
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bar_l),
+                top: px(hp_t),
+                width: px(bar_w),
+                height: px(bar_h),
+                overflow: {Overflow::clip()},
+            }
+            Children [
                 Node {
-                    position_type: PositionType::Absolute,
-                    left: px(bar_l),
-                    top: px(hp_t),
-                    width: px(bar_w),
-                    height: px(bar_h),
+                    width: percent(hp_fill * 100.0),
+                    height: percent(100),
                     overflow: {Overflow::clip()},
                 }
+                Pickable::IGNORE
                 Children [
-                        Node {
-                            width: percent(hp_fill * 100.0),
-                            height: percent(100),
-                            overflow: {Overflow::clip()},
-                        }
-                        Pickable::IGNORE
-                        Children [
-                                ImageNode { image: {hp_image}, image_mode: NodeImageMode::Stretch }
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: px(0.0),
-                                    top: px(0.0),
-                                    width: px(bar_w),
-                                    height: px(bar_h),
-                                }
-                                Pickable::IGNORE
-                        ]
-                ]
-            --
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(bar_l),
-                    top: px(mp_t),
-                    width: px(bar_w),
-                    height: px(bar_h),
-                    overflow: {Overflow::clip()},
-                }
-                Children [
-                        Node {
-                            width: percent(mp_fill * 100.0),
-                            height: percent(100),
-                            overflow: {Overflow::clip()},
-                        }
-                        Pickable::IGNORE
-                        Children [
-                                ImageNode { image: {mp_image}, image_mode: NodeImageMode::Stretch }
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: px(0.0),
-                                    top: px(0.0),
-                                    width: px(bar_w),
-                                    height: px(bar_h),
-                                }
-                                Pickable::IGNORE
-                        ]
-                ]
-            --
-            // EXP and SP share one row, gold caption + white value each
-                @label("EXP", exp_cap_font, font_size)
-                TextColor({caption_color})
-                Node { position_type: PositionType::Absolute, left: px(exp_cap_l), top: px(stats_t), width: px(exp_cap_w), height: px(row_h) }
-            --
-                @label(&exp_text, exp_font, font_size)
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(exp_val_l), top: px(stats_t), width: px(exp_val_w), height: px(row_h) }
-            --
-                @label("Stat", sp_cap_font, font_size)
-                TextColor({caption_color})
-                Node { position_type: PositionType::Absolute, left: px(sp_cap_l), top: px(stats_t), width: px(sp_cap_w), height: px(row_h) }
-            --
-                @label(&sp_text, sp_font, font_size)
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(sp_val_l), top: px(stats_t), width: px(sp_val_w), height: px(row_h) }
-            --
-            // LEVEL sits centered in the row below
-                @label("Level", level_cap_font, font_size)
-                TextColor({caption_color})
-                Node { position_type: PositionType::Absolute, left: px(level_cap_l), top: px(level_t), width: px(level_cap_w), height: px(row_h) }
-            --
-                @label(&level_text, level_font, font_size)
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(level_val_l), top: px(level_t), width: px(level_val_w), height: px(row_h) }
+                    ImageNode { image: {hp_image}, image_mode: NodeImageMode::Stretch }
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0.0),
+                        top: px(0.0),
+                        width: px(bar_w),
+                        height: px(bar_h),
+                    }
+                    Pickable::IGNORE
+            ]
         ]
+        --
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(bar_l),
+                top: px(mp_t),
+                width: px(bar_w),
+                height: px(bar_h),
+                overflow: {Overflow::clip()},
+            }
+            Children [
+                Node {
+                    width: percent(mp_fill * 100.0),
+                    height: percent(100),
+                    overflow: {Overflow::clip()},
+                }
+                Pickable::IGNORE
+                Children [
+                    ImageNode { image: {mp_image}, image_mode: NodeImageMode::Stretch }
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0.0),
+                        top: px(0.0),
+                        width: px(bar_w),
+                        height: px(bar_h),
+                    }
+                    Pickable::IGNORE
+            ]
+        ]
+        --
+            // EXP and SP share one row, gold caption + white value each
+            @label("EXP", exp_cap_font, font_size)
+            TextColor({caption_color})
+            Node { position_type: PositionType::Absolute, left: px(exp_cap_l), top: px(stats_t), width: px(exp_cap_w), height: px(row_h) }
+        --
+            @label(&exp_text, exp_font, font_size)
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(exp_val_l), top: px(stats_t), width: px(exp_val_w), height: px(row_h) }
+        --
+            @label("Stat", sp_cap_font, font_size)
+            TextColor({caption_color})
+            Node { position_type: PositionType::Absolute, left: px(sp_cap_l), top: px(stats_t), width: px(sp_cap_w), height: px(row_h) }
+        --
+            @label(&sp_text, sp_font, font_size)
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(sp_val_l), top: px(stats_t), width: px(sp_val_w), height: px(row_h) }
+        --
+            // LEVEL sits centered in the row below
+            @label("Level", level_cap_font, font_size)
+            TextColor({caption_color})
+            Node { position_type: PositionType::Absolute, left: px(level_cap_l), top: px(level_t), width: px(level_cap_w), height: px(row_h) }
+        --
+            @label(&level_text, level_font, font_size)
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(level_val_l), top: px(level_t), width: px(level_val_w), height: px(row_h) }
+    ]
     }
 }
 
@@ -1029,51 +1029,51 @@ fn delete_modal(
         DeleteConfirmModal
         Name("Delete Confirmation Modal V2")
         Children [
-                @modal_plate(window, DELETE_MODAL_WIDTH, DELETE_MODAL_HEIGHT)
-                Children [
-                        // @label() starts transparent for the fade systems,
-                        // which never run on this modal, so force it white.
-                        @label(&confirmation_text, text_font, 12.0)
-                        TextColor(Color::WHITE)
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(30),
-                            top: px(48),
-                            width: px(284),
-                            height: px(60),
-                        }
-                    --
-                        @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(90),
-                            top: px(WARNING_BUTTON_Y),
-                            width: px(WARNING_BUTTON_WIDTH),
-                            height: px(WARNING_BUTTON_HEIGHT),
-                        }
-                        ButtonSound({button_sound})
-                        Children [ @label(&accept_label, confirm_font, 12.0) TextColor(Color::WHITE) ]
-                        on(on_delete_confirm_activate)
-                    --
-                        @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: px(178),
-                            top: px(WARNING_BUTTON_Y),
-                            width: px(WARNING_BUTTON_WIDTH),
-                            height: px(WARNING_BUTTON_HEIGHT),
-                        }
-                        ButtonSound({cancel_sound})
-                        Children [ @label(&cancel_label, cancel_font, 12.0) TextColor(Color::WHITE) ]
-                        on(|_activate: On<Activate>,
-                            modal_query: Query<Entity, With<DeleteConfirmModal>>,
-                            mut commands: Commands| {
-                            for modal in modal_query.iter() {
-                                commands.entity(modal).despawn();
-                            }
-                        })
-                ]
+            @modal_plate(window, DELETE_MODAL_WIDTH, DELETE_MODAL_HEIGHT)
+            Children [
+                    // @label() starts transparent for the fade systems,
+                    // which never run on this modal, so force it white.
+                @label(&confirmation_text, text_font, 12.0)
+                TextColor(Color::WHITE)
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(30),
+                    top: px(48),
+                    width: px(284),
+                    height: px(60),
+                }
+            --
+                @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(90),
+                    top: px(WARNING_BUTTON_Y),
+                    width: px(WARNING_BUTTON_WIDTH),
+                    height: px(WARNING_BUTTON_HEIGHT),
+                }
+                ButtonSound({button_sound})
+                Children [ @label(&accept_label, confirm_font, 12.0) TextColor(Color::WHITE) ]
+                on(on_delete_confirm_activate)
+            --
+                @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(178),
+                    top: px(WARNING_BUTTON_Y),
+                    width: px(WARNING_BUTTON_WIDTH),
+                    height: px(WARNING_BUTTON_HEIGHT),
+                }
+                ButtonSound({cancel_sound})
+                Children [ @label(&cancel_label, cancel_font, 12.0) TextColor(Color::WHITE) ]
+                on(|_activate: On<Activate>,
+                    modal_query: Query<Entity, With<DeleteConfirmModal>>,
+                    mut commands: Commands| {
+                    for modal in modal_query.iter() {
+                        commands.entity(modal).despawn();
+                    }
+                })
         ]
+    ]
     }
 }
 
@@ -1249,14 +1249,14 @@ fn join_loading_overlay(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scen
         GlobalZIndex(200)
         Pickable::IGNORE
         Children [
-                ImageNode { image: {background} }
-                Node { max_width: percent(100), max_height: percent(100) }
-                Pickable::IGNORE
-            --
-                @label("Joining world...", font, 16.0)
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, bottom: percent(10) }
-        ]
+            ImageNode { image: {background} }
+            Node { max_width: percent(100), max_height: percent(100) }
+            Pickable::IGNORE
+        --
+            @label("Joining world...", font, 16.0)
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, bottom: percent(10) }
+    ]
     }
 }
 
