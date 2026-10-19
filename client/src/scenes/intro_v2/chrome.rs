@@ -50,14 +50,18 @@ const NOTICE_COLOR: Color = Color::srgb_u8(255, 103, 29);
 /// (the lane-wide FontIndex -> face mapping is UNKNOWN), so the size below is
 /// ours.
 const NOTICE_FONT_SIZE: f32 = 16.0;
-/// The offset is **derived, not chosen**: the footer bar is anchored to the
-/// bottom edge and is `BAR_H_PCT` tall, so any notice whose bottom edge sits
-/// below that is laid out *inside* the bar and never reaches the player. One
-/// text line of clearance above the bar is the smallest offset that keeps the
-/// whole line visible, and both terms come from the trees' own 1200-unit
-/// design space. The literal `10.0` it replaces was ours and was never
-/// checked against the bar.
-const NOTICE_BOTTOM_PCT: f32 = BAR_H_PCT + 100.0 * NOTICE_FONT_SIZE / DESIGN_H;
+/// **openroad choice**, and the bar is where it belongs: the notice is spawned
+/// after the footer, so it draws *on* the bar rather than behind it. Sitting
+/// it inside the bar is the original's look; lifting it clear of the bar — as
+/// a derived `BAR_H_PCT + one line` offset does — centres it in empty space
+/// above the frame, which is the look the player vetoed.
+const NOTICE_BOTTOM_PCT: f32 = 10.0;
+/// Width of the trees' design space; the height counterpart of `DESIGN_H`,
+/// matching `region_select::DESIGN`.
+const DESIGN_W: f32 = 1600.0;
+/// Left inset of the notice in that space. The notice reads as a status line
+/// at the bar's left edge, not as a centred banner.
+const NOTICE_LEFT_PCT: f32 = 100.0 * 24.0 / DESIGN_W;
 
 /// Marker for the top bar.
 #[derive(Component, Default, Clone)]
@@ -150,13 +154,15 @@ pub fn info_text() -> impl Scene {
         Text("")
         TextFont { font_size: {FontSize::Px(NOTICE_FONT_SIZE)} }
         TextColor(NOTICE_COLOR)
-        TextLayout::justify(Justify::Center)
+        TextLayout::justify(Justify::Left)
         Node {
             position_type: PositionType::Absolute,
             bottom: percent(NOTICE_BOTTOM_PCT),
-            width: percent(100),
-            justify_content: JustifyContent::Center,
+            left: percent(NOTICE_LEFT_PCT),
+            right: percent(NOTICE_LEFT_PCT),
+            justify_content: JustifyContent::FlexStart,
         }
+
         Pickable::IGNORE
     }
 }
@@ -221,18 +227,14 @@ mod test {
     /// player. Measured at 720p with the old literal `10.0`: node y 628..648,
     /// bar from y 616.8.
     #[test]
-    fn the_notice_clears_the_footer_bar() {
-        let clearance_pct = NOTICE_BOTTOM_PCT - BAR_H_PCT;
+    fn the_notice_sits_inside_the_footer_bar() {
+        // The notice is spawned after the footer, so it draws on the bar.
+        // Its whole line must fit within the bar's height, measured from the
+        // bar's bottom edge, or it reads as a caption floating above the frame.
+        let line_pct = 100.0 * NOTICE_FONT_SIZE / DESIGN_H;
         assert!(
-            clearance_pct > 0.0,
-            "notice at {NOTICE_BOTTOM_PCT}% sits inside a {BAR_H_PCT}% bar"
-        );
-        // exactly one text line of clearance, not a hair: the line is placed
-        // by its bottom edge, so anything less clips it back into the bar
-        let clearance_px = clearance_pct / 100.0 * DESIGN_H;
-        assert!(
-            (clearance_px - NOTICE_FONT_SIZE).abs() < 0.01,
-            "{clearance_px}px clearance for a {NOTICE_FONT_SIZE}px line"
+            NOTICE_BOTTOM_PCT > 0.0 && NOTICE_BOTTOM_PCT + line_pct <= BAR_H_PCT,
+            "notice at {NOTICE_BOTTOM_PCT}% + {line_pct}% line must fit a {BAR_H_PCT}% bar"
         );
     }
 
