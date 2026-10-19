@@ -106,7 +106,7 @@ pub fn spawn_tooltip(commands: &mut Commands, _asset_server: &AssetServer, camer
 // --- Hover observers (attached to every slot cell by ui.rs) -----------------
 
 pub fn on_slot_over(
-    over: On<Pointer<Over>>,
+    over: On<PointerOver>,
     grid: Query<&InventoryGridCell>,
     equip: Query<&EquipSlotCell>,
     mut state: ResMut<InventoryState>,
@@ -124,7 +124,7 @@ pub fn on_slot_over(
 }
 
 pub fn on_slot_out(
-    out: On<Pointer<Out>>,
+    out: On<PointerOut>,
     grid: Query<&InventoryGridCell>,
     equip: Query<&EquipSlotCell>,
     mut state: ResMut<InventoryState>,

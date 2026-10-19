@@ -102,17 +102,17 @@ pub fn server_window(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                 }
                 Children [
                     (
-                        image_button(up, 20.0, 20.0)
+                        @image_button(up, 20.0, 20.0)
                         ImageNode { color: Color::NONE }
                         Node { position_type: PositionType::Absolute, top: px(25), right: px(6), align_self: AlignSelf::FlexEnd }
                     ),
                     (
-                        image_button(mov, 20.0, 20.0)
+                        @image_button(mov, 20.0, 20.0)
                         ImageNode { color: Color::NONE }
                         Node { position_type: PositionType::Absolute, top: px(45), right: px(6), align_self: AlignSelf::FlexEnd }
                     ),
                     (
-                        image_button(down, 20.0, 20.0)
+                        @image_button(down, 20.0, 20.0)
                         ImageNode { color: Color::NONE }
                         Node { position_type: PositionType::Absolute, top: px(275), right: px(6), bottom: px(6), align_self: AlignSelf::FlexEnd }
                     ),
@@ -129,11 +129,11 @@ pub fn server_window(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                 }
                 Children [
                     (
-                        image_button(main_button_style(assets), 91.0, 41.0)
+                        @image_button(main_button_style(assets), 91.0, 41.0)
                         SelectButton
                         ImageNode { color: Color::NONE }
                         ButtonSound({button_sound.clone()})
-                        Children [ (label("Select", font.clone(), 16.0)) ]
+                        Children [ (@label("Select", font.clone(), 16.0)) ]
                         on(move |_activate: On<Activate>,
                             selected_row: Query<&ShardRow, With<SelectedRow>>,
                             mut selected_shard: ResMut<SelectedShardV2>,
@@ -154,11 +154,11 @@ pub fn server_window(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                         })
                     ),
                     (
-                        image_button(main_button_style(assets), 91.0, 41.0)
+                        @image_button(main_button_style(assets), 91.0, 41.0)
                         CancelButton
                         ImageNode { color: Color::NONE }
                         ButtonSound({button_sound})
-                        Children [ (label("Cancel", font, 16.0)) ]
+                        Children [ (@label("Cancel", font, 16.0)) ]
                         on(move |_activate: On<Activate>,
                             mut next_state: ResMut<NextState<IntroV2State>>,
                             options: Res<GameOptions>,
@@ -216,11 +216,11 @@ fn shard_row(shard: &Shard, _assets: &IntroV2Assets, fonts: &FontAssets) -> impl
         BackgroundColor(Color::NONE)
         Children [
             (
-                label(name.as_str(), font, 12.0)
+                @label(name.as_str(), font, 12.0)
                 Node { justify_content: JustifyContent::FlexStart, align_self: AlignSelf::Center, max_width: px(120) }
             ),
             (
-                label(status_text.as_str(), status_font, 12.0)
+                @label(status_text.as_str(), status_font, 12.0)
                 TargetColor({status_color})
                 Node { justify_content: JustifyContent::FlexEnd, align_self: AlignSelf::Center, max_width: px(60) }
             ),

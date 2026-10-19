@@ -1018,7 +1018,7 @@ pub fn sample_graphs(
                 if let Some(argb) = sample_argb(&cache.diffuse, node_data, frac) {
                     let argb = dim_argb_rgb(argb, intensity);
                     if argb != visual.last_argb {
-                        tag.0 = argb;
+                        tag.value = argb;
                         visual.last_argb = argb;
                     }
                 }

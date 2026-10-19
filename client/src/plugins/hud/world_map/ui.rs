@@ -760,7 +760,7 @@ fn on_city_button(
 
 /// Drag-to-pan: remember the canvas offset, then move it with the pointer.
 fn on_pan_start(
-    _: On<Pointer<DragStart>>,
+    _: On<PointerDragStart>,
     viewports: Query<Entity, With<WmViewport>>,
     canvases: Query<&Node, With<WmCanvas>>,
     mut commands: Commands,
@@ -777,7 +777,7 @@ fn on_pan_start(
 }
 
 fn on_pan(
-    drag: On<Pointer<Drag>>,
+    drag: On<PointerDrag>,
     starts: Query<&WmPanStart>,
     mut canvases: Query<(&WmCanvas, &mut Node)>,
     mut follow: ResMut<WorldMapFollow>,
@@ -792,7 +792,7 @@ fn on_pan(
     if follow.0 {
         follow.0 = false;
     }
-    let target = start.0 + drag.event.distance;
+    let target = start.0 + drag.distance;
     apply_pan(canvas, &mut node, target);
 }
 

@@ -203,7 +203,7 @@ fn gather_effect_instances(
                 instance: EffectInstance {
                     world_from_local: global.to_matrix().to_cols_array_2d(),
                     uv_offset_scale: visual.map_or(DEFAULT_UV, |v| v.last_uv.to_array()),
-                    tint: tag.0,
+                    tint: tag.value,
                     _pad: [0; 3],
                 },
             });
@@ -742,7 +742,7 @@ mod tests {
             } else {
                 InheritedVisibility::HIDDEN
             },
-            MeshTag(0xFF80_4020),
+            MeshTag::new(0xFF80_4020),
         ));
     }
 

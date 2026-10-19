@@ -315,7 +315,7 @@ pub fn spawn_target_window(
                 Pickable::IGNORE
                 Children [
                     (
-                        label("", name_font.clone(), NAME_FONT_SIZE * s)
+                        @label("", name_font.clone(), NAME_FONT_SIZE * s)
                         TwNameText
                         TextColor(Color::WHITE)
                     ),
@@ -360,7 +360,7 @@ pub fn spawn_target_window(
                         Pickable::IGNORE
                     ),
                     (
-                        label("", name_font, NAME_FONT_SIZE * s)
+                        @label("", name_font, NAME_FONT_SIZE * s)
                         TwRarityText
                         TextColor(Color::WHITE)
                     ),
@@ -379,7 +379,7 @@ pub fn spawn_target_window(
                 }
                 Pickable::IGNORE
             ),
-            // HP line: track sized to the groove -> `gauge()` crop -> art at
+            // HP line: track sized to the groove -> `@gauge()` crop -> art at
             // its native size, so `tw_hp.ddj`'s 1-texel rounded corners stay
             // on the bar's ends instead of riding the fill front (#630).
             (
@@ -395,7 +395,7 @@ pub fn spawn_target_window(
                 Children [
                     (
                         TwBarFill
-                        gauge(hp_image, bar_w, bar_h)
+                        @gauge(hp_image, bar_w, bar_h)
                     ),
                 ]
             ),

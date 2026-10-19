@@ -279,12 +279,12 @@ fn on_close_button(_: On<Activate>, mut state: ResMut<AlchemyState>) {
 /// reference, so nothing is sent). A press while carrying is left to
 /// [`place_drop_on_alchemy`] so a drop is not double-handled.
 fn on_alchemy_slot_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     cells: Query<&AlchemySlotCell>,
     inv_state: Res<InventoryState>,
     mut state: ResMut<AlchemyState>,
 ) {
-    if press.event.button != PointerButton::Primary || inv_state.drag.is_some() {
+    if press.button != PointerButton::Primary || inv_state.drag.is_some() {
         return;
     }
     let Ok(cell) = cells.get(press.entity) else {

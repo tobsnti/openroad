@@ -27,14 +27,16 @@ use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::{default, AlphaMode, Material};
 use bevy::reflect::TypePath;
+use bevy::render::material_bind_groups::FallbackBuffer;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
-    AddressMode, AsBindGroup, AsBindGroupError, BindGroupEntry, BindGroupLayout,
+    AddressMode, AsBindGroup, AsBindGroupError, BindGroupBuilder, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType,
     BufferBindingType, Face, FilterMode, MipmapFilterMode, PipelineCache, PreparedBindGroup,
     RenderPipelineDescriptor, SamplerBindingType, SamplerDescriptor, ShaderStages,
-    SpecializedMeshPipelineError, TextureSampleType, TextureViewDimension, UnpreparedBindGroup,
+    SpecializedMeshPipelineError, TextureSampleType, TextureViewDimension,
 };
+use bevy::render::storage::GpuShaderBuffer;
 use bevy::render::texture::GpuImage;
 use bevy::shader::ShaderRef;
 
@@ -276,6 +278,7 @@ mod raw_pack_tests {
 /// and pinned texture views each time (bevy_pbr material.rs `prepare_asset`, the
 /// direct-path arm misses the `bind_group_allocator.free` the unprepared arm has).
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct TerrainAmbientRatio(pub [f32; 4]);
 
 impl Default for TerrainAmbientRatio {
@@ -310,6 +313,7 @@ pub struct TerrainAmbientRatioBuffer(pub Buffer);
 /// (see [`crate::plugins::settings::live`]); the render-debug panel and the
 /// dungeon atmosphere override cycle it live on top of that.
 #[derive(Resource, Clone, PartialEq, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct TerrainRenderParams {
     pub lightmap_flip_v: bool,
     pub lighting_mode: TerrainLightingMode,
@@ -628,13 +632,14 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
 
     // The bind group is built by hand below (shared samplers and buffers that outlive every
     // material); `CreateBindGroupDirectly` routes the framework to `as_bind_group()`.
-    fn unprepared_bind_group(
+    fn build_bind_group(
         &self,
         _layout: &BindGroupLayout,
         _render_device: &RenderDevice,
         _param: &mut <Self::Param as SystemParam>::Item<'_, '_>,
         _force_no_bindless: bool,
-    ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
+        _output: &mut BindGroupBuilder,
+    ) -> Result<(), AsBindGroupError> {
         Err(AsBindGroupError::CreateBindGroupDirectly)
     }
 
@@ -643,6 +648,8 @@ impl AsBindGroup for TerrainBlockSplatMaterial {
         layout_descriptor: &BindGroupLayoutDescriptor,
         render_device: &RenderDevice,
         pipeline_cache: &PipelineCache,
+        _fallback_buffer: &FallbackBuffer,
+        _shader_buffer_assets: &RenderAssets<GpuShaderBuffer>,
         param: &mut <Self::Param as SystemParam>::Item<'_, '_>,
     ) -> Result<PreparedBindGroup, AsBindGroupError> {
         let layout = &pipeline_cache.get_bind_group_layout(layout_descriptor);

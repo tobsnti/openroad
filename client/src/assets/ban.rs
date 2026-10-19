@@ -5,7 +5,7 @@ use std::time::Duration;
 use bevy::animation::prelude::AnimatedField;
 use bevy::animation::{animated_field, AnimationClip, AnimationTargetId};
 use bevy::asset::{io::Reader, Asset, AssetLoader, LoadContext};
-use bevy::math::curve::UnevenSampleAutoCurve;
+use bevy::curve::UnevenSampleAutoCurve;
 use bevy::prelude::{warn, AnimatableCurve, Name, Quat, Transform, Vec3};
 use bevy::reflect::TypePath;
 use bytes::Buf;

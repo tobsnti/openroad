@@ -621,14 +621,14 @@ pub fn spawn_node_tree(
             commands.entity(entity).insert((
                 Mesh3d(mesh),
                 MeshMaterial3d(material),
-                MeshTag(0xFFFFFFFF),
+                MeshTag::new(0xFFFFFFFF),
                 visual,
                 NotShadowCaster,
             ));
         } else {
             commands.entity(entity).insert((
                 EffectInstanced { mesh, material },
-                MeshTag(0xFFFFFFFF),
+                MeshTag::new(0xFFFFFFFF),
                 visual,
             ));
         }

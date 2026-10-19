@@ -209,7 +209,7 @@ fn stamp_new_windows(
 /// walked up the hierarchy, because the thing actually hit is a slot, a button
 /// or a label — never the root itself.
 fn stamp_clicked_window(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     parents: Query<&ChildOf>,
     windows: Query<(), Or<(With<HudWindow>, With<HudDialog>)>>,
     mut focus: ResMut<HudFocus>,

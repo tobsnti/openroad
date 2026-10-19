@@ -538,32 +538,32 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
                 Pickable::IGNORE
             ),
             (
-                label("", area_font, AREA_FONT_SIZE * s)
+                @label("", area_font, AREA_FONT_SIZE * s)
                 MinimapAreaText
                 TextColor({AREA_NAME_COLOR})
                 Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
             ),
             (
-                label("", x_font, POS_FONT_SIZE * s)
+                @label("", x_font, POS_FONT_SIZE * s)
                 MinimapPosXText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
             ),
             (
-                label("", z_font, POS_FONT_SIZE * s)
+                @label("", z_font, POS_FONT_SIZE * s)
                 MinimapPosZText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
             ),
             (
-                image_button(zoom_in_style, zi_w, zi_h)
+                @image_button(zoom_in_style, zi_w, zi_h)
                 Node { position_type: PositionType::Absolute, left: px(zi_l), top: px(zi_t) }
                 on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
                     state.zoom_idx = (state.zoom_idx + 1).min(ZOOM_LEVELS.len() - 1);
                 })
             ),
             (
-                image_button(zoom_out_style, zo_w, zo_h)
+                @image_button(zoom_out_style, zo_w, zo_h)
                 Node { position_type: PositionType::Absolute, left: px(zo_l), top: px(zo_t) }
                 on(|_activate: On<Activate>, mut state: ResMut<MinimapState>| {
                     state.zoom_idx = state.zoom_idx.saturating_sub(1);
@@ -584,7 +584,7 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
                 Pickable::IGNORE
             ),
             (
-                label("", floor_font, POS_FONT_SIZE * s)
+                @label("", floor_font, POS_FONT_SIZE * s)
                 MinimapFloorText
                 TextColor(Color::WHITE)
                 Node {
@@ -598,7 +598,7 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             ),
             // world-map toggle (same behavior as the M key)
             (
-                image_button(map_button_style, mb_w, mb_h)
+                @image_button(map_button_style, mb_w, mb_h)
                 Node { position_type: PositionType::Absolute, left: px(mb_l), top: px(mb_t) }
                 on(|_activate: On<Activate>,
                     origin: Res<crate::plugins::world_origin::WorldOrigin>,

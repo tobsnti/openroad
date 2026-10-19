@@ -539,7 +539,7 @@ fn spawn_image_button<'a>(
 /// already-armed slot, or arm it (moving the arrow ring).
 #[allow(clippy::too_many_arguments)]
 pub fn on_slot_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     cells: Query<&UbSlotCell>,
     special: Query<(), With<UbSpecialSlotCell>>,
     mut quickslots: ResMut<QuickSlots>,
@@ -554,7 +554,7 @@ pub fn on_slot_press(
     mut commands: Commands,
 ) {
     press.propagate(false);
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     if inv_state.drag.is_some() || skill_drag.skill.is_some() {
@@ -592,7 +592,7 @@ pub fn on_slot_press(
 
 /// Click (press + release in place) on a slot pressed while armed: cast.
 pub fn on_slot_click(
-    mut click: On<Pointer<Click>>,
+    mut click: On<PointerClick>,
     cells: Query<&UbSlotCell>,
     mut quickslots: ResMut<QuickSlots>,
     selected: Res<SelectedEntity>,
@@ -600,7 +600,7 @@ pub fn on_slot_click(
     mut item_uses: MessageWriter<cast::UseItemRequest>,
 ) {
     click.propagate(false);
-    if click.event.button != PointerButton::Primary {
+    if click.button != PointerButton::Primary {
         return;
     }
     let Ok(cell) = cells.get(click.entity) else {
@@ -620,7 +620,7 @@ pub fn on_slot_click(
 /// (vanilla drag-out removal).
 #[allow(clippy::too_many_arguments)]
 pub fn on_slot_drag_start(
-    mut drag_start: On<Pointer<DragStart>>,
+    mut drag_start: On<PointerDragStart>,
     cells: Query<&UbSlotCell>,
     mut quickslots: ResMut<QuickSlots>,
     mut skill_drag: ResMut<SkillDrag>,
@@ -631,7 +631,7 @@ pub fn on_slot_drag_start(
     mut commands: Commands,
 ) {
     drag_start.propagate(false);
-    if drag_start.event.button != PointerButton::Primary || skill_drag.skill.is_some() {
+    if drag_start.button != PointerButton::Primary || skill_drag.skill.is_some() {
         return;
     }
     let Ok(cell) = cells.get(drag_start.entity) else {
@@ -657,7 +657,7 @@ pub fn on_slot_drag_start(
         .map(|path| asset_server.load(path))
         .unwrap_or_default();
     let size = DRAG_GHOST_SIZE * hud_scale();
-    let cursor = drag_start.pointer_location.position;
+    let cursor = drag_start.pointer.position;
     commands.spawn(drag_ghost_bundle(
         "Skill Drag Ghost",
         icon,
@@ -671,7 +671,7 @@ pub fn on_slot_drag_start(
 /// or the skill window.
 #[allow(clippy::too_many_arguments)]
 pub fn on_slot_release(
-    mut release: On<Pointer<Release>>,
+    mut release: On<PointerRelease>,
     cells: Query<&UbSlotCell>,
     special: Query<(), With<UbSpecialSlotCell>>,
     mut quickslots: ResMut<QuickSlots>,
@@ -682,7 +682,7 @@ pub fn on_slot_release(
     mut commands: Commands,
 ) {
     release.propagate(false);
-    if release.event.button != PointerButton::Primary
+    if release.button != PointerButton::Primary
         || (inv_state.drag.is_none() && skill_drag.skill.is_none())
     {
         return;

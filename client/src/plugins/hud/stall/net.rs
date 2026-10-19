@@ -300,12 +300,12 @@ pub fn on_stall_leave_response(
 /// with the snapshot opcode (#759), which is what would give it a price to
 /// show in the first place.
 pub fn on_stall_slot_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     cells: Query<&StallSlot>,
     state: Res<StallState>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     let Ok(cell) = cells.get(press.entity) else {

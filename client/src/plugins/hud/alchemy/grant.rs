@@ -483,19 +483,19 @@ fn on_close_button(_: On<Activate>, mut state: ResMut<GrantState>) {
     state.clear();
 }
 
-fn on_cancel_button(_: On<Pointer<Press>>, mut state: ResMut<GrantState>) {
+fn on_cancel_button(_: On<PointerPress>, mut state: ResMut<GrantState>) {
     state.open = false;
     state.clear();
 }
 
 /// Clicking the filled slot returns the item — the reference is released, no
 /// inventory move happens (the server owns that).
-fn on_item_slot_press(_: On<Pointer<Press>>, mut state: ResMut<GrantState>) {
+fn on_item_slot_press(_: On<PointerPress>, mut state: ResMut<GrantState>) {
     state.take();
 }
 
 fn on_option_row_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     rows: Query<&GrantOptionRow>,
     mut state: ResMut<GrantState>,
 ) {

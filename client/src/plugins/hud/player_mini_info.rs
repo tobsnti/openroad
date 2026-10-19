@@ -529,20 +529,20 @@ fn mini_info(
             ),
             // name (vanilla HAlign 0: left-aligned in its slot)
             (
-                label("", name_font, name_size)
+                @label("", name_font, name_size)
                 MiniInfoNameText
                 TextColor(Color::WHITE)
                 TextLayout::justify(Justify::Left)
                 Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(name_h), justify_content: JustifyContent::FlexStart }
             ),
             (
-                label("", level_font, name_size)
+                @label("", level_font, name_size)
                 MiniInfoLevelText
                 TextColor({LEVEL_COLOR})
                 TextLayout::justify(Justify::Left)
                 Node { position_type: PositionType::Absolute, left: px(lvl_l), top: px(lvl_t), width: px(lvl_w), height: px(lvl_h), justify_content: JustifyContent::FlexStart }
             ),
-            // HP gauge: track (authored rect) -> `gauge()` crop -> art at its
+            // HP gauge: track (authored rect) -> `@gauge()` crop -> art at its
             // native 124x12, so `pmi_hp` is cropped and never squashed (#630).
             (
                 Node {
@@ -556,11 +556,11 @@ fn mini_info(
                 Children [
                     (
                         MiniInfoHpFill
-                        gauge(hp_image, hpb_w, hpb_h)
+                        @gauge(hp_image, hpb_w, hpb_h)
                     ),
                 ]
             ),
-            // MP gauge
+            // MP @gauge
             (
                 Node {
                     position_type: PositionType::Absolute,
@@ -573,7 +573,7 @@ fn mini_info(
                 Children [
                     (
                         MiniInfoMpFill
-                        gauge(mp_image, mpb_w, mpb_h)
+                        @gauge(mp_image, mpb_w, mpb_h)
                     ),
                 ]
             ),
@@ -596,29 +596,29 @@ fn mini_info(
             ),
             // "cur / max" overlays (vanilla HAlign 1: centered)
             (
-                label("", hp_font, bar_size)
+                @label("", hp_font, bar_size)
                 MiniInfoHpText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(hpt_l), top: px(hpt_t), width: px(hpt_w), height: px(hpt_h) }
             ),
             (
-                label("", mp_font, bar_size)
+                @label("", mp_font, bar_size)
                 MiniInfoMpText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(mpt_l), top: px(mpt_t), width: px(mpt_w), height: px(mpt_h) }
             ),
             // hwan/berserk pips along the portrait ring's arc; visibility is
             // driven by refresh_mini_info (hidden while the gauge is empty)
-            (pip(pip_image.clone(), 0)),
-            (pip(pip_image.clone(), 1)),
-            (pip(pip_image.clone(), 2)),
-            (pip(pip_image.clone(), 3)),
-            (pip(pip_image, 4)),
+            (@pip(pip_image.clone(), 0)),
+            (@pip(pip_image.clone(), 1)),
+            (@pip(pip_image.clone(), 2)),
+            (@pip(pip_image.clone(), 3)),
+            (@pip(pip_image, 4)),
             // the expanded stat drawer and its toggle; the drawer hangs below
             // the 70px frame and starts hidden. The toggle's hover/press art is
             // swapped by the shared `ImageButtonStyle` updater, so it needs no
             // system of its own. NOT Pickable::IGNORE — it's clickable.
-            (stat_drawer(asset_server, fonts, ui_strings)),
+            (@stat_drawer(asset_server, fonts, ui_strings)),
             (
                 MiniInfoCinfoButton
                 Button
@@ -705,7 +705,7 @@ fn stat_label(
     let size = BAR_FONT_SIZE * s;
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
-        label(text, font, size)
+        @label(text, font, size)
         TextColor(CINFO_LABEL_COLOR)
         TextLayout::justify(justify)
         Node {
@@ -726,7 +726,7 @@ fn stat_value(font: Handle<Font>, stat: CinfoStat, rect: (f32, f32, f32, f32)) -
     let size = BAR_FONT_SIZE * s;
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
-        label("", font, size)
+        @label("", font, size)
         MiniInfoStatValue({stat})
         TextColor(Color::WHITE)
         TextLayout::justify(Justify::Right)
@@ -769,27 +769,27 @@ fn stat_drawer(
         Pickable::IGNORE
         Children [
             // y=65: the STR/INT pair, the only centre-aligned labels
-            (stat_label(f.clone(), ui_strings.get_or("PARAM_STR", "Str"), CINFO_STR_LABEL_RECT, Justify::Center)),
-            (stat_value(f.clone(), CinfoStat::Str, CINFO_STR_VALUE_RECT)),
-            (stat_label(f.clone(), ui_strings.get_or("PARAM_INT", "Int"), CINFO_INT_LABEL_RECT, Justify::Center)),
-            (stat_value(f.clone(), CinfoStat::Int, CINFO_INT_VALUE_RECT)),
+            (@stat_label(f.clone(), ui_strings.get_or("PARAM_STR", "Str"), CINFO_STR_LABEL_RECT, Justify::Center)),
+            (@stat_value(f.clone(), CinfoStat::Str, CINFO_STR_VALUE_RECT)),
+            (@stat_label(f.clone(), ui_strings.get_or("PARAM_INT", "Int"), CINFO_INT_LABEL_RECT, Justify::Center)),
+            (@stat_value(f.clone(), CinfoStat::Int, CINFO_INT_VALUE_RECT)),
             // y=85..225: the eight derived-stat rows, left labels, right values
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_ATTACK", "Phy. atk"), cinfo_label_rect(CINFO_ROW_YS[0]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::PhyAtk, cinfo_value_rect(CINFO_ROW_YS[0]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_DEFENCE", "Phy. def."), cinfo_label_rect(CINFO_ROW_YS[1]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::PhyDef, cinfo_value_rect(CINFO_ROW_YS[1]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_ATTACK", "Mag. atk"), cinfo_label_rect(CINFO_ROW_YS[2]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::MagAtk, cinfo_value_rect(CINFO_ROW_YS[2]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_DEFENCE", "Mag. def."), cinfo_label_rect(CINFO_ROW_YS[3]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::MagDef, cinfo_value_rect(CINFO_ROW_YS[3]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_BALANCE", "Phy. balance"), cinfo_label_rect(CINFO_ROW_YS[4]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::PhyBal, cinfo_value_rect(CINFO_ROW_YS[4]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_BALANCE", "Mag. balance"), cinfo_label_rect(CINFO_ROW_YS[5]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::MagBal, cinfo_value_rect(CINFO_ROW_YS[5]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_HIT_RATIO", "Hit rate"), cinfo_label_rect(CINFO_ROW_YS[6]), Justify::Left)),
-            (stat_value(f.clone(), CinfoStat::Hit, cinfo_value_rect(CINFO_ROW_YS[6]))),
-            (stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PARRY_RATIO", "Parry ratio"), cinfo_label_rect(CINFO_ROW_YS[7]), Justify::Left)),
-            (stat_value(f, CinfoStat::Parry, cinfo_value_rect(CINFO_ROW_YS[7]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_ATTACK", "Phy. atk"), cinfo_label_rect(CINFO_ROW_YS[0]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::PhyAtk, cinfo_value_rect(CINFO_ROW_YS[0]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_DEFENCE", "Phy. def."), cinfo_label_rect(CINFO_ROW_YS[1]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::PhyDef, cinfo_value_rect(CINFO_ROW_YS[1]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_ATTACK", "Mag. atk"), cinfo_label_rect(CINFO_ROW_YS[2]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::MagAtk, cinfo_value_rect(CINFO_ROW_YS[2]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_DEFENCE", "Mag. def."), cinfo_label_rect(CINFO_ROW_YS[3]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::MagDef, cinfo_value_rect(CINFO_ROW_YS[3]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_BALANCE", "Phy. balance"), cinfo_label_rect(CINFO_ROW_YS[4]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::PhyBal, cinfo_value_rect(CINFO_ROW_YS[4]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_BALANCE", "Mag. balance"), cinfo_label_rect(CINFO_ROW_YS[5]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::MagBal, cinfo_value_rect(CINFO_ROW_YS[5]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_HIT_RATIO", "Hit rate"), cinfo_label_rect(CINFO_ROW_YS[6]), Justify::Left)),
+            (@stat_value(f.clone(), CinfoStat::Hit, cinfo_value_rect(CINFO_ROW_YS[6]))),
+            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PARRY_RATIO", "Parry ratio"), cinfo_label_rect(CINFO_ROW_YS[7]), Justify::Left)),
+            (@stat_value(f, CinfoStat::Parry, cinfo_value_rect(CINFO_ROW_YS[7]))),
         ]
     }
 }

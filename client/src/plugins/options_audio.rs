@@ -240,7 +240,7 @@ fn spawn_slider(
         Hovered::default(),
     ));
     slider.observe(
-        move |_: On<Pointer<DragStart>>,
+        move |_: On<PointerDragStart>,
               options: Res<GameOptions>,
               mut commands: Commands,
               sliders: Query<Entity, With<VolumeTrack>>| {
@@ -251,13 +251,13 @@ fn spawn_slider(
         },
     );
     slider.observe(
-        move |drag: On<Pointer<Drag>>,
+        move |drag: On<PointerDrag>,
               starts: Query<&DragStartVolume>,
               mut options: ResMut<GameOptions>| {
             let Ok(start) = starts.get(drag.entity) else {
                 return;
             };
-            let travelled = drag.event.distance.x / SLIDER_XYWH.2 * VOLUME_MAX;
+            let travelled = drag.distance.x / SLIDER_XYWH.2 * VOLUME_MAX;
             let next = (start.0 as f32 + travelled).clamp(0.0, VOLUME_MAX);
             channel.set_volume(&mut options.audio, next.round() as u32);
         },

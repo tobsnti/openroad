@@ -1205,7 +1205,7 @@ pub fn refresh_store_gold(
 /// cursor; dropping it on the (open) inventory grid opens the quantity
 /// modal, releasing anywhere else cancels.
 fn on_good_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     cells: Query<&StoreSlotCell>,
     state: Res<StoreState>,
     item_data: Res<ClientItemData>,
@@ -1216,7 +1216,7 @@ fn on_good_press(
     asset_server: Res<AssetServer>,
     mut commands: Commands,
 ) {
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     if carry.0.is_some() {

@@ -216,9 +216,9 @@ pub fn enter_region_select(
             }
             Children [
                 (
-                    image_button(main_button_style(&assets), 91.0, 41.0)
+                    @image_button(main_button_style(&assets), 91.0, 41.0)
                     ButtonSound({cancel_sound})
-                    Children [ (label(&cancel_text, cancel_font, 16.0) TextColor(Color::WHITE)) ]
+                    Children [ (@label(&cancel_text, cancel_font, 16.0) TextColor(Color::WHITE)) ]
                     on(|_a: On<Activate>, mut next_state: ResMut<NextState<IntroV2State>>| {
                         next_state.set(IntroV2State::CharacterList);
                     })

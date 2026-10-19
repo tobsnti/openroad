@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use bevy::camera::RenderTarget;
 use bevy::light::NotShadowCaster;
-use bevy::math::Ray3d;
 use bevy::prelude::*;
+use bevy::shape::Ray3d;
 
 use super::celestial::sun_direction;
 use super::TimeOfDay;

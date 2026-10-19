@@ -612,7 +612,7 @@ fn on_lock_button(_: On<Activate>, mut state: ResMut<QuickPartyState>) {
 /// in our tree, and offering a button that cannot send anything is worse than
 /// not offering it.
 fn on_slot_click(
-    click: On<Pointer<Press>>,
+    click: On<PointerPress>,
     slots: Query<&QuickPartySlot>,
     views: Res<QuickPartyViews>,
     roster: Option<Res<PartyRoster>>,

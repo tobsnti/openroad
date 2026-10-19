@@ -14,6 +14,7 @@ use bevy::render::extract_resource::ExtractResource;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
+use bevy::render::RenderApp;
 
 use super::block_splat_material::TerrainTileAtlas;
 use crate::assets::tile_layers::{
@@ -23,6 +24,7 @@ use crate::assets::tile_layers::{
 
 /// The four ground-tile arrays, indexed by `tile_id / 256`.
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct TerrainTileArrays(pub [Handle<Image>; TILE_ARRAY_COUNT]);
 
 pub(super) fn build_tile_arrays(
