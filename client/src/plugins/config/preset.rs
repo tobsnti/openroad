@@ -12,10 +12,10 @@
 //! ([`super::gpu_probe`]), because the preset decides restart-only settings
 //! such as the requested wgpu features.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The tiers, from what a 2008-era card can carry to what a current one can.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum QualityPreset {
     /// Picked from the GPU at startup; see [`tier_for`].
@@ -54,6 +54,15 @@ impl QualityPreset {
 /// The preset a config was actually built with, and why. Logged at startup.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedPreset {
+    /// What was *asked* for — `config.yaml`'s `graphics.preset`, or the
+    /// options window's saved row when that one wins. Kept alongside [`tier`]
+    /// because they differ whenever `Auto` is asked for, and the options row
+    /// has to tell "your choice is in effect" from "your choice needs a
+    /// restart" without comparing [`reason`] strings.
+    ///
+    /// [`tier`]: Self::tier
+    /// [`reason`]: Self::reason
+    pub requested: QualityPreset,
     pub tier: QualityPreset,
     pub reason: String,
 }
@@ -96,6 +105,7 @@ pub enum GpuKind {
 pub fn tier_for(gpu: Option<&GpuSummary>) -> ResolvedPreset {
     let Some(gpu) = gpu else {
         return ResolvedPreset {
+            requested: QualityPreset::Auto,
             tier: QualityPreset::Medium,
             reason: "auto: no GPU adapter found by the probe".into(),
         };
@@ -111,6 +121,7 @@ pub fn tier_for(gpu: Option<&GpuSummary>) -> ResolvedPreset {
         }
     };
     ResolvedPreset {
+        requested: QualityPreset::Auto,
         tier,
         reason: format!("auto: {why} '{}' ({})", gpu.name, gpu.backend),
     }

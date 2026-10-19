@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::sroptionset::{OptionRecord, OptionValue};
 use super::window_positions::WindowPositions;
+use crate::plugins::config::preset::QualityPreset;
 
 /// One of the two graphics profiles the client stores (Graphic 1 / Graphic 2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +149,17 @@ pub struct VideoOptions {
     /// the field is simply absent from the emitted YAML.
     #[serde(skip)]
     pub window_mode_override: Option<bool>,
+    /// The Video pane's Graphics Preset row (`graphics.preset`). `None`
+    /// follows `config.yaml`.
+    ///
+    /// **Persisted**, unlike [`window_mode_override`](Self::window_mode_override),
+    /// and that difference is the point: a preset is merged *under*
+    /// `config.yaml` while the file is parsed, and it decides values nothing
+    /// re-reads afterwards (the requested wgpu features, the image sampler).
+    /// A session-only copy could therefore never take effect, so the row says
+    /// "next start" and this field has to survive one.
+    #[serde(default)]
+    pub preset_override: Option<QualityPreset>,
 }
 
 impl Default for VideoOptions {
@@ -156,6 +168,7 @@ impl Default for VideoOptions {
             graphic1: GraphicProfile::default(),
             graphic2: GraphicProfile::default(),
             window_mode_override: None,
+            preset_override: None,
         }
     }
 }

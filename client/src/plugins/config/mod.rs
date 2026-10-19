@@ -167,11 +167,19 @@ impl ClientConfig {
     /// Called from `main()` before the `App` is built: plugin *registration*
     /// (dev tools, networking) is decided by config values, so the resource
     /// must exist in the world before any `Plugin::build` runs.
-    pub fn load() -> Self {
+    ///
+    /// `forced_preset` is the options window's saved Graphics Preset row,
+    /// which outranks `config.yaml`'s `graphics.preset` the same way every
+    /// other saved quality row outranks its key. It has to arrive here rather
+    /// than through an apply system: the preset layer is merged while the file
+    /// is read, and it decides values nothing re-reads later (the requested
+    /// wgpu features, the image sampler).
+    pub fn load(forced_preset: Option<preset::QualityPreset>) -> Self {
         // A readable message, not a bare `unwrap`: this runs before the window
         // exists, so this string is the only thing a user with a broken
         // `config.yaml` ever sees (#539).
-        Self::from_file("config").unwrap_or_else(|err| {
+        let loaded = Self::from_file_with_preset("config", gpu_probe::probe, forced_preset);
+        loaded.unwrap_or_else(|err| {
             panic!(
                 "failed to load config.yaml: {err}\nsee config.example.yaml for the expected shape"
             )
@@ -209,21 +217,41 @@ impl ClientConfig {
         name: &str,
         probe: impl FnOnce() -> Option<preset::GpuSummary>,
     ) -> Result<Self, config::ConfigError> {
+        Self::from_file_with_preset(name, probe, None)
+    }
+
+    /// [`from_file_with`](Self::from_file_with) with the options window's
+    /// saved preset row (`video.preset_override`) laid over the file's
+    /// `graphics.preset`. `None` means "follow the file".
+    pub(crate) fn from_file_with_preset(
+        name: &str,
+        probe: impl FnOnce() -> Option<preset::GpuSummary>,
+        forced: Option<preset::QualityPreset>,
+    ) -> Result<Self, config::ConfigError> {
         let gpu = probe();
         let user = config::File::with_name(name);
-        let requested = Config::builder()
-            .add_source(user.clone())
-            .build()?
-            .get::<preset::QualityPreset>("graphics.preset")
-            .or_else(|err| match err {
-                config::ConfigError::NotFound(_) => Ok(preset::QualityPreset::Auto),
-                err => Err(err),
-            })?;
+        let from_file = || -> Result<preset::QualityPreset, config::ConfigError> {
+            Config::builder()
+                .add_source(user.clone())
+                .build()?
+                .get::<preset::QualityPreset>("graphics.preset")
+                .or_else(|err| match err {
+                    config::ConfigError::NotFound(_) => Ok(preset::QualityPreset::Auto),
+                    err => Err(err),
+                })
+        };
+        let (requested, source) = match forced {
+            Some(tier) => (tier, "set in the options window"),
+            None => (from_file()?, "set in config.yaml"),
+        };
         let resolved = match requested {
+            // `tier_for` fills in `requested: Auto` itself, which is what this
+            // arm matched on.
             preset::QualityPreset::Auto => preset::tier_for(gpu.as_ref()),
             tier => preset::ResolvedPreset {
+                requested,
                 tier,
-                reason: "set in config.yaml".into(),
+                reason: source.into(),
             },
         };
         let mut builder = Config::builder();
@@ -522,6 +550,43 @@ mod tests {
         assert_eq!(loaded.graphics.render_scale.factor(), 0.75);
         assert_eq!(loaded.graphics.view.view_distance, 2880.0);
         assert!(loaded.graphics.view.cull_follows_envi_fog);
+    }
+
+    /// The options window's saved Graphics Preset row outranks the file, the
+    /// same way every other saved quality row outranks its key — otherwise the
+    /// restart it asks for would change nothing.
+    #[test]
+    fn a_saved_preset_row_outranks_the_file() {
+        // The example ships `preset: auto`, and the test probe reports a
+        // discrete GPU, so without the override this resolves to `high`.
+        let forced = ClientConfig::from_file_with_preset(
+            &example_config_name(),
+            preset::test_discrete_gpu,
+            Some(preset::QualityPreset::Low),
+        )
+        .expect("config.example.yaml loads");
+        let resolved = forced.graphics.resolved_preset.expect("resolved");
+        assert_eq!(resolved.tier, preset::QualityPreset::Low);
+        assert_eq!(resolved.requested, preset::QualityPreset::Low);
+        assert!(
+            resolved.reason.contains("options window"),
+            "the row has to say where the tier came from: {}",
+            resolved.reason
+        );
+        // and the layer really is underneath: a key the example leaves to the
+        // preset now carries the low tier's value
+        assert_eq!(forced.graphics.render_scale.factor(), 0.75);
+
+        let from_file = ClientConfig::from_file(&example_config_name()).expect("loads");
+        assert_eq!(
+            from_file
+                .graphics
+                .resolved_preset
+                .expect("resolved")
+                .requested,
+            preset::QualityPreset::Auto,
+            "without an override the file's `preset: auto` is what was asked for"
+        );
     }
 
     /// `auto` asks the probe, and only `auto` does.
