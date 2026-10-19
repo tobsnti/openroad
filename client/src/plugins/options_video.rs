@@ -29,7 +29,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
-use crate::plugins::config::graphics::{FoliageMode, RenderScale};
+use crate::plugins::config::graphics::{FoliageMode, RenderMode, RenderScale};
 use crate::plugins::config::preset::QualityPreset;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::options::{GameOptions, GraphicProfile};
@@ -139,6 +139,48 @@ struct ConfigRow {
     steps: &'static [&'static str],
     /// Why a change only shows after a restart, if it does.
     restart: Option<&'static str>,
+    /// What has to be true before the row can do anything at all.
+    requires: Requirement,
+}
+
+/// A condition outside the row's own key that decides whether it can have any
+/// effect.
+///
+/// The pane already refuses to render a control with no feature behind it
+/// ("no fake controls"). This is the same rule one level down: a row can be
+/// fully wired and still be inert because the client is in a mode, or on a
+/// machine, that cannot honour it. Saying so in the row is the difference
+/// between a setting and a lie — and keeping it as *data* beside the steps is
+/// what stops the answer from being buried in a value string per row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Requirement {
+    /// Nothing outside the key refuses it.
+    Always,
+    /// Shadow maps are drawn in PBR lighting only: `map::setup_lighting` sets
+    /// `shadow_maps_enabled: is_pbr && shadows.enabled` (`map/mod.rs:342`),
+    /// and `render_mode: vanilla` — the faithful default — is the mode that
+    /// draws none.
+    PbrLighting,
+}
+
+impl Requirement {
+    /// Whether this config, on this machine, can honour the row.
+    fn met(self, config: &ClientConfig) -> bool {
+        match self {
+            Requirement::Always => true,
+            Requirement::PbrLighting => config.graphics.render_mode == RenderMode::Pbr,
+        }
+    }
+
+    /// What the row says instead of a plain step while the condition is
+    /// unmet. Names the condition, not the row: the player has to know *what*
+    /// to change.
+    fn unmet_note(self) -> Option<&'static str> {
+        match self {
+            Requirement::Always => None,
+            Requirement::PbrLighting => Some("no effect in vanilla lighting"),
+        }
+    }
 }
 
 /// View distances for Background Sight Range. 5760 is the original's
@@ -154,10 +196,23 @@ const FILTERING_STEPS: [u16; 5] = [1, 2, 4, 8, 16];
 
 /// The config key behind row `id`, if it has one.
 fn config_row(id: u16) -> Option<ConfigRow> {
-    let row = |steps, restart| Some(ConfigRow { steps, restart });
+    let row = |steps, restart| {
+        Some(ConfigRow {
+            steps,
+            restart,
+            requires: Requirement::Always,
+        })
+    };
+    let row_requiring = |steps, restart, requires| {
+        Some(ConfigRow {
+            steps,
+            restart,
+            requires,
+        })
+    };
     let off_on: &'static [&'static str] = &["Off", "On"];
     match id {
-        1 => row(off_on, Some("restart; PBR lighting only")),
+        1 => row_requiring(off_on, Some("restart"), Requirement::PbrLighting),
         2 => row(
             &[
                 "Shortest (1920)",
@@ -363,21 +418,41 @@ pub(crate) fn overlay_saved_rows(bank: &GraphicProfile, config: &mut ClientConfi
 /// `config.yaml` included. Every frame, like [`refresh_extra_rows`].
 pub(crate) fn refresh_config_rows(
     config: Res<ClientConfig>,
-    mut rows: Query<(&ConfigRowValue, &mut Text)>,
+    mut rows: Query<(&ConfigRowValue, &mut Text, &mut TextColor)>,
 ) {
-    for (row, mut text) in rows.iter_mut() {
-        let Some(def) = config_row(row.id) else {
+    for (row, mut text, mut color) in rows.iter_mut() {
+        let Some(wanted) = config_row_text(row.id, &config) else {
             continue;
-        };
-        let step = def.steps[config_row_step(row.id, &config).min(def.steps.len() - 1)];
-        let wanted = match def.restart {
-            Some(note) => format!("{step} ({note})"),
-            None => step.to_string(),
         };
         if text.0 != wanted {
             *text = Text::new(wanted);
         }
+        // Dimmed while the condition is unmet, for the same reason the pane
+        // dims a control with no feature: the state is real, its effect is not.
+        let unmet = config_row(row.id).is_some_and(|def| !def.requires.met(&config));
+        let wanted = if unmet { UNBACKED_COLOR } else { VALUE_COLOR };
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
     }
+}
+
+/// What a config-backed row shows: the step in effect, plus the one note that
+/// applies — the condition in the way if there is one, the restart it needs
+/// otherwise. An unmet condition outranks the restart note: a change that has
+/// no effect in this mode will not gain one by relaunching.
+fn config_row_text(id: u16, config: &ClientConfig) -> Option<String> {
+    let def = config_row(id)?;
+    let step = def.steps[config_row_step(id, config).min(def.steps.len() - 1)];
+    let note = if def.requires.met(config) {
+        def.restart
+    } else {
+        def.requires.unmet_note()
+    };
+    Some(match note {
+        Some(note) => format!("{step} ({note})"),
+        None => step.to_string(),
+    })
 }
 
 /// The 13 named quality rows. Ids and names are `[S]` from the SROptionSet
@@ -1332,6 +1407,47 @@ mod tests {
             "low (next start; now auto (high))",
             "a pending choice must name both halves, or the row looks broken"
         );
+    }
+
+    /// The shipped default is `render_mode: vanilla`, which draws no shadow
+    /// maps at all (`map/mod.rs:342`). So the Shadow Detail row can hold "On"
+    /// and change nothing — and before this it said "(restart; PBR lighting
+    /// only)", a condition wearing a restart note's clothes. The condition is
+    /// data now, and it outranks the restart note: relaunching does not give
+    /// vanilla lighting shadows.
+    #[test]
+    fn a_row_whose_condition_is_unmet_names_the_condition_not_a_restart() {
+        let mut config = test_config();
+        assert_eq!(
+            config.graphics.render_mode,
+            RenderMode::Vanilla,
+            "the faithful default is what makes this row inert"
+        );
+        let text = config_row_text(1, &config).expect("Shadow Detail is config-backed");
+        assert!(
+            text.ends_with("(no effect in vanilla lighting)"),
+            "the row has to name the condition: {text:?}"
+        );
+
+        config.graphics.render_mode = RenderMode::Pbr;
+        let text = config_row_text(1, &config).expect("Shadow Detail is config-backed");
+        assert!(
+            text.ends_with("(restart)"),
+            "with the condition met the restart note is what is left: {text:?}"
+        );
+    }
+
+    /// Every other row is unconditional, and should stay that way by
+    /// accident of nobody adding a condition: a row that quietly grew one
+    /// would start claiming an effect it does not have.
+    #[test]
+    fn only_shadow_detail_carries_a_condition() {
+        let conditional: Vec<u16> = DETAIL_ROWS
+            .iter()
+            .filter(|row| config_row(row.id).is_some_and(|def| def.requires != Requirement::Always))
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(conditional, vec![1]);
     }
 
     /// Supersampling has to be reachable from the window, or "let me have the
