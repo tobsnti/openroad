@@ -6,12 +6,10 @@
 // `uv_speed * globals.time` before sampling. Shader-clock driven: the
 // material uniform never changes, so instances batch and there is no
 // per-frame CPU/bind-group churn (docs/perf-future-levers.md).
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    mesh_view_bindings::globals,
-}
+import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
+import bevy_pbr::render::mesh_view_bindings::globals;
 
 struct UvScrollSettings {
     // uv/sec, from the TexAni matrix translation slots
@@ -19,7 +17,7 @@ struct UvScrollSettings {
     _padding: vec2<f32>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
+@group(constants::MATERIAL_BIND_GROUP) @binding(100)
 var<uniform> uv_scroll: UvScrollSettings;
 
 @fragment
@@ -30,7 +28,11 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     in.uv += fract(uv_scroll.uv_speed * globals.time);
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

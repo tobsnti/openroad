@@ -10,7 +10,7 @@ use bevy::shader::ShaderRef;
 use crate::plugins::skybox::SKY_COLOR_HEX;
 
 // Idea: high-quality (default/high graphics) water is a `StandardMaterial` extended with a
-// custom fragment shader (`water_hq.wgsl`), so Bevy's built-in screen-space specular
+// custom fragment shader (`water_hq.wesl`), so Bevy's built-in screen-space specular
 // transmission keeps doing the heavy lifting of actually rendering what's behind the water,
 // refracted by `ior`/`thickness` on `base`. The extension only bolts on the parts that make
 // flat transmissive glass read as *moving water*: a scrolling diffuse, a real (procedurally
@@ -42,7 +42,7 @@ pub struct WaterExtension {
     pub normal_map: Handle<Image>,
 }
 
-/// Std140 layout, field order must match the `WaterHqSettings` struct in `water_hq.wgsl`.
+/// Std140 layout, field order must match the `WaterHqSettings` struct in `water_hq.wesl`.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct WaterHqSettings {
     /// Reflection tint blended in at grazing angles; alpha is the max blend strength.
@@ -79,7 +79,7 @@ impl Default for WaterHqSettings {
 
 impl MaterialExtension for WaterExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/water_hq.wgsl".into()
+        "shaders/water_hq.wesl".into()
     }
 
     /// The water must stay out of the depth prepass: its fragment shader raymarches that very

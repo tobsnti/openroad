@@ -21,7 +21,7 @@
 //!
 //! Dropping `Material` also drops its free shadow-phase participation, so shadow *casting* is a
 //! separate, parallel depth-only pipeline in the `shadow` submodule (directional/Sun only).
-//! Shadow *receiving* never depended on it: `terrain_splat.wgsl` samples the shared shadow map
+//! Shadow *receiving* never depended on it: `terrain_splat.wesl` samples the shared shadow map
 //! through `apply_pbr_lighting` either way.
 //!
 //! Correctness note: `Opaque3d` is a *binned* phase, and Bevy's GPU-driven renderer can
@@ -197,7 +197,7 @@ fn init_terrain_pipeline(
 
     commands.insert_resource(TerrainPipeline {
         mesh_pipeline: mesh_pipeline.clone(),
-        shader: asset_server.load("shaders/terrain_splat.wgsl"),
+        shader: asset_server.load("shaders/terrain_splat.wesl"),
         region_bind_group_layout,
         region_bind_group_layout_descriptor,
     });

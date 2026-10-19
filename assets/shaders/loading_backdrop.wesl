@@ -25,7 +25,7 @@
 // the art is 4:3 too, so UV space and screen space share one aspect ratio: a
 // circular tap offset in UV stays circular on screen.
 
-#import bevy_ui::ui_vertex_output::UiVertexOutput
+import bevy_ui_render::ui_vertex_output::UiVertexOutput;
 
 // x = blur radius in UV (= fraction of the box height), y = linear brightness
 @group(1) @binding(0) var<uniform> settings: vec4<f32>;

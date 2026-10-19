@@ -30,7 +30,7 @@ so preloaded regions survive scene switches in place.
 Constraints:
 
 - `O` is snapped to the region grid (multiples of 1920, exactly representable
-  in f32): `terrain_splat.wgsl` recovers block indices from
+  in f32): `terrain_splat.wesl` recovers block indices from
   `world_position % span`, which only survives translation by exact multiples.
   `O.y` stays 0.
   *Amendment (2026-08-12, ADR-0008):* the snap invariant only serves the splat

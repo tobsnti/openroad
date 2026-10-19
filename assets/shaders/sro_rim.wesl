@@ -7,11 +7,9 @@
 // highlight clone is built), so the whole model brightens slightly while the
 // rim traces its edge. Everything else (skinning, shadows, prepass, light
 // probes) stays the stock PBR pipeline via `pbr_input_from_standard_material`.
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-}
+import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
 
 struct RimSettings {
     // rgb = rim tint (scene-linear), a = strength
@@ -24,7 +22,7 @@ struct RimSettings {
     mode: f32,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
+@group(constants::MATERIAL_BIND_GROUP) @binding(100)
 var<uniform> rim_settings: RimSettings;
 
 @fragment
@@ -33,8 +31,8 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     // `pbr_input_from_standard_material` samples the texture but runs no
     // alpha handling, so a fragment shader that replaces the stock one has to
-    // do it — exactly as `sro_uv_scroll.wgsl`, `terrain_splat.wgsl` and
-    // `water_hq.wgsl` already do. Two things happen here, and both matter for
+    // do it — exactly as `sro_uv_scroll.wesl`, `terrain_splat.wesl` and
+    // `water_hq.wesl` already do. Two things happen here, and both matter for
     // character-class meshes, which are the only always-on users of this
     // material: `AlphaMode::Mask` texels below the cutoff are discarded in the
     // main pass (the depth prepass already discards them, so without this the
@@ -43,9 +41,13 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     // render target, which is how an opaque skin material can come out looking
     // see-through.
     //
-    // `sro_sheen.wgsl` is the deliberate exception: it consumes the sampled
+    // `sro_sheen.wesl` is the deliberate exception: it consumes the sampled
     // alpha as its sheen mask and then sets `base_color.a = 1.0` itself.
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

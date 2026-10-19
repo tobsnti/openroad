@@ -207,7 +207,7 @@ pub struct EnvironmentProfile {
     pub water_color: ColorGraph,      //added in fileVersion 1002
     /// Inferred (Graph15): +1 at midnight, -1 at noon in every outdoor profile — a
     /// "nightness" factor. Drives the procedural star field's intensity: remapped to 0..1 in
-    /// `plugins/environment` and written to `gradient.params.x`, which `sky_gradient.wgsl`
+    /// `plugins/environment` and written to `gradient.params.x`, which `sky_gradient.wesl`
     /// feeds to `stars()`.
     pub night_intensity: FloatGraph,
 }

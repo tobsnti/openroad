@@ -123,7 +123,7 @@ impl DesignFit {
 /// composition. The value is a fraction, not pixels, so the effect is the same
 /// on a 1280 and a 3440 window.
 ///
-/// `assets/shaders/loading_backdrop.wgsl` explains how a radius this wide is
+/// `assets/shaders/loading_backdrop.wesl` explains how a radius this wide is
 /// gathered in 25 taps without ghosting the paintings' hard silhouettes — and
 /// why that method does not depend on the mip chain, which 18 of the 40 vanilla
 /// backgrounds do not have.
@@ -137,7 +137,7 @@ pub const BACKDROP_BLUR: f32 = 0.09;
 pub const BACKDROP_BRIGHTNESS: f32 = 0.18;
 
 /// The blur-and-dim material of the backdrop
-/// (`assets/shaders/loading_backdrop.wgsl` states the idea and the method).
+/// (`assets/shaders/loading_backdrop.wesl` states the idea and the method).
 ///
 /// `settings` is one `Vec4` rather than two `f32` uniforms because a uniform
 /// buffer binding is 16-byte aligned anyway — two scalars would occupy the
@@ -154,7 +154,7 @@ pub struct LoadingBackdropMaterial {
 
 impl UiMaterial for LoadingBackdropMaterial {
     fn fragment_shader() -> ShaderRef {
-        "shaders/loading_backdrop.wgsl".into()
+        "shaders/loading_backdrop.wesl".into()
     }
 }
 

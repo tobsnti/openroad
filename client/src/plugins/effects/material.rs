@@ -207,11 +207,11 @@ pub fn blend_components(src: u32, dst: u32) -> (BlendFactor, BlendFactor) {
 
 impl Material for SroEffectMaterial {
     fn vertex_shader() -> ShaderRef {
-        "shaders/sro_effect.wgsl".into()
+        "shaders/sro_effect.wesl".into()
     }
 
     fn fragment_shader() -> ShaderRef {
-        "shaders/sro_effect.wgsl".into()
+        "shaders/sro_effect.wesl".into()
     }
 
     #[inline]

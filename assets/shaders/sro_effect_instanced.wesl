@@ -1,4 +1,4 @@
-// Instanced variant of sro_effect.wgsl for effect particles
+// Instanced variant of sro_effect.wesl for effect particles
 // (`plugins/effects/instanced.rs`). Same unlit look — texture * tint, the
 // fixed-function texture-op clamps and the LDR-additive emulation — but every
 // per-particle value arrives through an instance-rate vertex buffer instead of
@@ -8,24 +8,22 @@
 // effect's worth of particles that share a mesh and a material, so the
 // particles never become individual render-world objects.
 //
-// Must stay in step with sro_effect.wgsl's fragment stage; blending, depth
+// Must stay in step with sro_effect.wesl's fragment stage; blending, depth
 // write and culling come from `material::apply_effect_render_state`.
 
-#import bevy_pbr::view_transformations::position_world_to_clip
+import bevy_pbr::render::view_transformations::position_world_to_clip;
 
 @group(2) @binding(0) var effect_texture: texture_2d<f32>;
 @group(2) @binding(1) var effect_sampler: sampler;
-// x = color multiplier, y = alpha multiplier, z = LDR mode — see sro_effect.wgsl
+// x = color multiplier, y = alpha multiplier, z = LDR mode — see sro_effect.wesl
 @group(2) @binding(2) var<uniform> effect_params: vec4<f32>;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     @location(2) uv: vec2<f32>,
-#endif
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     @location(5) color: vec4<f32>,
-#endif
     // per instance (see `EffectInstance` in instanced.rs)
     @location(8) world_from_local_0: vec4<f32>,
     @location(9) world_from_local_1: vec4<f32>,
@@ -69,20 +67,18 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     );
     let world_position = world_from_local * vec4(vertex.position, 1.0);
     out.clip_position = position_world_to_clip(world_position.xyz);
-#ifdef VERTEX_UVS_A
+    @if(VERTEX_UVS_A)
     out.uv = vertex.uv * vertex.uv_offset_scale.zw + vertex.uv_offset_scale.xy;
-#else
+    @if(!VERTEX_UVS_A)
     out.uv = vec2(0.5, 0.5);
-#endif
-#ifdef VERTEX_COLORS
+    @if(VERTEX_COLORS)
     out.color = vertex.color * unpack_tint(vertex.tint);
-#else
+    @if(!VERTEX_COLORS)
     out.color = unpack_tint(vertex.tint);
-#endif
     return out;
 }
 
-// Inverse of srgb_to_linear, quantized to 1/255 steps — see sro_effect.wgsl.
+// Inverse of srgb_to_linear, quantized to 1/255 steps — see sro_effect.wesl.
 fn quantize_srgb_255(linear: vec3<f32>) -> vec3<f32> {
     let lower = linear * 12.92;
     let higher = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
@@ -94,7 +90,7 @@ fn quantize_srgb_255(linear: vec3<f32>) -> vec3<f32> {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(effect_texture, effect_sampler, in.uv) * in.color;
     // D3D9 texture stages saturate their outputs before blending (see
-    // sro_effect.wgsl).
+    // sro_effect.wesl).
     var rgb = min(color.rgb * effect_params.x, vec3(1.0));
     let a = min(color.a * effect_params.y, 1.0);
     if effect_params.z >= 0.5 {

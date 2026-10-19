@@ -97,7 +97,7 @@ pub(super) fn build_tile_arrays(
     // Trimming each array to its highest defined id leaves the rest of the id
     // space addressable but unbacked, and nothing downstream notices: the splat
     // shader derives the layer from the raw 10-bit id alone
-    // (`terrain_splat.wgsl`, `let layer = i32(tile & 255u)`), and WGSL leaves an
+    // (`terrain_splat.wesl`, `let layer = i32(tile & 255u)`), and WGSL leaves an
     // out-of-range array layer indeterminate. Whether any map vertex names such
     // an id is a property of the drop, so say what is missing and let the log
     // answer it, rather than assuming either way.

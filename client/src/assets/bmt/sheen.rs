@@ -30,7 +30,7 @@ pub const SHEEN_ALPHA_CUTOUT: f32 = 1.0 / 255.0;
 // polished metal (blade, plates), low alpha = matte (leather grip, cloth
 // straps). This extension keeps the full standard PBR pipeline (skinning,
 // shadows, prepass, light probes) and swaps the fragment shader
-// (`sro_sheen.wgsl`) for one that reproduces the original's actual EnvMap
+// (`sro_sheen.wesl`) for one that reproduces the original's actual EnvMap
 // stages: the grayscale chrome-probe sphere map (spheremap_gray, sampled
 // by the view-space normal) is added into the albedo per texel by the
 // mask, then multiplied by the lighting — the moving glint on metal
@@ -58,7 +58,7 @@ pub struct SheenExtension {
 }
 
 /// Std140 layout, field order must match the `SheenSettings` struct in
-/// `sro_sheen.wgsl`. All values are visual calibration constants.
+/// `sro_sheen.wesl`. All values are visual calibration constants.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct SheenSettings {
     /// PBR metallic at full mask (texture alpha 1.0). Defaults to 0: the
@@ -109,7 +109,7 @@ pub struct SheenSettings {
     /// Always-on rim light (mobile-port parity, gap #1 in
     /// `docs/rendering-mobile-shader-comparison.md`): rgb = rim color,
     /// a = strength; a == 0 (the default) disables the term. Applied
-    /// post-lighting with the same fresnel as `sro_rim.wgsl`. Populated
+    /// post-lighting with the same fresnel as `sro_rim.wesl`. Populated
     /// from `graphics.rim` config by the .bmt loader.
     pub rim_color: Vec4,
     /// Fresnel exponent of [`rim_color`](Self::rim_color) (mobile ships 3).
@@ -367,7 +367,7 @@ pub fn set_shine(
 
 impl MaterialExtension for SheenExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/sro_sheen.wgsl".into()
+        "shaders/sro_sheen.wesl".into()
     }
 }
 

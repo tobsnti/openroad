@@ -1,4 +1,4 @@
-//! Fresnel rim material (`sro_rim.wgsl`): standard PBR plus an additive
+//! Fresnel rim material (`sro_rim.wesl`): standard PBR plus an additive
 //! edge glow. Two users share it:
 //!  - the always-on subtle rim on character-class meshes (mobile-port
 //!    parity, gap #1 in `docs/rendering-mobile-shader-comparison.md`) —
@@ -7,7 +7,7 @@
 //!  - the hover/click selection highlight
 //!    (`plugins/cursor/interactions/entity_select.rs`), which overrides
 //!    the rim parameters with the stronger selection color.
-//! (Sheen materials carry the same rim term inside `sro_sheen.wgsl`
+//! (Sheen materials carry the same rim term inside `sro_sheen.wesl`
 //! instead — bevy allows one extension per `ExtendedMaterial`.)
 
 use bevy::math::Vec4;
@@ -17,7 +17,7 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
-/// Uniform for `sro_rim.wgsl`; field order must match the shader struct.
+/// Uniform for `sro_rim.wesl`; field order must match the shader struct.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct RimSettings {
     /// rgb = rim tint (scene-linear), a = strength.
@@ -48,7 +48,7 @@ pub struct RimExtension {
 
 impl MaterialExtension for RimExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/sro_rim.wgsl".into()
+        "shaders/sro_rim.wesl".into()
     }
 }
 
@@ -78,25 +78,25 @@ mod tests {
     /// the render target instead of forcing 1.0 for non-blend modes, which
     /// makes an opaque character material read as see-through (#427).
     ///
-    /// `sro_sheen.wgsl` is the one deliberate exception: it consumes the
+    /// `sro_sheen.wesl` is the one deliberate exception: it consumes the
     /// sampled alpha as its sheen mask and sets `base_color.a = 1.0` itself, so
     /// it is asserted on that instead.
     #[test]
     fn character_shaders_handle_alpha_instead_of_leaking_it() {
-        const RIM: &str = include_str!("../../../../assets/shaders/sro_rim.wgsl");
-        const SHEEN: &str = include_str!("../../../../assets/shaders/sro_sheen.wgsl");
+        const RIM: &str = include_str!("../../../../assets/shaders/sro_rim.wesl");
+        const SHEEN: &str = include_str!("../../../../assets/shaders/sro_sheen.wesl");
 
         assert!(
-            RIM.contains("alpha_discard(pbr_input.material, pbr_input.material.base_color)"),
-            "sro_rim.wgsl must run alpha_discard after pbr_input_from_standard_material"
+            RIM.contains("alpha_discard(") && RIM.contains("pbr_input.material.alpha_cutoff"),
+            "sro_rim.wesl must run alpha_discard after pbr_input_from_standard_material"
         );
         assert!(
             RIM.contains("pbr_functions::{alpha_discard,"),
-            "sro_rim.wgsl must import alpha_discard"
+            "sro_rim.wesl must import alpha_discard"
         );
         assert!(
             SHEEN.contains("pbr_input.material.base_color.a = 1.0"),
-            "sro_sheen.wgsl consumes the alpha as its mask, so it must set it to 1.0 itself"
+            "sro_sheen.wesl consumes the alpha as its mask, so it must set it to 1.0 itself"
         );
     }
 }

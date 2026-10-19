@@ -1,23 +1,21 @@
 // Idea: the low graphics tier's water — a `StandardMaterial` extension (see
 // `water_material.rs`) whose only addition is a time-scrolled base-color UV. Everything else
-// is stock PBR, which is the point: the HQ tier (`water_hq.wgsl`) buys refraction, ripple
+// is stock PBR, which is the point: the HQ tier (`water_hq.wesl`) buys refraction, ripple
 // normals and screen-space reflections at a per-pixel cost this tier exists to avoid.
 //
 // The scroll reads `globals.time` rather than a CPU-updated uniform so the material stays
 // immutable and its bind group is never re-prepared (see the note in `water_material.rs`).
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings::globals,
-    pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-}
+import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::mesh_view_bindings::globals;
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
 
 struct WaterLowSettings {
     scroll_speed: vec2<f32>,
     _padding: vec2<f32>,
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
+@group(constants::MATERIAL_BIND_GROUP) @binding(100)
 var<uniform> water_settings: WaterLowSettings;
 
 @fragment
@@ -33,7 +31,11 @@ fn fragment(
     var pbr_input = pbr_input_from_standard_material(scrolled, is_front);
     // Honours the base material's AlphaMode; the water is authored as Blend, so this keeps
     // the lakebed visible through the surface.
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    pbr_input.material.base_color = alpha_discard(
+        pbr_input.material.flags,
+        pbr_input.material.alpha_cutoff,
+        pbr_input.material.base_color,
+    );
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

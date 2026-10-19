@@ -33,7 +33,7 @@ extension). Regions load their lightmap alongside the `.m` heightmap (`map://{z}
   texture minus its 12-byte signature, so the embedded DDS decodes through the shared
   `assets::ddj::dds_buffer_to_image` path. It is exposed as a labeled `"lightmap"` sub-asset.
 - The decoded texture is bound into `TerrainBlockSplatMaterial` (bind-group binding 5) and sampled
-  in `assets/shaders/terrain_splat.wgsl` at **region-local UV** (positive-modulo of world position
+  in `assets/shaders/terrain_splat.wesl` at **region-local UV** (positive-modulo of world position
   over the 1920-unit region; world X is negated because region entities are X-mirrored), then
   through a shared scale/offset (`TerrainRenderParams`, Unity `_ST` style) so the mapping is
   data rather than shader code. It is multiplied into the ground albedo before

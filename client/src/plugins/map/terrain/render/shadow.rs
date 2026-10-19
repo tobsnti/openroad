@@ -33,7 +33,7 @@
 //! Known limitation, deferred: on GPUs without the `DEPTH_CLIP_CONTROL` wgpu
 //! feature, directional cascades need a depth-clamp-in-fragment-shader fallback
 //! (`UNCLIPPED_DEPTH_ORTHO_EMULATION`, mirrored from Bevy's own embedded
-//! `prepass.wgsl`) that isn't implemented yet — `depth_clip_control_supported` is
+//! `prepass.wesl`) that isn't implemented yet — `depth_clip_control_supported` is
 //! logged at startup so this is diagnosable; expected `true` on most desktop GPUs,
 //! including this dev machine's.
 

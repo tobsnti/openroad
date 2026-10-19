@@ -500,7 +500,7 @@ impl EffectMotion {
 }
 
 /// A rendered node. The animated diffuse-graph tint travels as a packed
-/// ARGB `MeshTag` (unpacked in sro_effect.wgsl), so materials stay immutable
+/// ARGB `MeshTag` (unpacked in sro_effect.wesl), so materials stay immutable
 /// and are shared per (texture, blend) — per-frame material writes would
 /// re-prepare every material's bind group and defeat batching. Only
 /// TextureSlide nodes keep a private material whose `uv_offset_scale`
