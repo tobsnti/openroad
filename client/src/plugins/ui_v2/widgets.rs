@@ -99,37 +99,37 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
         FocusRing
         Node { width: percent(100), height: percent(100) }
         Children [
-                M
-                TextInput
-                EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
-                Node {
-                    width: percent(100),
-                    height: percent(100),
-                    padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
-                }
-                TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(12.0)} }
-                TextColor(Color::NONE)
-                TextCursorStyle { color: Color::WHITE }
-                TabIndex({tab})
-            --
-                PasswordEcho
-                Text("")
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(0),
-                    top: px(0),
-                    width: percent(100),
-                    height: percent(100),
-                    padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
-                }
-                TextFont { font: FontSourceTemplate::Handle({echo_font}), font_size: {FontSize::Px(12.0)} }
-                TextColor(Color::WHITE)
-                // fade with the rest of the screen; the inner EditableText
-                // must NOT get a TargetColor (its glyphs stay transparent so
-                // the plaintext password is never shown)
-                TargetColor(Srgba::WHITE)
-                Pickable::IGNORE
-        ]
+            M
+            TextInput
+            EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
+            Node {
+                width: percent(100),
+                height: percent(100),
+                padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
+            }
+            TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(12.0)} }
+            TextColor(Color::NONE)
+            TextCursorStyle { color: Color::WHITE }
+            TabIndex({tab})
+        --
+            PasswordEcho
+            Text("")
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0),
+                top: px(0),
+                width: percent(100),
+                height: percent(100),
+                padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
+            }
+            TextFont { font: FontSourceTemplate::Handle({echo_font}), font_size: {FontSize::Px(12.0)} }
+            TextColor(Color::WHITE)
+            // fade with the rest of the screen; the inner EditableText
+            // must NOT get a TargetColor (its glyphs stay transparent so
+            // the plaintext password is never shown)
+            TargetColor(Srgba::WHITE)
+            Pickable::IGNORE
+    ]
     }
 }
 

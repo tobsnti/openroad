@@ -513,86 +513,86 @@ fn mini_info(
             // the name and the gauges: the descriptor states no z-order for it,
             // and an aura drawn over the readouts would obscure them. Spawned
             // hidden; `update_jahwan_glow` is the only thing that shows it.
-                MiniInfoJahwanGlow
-                ImageNode { image: {jahwan_glow}, image_mode: NodeImageMode::Stretch, rect: {Some(jahwan_glow_crop)} }
-                Node { position_type: PositionType::Absolute, left: px(glow_l), top: px(glow_t), width: px(glow_w), height: px(glow_h) }
-                Visibility::Hidden
-                Pickable::IGNORE
-            --
+            MiniInfoJahwanGlow
+            ImageNode { image: {jahwan_glow}, image_mode: NodeImageMode::Stretch, rect: {Some(jahwan_glow_crop)} }
+            Node { position_type: PositionType::Absolute, left: px(glow_l), top: px(glow_t), width: px(glow_w), height: px(glow_h) }
+            Visibility::Hidden
+            Pickable::IGNORE
+        --
             // the offscreen head render (transparent clear) over the frame's
             // black ring interior; the camera frames it to fit inside the ring
-                ImageNode { image: {portrait}, image_mode: NodeImageMode::Stretch }
-                Node { position_type: PositionType::Absolute, left: px(por_l), top: px(por_t), width: px(por_w), height: px(por_h) }
-                Pickable::IGNORE
-            --
+            ImageNode { image: {portrait}, image_mode: NodeImageMode::Stretch }
+            Node { position_type: PositionType::Absolute, left: px(por_l), top: px(por_t), width: px(por_w), height: px(por_h) }
+            Pickable::IGNORE
+        --
             // name (vanilla HAlign 0: left-aligned in its slot)
-                @label("", name_font, name_size)
-                MiniInfoNameText
-                TextColor(Color::WHITE)
-                TextLayout::justify(Justify::Left)
-                Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(name_h), justify_content: JustifyContent::FlexStart }
-            --
-                @label("", level_font, name_size)
-                MiniInfoLevelText
-                TextColor({LEVEL_COLOR})
-                TextLayout::justify(Justify::Left)
-                Node { position_type: PositionType::Absolute, left: px(lvl_l), top: px(lvl_t), width: px(lvl_w), height: px(lvl_h), justify_content: JustifyContent::FlexStart }
-            --
+            @label("", name_font, name_size)
+            MiniInfoNameText
+            TextColor(Color::WHITE)
+            TextLayout::justify(Justify::Left)
+            Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(name_h), justify_content: JustifyContent::FlexStart }
+        --
+            @label("", level_font, name_size)
+            MiniInfoLevelText
+            TextColor({LEVEL_COLOR})
+            TextLayout::justify(Justify::Left)
+            Node { position_type: PositionType::Absolute, left: px(lvl_l), top: px(lvl_t), width: px(lvl_w), height: px(lvl_h), justify_content: JustifyContent::FlexStart }
+        --
             // HP gauge: track (authored rect) -> `@gauge()` crop -> art at its
             // native 124x12, so `pmi_hp` is cropped and never squashed (#630).
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(hpb_l),
-                    top: px(hpb_t),
-                    width: px(hpb_w),
-                    height: px(hpb_h),
-                    overflow: {Overflow::clip()},
-                }
-                Children [
-                        MiniInfoHpFill
-                        @gauge(hp_image, hpb_w, hpb_h)
-                ]
-            --
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(hpb_l),
+                top: px(hpb_t),
+                width: px(hpb_w),
+                height: px(hpb_h),
+                overflow: {Overflow::clip()},
+            }
+            Children [
+                MiniInfoHpFill
+                @gauge(hp_image, hpb_w, hpb_h)
+        ]
+        --
             // MP @gauge
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(mpb_l),
-                    top: px(mpb_t),
-                    width: px(mpb_w),
-                    height: px(mpb_h),
-                    overflow: {Overflow::clip()},
-                }
-                Children [
-                        MiniInfoMpFill
-                        @gauge(mp_image, mpb_w, mpb_h)
-                ]
-            --
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(mpb_l),
+                top: px(mpb_t),
+                width: px(mpb_w),
+                height: px(mpb_h),
+                overflow: {Overflow::clip()},
+            }
+            Children [
+                MiniInfoMpFill
+                @gauge(mp_image, mpb_w, mpb_h)
+        ]
+        --
             // Animated low-vitals warnings (ids 77/78). Spawned hidden; only
             // `update_caution_overlays` ever shows them, and only when the
             // config supplies a threshold.
-                MiniInfoHpCaution
-                ImageNode { image: {hp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
-                Node { position_type: PositionType::Absolute, left: px(hpc_l), top: px(hpc_t), width: px(hpc_w), height: px(hpc_h) }
-                Visibility::Hidden
-                Pickable::IGNORE
-            --
-                MiniInfoMpCaution
-                ImageNode { image: {mp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
-                Node { position_type: PositionType::Absolute, left: px(mpc_l), top: px(mpc_t), width: px(mpc_w), height: px(mpc_h) }
-                Visibility::Hidden
-                Pickable::IGNORE
-            --
+            MiniInfoHpCaution
+            ImageNode { image: {hp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
+            Node { position_type: PositionType::Absolute, left: px(hpc_l), top: px(hpc_t), width: px(hpc_w), height: px(hpc_h) }
+            Visibility::Hidden
+            Pickable::IGNORE
+        --
+            MiniInfoMpCaution
+            ImageNode { image: {mp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
+            Node { position_type: PositionType::Absolute, left: px(mpc_l), top: px(mpc_t), width: px(mpc_w), height: px(mpc_h) }
+            Visibility::Hidden
+            Pickable::IGNORE
+        --
             // "cur / max" overlays (vanilla HAlign 1: centered)
-                @label("", hp_font, bar_size)
-                MiniInfoHpText
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(hpt_l), top: px(hpt_t), width: px(hpt_w), height: px(hpt_h) }
-            --
-                @label("", mp_font, bar_size)
-                MiniInfoMpText
-                TextColor(Color::WHITE)
-                Node { position_type: PositionType::Absolute, left: px(mpt_l), top: px(mpt_t), width: px(mpt_w), height: px(mpt_h) }
-            --
+            @label("", hp_font, bar_size)
+            MiniInfoHpText
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(hpt_l), top: px(hpt_t), width: px(hpt_w), height: px(hpt_h) }
+        --
+            @label("", mp_font, bar_size)
+            MiniInfoMpText
+            TextColor(Color::WHITE)
+            Node { position_type: PositionType::Absolute, left: px(mpt_l), top: px(mpt_t), width: px(mpt_w), height: px(mpt_h) }
+        --
             // hwan/berserk pips along the portrait ring's arc; visibility is
             // driven by refresh_mini_info (hidden while the gauge is empty)
             @pip(pip_image.clone(), 0)--
@@ -605,50 +605,50 @@ fn mini_info(
             // swapped by the shared `ImageButtonStyle` updater, so it needs no
             // system of its own. NOT Pickable::IGNORE — it's clickable.
             @stat_drawer(asset_server, fonts, ui_strings)--
-                MiniInfoCinfoButton
-                Button
-                Hovered
-                ImageNode { image: {cinfo_button}, image_mode: NodeImageMode::Stretch }
-                ImageButtonStyle { normal: {cinfo_normal}, hover: {cinfo_focus}, press: {cinfo_press} }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(cbt_l),
-                    top: px(cbt_t),
-                    width: px(cbt_w),
-                    height: px(cbt_h),
-                }
-            --
+            MiniInfoCinfoButton
+            Button
+            Hovered
+            ImageNode { image: {cinfo_button}, image_mode: NodeImageMode::Stretch }
+            ImageButtonStyle { normal: {cinfo_normal}, hover: {cinfo_focus}, press: {cinfo_press} }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(cbt_l),
+                top: px(cbt_t),
+                width: px(cbt_w),
+                height: px(cbt_h),
+            }
+        --
             // the stat-up `+` next to the level slot. It opens the character
             // window rather than spending a point itself: one button cannot
             // choose between STR and INT, and that window is the only surface
             // in the client that offers the choice (its own two `+` buttons
             // send 0x7050/0x7051). Stated inference, not a transcription.
-                MiniInfoStatUpButton
-                Button
-                Hovered
-                ImageNode { image: {plus_button}, image_mode: NodeImageMode::Stretch }
-                ImageButtonStyle { normal: {plus_normal}, hover: {plus_focus}, press: {plus_press} }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(sbt_l),
-                    top: px(sbt_t),
-                    width: px(sbt_w),
-                    height: px(sbt_h),
-                }
-            --
+            MiniInfoStatUpButton
+            Button
+            Hovered
+            ImageNode { image: {plus_button}, image_mode: NodeImageMode::Stretch }
+            ImageButtonStyle { normal: {plus_normal}, hover: {plus_focus}, press: {plus_press} }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(sbt_l),
+                top: px(sbt_t),
+                width: px(sbt_w),
+                height: px(sbt_h),
+            }
+        --
             // berserk activation button on the ring's top; shown by
             // refresh_mini_info only at a full gauge, hover/press art via
             // update_jahwan_button. NOT Pickable::IGNORE — it's clickable.
-                MiniInfoJahwanButton
-                ImageNode { image: {jahwan_button}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(jbt_l),
-                    top: px(jbt_t),
-                    width: px(jbt_w),
-                    height: px(jbt_h),
-                }
-        ]
+            MiniInfoJahwanButton
+            ImageNode { image: {jahwan_button}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(jbt_l),
+                top: px(jbt_t),
+                width: px(jbt_w),
+                height: px(jbt_h),
+            }
+    ]
     }
 }
 

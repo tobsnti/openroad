@@ -72,18 +72,18 @@ pub fn gauge(art: Handle<Image>, width: f32, height: f32) -> impl Scene {
         }
         Pickable::IGNORE
         Children [
-                GaugeArt
-                ImageNode { image: {art}, image_mode: NodeImageMode::Stretch }
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: {left},
-                    right: {right},
-                    top: px(0.0),
-                    width: px(width),
-                    height: px(height),
-                }
-                Pickable::IGNORE
-        ]
+            GaugeArt
+            ImageNode { image: {art}, image_mode: NodeImageMode::Stretch }
+            Node {
+                position_type: PositionType::Absolute,
+                left: {left},
+                right: {right},
+                top: px(0.0),
+                width: px(width),
+                height: px(height),
+            }
+            Pickable::IGNORE
+    ]
     }
 }
 
