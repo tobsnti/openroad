@@ -289,7 +289,6 @@ pub fn spawn_target_window(
         Pickable::IGNORE
         Children [
             // the gem in the gold ring socket (level gap / npc / player)
-            (
                 TwGemIcon
                 ImageNode { image: {gem_image}, image_mode: NodeImageMode::Stretch }
                 Node {
@@ -300,9 +299,8 @@ pub fn spawn_target_window(
                     height: px(gem_h),
                 }
                 Pickable::IGNORE
-            ),
+            --
             // centered name on the plate
-            (
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(row_l),
@@ -314,15 +312,12 @@ pub fn spawn_target_window(
                 }
                 Pickable::IGNORE
                 Children [
-                    (
                         @label("", name_font.clone(), NAME_FONT_SIZE * s)
                         TwNameText
                         TextColor(Color::WHITE)
-                    ),
                 ]
-            ),
+            --
             // close (X) button top-right (GDR_TW_CLOSE); NOT Pickable::IGNORE
-            (
                 TwCloseButton
                 Button
                 Hovered
@@ -335,9 +330,8 @@ pub fn spawn_target_window(
                     width: px(close_w),
                     height: px(close_h),
                 }
-            ),
+            --
             // centered "[icon] Class" row on the special frame's lower strip
-            (
                 TwRarityRow
                 Node {
                     position_type: PositionType::Absolute,
@@ -353,22 +347,18 @@ pub fn spawn_target_window(
                 Visibility::Hidden
                 Pickable::IGNORE
                 Children [
-                    (
                         TwRarityIcon
                         ImageNode { image: {icon_image}, image_mode: NodeImageMode::Stretch }
                         Node { width: px(ICON_SIZE * s), height: px(ICON_SIZE * s) }
                         Pickable::IGNORE
-                    ),
-                    (
+                    --
                         @label("", name_font, NAME_FONT_SIZE * s)
                         TwRarityText
                         TextColor(Color::WHITE)
-                    ),
                 ]
-            ),
+            --
             // GDR_TW_BUFF: no width, no slot count — the row is whatever its
             // children are (see BUFF_ROW_TOP)
-            (
                 TwBuffRow
                 Node {
                     position_type: PositionType::Absolute,
@@ -378,11 +368,10 @@ pub fn spawn_target_window(
                     align_items: AlignItems::FlexStart,
                 }
                 Pickable::IGNORE
-            ),
+            --
             // HP line: track sized to the groove -> `@gauge()` crop -> art at
             // its native size, so `tw_hp.ddj`'s 1-texel rounded corners stay
             // on the bar's ends instead of riding the fill front (#630).
-            (
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(bar_l),
@@ -393,12 +382,9 @@ pub fn spawn_target_window(
                 }
                 Pickable::IGNORE
                 Children [
-                    (
                         TwBarFill
                         @gauge(hp_image, bar_w, bar_h)
-                    ),
                 ]
-            ),
         ]
     };
     commands.spawn_scene(scene).insert(UiTargetCamera(camera));

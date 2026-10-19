@@ -643,7 +643,7 @@ mod tests {
 
         let mut system = IntoSystem::into_system(resolve_saddle_seats);
         system.initialize(&mut world);
-        system.run((), &mut world);
+        let _ = system.run((), &mut world);
 
         // ...and the mount is gone before the command lands.
         world.entity_mut(cos).despawn();
@@ -672,7 +672,7 @@ mod tests {
 
         let mut system = IntoSystem::into_system(resolve_saddle_seats);
         system.initialize(&mut world);
-        system.run((), &mut world);
+        let _ = system.run((), &mut world);
         system.apply_deferred(&mut world);
 
         let seat = world.get::<SaddleSeat>(cos).expect("a seat was resolved");

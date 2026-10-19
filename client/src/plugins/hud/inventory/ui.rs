@@ -2294,7 +2294,7 @@ mod test {
     fn an_icon_effect_starts_with_no_sheet_loaded() {
         let mut app = inventory_app();
         let mut found = 0;
-        let mut world = app.world_mut();
+        let world = app.world_mut();
         let mut query = world.query::<(&SlotIconEffect, &ImageNode)>();
         for (effect, image) in query.iter(&world) {
             assert_eq!(

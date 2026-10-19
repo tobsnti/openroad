@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::Duration;
 
-use bevy::animation::prelude::AnimatedField;
 use bevy::animation::{animated_field, AnimationClip, AnimationTargetId};
 use bevy::asset::{io::Reader, Asset, AssetLoader, LoadContext};
 use bevy::curve::UnevenSampleAutoCurve;

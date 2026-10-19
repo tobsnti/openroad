@@ -25,7 +25,7 @@ use bevy::math::Vec3A;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
-use bevy::ui::{InteractionDisabled, Overflow, UiTargetCamera};
+use bevy::ui::{InteractionDisabled, Overflow, Pressed, UiTargetCamera};
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::prelude::{
@@ -513,38 +513,33 @@ fn mini_info(
             // the name and the gauges: the descriptor states no z-order for it,
             // and an aura drawn over the readouts would obscure them. Spawned
             // hidden; `update_jahwan_glow` is the only thing that shows it.
-            (
                 MiniInfoJahwanGlow
                 ImageNode { image: {jahwan_glow}, image_mode: NodeImageMode::Stretch, rect: {Some(jahwan_glow_crop)} }
                 Node { position_type: PositionType::Absolute, left: px(glow_l), top: px(glow_t), width: px(glow_w), height: px(glow_h) }
                 Visibility::Hidden
                 Pickable::IGNORE
-            ),
+            --
             // the offscreen head render (transparent clear) over the frame's
             // black ring interior; the camera frames it to fit inside the ring
-            (
                 ImageNode { image: {portrait}, image_mode: NodeImageMode::Stretch }
                 Node { position_type: PositionType::Absolute, left: px(por_l), top: px(por_t), width: px(por_w), height: px(por_h) }
                 Pickable::IGNORE
-            ),
+            --
             // name (vanilla HAlign 0: left-aligned in its slot)
-            (
                 @label("", name_font, name_size)
                 MiniInfoNameText
                 TextColor(Color::WHITE)
                 TextLayout::justify(Justify::Left)
                 Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(name_h), justify_content: JustifyContent::FlexStart }
-            ),
-            (
+            --
                 @label("", level_font, name_size)
                 MiniInfoLevelText
                 TextColor({LEVEL_COLOR})
                 TextLayout::justify(Justify::Left)
                 Node { position_type: PositionType::Absolute, left: px(lvl_l), top: px(lvl_t), width: px(lvl_w), height: px(lvl_h), justify_content: JustifyContent::FlexStart }
-            ),
+            --
             // HP gauge: track (authored rect) -> `@gauge()` crop -> art at its
             // native 124x12, so `pmi_hp` is cropped and never squashed (#630).
-            (
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(hpb_l),
@@ -554,14 +549,11 @@ fn mini_info(
                     overflow: {Overflow::clip()},
                 }
                 Children [
-                    (
                         MiniInfoHpFill
                         @gauge(hp_image, hpb_w, hpb_h)
-                    ),
                 ]
-            ),
+            --
             // MP @gauge
-            (
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(mpb_l),
@@ -571,55 +563,48 @@ fn mini_info(
                     overflow: {Overflow::clip()},
                 }
                 Children [
-                    (
                         MiniInfoMpFill
                         @gauge(mp_image, mpb_w, mpb_h)
-                    ),
                 ]
-            ),
+            --
             // Animated low-vitals warnings (ids 77/78). Spawned hidden; only
             // `update_caution_overlays` ever shows them, and only when the
             // config supplies a threshold.
-            (
                 MiniInfoHpCaution
                 ImageNode { image: {hp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
                 Node { position_type: PositionType::Absolute, left: px(hpc_l), top: px(hpc_t), width: px(hpc_w), height: px(hpc_h) }
                 Visibility::Hidden
                 Pickable::IGNORE
-            ),
-            (
+            --
                 MiniInfoMpCaution
                 ImageNode { image: {mp_caution}, image_mode: NodeImageMode::Stretch, rect: {Some(caution_frame_rect(0))} }
                 Node { position_type: PositionType::Absolute, left: px(mpc_l), top: px(mpc_t), width: px(mpc_w), height: px(mpc_h) }
                 Visibility::Hidden
                 Pickable::IGNORE
-            ),
+            --
             // "cur / max" overlays (vanilla HAlign 1: centered)
-            (
                 @label("", hp_font, bar_size)
                 MiniInfoHpText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(hpt_l), top: px(hpt_t), width: px(hpt_w), height: px(hpt_h) }
-            ),
-            (
+            --
                 @label("", mp_font, bar_size)
                 MiniInfoMpText
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(mpt_l), top: px(mpt_t), width: px(mpt_w), height: px(mpt_h) }
-            ),
+            --
             // hwan/berserk pips along the portrait ring's arc; visibility is
             // driven by refresh_mini_info (hidden while the gauge is empty)
-            (@pip(pip_image.clone(), 0)),
-            (@pip(pip_image.clone(), 1)),
-            (@pip(pip_image.clone(), 2)),
-            (@pip(pip_image.clone(), 3)),
-            (@pip(pip_image, 4)),
+            @pip(pip_image.clone(), 0)--
+            @pip(pip_image.clone(), 1)--
+            @pip(pip_image.clone(), 2)--
+            @pip(pip_image.clone(), 3)--
+            @pip(pip_image, 4)--
             // the expanded stat drawer and its toggle; the drawer hangs below
             // the 70px frame and starts hidden. The toggle's hover/press art is
             // swapped by the shared `ImageButtonStyle` updater, so it needs no
             // system of its own. NOT Pickable::IGNORE — it's clickable.
-            (@stat_drawer(asset_server, fonts, ui_strings)),
-            (
+            @stat_drawer(asset_server, fonts, ui_strings)--
                 MiniInfoCinfoButton
                 Button
                 Hovered
@@ -632,13 +617,12 @@ fn mini_info(
                     width: px(cbt_w),
                     height: px(cbt_h),
                 }
-            ),
+            --
             // the stat-up `+` next to the level slot. It opens the character
             // window rather than spending a point itself: one button cannot
             // choose between STR and INT, and that window is the only surface
             // in the client that offers the choice (its own two `+` buttons
             // send 0x7050/0x7051). Stated inference, not a transcription.
-            (
                 MiniInfoStatUpButton
                 Button
                 Hovered
@@ -651,11 +635,10 @@ fn mini_info(
                     width: px(sbt_w),
                     height: px(sbt_h),
                 }
-            ),
+            --
             // berserk activation button on the ring's top; shown by
             // refresh_mini_info only at a full gauge, hover/press art via
             // update_jahwan_button. NOT Pickable::IGNORE — it's clickable.
-            (
                 MiniInfoJahwanButton
                 ImageNode { image: {jahwan_button}, image_mode: NodeImageMode::Stretch }
                 Node {
@@ -665,7 +648,6 @@ fn mini_info(
                     width: px(jbt_w),
                     height: px(jbt_h),
                 }
-            ),
         ]
     }
 }
@@ -769,27 +751,27 @@ fn stat_drawer(
         Pickable::IGNORE
         Children [
             // y=65: the STR/INT pair, the only centre-aligned labels
-            (@stat_label(f.clone(), ui_strings.get_or("PARAM_STR", "Str"), CINFO_STR_LABEL_RECT, Justify::Center)),
-            (@stat_value(f.clone(), CinfoStat::Str, CINFO_STR_VALUE_RECT)),
-            (@stat_label(f.clone(), ui_strings.get_or("PARAM_INT", "Int"), CINFO_INT_LABEL_RECT, Justify::Center)),
-            (@stat_value(f.clone(), CinfoStat::Int, CINFO_INT_VALUE_RECT)),
+            @stat_label(f.clone(), ui_strings.get_or("PARAM_STR", "Str"), CINFO_STR_LABEL_RECT, Justify::Center)--
+            @stat_value(f.clone(), CinfoStat::Str, CINFO_STR_VALUE_RECT)--
+            @stat_label(f.clone(), ui_strings.get_or("PARAM_INT", "Int"), CINFO_INT_LABEL_RECT, Justify::Center)--
+            @stat_value(f.clone(), CinfoStat::Int, CINFO_INT_VALUE_RECT)--
             // y=85..225: the eight derived-stat rows, left labels, right values
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_ATTACK", "Phy. atk"), cinfo_label_rect(CINFO_ROW_YS[0]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::PhyAtk, cinfo_value_rect(CINFO_ROW_YS[0]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_DEFENCE", "Phy. def."), cinfo_label_rect(CINFO_ROW_YS[1]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::PhyDef, cinfo_value_rect(CINFO_ROW_YS[1]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_ATTACK", "Mag. atk"), cinfo_label_rect(CINFO_ROW_YS[2]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::MagAtk, cinfo_value_rect(CINFO_ROW_YS[2]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_DEFENCE", "Mag. def."), cinfo_label_rect(CINFO_ROW_YS[3]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::MagDef, cinfo_value_rect(CINFO_ROW_YS[3]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_BALANCE", "Phy. balance"), cinfo_label_rect(CINFO_ROW_YS[4]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::PhyBal, cinfo_value_rect(CINFO_ROW_YS[4]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_BALANCE", "Mag. balance"), cinfo_label_rect(CINFO_ROW_YS[5]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::MagBal, cinfo_value_rect(CINFO_ROW_YS[5]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_HIT_RATIO", "Hit rate"), cinfo_label_rect(CINFO_ROW_YS[6]), Justify::Left)),
-            (@stat_value(f.clone(), CinfoStat::Hit, cinfo_value_rect(CINFO_ROW_YS[6]))),
-            (@stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PARRY_RATIO", "Parry ratio"), cinfo_label_rect(CINFO_ROW_YS[7]), Justify::Left)),
-            (@stat_value(f, CinfoStat::Parry, cinfo_value_rect(CINFO_ROW_YS[7]))),
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_ATTACK", "Phy. atk"), cinfo_label_rect(CINFO_ROW_YS[0]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::PhyAtk, cinfo_value_rect(CINFO_ROW_YS[0]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_DEFENCE", "Phy. def."), cinfo_label_rect(CINFO_ROW_YS[1]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::PhyDef, cinfo_value_rect(CINFO_ROW_YS[1]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_ATTACK", "Mag. atk"), cinfo_label_rect(CINFO_ROW_YS[2]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::MagAtk, cinfo_value_rect(CINFO_ROW_YS[2]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_DEFENCE", "Mag. def."), cinfo_label_rect(CINFO_ROW_YS[3]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::MagDef, cinfo_value_rect(CINFO_ROW_YS[3]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PHYSICAL_BALANCE", "Phy. balance"), cinfo_label_rect(CINFO_ROW_YS[4]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::PhyBal, cinfo_value_rect(CINFO_ROW_YS[4]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_MAGICAL_BALANCE", "Mag. balance"), cinfo_label_rect(CINFO_ROW_YS[5]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::MagBal, cinfo_value_rect(CINFO_ROW_YS[5]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_HIT_RATIO", "Hit rate"), cinfo_label_rect(CINFO_ROW_YS[6]), Justify::Left)--
+            @stat_value(f.clone(), CinfoStat::Hit, cinfo_value_rect(CINFO_ROW_YS[6]))--
+            @stat_label(f.clone(), ui_strings.get_or("UIIT_STT_PARRY_RATIO", "Parry ratio"), cinfo_label_rect(CINFO_ROW_YS[7]), Justify::Left)--
+            @stat_value(f, CinfoStat::Parry, cinfo_value_rect(CINFO_ROW_YS[7]))
         ]
     }
 }
@@ -1176,32 +1158,39 @@ pub fn refresh_mini_info(
 ///
 /// The request is 0x70A7 with the single action byte the original's builder
 /// writes (`sro_client.exe@0081e690:21,30`); the server answers with 0xB0A7,
-/// handled by [`on_hwan_action_response`]. (`Interaction` has no bsn template
+/// handled by [`on_hwan_action_response`]. (`Button` has no bsn template
 /// support, so it is inserted here rather than in the scene.)
+///
+/// Bevy 0.20 retired `Interaction` for the pair `Hovered` + `Pressed`, which
+/// are states, not transitions: the art follows them every frame the way
+/// ui_v2's `update_image_button_visuals` does, and the packet hangs off
+/// `Added<Pressed>`, because a marker insertion happens exactly once per press
+/// where `Changed<Interaction>` used to.
 pub fn update_jahwan_button(
     asset_server: Res<AssetServer>,
-    uninit: Query<Entity, (With<MiniInfoJahwanButton>, Without<Interaction>)>,
-    mut buttons: Query<
-        (&Interaction, &mut ImageNode),
-        (Changed<Interaction>, With<MiniInfoJahwanButton>),
-    >,
+    uninit: Query<Entity, (With<MiniInfoJahwanButton>, Without<Button>)>,
+    mut buttons: Query<(&Hovered, Has<Pressed>, &mut ImageNode), With<MiniInfoJahwanButton>>,
+    just_pressed: Query<(), (Added<Pressed>, With<MiniInfoJahwanButton>)>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     mut commands: Commands,
 ) {
     for entity in uninit.iter() {
-        commands.entity(entity).insert(Interaction::default());
+        commands.entity(entity).insert(Button);
     }
-    for (interaction, mut image) in buttons.iter_mut() {
-        let path = match interaction {
-            Interaction::Pressed => {
-                debug!("mini-info: berserk button pressed, sending 0x70A7");
-                send_hwan_activation(&conn);
-                JAHWAN_BUTTON_PRESS
-            }
-            Interaction::Hovered => JAHWAN_BUTTON_FOCUS,
-            Interaction::None => JAHWAN_BUTTON_NORMAL,
+    if !just_pressed.is_empty() {
+        debug!("mini-info: berserk button pressed, sending 0x70A7");
+        send_hwan_activation(&conn);
+    }
+    for (hovered, pressed, mut image) in buttons.iter_mut() {
+        let path = match (pressed, hovered.get()) {
+            (true, _) => JAHWAN_BUTTON_PRESS,
+            (_, true) => JAHWAN_BUTTON_FOCUS,
+            _ => JAHWAN_BUTTON_NORMAL,
         };
-        image.image = asset_server.load(path);
+        let next = asset_server.load(path);
+        if image.image != next {
+            image.image = next;
+        }
     }
 }
 

@@ -1492,7 +1492,7 @@ mod tests {
         };
 
         let dt = Duration::from_secs_f64(1.0 / 60.0);
-        let mut step = |world: &mut World| {
+        let step = |world: &mut World| {
             world.resource_mut::<Time>().advance_by(dt);
             world.run_system_once(tick_effect_nodes).unwrap();
             world.run_system_once(emit_particles).unwrap();
