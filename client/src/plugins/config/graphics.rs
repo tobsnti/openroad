@@ -173,6 +173,13 @@ pub enum WaterQuality {
 /// the picking ray, nameplates, hit counts, world anchors — keeps working in
 /// window coordinates with no per-site conversion.
 ///
+/// Above 1.0 the same mechanism is supersampling: the 3D view renders larger
+/// than the window and the composite blit resolves it down, which is the one
+/// anti-aliasing lever that needs no vendor, no feature flag and no SDK — it
+/// works on Metal, on Vulkan/DX12 and in the browser alike. It is never picked
+/// by a preset (`auto` least of all): the cost is quadratic in the scale, so
+/// 2.0 asks the GPU for four times the fragments.
+///
 /// 1.0 (the default) retargets nothing at all and is the original behaviour;
 /// this is the ADR 0009 "deliberate, stated deviation" case, so it is opt-in.
 /// It doubles as the measurement instrument: mirrored onto
@@ -194,31 +201,41 @@ impl RenderScale {
     /// being a rendering of the scene in any useful sense.
     pub const MIN: f32 = 0.25;
 
-    /// The usable fraction: non-finite and out-of-range values fall back to
-    /// 1.0 with a warning rather than silently producing a broken target, and
-    /// exactly 1.0 means "do not retarget".
+    /// Above this, supersampling stops buying visible quality and only costs
+    /// fragments: 2.0 already resolves four samples per output pixel. The
+    /// target size has its own, separate ceiling — see
+    /// `camera::MAX_TARGET_DIMENSION`.
+    pub const MAX: f32 = 2.0;
+
+    /// The usable scale: values that cannot describe a target at all
+    /// (non-finite, zero, negative) fall back to 1.0 with a warning rather
+    /// than silently producing a broken image; values merely outside
+    /// [`MIN`](Self::MIN)..=[`MAX`](Self::MAX) clamp into it, so "as low as it
+    /// goes" and "as high as it goes" both land somewhere sane. Exactly 1.0
+    /// means "do not retarget".
     pub fn factor(self) -> f32 {
-        if !self.0.is_finite() || self.0 <= 0.0 || self.0 > 1.0 {
+        if !self.0.is_finite() || self.0 <= 0.0 {
             bevy::log::warn_once!(
-                "graphics.render_scale: {} is outside {}..=1.0; rendering at full resolution",
-                self.0,
-                Self::MIN
+                "graphics.render_scale: {} is not a usable scale; rendering at full resolution",
+                self.0
             );
             return 1.0;
         }
-        if self.0 < Self::MIN {
+        if !(Self::MIN..=Self::MAX).contains(&self.0) {
             bevy::log::warn_once!(
-                "graphics.render_scale: {} is below the {} floor; clamping",
+                "graphics.render_scale: {} is outside {}..={}; clamping",
                 self.0,
-                Self::MIN
+                Self::MIN,
+                Self::MAX
             );
         }
-        self.0.max(Self::MIN)
+        self.0.clamp(Self::MIN, Self::MAX)
     }
 
-    /// Whether this scale asks for an offscreen target at all.
+    /// Whether this scale asks for an offscreen target at all. Only exactly
+    /// 1.0 does not: both a smaller and a larger target need one.
     pub fn is_native(self) -> bool {
-        self.factor() >= 1.0
+        self.factor() == 1.0
     }
 }
 

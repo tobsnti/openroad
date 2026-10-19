@@ -650,17 +650,47 @@ pub(crate) fn retarget_window_cameras<'a>(
 ///
 /// The physical size is rounded and floored at one texel: a zero-sized render
 /// target is a wgpu validation error, and a window can legitimately report 0
-/// while minimised.
+/// while minimised. It is also ceilinged, because supersampling can ask for a
+/// texture no GPU has to offer — see [`MAX_TARGET_DIMENSION`].
 pub fn render_scale_target(
     window_physical: UVec2,
     window_scale_factor: f32,
     scale: f32,
 ) -> (UVec2, f32) {
+    let scale = fit_to_texture_limit(window_physical, scale);
     let size = (window_physical.as_vec2() * scale)
         .round()
         .as_uvec2()
         .max(UVec2::ONE);
     (size, window_scale_factor * scale)
+}
+
+/// Largest offscreen target edge we ask for. `wgpu`'s default
+/// `max_texture_dimension_2d` is 8192 (`wgpu-types-29.0.4/src/limits.rs:376`;
+/// the WebGL2 downlevel default at `:498` is 2048, but that path never takes a
+/// supersampled scale because no preset sets one). Asking for more is a
+/// validation error, and bevy quits the application on those.
+const MAX_TARGET_DIMENSION: u32 = 8192;
+
+/// `scale`, lowered until the target fits [`MAX_TARGET_DIMENSION`].
+///
+/// Only a supersampling scale can reach the ceiling on today's displays: a 4K
+/// window at 2.0 is 7680x4320, a 5K one is 10240x5760 and gets trimmed. The
+/// returned scale is what both the size *and* the target scale factor are
+/// derived from, so the logical-viewport identity survives the trim.
+fn fit_to_texture_limit(window_physical: UVec2, scale: f32) -> f32 {
+    let longest = window_physical.max_element().max(1) as f32;
+    let fits = MAX_TARGET_DIMENSION as f32 / longest;
+    if scale <= fits {
+        return scale;
+    }
+    bevy::log::warn_once!(
+        "render_scale {scale}: a {}x{} window would need a {}px texture, past the {MAX_TARGET_DIMENSION}px limit; using {fits:.2}",
+        window_physical.x,
+        window_physical.y,
+        (longest * scale).round(),
+    );
+    fits
 }
 
 /// Tell `camera_system` that a camera's render target changed shape.
@@ -1487,7 +1517,7 @@ mod render_scale_tests {
         let window_physical = UVec2::new(3440, 1440);
         for window_scale_factor in [1.0, 1.25, 2.0] {
             let native = window_physical.as_vec2() / window_scale_factor;
-            for scale in [1.0, 0.9, 0.75, 0.5, 0.25] {
+            for scale in [2.0, 1.5, 1.0, 0.9, 0.75, 0.5, 0.25] {
                 let (size, target_scale_factor) =
                     render_scale_target(window_physical, window_scale_factor, scale);
                 let logical = size.as_vec2() / target_scale_factor;
@@ -1537,12 +1567,11 @@ mod render_scale_tests {
     }
 
     /// Garbage in config must degrade to full resolution, not to a broken
-    /// target: 0 and negatives would be a zero-sized image, >1 would render
-    /// more pixels than the window has, and NaN propagates into the texture
-    /// descriptor.
+    /// target: 0 and negatives would be a zero-sized image, and NaN propagates
+    /// into the texture descriptor.
     #[test]
-    fn out_of_range_scales_fall_back_to_full_resolution() {
-        for bad in [0.0, -0.5, 1.5, f32::NAN, f32::INFINITY] {
+    fn unusable_scales_fall_back_to_full_resolution() {
+        for bad in [0.0, -0.5, f32::NAN, f32::INFINITY] {
             assert_eq!(
                 RenderScale(bad).factor(),
                 1.0,
@@ -1550,10 +1579,61 @@ mod render_scale_tests {
             );
             assert!(RenderScale(bad).is_native());
         }
-        // Below the floor clamps rather than falling back, so a user asking for
-        // "as low as it goes" still gets a scaled view.
+        // Outside the range clamps rather than falling back, so "as low as it
+        // goes" and "as high as it goes" both still scale.
         assert_eq!(RenderScale(0.1).factor(), RenderScale::MIN);
         assert!(!RenderScale(0.1).is_native());
+        assert_eq!(RenderScale(5.0).factor(), RenderScale::MAX);
+        assert!(!RenderScale(5.0).is_native());
+    }
+
+    /// Supersampling is the other half of the lever (#maximum): above 1.0 the
+    /// view renders *larger* than the window and the blit resolves it down.
+    /// `is_native` has to say no, or `apply_render_scale` never builds the
+    /// offscreen target and the setting does nothing.
+    #[test]
+    fn supersampling_scales_retarget_and_add_pixels() {
+        let window = UVec2::new(1920, 1080);
+        let native = render_scale_target(window, 1.0, 1.0).0.element_product();
+        for scale in [1.5, RenderScale::MAX] {
+            assert!(
+                !RenderScale(scale).is_native(),
+                "render_scale {scale} must ask for an offscreen target"
+            );
+            assert_eq!(RenderScale(scale).factor(), scale);
+            let bigger = render_scale_target(window, 1.0, scale).0.element_product();
+            assert!(
+                bigger as f32 / native as f32 > scale,
+                "{scale}: {bigger} is not more than {native} pixels"
+            );
+        }
+    }
+
+    /// A supersampled target can outgrow what wgpu guarantees (8192px), and a
+    /// texture past the limit is a validation error bevy quits on. The trim
+    /// must keep the logical viewport identity, so it lowers the *scale* both
+    /// outputs are derived from rather than only the size.
+    #[test]
+    fn a_supersampled_target_stays_inside_the_texture_limit() {
+        // 5K: 5120 * 2.0 would be 10240px.
+        let window = UVec2::new(5120, 2880);
+        let (size, target_scale_factor) = render_scale_target(window, 2.0, RenderScale::MAX);
+        assert!(
+            size.max_element() <= MAX_TARGET_DIMENSION,
+            "{size:?} is past the {MAX_TARGET_DIMENSION}px limit"
+        );
+        let logical = size.as_vec2() / target_scale_factor;
+        let native = window.as_vec2() / 2.0;
+        assert!(
+            (logical - native).abs().max_element() < 1.0,
+            "the trim broke the logical viewport: {logical:?} vs {native:?}"
+        );
+        // A window that fits is left exactly where it was.
+        let window = UVec2::new(1920, 1080);
+        assert_eq!(
+            render_scale_target(window, 1.0, RenderScale::MAX).0,
+            UVec2::new(3840, 2160)
+        );
     }
 
     /// The projection is how a target-shape change is signalled to
