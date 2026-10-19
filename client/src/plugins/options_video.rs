@@ -642,9 +642,15 @@ pub(crate) enum ExtraRow {
     /// Named after the original's own *sight range* vocabulary, which is the
     /// closest thing it has to this concept.
     FoliageSightRange,
-    /// The graphics preset in effect and why (`graphics.preset`). Read-only:
-    /// a preset is laid under `config.yaml` while it loads, so it changes
-    /// with a restart, not a click.
+    /// The graphics preset (`graphics.preset`): the one row that moves every
+    /// other value at once, which is what a weak machine needs first.
+    ///
+    /// It writes `GameOptions`, not `ClientConfig`, and takes effect on the
+    /// next start — a preset is merged *under* `config.yaml` while the file is
+    /// parsed (`config::ClientConfig::from_file_with_preset`), and the values
+    /// it decides include ones nothing re-reads later. Applying the tier live
+    /// would mean a second precedence path beside `apply_config_rows`, so the
+    /// row states the restart instead, exactly as the config-backed rows do.
     Preset,
 }
 
@@ -663,6 +669,18 @@ const DENSITY_STEPS: [f32; 4] = [0.5, 1.0, 1.5, 2.0];
 /// is what shipped before #366 and is kept reachable but is not a step anyone
 /// lands on by accident.
 const SIGHT_RANGE_STEPS: [f32; 4] = [150.0, 300.0, 600.0, 0.0];
+/// Preset steps. `None` — "follow `config.yaml`" — is a step of its own, and
+/// deliberately the first: without it a single click would take the choice
+/// away from the file for good, and there would be no way back to it from the
+/// window. The rest follow the order `config.example.yaml` documents.
+const PRESET_STEPS: [Option<QualityPreset>; 6] = [
+    None,
+    Some(QualityPreset::Auto),
+    Some(QualityPreset::Low),
+    Some(QualityPreset::Medium),
+    Some(QualityPreset::High),
+    Some(QualityPreset::Ultra),
+];
 /// Openroad additions are drawn in their own colour so a screenshot never
 /// suggests the original had this control.
 const OPENROAD_COLOR: Color = Color::srgb(0.63, 0.84, 1.0);
@@ -678,7 +696,7 @@ impl ExtraRow {
     }
 
     /// What the row shows for the current config.
-    fn value_text(self, config: &ClientConfig) -> String {
+    fn value_text(self, config: &ClientConfig, options: &GameOptions) -> String {
         let foliage = &config.graphics.foliage;
         match self {
             ExtraRow::FoliageMode => match foliage.mode {
@@ -695,18 +713,29 @@ impl ExtraRow {
                     "Unlimited".to_string()
                 }
             }
-            ExtraRow::Preset => match &config.graphics.resolved_preset {
-                Some(preset) if config.graphics.preset == QualityPreset::Auto => {
-                    format!("{} (auto; config.yaml)", preset.tier.name())
+            ExtraRow::Preset => {
+                let Some(resolved) = &config.graphics.resolved_preset else {
+                    return "none".to_string();
+                };
+                let running = match resolved.requested {
+                    // `auto` names the tier it picked, or the row would read
+                    // "auto" on every machine and say nothing.
+                    QualityPreset::Auto => format!("auto ({})", resolved.tier.name()),
+                    tier => tier.name().to_string(),
+                };
+                match options.video.preset_override {
+                    None => format!("{running}; config.yaml"),
+                    Some(saved) if saved == resolved.requested => format!("{running}; yours"),
+                    Some(saved) => format!("{} (next start; now {running})", saved.name()),
                 }
-                Some(preset) => format!("{} (config.yaml)", preset.tier.name()),
-                None => "none".to_string(),
-            },
+            }
         }
     }
 
-    /// Advances the row one step, writing `ClientConfig`.
-    fn cycle(self, config: &mut ClientConfig) {
+    /// Advances the row one step. The foliage rows write `ClientConfig` (they
+    /// are live); the preset row writes `GameOptions`, because it is read
+    /// before the next `ClientConfig` exists.
+    fn cycle(self, config: &mut ClientConfig, options: &mut GameOptions) {
         let foliage = &mut config.graphics.foliage;
         match self {
             ExtraRow::FoliageMode => {
@@ -723,8 +752,13 @@ impl ExtraRow {
             ExtraRow::FoliageSightRange => {
                 foliage.view_distance = next_step(&SIGHT_RANGE_STEPS, foliage.view_distance)
             }
-            // read-only, see the variant
-            ExtraRow::Preset => {}
+            ExtraRow::Preset => {
+                let at = PRESET_STEPS
+                    .iter()
+                    .position(|step| *step == options.video.preset_override)
+                    .unwrap_or(0);
+                options.video.preset_override = PRESET_STEPS[(at + 1) % PRESET_STEPS.len()];
+            }
         }
     }
 }
@@ -758,8 +792,10 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
         Pickable::default(),
     ));
     entity.observe(
-        move |_activate: On<Activate>, mut config: ResMut<ClientConfig>| {
-            row.cycle(&mut config);
+        move |_activate: On<Activate>,
+              mut config: ResMut<ClientConfig>,
+              mut options: ResMut<GameOptions>| {
+            row.cycle(&mut config, &mut options);
         },
     );
     entity.with_children(|r| {
@@ -799,10 +835,11 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
 /// handful of short string formats is not worth a second code path.
 pub(crate) fn refresh_extra_rows(
     config: Res<ClientConfig>,
+    options: Res<GameOptions>,
     mut rows: Query<(&ExtraRow, &mut Text)>,
 ) {
     for (row, mut text) in rows.iter_mut() {
-        let wanted = row.value_text(&config);
+        let wanted = row.value_text(&config, &options);
         if text.0 != wanted {
             *text = Text::new(wanted);
         }
@@ -1210,18 +1247,18 @@ mod tests {
     fn every_extra_row_cycles_back_to_its_starting_value() {
         for row in EXTRA_ROWS {
             let mut config = test_config();
-            let start = row.value_text(&config);
+            let mut options = GameOptions::default();
+            let start = row.value_text(&config, &options);
             let steps = match row {
                 ExtraRow::FoliageMode => 4,
                 ExtraRow::FoliageDensity => DENSITY_STEPS.len(),
                 ExtraRow::FoliageSightRange => SIGHT_RANGE_STEPS.len(),
-                // read-only: one value, which a click keeps
-                ExtraRow::Preset => 1,
+                ExtraRow::Preset => PRESET_STEPS.len(),
             };
             let mut seen = vec![start.clone()];
             for _ in 0..steps {
-                row.cycle(&mut config);
-                seen.push(row.value_text(&config));
+                row.cycle(&mut config, &mut options);
+                seen.push(row.value_text(&config, &options));
             }
             assert_eq!(seen.first(), seen.last(), "{row:?} does not wrap: {seen:?}");
             assert_eq!(
@@ -1235,6 +1272,48 @@ mod tests {
         }
     }
 
+    /// The preset row is the one control that moves every other value at
+    /// once, so it has to say which of three states it is in: following the
+    /// file, holding the tier this process actually started with, or holding a
+    /// choice that only a restart can honour.
+    #[test]
+    fn the_preset_row_names_the_file_the_running_tier_and_a_pending_choice() {
+        // `config.example.yaml` ships `preset: auto`, and the test probe
+        // reports a discrete GPU, so `auto` resolved to `high`.
+        let config = test_config();
+        let mut options = GameOptions::default();
+        assert_eq!(
+            ExtraRow::Preset.value_text(&config, &options),
+            "auto (high); config.yaml"
+        );
+
+        options.video.preset_override = Some(QualityPreset::Auto);
+        assert_eq!(
+            ExtraRow::Preset.value_text(&config, &options),
+            "auto (high); yours",
+            "the saved choice matches what the process started with"
+        );
+
+        options.video.preset_override = Some(QualityPreset::Low);
+        assert_eq!(
+            ExtraRow::Preset.value_text(&config, &options),
+            "low (next start; now auto (high))",
+            "a pending choice must name both halves, or the row looks broken"
+        );
+    }
+
+    /// One lap hands the choice back to `config.yaml`. Without that step a
+    /// single click would take the setting away from the file for good.
+    #[test]
+    fn the_preset_row_can_hand_the_choice_back_to_the_file() {
+        let mut config = test_config();
+        let mut options = GameOptions::default();
+        for _ in 0..PRESET_STEPS.len() {
+            ExtraRow::Preset.cycle(&mut config, &mut options);
+        }
+        assert_eq!(options.video.preset_override, None);
+    }
+
     /// `off` is the faithful v1.188 setting (#366, #646): the default must
     /// stay off, and the mode row must start there rather than at a mode that
     /// renders grass the original never had.
@@ -1243,7 +1322,7 @@ mod tests {
         let config = test_config();
         assert_eq!(config.graphics.foliage.mode, FoliageMode::Off);
         assert_eq!(
-            ExtraRow::FoliageMode.value_text(&config),
+            ExtraRow::FoliageMode.value_text(&config, &GameOptions::default()),
             "Off (vanilla)",
             "the off state has to name itself as the original behaviour"
         );

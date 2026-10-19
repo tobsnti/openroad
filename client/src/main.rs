@@ -184,12 +184,19 @@ fn main() {
     // Loaded before the App is built: plugin registration below is decided by
     // config values (`dev_tools`, network), and NetworkPlugin reads the
     // resource during Plugin::build.
-    let mut config = plugins::config::ClientConfig::load();
+    // Read before the config, because the saved Graphics Preset row decides
+    // which preset layer goes *under* config.yaml while it is parsed.
+    let saved_options = plugins::settings::persistence::read_user_settings();
+    let mut config = plugins::config::ClientConfig::load(
+        saved_options
+            .as_ref()
+            .and_then(|options| options.video.preset_override),
+    );
     // The options window's saved graphics rows outrank config.yaml (as the
     // original's options file does), and some are read only while the app is
     // built (the sampler, the sheen materials): lay them over it now, not on
     // the first frame.
-    if let Some(options) = plugins::settings::persistence::read_user_settings() {
+    if let Some(options) = &saved_options {
         plugins::options_video::overlay_saved_rows(&options.video.graphic1, &mut config);
     }
 
