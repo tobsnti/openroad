@@ -554,7 +554,7 @@ pub fn track_storage_hover(
 /// observer backs off so the drop isn't double-handled.
 #[allow(clippy::too_many_arguments)]
 fn on_storage_slot_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     cells: Query<&StorageSlotCell>,
     state: Res<StorageState>,
     inv_state: Res<InventoryState>,
@@ -564,7 +564,7 @@ fn on_storage_slot_press(
     asset_server: Res<AssetServer>,
     mut commands: Commands,
 ) {
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     if carry.0.is_some() || inv_state.drag.is_some() {

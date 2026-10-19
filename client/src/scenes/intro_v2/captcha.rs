@@ -189,13 +189,13 @@ fn captcha_modal(
     // screen is therefore an openroad convention, not a reproduction; only the
     // 400x180 box art and the child rects below come from the original.
     bsn! {
-        modal_scrim()
+        @modal_scrim()
         CaptchaModal
         Name("Captcha Modal V2")
         TabGroup::new(0)
         Children [
             (
-                modal_plate(window, CAPTCHA_BOX_W, CAPTCHA_BOX_H)
+                @modal_plate(window, CAPTCHA_BOX_W, CAPTCHA_BOX_H)
                 Children [
                     (
                         Text({caption})
@@ -234,7 +234,7 @@ fn captcha_modal(
                         }
                     ),
                     (
-                        text_input(input_font, 0)
+                        @text_input(input_font, 0)
                         CaptchaInput
                         EditableTextFilter::new(char::is_alphanumeric)
                         Node {
@@ -247,7 +247,7 @@ fn captcha_modal(
                         }
                     ),
                     (
-                        image_button(confirm_button_style(assets), 55.0, 18.0)
+                        @image_button(confirm_button_style(assets), 55.0, 18.0)
                         Node {
                             position_type: PositionType::Absolute,
                             width: px(55),
@@ -256,10 +256,10 @@ fn captcha_modal(
                             left: px(257),
                         }
                         Children [
-                            // label() starts transparent for the fade systems,
+                            // @label() starts transparent for the fade systems,
                             // which never run on this modal, so force it white.
                             (
-                                label(&confirm, confirm_font, 12.0)
+                                @label(&confirm, confirm_font, 12.0)
                                 TextColor(Color::WHITE)
                             ),
                         ]

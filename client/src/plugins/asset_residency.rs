@@ -112,7 +112,7 @@ fn apply_residency_grace(
 /// A spawned resource wrapper going away (despawn, or a detach) parks its
 /// `.bsr` handle, and with it the meshes, material sets and textures it owns.
 fn park_released_resource(
-    remove: On<Remove, SpawnedFromResource>,
+    remove: On<Remove<SpawnedFromResource>>,
     from: Query<&SpawnedFromResource>,
     residency: Option<ResMut<AssetResidency>>,
     time: Res<Time>,

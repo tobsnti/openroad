@@ -259,12 +259,12 @@ pub fn update_magic_state_board(
 /// debuffs can't be clicked away). Local-sim only: no client→server buff
 /// cancel opcode is documented (see [`status::cancel_buff`]).
 fn on_buff_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     icons: Query<&BuffIcon>,
     mut buffs: Query<&mut ActiveBuffs, With<Player>>,
     mut commands: Commands,
 ) {
-    if press.event.button != PointerButton::Secondary {
+    if press.button != PointerButton::Secondary {
         return;
     }
     let Ok(BuffIcon(GaugeSource::Buff(codename))) = icons.get(press.entity) else {

@@ -96,24 +96,24 @@ pub fn login_form(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                 }
                 Children [
                     (
-                        label("ID", font.clone(), 16.0)
+                        @label("ID", font.clone(), 16.0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(35), width: px(59), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
-                        label("PW", font.clone(), 16.0)
+                        @label("PW", font.clone(), 16.0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(62), width: px(59), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
-                        label("Server", font.clone(), 16.0)
+                        @label("Server", font.clone(), 16.0)
                         Node { position_type: PositionType::Absolute, left: px(36), top: px(89), width: px(59), height: px(15), align_self: AlignSelf::FlexStart }
                     ),
                     (
-                        text_input(font.clone(), 0)
+                        @text_input(font.clone(), 0)
                         IdInput
                         Node { position_type: PositionType::Absolute, left: px(110), top: px(35), width: px(135), height: px(20) }
                     ),
                     (
-                        password_input::<PwInput>(font.clone(), 1)
+                        @password_input::<PwInput>(font.clone(), 1)
                         Node { position_type: PositionType::Absolute, left: px(110), top: px(62), width: px(135), height: px(20) }
                     ),
                     (
@@ -126,11 +126,11 @@ pub fn login_form(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                             justify_content: JustifyContent::Center,
                         }
                         Children [
-                            (label("", font.clone(), 16.0) ShardNameText),
+                            (@label("", font.clone(), 16.0) ShardNameText),
                         ]
                     ),
                     (
-                        image_button(list_button_style(assets), 48.0, 24.0)
+                        @image_button(list_button_style(assets), 48.0, 24.0)
                         ServerListButton
                         TabIndex(2)
                         ImageNode { color: Color::NONE }
@@ -162,21 +162,21 @@ pub fn login_form(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene {
                 }
                 Children [
                     (
-                        image_button(main_button_style(assets), 91.0, 41.0)
+                        @image_button(main_button_style(assets), 91.0, 41.0)
                         ConnectButton
                         TabIndex(3)
                         ImageNode { color: Color::NONE }
                         ButtonSound({button_sound.clone()})
-                        Children [ (label("Connect", font.clone(), 16.0)) ]
+                        Children [ (@label("Connect", font.clone(), 16.0)) ]
                         on(super::net::on_connect_activate)
                     ),
                     (
-                        image_button(main_button_style(assets), 91.0, 41.0)
+                        @image_button(main_button_style(assets), 91.0, 41.0)
                         ExitButton
                         TabIndex(4)
                         ImageNode { color: Color::NONE }
                         ButtonSound({button_sound})
-                        Children [ (label("Exit", font, 16.0)) ]
+                        Children [ (@label("Exit", font, 16.0)) ]
                         on(|_activate: On<Activate>, mut exit: MessageWriter<AppExit>| {
                             exit.write(AppExit::Success);
                         })

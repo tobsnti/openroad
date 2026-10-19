@@ -249,7 +249,7 @@ fn spawn_selected_player(
     };
 
     let mut player = commands.spawn((
-        Name::from(char.name.as_str()),
+        Name::new(char.name.clone()),
         DisplayName(char.name.clone()),
         Player::new(),
         GameCursorTarget::default(),

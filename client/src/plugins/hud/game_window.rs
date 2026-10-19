@@ -542,7 +542,7 @@ fn close_button_node(s: f32) -> Node {
 
 /// Start a window drag from the title bar: remember the root's anchor.
 fn on_chrome_drag_start(
-    drag: On<Pointer<DragStart>>,
+    drag: On<PointerDragStart>,
     targets: Query<&ChromeDragTarget>,
     roots: Query<&Node>,
     mut commands: Commands,
@@ -563,7 +563,7 @@ fn on_chrome_drag_start(
 
 /// Move the window with the pointer (the root is right/top-anchored).
 fn on_chrome_drag(
-    drag: On<Pointer<Drag>>,
+    drag: On<PointerDrag>,
     starts: Query<(&ChromeDragStart, &ChromeDragTarget)>,
     mut roots: Query<&mut Node>,
 ) {
@@ -573,8 +573,8 @@ fn on_chrome_drag(
     let Ok(mut node) = roots.get_mut(target.0) else {
         return;
     };
-    node.right = Val::Px(start.right - drag.event.distance.x);
-    node.top = Val::Px(start.top + drag.event.distance.y);
+    node.right = Val::Px(start.right - drag.distance.x);
+    node.top = Val::Px(start.top + drag.distance.y);
 }
 
 #[cfg(test)]

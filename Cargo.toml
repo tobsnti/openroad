@@ -24,7 +24,7 @@ repository = "https://github.com/ferdoran/openroad"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-bevy = { version = "0.19", features = ["dds", "serialize", "file_watcher", "wav", "bevy_animation"] }
+bevy = { version = "0.20", features = ["dds", "serialize", "file_watcher", "wav", "bevy_animation"] }
 bytes = "1.3.0"
 byteorder = "1.4.3"
 thiserror = "1"

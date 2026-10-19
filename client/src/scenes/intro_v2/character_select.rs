@@ -136,10 +136,10 @@ pub fn control_buttons(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene
         }
         Children [
             (
-                image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
                 ImageNode { color: Color::NONE }
                 ButtonSound({button_sound})
-                Children [ (label("Create", font, 16.0)) ]
+                Children [ (@label("Create", font, 16.0)) ]
                 on(|_activate: On<Activate>,
                     fade_timer: Option<Res<FadeToBlackTimer>>,
                     mut next_state: ResMut<NextState<IntroV2State>>,
@@ -159,10 +159,10 @@ pub fn control_buttons(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scene
                 })
             ),
             (
-                image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
                 ImageNode { color: Color::NONE }
                 ButtonSound({cancel_sound})
-                Children [ (label("Cancel", cancel_font, 16.0)) ]
+                Children [ (@label("Cancel", cancel_font, 16.0)) ]
                 on(|_activate: On<Activate>,
                     mut fade_writer: MessageWriter<FadeToBlack>,
                     mut commands: Commands| {
@@ -197,22 +197,22 @@ pub(crate) fn selected_control_buttons(assets: &IntroV2Assets, fonts: &FontAsset
         }
         Children [
             (
-                image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
                 StartButton
                 ButtonSound({start_sound})
-                Children [ (label("Start", start_font, 16.0) TextColor(Color::WHITE)) ]
+                Children [ (@label("Start", start_font, 16.0) TextColor(Color::WHITE)) ]
                 on(on_start_activate)
             ),
             (
-                image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
                 ButtonSound({delete_sound})
-                Children [ (label("Delete", delete_font, 16.0) TextColor(Color::WHITE)) ]
+                Children [ (@label("Delete", delete_font, 16.0) TextColor(Color::WHITE)) ]
                 on(on_delete_activate)
             ),
             (
-                image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
+                @image_button(main_button_style(assets), MAIN_BUTTON_W, MAIN_BUTTON_H)
                 ButtonSound({cancel_sound})
-                Children [ (label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE)) ]
+                Children [ (@label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE)) ]
                 on(on_selection_cancel_activate)
             ),
         ]
@@ -251,15 +251,15 @@ pub(crate) fn deleting_control_buttons(
         }
         Children [
             (
-                image_button(main_button_style(assets), 91.0, 41.0)
+                @image_button(main_button_style(assets), 91.0, 41.0)
                 ButtonSound({restore_sound})
-                Children [ (label(&restore_label, restore_font, 16.0) TextColor(Color::WHITE)) ]
+                Children [ (@label(&restore_label, restore_font, 16.0) TextColor(Color::WHITE)) ]
                 on(on_restore_activate)
             ),
             (
-                image_button(main_button_style(assets), 91.0, 41.0)
+                @image_button(main_button_style(assets), 91.0, 41.0)
                 ButtonSound({cancel_sound})
-                Children [ (label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE)) ]
+                Children [ (@label("Cancel", cancel_font, 16.0) TextColor(Color::WHITE)) ]
                 on(on_selection_cancel_activate)
             ),
         ]
@@ -428,7 +428,7 @@ pub fn on_char_selection_action_response(
                     SelectableCharacterV2,
                     Hovered::default(),
                     CharacterInfoV2(char.clone()),
-                    Name::from(char.name.as_str()),
+                    Name::new(char.name.clone()),
                 ));
                 if let Some(path) = path {
                     char_commands.insert(UnloadedResource(asset_server.load(path)));
@@ -585,10 +585,10 @@ pub fn clear_highlights(tinted: Query<(Entity, &OriginalMaterial)>, mut commands
     }
 }
 
-/// `Pointer<Click>` observer attached to each character root: marks the
+/// `PointerClick` observer attached to each character root: marks the
 /// character selected and flies the camera onto it.
 pub fn on_character_clicked(
-    click: On<Pointer<Click>>,
+    click: On<PointerClick>,
     selected: Option<Res<SelectedCharacterV2>>,
     transforms: Query<&Transform, With<SelectableCharacterV2>>,
     cam_query: Query<
@@ -597,7 +597,7 @@ pub fn on_character_clicked(
     >,
     mut commands: Commands,
 ) {
-    if selected.is_some() || click.event.button != PointerButton::Primary {
+    if selected.is_some() || click.button != PointerButton::Primary {
         return;
     }
 
@@ -783,7 +783,7 @@ pub(crate) fn info_box(
         Children [
             (
                 // the character name goes into the window's sunken slot
-                label(&name, name_font, font_size)
+                @label(&name, name_font, font_size)
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(name_l), top: px(name_t), width: px(name_w), height: px(row_h) }
             ),
@@ -864,33 +864,33 @@ pub(crate) fn info_box(
             ),
             // EXP and SP share one row, gold caption + white value each
             (
-                label("EXP", exp_cap_font, font_size)
+                @label("EXP", exp_cap_font, font_size)
                 TextColor({caption_color})
                 Node { position_type: PositionType::Absolute, left: px(exp_cap_l), top: px(stats_t), width: px(exp_cap_w), height: px(row_h) }
             ),
             (
-                label(&exp_text, exp_font, font_size)
+                @label(&exp_text, exp_font, font_size)
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(exp_val_l), top: px(stats_t), width: px(exp_val_w), height: px(row_h) }
             ),
             (
-                label("Stat", sp_cap_font, font_size)
+                @label("Stat", sp_cap_font, font_size)
                 TextColor({caption_color})
                 Node { position_type: PositionType::Absolute, left: px(sp_cap_l), top: px(stats_t), width: px(sp_cap_w), height: px(row_h) }
             ),
             (
-                label(&sp_text, sp_font, font_size)
+                @label(&sp_text, sp_font, font_size)
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(sp_val_l), top: px(stats_t), width: px(sp_val_w), height: px(row_h) }
             ),
             // LEVEL sits centered in the row below
             (
-                label("Level", level_cap_font, font_size)
+                @label("Level", level_cap_font, font_size)
                 TextColor({caption_color})
                 Node { position_type: PositionType::Absolute, left: px(level_cap_l), top: px(level_t), width: px(level_cap_w), height: px(row_h) }
             ),
             (
-                label(&level_text, level_font, font_size)
+                @label(&level_text, level_font, font_size)
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, left: px(level_val_l), top: px(level_t), width: px(level_val_w), height: px(row_h) }
             ),
@@ -1053,17 +1053,17 @@ fn delete_modal(
         .to_string();
 
     bsn! {
-        modal_scrim()
+        @modal_scrim()
         DeleteConfirmModal
         Name("Delete Confirmation Modal V2")
         Children [
             (
-                modal_plate(window, DELETE_MODAL_WIDTH, DELETE_MODAL_HEIGHT)
+                @modal_plate(window, DELETE_MODAL_WIDTH, DELETE_MODAL_HEIGHT)
                 Children [
                     (
-                        // label() starts transparent for the fade systems,
+                        // @label() starts transparent for the fade systems,
                         // which never run on this modal, so force it white.
-                        label(&confirmation_text, text_font, 12.0)
+                        @label(&confirmation_text, text_font, 12.0)
                         TextColor(Color::WHITE)
                         Node {
                             position_type: PositionType::Absolute,
@@ -1074,7 +1074,7 @@ fn delete_modal(
                         }
                     ),
                     (
-                        image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
+                        @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
                         Node {
                             position_type: PositionType::Absolute,
                             left: px(90),
@@ -1083,11 +1083,11 @@ fn delete_modal(
                             height: px(WARNING_BUTTON_HEIGHT),
                         }
                         ButtonSound({button_sound})
-                        Children [ (label(&accept_label, confirm_font, 12.0) TextColor(Color::WHITE)) ]
+                        Children [ (@label(&accept_label, confirm_font, 12.0) TextColor(Color::WHITE)) ]
                         on(on_delete_confirm_activate)
                     ),
                     (
-                        image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
+                        @image_button(warning_button_style(assets), WARNING_BUTTON_WIDTH, WARNING_BUTTON_HEIGHT)
                         Node {
                             position_type: PositionType::Absolute,
                             left: px(178),
@@ -1096,7 +1096,7 @@ fn delete_modal(
                             height: px(WARNING_BUTTON_HEIGHT),
                         }
                         ButtonSound({cancel_sound})
-                        Children [ (label(&cancel_label, cancel_font, 12.0) TextColor(Color::WHITE)) ]
+                        Children [ (@label(&cancel_label, cancel_font, 12.0) TextColor(Color::WHITE)) ]
                         on(|_activate: On<Activate>,
                             modal_query: Query<Entity, With<DeleteConfirmModal>>,
                             mut commands: Commands| {
@@ -1289,7 +1289,7 @@ fn join_loading_overlay(assets: &IntroV2Assets, fonts: &FontAssets) -> impl Scen
                 Pickable::IGNORE
             ),
             (
-                label("Joining world...", font, 16.0)
+                @label("Joining world...", font, 16.0)
                 TextColor(Color::WHITE)
                 Node { position_type: PositionType::Absolute, bottom: percent(10) }
             ),

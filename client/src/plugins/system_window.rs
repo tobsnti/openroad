@@ -279,7 +279,7 @@ fn spawn_button<M: Send + Sync + 'static>(
     y: f32,
     style: &ImageButtonStyle,
     font: &Handle<Font>,
-    observer: impl IntoObserverSystem<Activate, (), M>,
+    observer: impl IntoObserverSystem<Activate, M>,
 ) {
     let label = text.to_string();
     let font = font.clone();

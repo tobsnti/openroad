@@ -272,7 +272,7 @@ pub fn sync_dialog_window(
         window
             .spawn((NpcSpeechScroll, Hovered::default(), content_node))
             .observe(
-                |mut scroll: On<Pointer<Scroll>>,
+                |mut scroll: On<PointerScroll>,
                  mut lists: Query<(&mut ScrollPosition, &ComputedNode), With<NpcSpeechScroll>>| {
                     let Ok((mut pos, computed)) = lists.single_mut() else {
                         return;
@@ -280,7 +280,7 @@ pub fn sync_dialog_window(
                     let max = ((computed.content_size().y - computed.size().y)
                         * computed.inverse_scale_factor())
                     .max(0.0);
-                    pos.y = (pos.y - scroll.event.y * 30.0).clamp(0.0, max);
+                    pos.y = (pos.y - scroll.y * 30.0).clamp(0.0, max);
                     scroll.propagate(false);
                 },
             )

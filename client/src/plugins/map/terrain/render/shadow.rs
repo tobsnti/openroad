@@ -227,7 +227,7 @@ pub(super) fn specialize_terrain_shadows(
         else {
             continue;
         };
-        let Some(mesh_entities) = visible_entities.get::<Mesh3d>() else {
+        let Some(mesh_entities) = visible_entities.1.get::<Mesh3d>() else {
             continue;
         };
         let view_cache = cache
@@ -300,7 +300,7 @@ pub(super) fn queue_terrain_shadows(
             else {
                 break 'collect;
             };
-            let Some(mesh_entities) = visible_entities.get::<Mesh3d>() else {
+            let Some(mesh_entities) = visible_entities.1.get::<Mesh3d>() else {
                 break 'collect;
             };
             for (render_entity, main_entity) in mesh_entities.iter_visible() {

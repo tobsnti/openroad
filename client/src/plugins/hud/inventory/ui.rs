@@ -1954,7 +1954,7 @@ fn right_click_slot(
 /// the item under the cursor (see [`right_click_slot`]).
 #[allow(clippy::too_many_arguments)]
 pub fn on_slot_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     grid: Query<&InventoryGridCell>,
     equip: Query<&EquipSlotCell>,
     mut state: ResMut<InventoryState>,
@@ -1974,7 +1974,7 @@ pub fn on_slot_press(
     let Some(slot) = wire_slot_of(press.entity, &grid, &equip, &state) else {
         return;
     };
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         // A right-click while carrying just cancels the carry.
         if state.drag.is_some() {
             end_carry(&mut state, &ghosts, &mut commands);
@@ -2043,7 +2043,7 @@ pub fn on_slot_press(
     }
     match state.drag {
         None => {
-            let cursor = press.pointer_location.position;
+            let cursor = press.pointer.position;
             begin_carry(
                 slot,
                 cursor,
@@ -2071,7 +2071,7 @@ pub fn on_slot_press(
 /// different slot. Releasing over the source keeps carrying, which is what
 /// turns a plain click into the vanilla click-carry.
 pub fn on_slot_release(
-    mut release: On<Pointer<Release>>,
+    mut release: On<PointerRelease>,
     grid: Query<&InventoryGridCell>,
     equip: Query<&EquipSlotCell>,
     mut state: ResMut<InventoryState>,
@@ -2082,7 +2082,7 @@ pub fn on_slot_release(
     mut commands: Commands,
 ) {
     release.propagate(false);
-    if release.event.button != PointerButton::Primary {
+    if release.button != PointerButton::Primary {
         return;
     }
     let Some(source) = state.drag else {
@@ -2139,7 +2139,7 @@ fn equip_panel_drop(
 }
 
 pub fn on_equip_panel_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     mut state: ResMut<InventoryState>,
     inventories: Query<&Inventory, With<Player>>,
     item_data: Res<ClientItemData>,
@@ -2148,7 +2148,7 @@ pub fn on_equip_panel_press(
     mut commands: Commands,
 ) {
     equip_panel_drop(
-        press.event.button,
+        press.button,
         &mut state,
         &inventories,
         &item_data,
@@ -2159,7 +2159,7 @@ pub fn on_equip_panel_press(
 }
 
 pub fn on_equip_panel_release(
-    release: On<Pointer<Release>>,
+    release: On<PointerRelease>,
     mut state: ResMut<InventoryState>,
     inventories: Query<&Inventory, With<Player>>,
     item_data: Res<ClientItemData>,
@@ -2168,7 +2168,7 @@ pub fn on_equip_panel_release(
     mut commands: Commands,
 ) {
     equip_panel_drop(
-        release.event.button,
+        release.button,
         &mut state,
         &inventories,
         &item_data,
@@ -2216,7 +2216,7 @@ fn bag_panel_drop(
 }
 
 pub fn on_bag_panel_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     mut state: ResMut<InventoryState>,
     inventories: Query<&Inventory, With<Player>>,
     ghosts: Query<Entity, With<DragGhost>>,
@@ -2224,7 +2224,7 @@ pub fn on_bag_panel_press(
     mut commands: Commands,
 ) {
     bag_panel_drop(
-        press.event.button,
+        press.button,
         &mut state,
         &inventories,
         &ghosts,
@@ -2234,7 +2234,7 @@ pub fn on_bag_panel_press(
 }
 
 pub fn on_bag_panel_release(
-    release: On<Pointer<Release>>,
+    release: On<PointerRelease>,
     mut state: ResMut<InventoryState>,
     inventories: Query<&Inventory, With<Player>>,
     ghosts: Query<Entity, With<DragGhost>>,
@@ -2242,7 +2242,7 @@ pub fn on_bag_panel_release(
     mut commands: Commands,
 ) {
     bag_panel_drop(
-        release.event.button,
+        release.button,
         &mut state,
         &inventories,
         &ghosts,
@@ -2505,12 +2505,19 @@ mod test {
             position: Vec2::ZERO,
         };
         let hit = HitData::new(Entity::PLACEHOLDER, 0.0, None, None);
+        let pointer = Pointer::new(PointerId::Mouse, location);
         if over {
-            app.world_mut()
-                .trigger(Pointer::new(PointerId::Mouse, location, Over { hit }, cell));
+            app.world_mut().trigger(PointerOver {
+                entity: cell,
+                pointer,
+                hit,
+            });
         } else {
-            app.world_mut()
-                .trigger(Pointer::new(PointerId::Mouse, location, Out { hit }, cell));
+            app.world_mut().trigger(PointerOut {
+                entity: cell,
+                pointer,
+                hit,
+            });
         }
         app.world_mut().flush();
     }
@@ -2549,7 +2556,7 @@ mod test {
         assert_eq!(
             app.world().resource::<InventoryState>().hovered_slot,
             Some(BAG_FIRST_SLOT + 3),
-            "Pointer<Over> on a bag cell did not reach on_slot_over"
+            "PointerOver on a bag cell did not reach on_slot_over"
         );
         hover(&mut app, cell, false);
         assert_eq!(app.world().resource::<InventoryState>().hovered_slot, None);
@@ -2560,11 +2567,11 @@ mod test {
         assert_eq!(
             app.world().resource::<InventoryState>().hovered_slot,
             Some(slot),
-            "Pointer<Over> on an equipment cell did not reach on_slot_over"
+            "PointerOver on an equipment cell did not reach on_slot_over"
         );
     }
 
-    /// `Pointer<Over>.entity` is the entity the backend actually hit, so a
+    /// `PointerOver.entity` is the entity the backend actually hit, so a
     /// pickable child (glow, icon, stack count, placeholder art) makes
     /// `on_slot_over`'s `grid.get(entity)` miss and the tooltip never opens.
     /// Every descendant of a slot cell must therefore be `Pickable::IGNORE`.

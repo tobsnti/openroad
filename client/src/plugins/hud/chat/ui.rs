@@ -19,7 +19,7 @@
 //! changes (capped at [`MAX_RENDERED_LINES`] rows).
 
 use bevy::input_focus::InputFocus;
-use bevy::picking::events::{Drag, DragStart, Pointer, Scroll};
+use bevy::picking::events::{PointerDrag, PointerDragStart, PointerScroll};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::EditableText;
@@ -376,14 +376,14 @@ fn chat_window(
                 Pickable::IGNORE
                 Children [
                     (
-                        image_button(whisper_style, wb_w, wb_h)
+                        @image_button(whisper_style, wb_w, wb_h)
                         Node { position_type: PositionType::Absolute, left: px(wb_l), top: px(wb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.whisper_panel_open = !state.whisper_panel_open;
                         })
                     ),
                     (
-                        image_button(hide_style, hb_w, hb_h)
+                        @image_button(hide_style, hb_w, hb_h)
                         Node { position_type: PositionType::Absolute, left: px(hb_l), top: px(hb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.collapsed = !state.collapsed;
@@ -401,11 +401,11 @@ fn chat_window(
                         }
                         Pickable::IGNORE
                         Children [
-                            (tab_cell(asset_server, fonts, ChatTab::All)),
-                            (tab_cell(asset_server, fonts, ChatTab::Party)),
-                            (tab_cell(asset_server, fonts, ChatTab::Guild)),
-                            (tab_cell(asset_server, fonts, ChatTab::Alliance)),
-                            (tab_cell(asset_server, fonts, ChatTab::Academy)),
+                            (@tab_cell(asset_server, fonts, ChatTab::All)),
+                            (@tab_cell(asset_server, fonts, ChatTab::Party)),
+                            (@tab_cell(asset_server, fonts, ChatTab::Guild)),
+                            (@tab_cell(asset_server, fonts, ChatTab::Alliance)),
+                            (@tab_cell(asset_server, fonts, ChatTab::Academy)),
                         ]
                     ),
                 ]
@@ -458,12 +458,12 @@ fn chat_window(
                             overflow: {Overflow::scroll_y()},
                         }
                         ScrollPosition(Vec2::ZERO)
-                        on(|scroll: On<Pointer<Scroll>>,
+                        on(|scroll: On<PointerScroll>,
                             mut list: Query<(&mut ScrollPosition, &ComputedNode), With<ChatMessageList>>,
                             mut state: ResMut<ChatState>| {
                             let Ok((mut pos, computed)) = list.single_mut() else { return };
                             let current = computed.scroll_position.y * computed.inverse_scale_factor;
-                            scroll_list_to(&mut pos, computed, &mut state, current - scroll.event.y * WHEEL_STEP);
+                            scroll_list_to(&mut pos, computed, &mut state, current - scroll.y * WHEEL_STEP);
                         })
                     ),
                     // scrollbar spanning the body's full height:
@@ -529,14 +529,14 @@ fn chat_window(
                                             width: px(GUTTER_W * hud_scale()),
                                             height: px(GUTTER_W * hud_scale()),
                                         }
-                                        on(|drag: On<Pointer<DragStart>>,
+                                        on(|drag: On<PointerDragStart>,
                                             mut commands: Commands,
                                             list: Query<&ComputedNode, With<ChatMessageList>>| {
                                             let Ok(computed) = list.single() else { return };
                                             let current = computed.scroll_position.y * computed.inverse_scale_factor;
                                             commands.entity(drag.entity).insert(ChatThumbDrag(current));
                                         })
-                                        on(|drag: On<Pointer<Drag>>,
+                                        on(|drag: On<PointerDrag>,
                                             starts: Query<&ChatThumbDrag>,
                                             track: Query<&ComputedNode, With<ChatScrollTrack>>,
                                             mut list: Query<(&mut ScrollPosition, &ComputedNode), With<ChatMessageList>>,
@@ -548,7 +548,7 @@ fn chat_window(
                                             if track_h <= 0.0 { return }
                                             let content_h = computed.content_size.y * computed.inverse_scale_factor;
                                             // thumb px -> scroll px: linear with ratio content/track
-                                            let delta = drag.event.distance.y * content_h / track_h;
+                                            let delta = drag.distance.y * content_h / track_h;
                                             scroll_list_to(&mut pos, computed, &mut state, start + delta);
                                         })
                                     ),
@@ -590,7 +590,7 @@ fn chat_window(
                 Pickable::IGNORE
                 Children [
                     (
-                        image_button(zoom_style, zb_w, zb_h)
+                        @image_button(zoom_style, zb_w, zb_h)
                         Node { position_type: PositionType::Absolute, left: px(zb_l), top: px(zb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.expanded = !state.expanded;
@@ -600,7 +600,7 @@ fn chat_window(
                     // hidden until the server restricts chat (0x302D)
                     (
                         ChatPenaltyLabel
-                        label("", penalty_font, TAB_FONT_SIZE * hud_scale())
+                        @label("", penalty_font, TAB_FONT_SIZE * hud_scale())
                         TextColor(PENALTY_COLOR)
                         Node {
                             position_type: PositionType::Absolute,
@@ -613,7 +613,7 @@ fn chat_window(
                     // GDR_CHAT_MODE_BTN + its CreateChatMode dropdown body
                     (
                         ChatModeButton
-                        image_button(mode_style, mb_w, mb_h)
+                        @image_button(mode_style, mb_w, mb_h)
                         Node { position_type: PositionType::Absolute, left: px(mb_l), top: px(mb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.mode_open = !state.mode_open;
@@ -644,11 +644,11 @@ fn chat_window(
                                     flex_direction: FlexDirection::Column,
                                 }
                                 Children [
-                                    (mode_row(fonts, ui_strings, ChatTab::All)),
-                                    (mode_row(fonts, ui_strings, ChatTab::Party)),
-                                    (mode_row(fonts, ui_strings, ChatTab::Guild)),
-                                    (mode_row(fonts, ui_strings, ChatTab::Alliance)),
-                                    (mode_row(fonts, ui_strings, ChatTab::Academy)),
+                                    (@mode_row(fonts, ui_strings, ChatTab::All)),
+                                    (@mode_row(fonts, ui_strings, ChatTab::Party)),
+                                    (@mode_row(fonts, ui_strings, ChatTab::Guild)),
+                                    (@mode_row(fonts, ui_strings, ChatTab::Alliance)),
+                                    (@mode_row(fonts, ui_strings, ChatTab::Academy)),
                                 ]
                             ),
                             (
@@ -669,7 +669,7 @@ fn chat_window(
                         }
                         Children [
                             (
-                                text_input(input_font, 0)
+                                @text_input(input_font, 0)
                                 ChatInputBox
                             ),
                         ]
@@ -690,7 +690,7 @@ fn chat_window(
                 }
                 Children [
                     (
-                        label(&whisper_title, whisper_title_font, TAB_FONT_SIZE * hud_scale())
+                        @label(&whisper_title, whisper_title_font, TAB_FONT_SIZE * hud_scale())
                         TextColor(Color::WHITE)
                         Node { height: px(14.0 * hud_scale()) }
                     ),
@@ -764,7 +764,7 @@ fn tab_cell(asset_server: &AssetServer, fonts: &FontAssets, tab: ChatTab) -> imp
             ),
             (
                 ChatTabLabel { tab: {tab} }
-                label(text, font, TAB_FONT_SIZE * hud_scale())
+                @label(text, font, TAB_FONT_SIZE * hud_scale())
             ),
         ]
     }
@@ -813,7 +813,7 @@ fn mode_row(fonts: &FontAssets, ui_strings: &ClientUiStrings, tab: ChatTab) -> i
         Children [
             (
                 ChatModeRowLabel { tab: {tab} }
-                label(&text, font, TAB_FONT_SIZE * hud_scale())
+                @label(&text, font, TAB_FONT_SIZE * hud_scale())
             ),
         ]
     }

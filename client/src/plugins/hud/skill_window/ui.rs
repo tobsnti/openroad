@@ -1195,7 +1195,7 @@ pub fn refresh_skill_window(
                 ScrollPosition(Vec2::new(0.0, state.scroll_y)),
             ))
             .observe(
-                |mut scroll: On<Pointer<Scroll>>,
+                |mut scroll: On<PointerScroll>,
                  mut lists: Query<(&mut ScrollPosition, &ComputedNode), With<SkillRowsNode>>| {
                     let Ok((mut pos, computed)) = lists.single_mut() else {
                         return;
@@ -1203,7 +1203,7 @@ pub fn refresh_skill_window(
                     let max = ((computed.content_size().y - computed.size().y)
                         * computed.inverse_scale_factor())
                     .max(0.0);
-                    pos.y = (pos.y - scroll.event.y * 30.0).clamp(0.0, max);
+                    pos.y = (pos.y - scroll.y * 30.0).clamp(0.0, max);
                     scroll.propagate(false);
                 },
             )
@@ -1699,7 +1699,7 @@ fn spawn_skill_cell(
 // --- Interactions -----------------------------------------------------------
 
 fn on_top_tab_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     tabs: Query<&TopTab>,
     mut state: ResMut<SkillWindowState>,
 ) {
@@ -1715,7 +1715,7 @@ fn on_top_tab_press(
 }
 
 fn on_mastery_tab_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     tabs: Query<&MasteryTab>,
     mut state: ResMut<SkillWindowState>,
 ) {
@@ -1777,7 +1777,7 @@ fn on_mastery_plus(
 /// ladder (#317).
 #[allow(clippy::too_many_arguments)]
 pub fn on_skill_cell_press(
-    mut press: On<Pointer<Press>>,
+    mut press: On<PointerPress>,
     cells: Query<&SkillCell>,
     skill_data: Res<ClientSkillData>,
     book: Res<SkillBook>,
@@ -1792,7 +1792,7 @@ pub fn on_skill_cell_press(
     let Ok(cell) = cells.get(press.entity) else {
         return;
     };
-    match press.event.button {
+    match press.button {
         PointerButton::Secondary => {
             // Right-press still never levels a skill down by itself — it
             // raises the removal box, which is where the decision is taken
@@ -1827,7 +1827,7 @@ pub fn on_skill_cell_press(
             drag.skill = Some(learned_id as u32);
             drag.from_underbar = false;
             let size = ICON_SIZE * hud_scale();
-            let cursor = press.pointer_location.position;
+            let cursor = press.pointer.position;
             commands.spawn(drag_ghost_bundle(
                 "Skill Drag Ghost",
                 asset_server.load(icon),

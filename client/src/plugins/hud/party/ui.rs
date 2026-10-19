@@ -1070,7 +1070,7 @@ fn on_footer_button(
 /// rows 1..7 carry this.
 #[allow(clippy::too_many_arguments)]
 fn on_party_row_click(
-    click: On<Pointer<Press>>,
+    click: On<PointerPress>,
     slots: Query<&PartyRowSlot>,
     views: Res<PartyRowViews>,
     roster: Option<Res<PartyRoster>>,
