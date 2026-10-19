@@ -193,6 +193,7 @@ impl ClientConfig {
     /// (#539). `pub(crate)` so tests outside this module can build a config
     /// from the shipped example instead of from a struct literal that would
     /// drift away from what users actually run.
+    #[cfg(test)]
     pub(crate) fn from_file(name: &str) -> Result<Self, config::ConfigError> {
         // Unit tests build configs from the shipped example and must not
         // depend on the machine's GPU: under test, `auto` resolves as for a
@@ -213,6 +214,7 @@ impl ClientConfig {
     /// sets wins over the preset (see `preset.rs`). The probe runs whatever
     /// the preset: plugin registration also depends on the GPU class (see
     /// [`Self::gpu`]).
+    #[cfg(test)]
     pub(crate) fn from_file_with(
         name: &str,
         probe: impl FnOnce() -> Option<preset::GpuSummary>,
@@ -220,9 +222,17 @@ impl ClientConfig {
         Self::from_file_with_preset(name, probe, None)
     }
 
-    /// [`from_file_with`](Self::from_file_with) with the options window's
-    /// saved preset row (`video.preset_override`) laid over the file's
+    /// Load and deserialize one config file (name without extension, as
+    /// `config::File::with_name` wants it), with the options window's saved
+    /// preset row (`video.preset_override`) laid over the file's
     /// `graphics.preset`. `None` means "follow the file".
+    ///
+    /// Two passes: the first reads only `graphics.preset` (resolving `auto`
+    /// from the probed GPU), the second layers that preset's YAML *under* the
+    /// user's file. config-rs merges sources key by key, so every key the user
+    /// sets wins over the preset (see `preset.rs`). The probe runs whatever
+    /// the preset: plugin registration also depends on the GPU class (see
+    /// [`Self::gpu`]).
     pub(crate) fn from_file_with_preset(
         name: &str,
         probe: impl FnOnce() -> Option<preset::GpuSummary>,
