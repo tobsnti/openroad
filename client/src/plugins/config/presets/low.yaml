@@ -12,10 +12,10 @@ graphics:
     terrain_lod: aggressive
     # other players, NPCs and monsters drawn this far (0 = all the server sends)
     character_distance: 1500.0
-  # MSAA multiplies fill cost, and so does the FXAA pass; the 75% render
-  # scale upscale softens edges anyway
+  # MSAA multiplies fill cost, and so does a full-screen post pass; the 75%
+  # render scale upscale softens edges anyway
   msaa: 1
-  fxaa: false
+  anti_alias: "off"   # quoted: bare `off` is a YAML boolean
   # model textures and ground tiles one mip level down: ~1/4 of their VRAM
   texture_detail: half
   # plain trilinear: anisotropic taps cost texture bandwidth an old card lacks

@@ -335,10 +335,30 @@ graphics:
   # `camera::apply_window_camera_msaa`); the offscreen portrait and paper-doll
   # rigs are unaffected.
   # msaa: 4
-  # FXAA post pass on the window cameras: a full-screen pass (~1 ms at
-  # 1920x1080 on an integrated GPU) and the only edge smoothing once msaa is 1.
-  # Applies to cameras spawned afterwards (the next scene).
-  # fxaa: true
+  # Edge smoothing: off | fxaa | smaa | taa. One value, because these are
+  # alternatives, not layers - they all smooth the same finished edges, so two
+  # at once pay twice for one result. Applies to cameras spawned afterwards
+  # (the next scene).
+  #
+  #   fxaa  a full-screen pass (~1 ms at 1920x1080 on an integrated GPU) and the
+  #         only edge smoothing once msaa is 1. The default, as it always was.
+  #   smaa  more search steps than FXAA plus diagonal/corner detection, no
+  #         prepass needed. Opt-in: nobody has measured its cost on this
+  #         project's frame yet, so no preset prescribes it.
+  #   taa   temporal. NEEDS msaa: 1 - with MSAA on, bevy warns and the pass does
+  #         nothing. It also pulls in a depth AND motion-vector prepass, so it
+  #         changes what the frame renders, not just how it is filtered.
+  #   off   raw edges, which is what the original client's output looks like.
+  #
+  # Replaces the old `fxaa: true|false`. A leftover `fxaa:` key in your own
+  # config.yaml is simply ignored (an unknown key), the same way the retired
+  # `window_mode:` key is - delete it when you next edit the file.
+  # anti_alias: fxaa
+  # Contrast-adaptive sharpening strength, 0.0 (off, the default) to 1.0. The
+  # counterpart to a softened image: every post-AA pass above and every
+  # render_scale below 1.0 blur a little, and this wins some of it back. 0.6 is
+  # the value bevy's own CAS ships with. Next scene, like anti_alias.
+  # sharpening: 0.0
   # How much of each world texture's mip chain is uploaded: full | half |
   # quarter. half starts model textures and ground tiles one level down (half
   # the width and height, ~1/4 of their VRAM); quarter one further (~1/16).

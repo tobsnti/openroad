@@ -205,7 +205,8 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                updates the level live, but each texture keeps the level it \
                was loaded with, and the ground-tile arrays are built once). \
                Next \
-               camera spawn, i.e. the next scene: `msaa`, `fxaa`, \
+               camera spawn, i.e. the next scene: `msaa`, `anti_alias`, \
+               `sharpening`, \
                `depth_prepass`, `sky_reflections` \
                (camera::apply_window_camera_msaa on Added<Camera>), \
                `tonemapping` and `shadows.filtering` (the spawn sites). \

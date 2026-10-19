@@ -70,9 +70,12 @@ pub struct GraphicsSettings {
     pub objects: ObjectLodSettings,
     #[serde(default)]
     pub msaa: MsaaSamples,
-    /// FXAA post pass on the window cameras — see [`FxaaSetting`].
+    /// Which edge-smoothing pass runs — see [`AntiAlias`].
     #[serde(default)]
-    pub fxaa: FxaaSetting,
+    pub anti_alias: AntiAlias,
+    /// Contrast-adaptive sharpening strength — see [`Sharpening`].
+    #[serde(default)]
+    pub sharpening: Sharpening,
     /// Mip levels dropped from world textures — see [`TextureDetail`].
     #[serde(default)]
     pub texture_detail: TextureDetail,
@@ -453,22 +456,77 @@ impl Anisotropy {
     }
 }
 
-/// Whether the window cameras run Bevy's FXAA post pass (`graphics.fxaa`).
+/// Which edge-smoothing pass the window cameras run (`graphics.anti_alias`).
 ///
-/// It is a full-screen pass, about 1 ms at 1920x1080 on an integrated GPU
-/// (`docs/perf-remote.md`), and the only edge smoothing left once MSAA is
-/// off. On by default, as it always was. The low preset turns it off: on a
-/// DX10-class card a full-screen pass costs proportionally more, and that
-/// preset also renders below window resolution, where the upscale softens
-/// edges anyway. A newtype so the derived `GraphicsSettings::default()`
-/// agrees with the serde default.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct FxaaSetting(pub bool);
+/// One value rather than one switch per method, because these are
+/// **alternatives, not layers**: all three read the same finished image and
+/// smooth the same edges, so two of them at once pay twice for one result.
+/// `bevy_anti_alias` ships all of them in `DefaultPlugins`
+/// (`bevy_internal/src/default_plugins.rs`), so nothing here registers a
+/// plugin — only components on the camera.
+///
+/// This replaces the old `fxaa: bool`. A stale `fxaa:` key in an existing
+/// `config.yaml` becomes an unknown key and is ignored, which is how this tree
+/// retires a renamed setting without a migration (the same decision as the
+/// retired `window_mode:` key, see `settings::options::VideoOptions`).
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AntiAlias {
+    /// No post pass. With `msaa: 1` as well, edges are raw — which is what the
+    /// original client's output looks like, and what the `low` preset picks
+    /// because a full-screen pass costs proportionally more on an old card
+    /// that is also already rendering below window resolution.
+    Off,
+    /// Bevy's FXAA: a full-screen pass, ~1 ms at 1920x1080 on an integrated
+    /// GPU (`docs/perf-remote.md`). The default, as it always was.
+    #[default]
+    Fxaa,
+    /// SMAA at its `High` preset (`bevy_anti_alias::smaa`): more search steps
+    /// than FXAA, diagonal and corner detection, and no prepass needed.
+    /// Opt-in: nobody has measured its cost on this project's frame yet, so no
+    /// preset prescribes it.
+    Smaa,
+    /// Temporal AA. **Needs `msaa: 1`**: with MSAA on, bevy warns
+    /// ("Temporal anti-aliasing requires MSAA to be disabled",
+    /// `bevy_anti_alias/src/taa/mod.rs`) and the pass does nothing. It also
+    /// pulls in a depth *and* motion-vector prepass, so it is the one option
+    /// here that changes what the frame renders rather than only how it is
+    /// filtered.
+    Taa,
+}
 
-impl Default for FxaaSetting {
-    fn default() -> Self {
-        Self(true)
+/// Contrast-adaptive sharpening strength (`graphics.sharpening`), 0.0 = off.
+///
+/// A float rather than a step enum because the range is not ours to invent:
+/// `ContrastAdaptiveSharpening` clamps to 0..=1 and ships 0.6 as its own
+/// default (`bevy_anti_alias/src/contrast_adaptive_sharpening/mod.rs`). So the
+/// only thing this file decides is that 0.0 means "do not attach the pass".
+///
+/// What it is for: every method above, and `render_scale` below 1.0, soften
+/// the image — the crate's own words are "usually used in combination with
+/// shader based anti-aliasing methods such as FXAA or TAA to regain some of
+/// the lost detail from the blurring that they introduce". Off by default, as
+/// the client always was.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+#[serde(transparent)]
+pub struct Sharpening(pub f32);
+
+impl Sharpening {
+    /// The strength to give the pass, or `None` while it is off. Out-of-range
+    /// values clamp into bevy's own 0..=1 rather than being refused: the
+    /// crate clamps anyway, and a silent disagreement between our value and
+    /// the one in effect is worse than a clamp.
+    pub fn strength(self) -> Option<f32> {
+        if !self.0.is_finite() || self.0 <= 0.0 {
+            return None;
+        }
+        if self.0 > 1.0 {
+            bevy::log::warn_once!(
+                "graphics.sharpening: {} is past 1.0, the maximum CAS accepts; clamping",
+                self.0
+            );
+        }
+        Some(self.0.min(1.0))
     }
 }
 

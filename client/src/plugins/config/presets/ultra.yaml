@@ -11,7 +11,7 @@ graphics:
     # other players, NPCs and monsters drawn this far (0 = all the server sends)
     character_distance: 0.0
   msaa: 4
-  fxaa: true
+  anti_alias: fxaa
   texture_detail: full
   anisotropy: 16
   bloom:

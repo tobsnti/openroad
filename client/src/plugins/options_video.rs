@@ -29,7 +29,9 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
-use crate::plugins::config::graphics::{FoliageMode, RenderMode, RenderScale};
+use crate::plugins::config::graphics::{
+    AntiAlias, FoliageMode, RenderMode, RenderScale, Sharpening,
+};
 use crate::plugins::config::preset::QualityPreset;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::options::{GameOptions, GraphicProfile};
@@ -161,14 +163,34 @@ enum Requirement {
     /// and `render_mode: vanilla` — the faithful default — is the mode that
     /// draws none.
     PbrLighting,
+    /// Temporal AA needs `msaa: 1`. With MSAA on, bevy warns
+    /// ("Temporal anti-aliasing requires MSAA to be disabled",
+    /// `bevy_anti_alias/src/taa/mod.rs`) and the pass returns without doing
+    /// anything. The row says so rather than turning MSAA off behind the
+    /// player's back: `msaa` is their other control, and a control has one
+    /// writer.
+    MsaaOff,
 }
 
 impl Requirement {
+    /// The condition that applies to an openroad row, which — unlike a
+    /// `ConfigRow`'s — can depend on the value the row is currently on: only
+    /// the TAA step needs MSAA off, the other three do not.
+    fn for_extra_row(row: ExtraRow, config: &ClientConfig) -> Self {
+        match row {
+            ExtraRow::AntiAlias if config.graphics.anti_alias == AntiAlias::Taa => {
+                Requirement::MsaaOff
+            }
+            _ => Requirement::Always,
+        }
+    }
+
     /// Whether this config, on this machine, can honour the row.
     fn met(self, config: &ClientConfig) -> bool {
         match self {
             Requirement::Always => true,
             Requirement::PbrLighting => config.graphics.render_mode == RenderMode::Pbr,
+            Requirement::MsaaOff => config.graphics.msaa.0 == 1,
         }
     }
 
@@ -179,6 +201,7 @@ impl Requirement {
         match self {
             Requirement::Always => None,
             Requirement::PbrLighting => Some("no effect in vanilla lighting"),
+            Requirement::MsaaOff => Some("no effect while MSAA is on"),
         }
     }
 }
@@ -717,6 +740,13 @@ pub(crate) enum ExtraRow {
     /// Named after the original's own *sight range* vocabulary, which is the
     /// closest thing it has to this concept.
     FoliageSightRange,
+    /// `graphics.anti_alias` — which edge-smoothing pass runs. Takes effect on
+    /// the next camera spawn, i.e. the next scene, like `msaa` beside it.
+    AntiAlias,
+    /// `graphics.sharpening` — contrast-adaptive sharpening strength, the
+    /// counterpart to a softened image (any post-AA pass, or `render_scale`
+    /// below 1.0). Next scene, same reason.
+    Sharpening,
     /// `graphics.render_scale` — the 3D view's resolution as a share of the
     /// window, the largest single lever in the frame (the cost tracks pixels,
     /// see `config::graphics::RenderScale`). Live.
@@ -737,9 +767,11 @@ pub(crate) enum ExtraRow {
     Preset,
 }
 
-const EXTRA_ROWS: [ExtraRow; 5] = [
+const EXTRA_ROWS: [ExtraRow; 7] = [
     ExtraRow::Preset,
     ExtraRow::RenderScale,
+    ExtraRow::AntiAlias,
+    ExtraRow::Sharpening,
     ExtraRow::FoliageMode,
     ExtraRow::FoliageDensity,
     ExtraRow::FoliageSightRange,
@@ -760,6 +792,17 @@ const SIGHT_RANGE_STEPS: [f32; 4] = [150.0, 300.0, 600.0, 0.0];
 /// Render-scale steps. 1.0 is the native default and sits in the middle: the
 /// two below it buy frames, the two above spend them on supersampling.
 const RENDER_SCALE_STEPS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
+/// The four edge-smoothing choices, cheapest first.
+const ANTI_ALIAS_STEPS: [AntiAlias; 4] = [
+    AntiAlias::Off,
+    AntiAlias::Fxaa,
+    AntiAlias::Smaa,
+    AntiAlias::Taa,
+];
+/// Sharpening steps. 0.6 is not ours: it is the default
+/// `ContrastAdaptiveSharpening` ships with, so the scale is hung on it rather
+/// than on three invented thirds.
+const SHARPENING_STEPS: [f32; 4] = [0.0, 0.3, 0.6, 1.0];
 const PRESET_STEPS: [Option<QualityPreset>; 6] = [
     None,
     Some(QualityPreset::Auto),
@@ -780,6 +823,8 @@ impl ExtraRow {
             ExtraRow::FoliageSightRange => "Grass Sight Range (openroad)",
             ExtraRow::Preset => "Graphics Preset (openroad)",
             ExtraRow::RenderScale => "Render Scale (openroad)",
+            ExtraRow::AntiAlias => "Antialiasing (openroad)",
+            ExtraRow::Sharpening => "Sharpening (openroad)",
         }
     }
 
@@ -794,6 +839,31 @@ impl ExtraRow {
                 FoliageMode::Both => "Authored + Bundled".to_string(),
             },
             ExtraRow::FoliageDensity => format!("{:.1}x", foliage.density),
+            ExtraRow::AntiAlias => {
+                let name = match config.graphics.anti_alias {
+                    AntiAlias::Off => "Off",
+                    AntiAlias::Fxaa => "FXAA",
+                    AntiAlias::Smaa => "SMAA (high)",
+                    AntiAlias::Taa => "TAA",
+                };
+                match Requirement::for_extra_row(self, config).met(config) {
+                    true => format!("{name} (next scene)"),
+                    false => format!(
+                        "{name} ({})",
+                        Requirement::MsaaOff
+                            .unmet_note()
+                            .expect("MsaaOff carries a note")
+                    ),
+                }
+            }
+            ExtraRow::Sharpening => match config.graphics.sharpening.strength() {
+                None => "Off".to_string(),
+                // 0.6 is named because it is CAS's own default, not ours.
+                Some(strength) if (strength - 0.6).abs() < f32::EPSILON => {
+                    "60% (bevy default, next scene)".to_string()
+                }
+                Some(strength) => format!("{:.0}% (next scene)", strength * 100.0),
+            },
             // What is in effect, not what the file says: a hand-edited 3.0
             // clamps, and the row has to show where it landed.
             ExtraRow::RenderScale => {
@@ -857,6 +927,19 @@ impl ExtraRow {
                 let graphics = &mut config.graphics;
                 graphics.render_scale =
                     RenderScale(next_step(&RENDER_SCALE_STEPS, graphics.render_scale.0))
+            }
+            ExtraRow::AntiAlias => {
+                let graphics = &mut config.graphics;
+                let at = ANTI_ALIAS_STEPS
+                    .iter()
+                    .position(|step| *step == graphics.anti_alias)
+                    .unwrap_or(0);
+                graphics.anti_alias = ANTI_ALIAS_STEPS[(at + 1) % ANTI_ALIAS_STEPS.len()];
+            }
+            ExtraRow::Sharpening => {
+                let graphics = &mut config.graphics;
+                graphics.sharpening =
+                    Sharpening(next_step(&SHARPENING_STEPS, graphics.sharpening.0))
             }
             ExtraRow::Preset => {
                 let at = PRESET_STEPS
@@ -942,12 +1025,23 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
 pub(crate) fn refresh_extra_rows(
     config: Res<ClientConfig>,
     options: Res<GameOptions>,
-    mut rows: Query<(&ExtraRow, &mut Text)>,
+    mut rows: Query<(&ExtraRow, &mut Text, &mut TextColor)>,
 ) {
-    for (row, mut text) in rows.iter_mut() {
+    for (row, mut text, mut color) in rows.iter_mut() {
         let wanted = row.value_text(&config, &options);
         if text.0 != wanted {
             *text = Text::new(wanted);
+        }
+        // Dimmed while a condition is unmet, exactly as the config-backed rows
+        // are (`refresh_config_rows`): one rule, both kinds of row.
+        let unmet = !Requirement::for_extra_row(*row, &config).met(&config);
+        let wanted = if unmet {
+            UNBACKED_COLOR
+        } else {
+            OPENROAD_COLOR
+        };
+        if color.0 != wanted {
+            color.0 = wanted;
         }
     }
 }
@@ -1220,6 +1314,7 @@ pub(crate) fn apply_bloom_option(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::config::graphics::MsaaSamples;
 
     #[test]
     fn detail_rows_cover_the_named_sroptionset_ids() {
@@ -1361,6 +1456,8 @@ mod tests {
                 ExtraRow::FoliageSightRange => SIGHT_RANGE_STEPS.len(),
                 ExtraRow::Preset => PRESET_STEPS.len(),
                 ExtraRow::RenderScale => RENDER_SCALE_STEPS.len(),
+                ExtraRow::AntiAlias => ANTI_ALIAS_STEPS.len(),
+                ExtraRow::Sharpening => SHARPENING_STEPS.len(),
             };
             let mut seen = vec![start.clone()];
             for _ in 0..steps {
@@ -1448,6 +1545,84 @@ mod tests {
             .map(|row| row.id)
             .collect();
         assert_eq!(conditional, vec![1]);
+    }
+
+    /// The TAA step is the one value in the pane whose condition depends on
+    /// *another* row: with MSAA on, bevy's TAA pass warns and returns. The row
+    /// says so instead of turning MSAA off behind the player's back.
+    #[test]
+    fn the_taa_step_names_the_msaa_condition_and_only_that_step_does() {
+        let mut config = test_config();
+        let options = GameOptions::default();
+        assert_eq!(config.graphics.msaa.0, 4, "the high preset ships MSAA 4x");
+
+        for step in ANTI_ALIAS_STEPS {
+            config.graphics.anti_alias = step;
+            let text = ExtraRow::AntiAlias.value_text(&config, &options);
+            let conditional = step == AntiAlias::Taa;
+            assert_eq!(
+                text.contains("no effect while MSAA is on"),
+                conditional,
+                "{step:?} with MSAA 4 shows {text:?}"
+            );
+            assert_eq!(
+                !Requirement::for_extra_row(ExtraRow::AntiAlias, &config).met(&config),
+                conditional,
+                "{step:?} with MSAA 4 has the wrong requirement verdict"
+            );
+        }
+
+        // With MSAA off, TAA is simply what it is.
+        config.graphics.anti_alias = AntiAlias::Taa;
+        config.graphics.msaa = MsaaSamples(1);
+        assert_eq!(
+            ExtraRow::AntiAlias.value_text(&config, &options),
+            "TAA (next scene)"
+        );
+    }
+
+    /// The sharpening scale is hung on CAS's own default, so the row has to
+    /// name that step rather than present 0.6 as an openroad number. And 0.0
+    /// must read as off, not as "0%".
+    #[test]
+    fn the_sharpening_row_names_the_crate_default_and_reads_zero_as_off() {
+        let mut config = test_config();
+        let options = GameOptions::default();
+        assert_eq!(
+            config.graphics.sharpening.0, 0.0,
+            "no preset prescribes sharpening"
+        );
+        assert_eq!(
+            ExtraRow::Sharpening.value_text(&config, &options),
+            "Off",
+            "0.0 means the pass is not attached at all"
+        );
+        config.graphics.sharpening = Sharpening(0.6);
+        assert_eq!(
+            ExtraRow::Sharpening.value_text(&config, &options),
+            "60% (bevy default, next scene)"
+        );
+        // Past the crate's own clamp: what is in effect is 1.0, and that is
+        // what the row shows.
+        config.graphics.sharpening = Sharpening(4.0);
+        assert_eq!(config.graphics.sharpening.strength(), Some(1.0));
+        config.graphics.sharpening = Sharpening(-1.0);
+        assert_eq!(config.graphics.sharpening.strength(), None);
+    }
+
+    /// A stale `fxaa:` key from a config written before `anti_alias` existed
+    /// must not refuse the load, and must not quietly become something else:
+    /// it is an unknown key, which is how this tree retires a renamed setting
+    /// (the same decision as `window_mode:`).
+    #[test]
+    fn a_retired_fxaa_key_is_ignored_rather_than_refused() {
+        let yaml = "graphics:\n  fxaa: false\n  msaa: 2\n";
+        let graphics: crate::plugins::config::graphics::GraphicsSettings =
+            serde_yaml::from_str::<serde_yaml::Value>(yaml)
+                .and_then(|value| serde_yaml::from_value(value["graphics"].clone()))
+                .expect("an unknown key must not fail the load");
+        assert_eq!(graphics.anti_alias, AntiAlias::default());
+        assert_eq!(graphics.msaa.0, 2, "the keys beside it still arrive");
     }
 
     /// Supersampling has to be reachable from the window, or "let me have the

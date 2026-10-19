@@ -16,7 +16,7 @@ use bevy::transform::TransformSystems;
 #[derive(Component, Default)]
 pub struct DebugCamera;
 use crate::plugins::animation_sounds::LISTENER_EAR_GAP;
-use crate::plugins::config::graphics::BloomSettings;
+use crate::plugins::config::graphics::{AntiAlias, BloomSettings};
 use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::cursor::GameCursorCamera;
@@ -990,7 +990,8 @@ fn main_view_render_settings(
 
 /// Keep every window-targeting camera on the configured sample count
 /// (`graphics.msaa`), and apply the other per-camera render switches that
-/// follow from config at spawn: `depth_prepass`, `sky_reflections`, `fxaa`.
+/// follow from config at spawn: `depth_prepass`, `sky_reflections`,
+/// `anti_alias`, `sharpening`.
 ///
 /// This is a system rather than an insert at each spawn site on purpose. Bevy
 /// keys the shared main texture on `(target, usage, format, msaa)`, so the
@@ -1027,10 +1028,70 @@ fn apply_window_camera_msaa(
                     bevy::light::EnvironmentMapLight,
                 )>();
             }
-            // `graphics.fxaa`: the spawn sites always attach the pass.
-            if is_3d && !config.graphics.fxaa.0 {
-                commands.entity(entity).remove::<Fxaa>();
+            if is_3d {
+                apply_anti_alias(&mut commands, entity, &config);
             }
+        }
+    }
+}
+
+/// Put one camera on `graphics.anti_alias` and `graphics.sharpening`.
+///
+/// The spawn sites attach `Fxaa` unconditionally, so every value other than
+/// `Fxaa` has to take it off again — same shape as the `sky_reflections`
+/// removal above.
+///
+/// The trap this function exists to get right: `TemporalAntiAliasing` is
+/// `#[require(TemporalJitter, MipBias, DepthPrepass, MotionVectorPrepass)]`,
+/// and bevy does **not** remove a required component when the component that
+/// pulled it in goes away (the same trap `options_video::apply_bloom_option`
+/// documents for `Bloom`/`Hdr`). Switching *away* from TAA therefore has to
+/// strip the jitter, the mip bias and the motion vectors explicitly, or the
+/// camera keeps paying for a prepass nothing reads and keeps jittering its
+/// projection. `DepthPrepass` is the exception: it is a setting of its own
+/// (`graphics.depth_prepass`, the Water Reflection row), so it only goes if
+/// the config does not ask for it.
+fn apply_anti_alias(commands: &mut Commands, camera: Entity, config: &ClientConfig) {
+    use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
+    use bevy::anti_alias::smaa::Smaa;
+    use bevy::anti_alias::taa::TemporalAntiAliasing;
+    use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
+    // `TemporalJitter`/`MipBias` live in `bevy_render::camera`, which is where
+    // `bevy_anti_alias`'s own TAA module imports them from.
+    use bevy::render::camera::{MipBias, TemporalJitter};
+
+    let mut entity = commands.entity(camera);
+    match config.graphics.anti_alias {
+        AntiAlias::Off => {
+            entity.remove::<(Fxaa, Smaa, TemporalAntiAliasing)>();
+        }
+        AntiAlias::Fxaa => {
+            entity.remove::<(Smaa, TemporalAntiAliasing)>();
+        }
+        AntiAlias::Smaa => {
+            entity.remove::<(Fxaa, TemporalAntiAliasing)>();
+            entity.insert(Smaa::default());
+        }
+        AntiAlias::Taa => {
+            entity.remove::<(Fxaa, Smaa)>();
+            entity.insert(TemporalAntiAliasing::default());
+        }
+    }
+    if config.graphics.anti_alias != AntiAlias::Taa {
+        entity.remove::<(TemporalJitter, MipBias, MotionVectorPrepass)>();
+        if !config.graphics.depth_prepass {
+            entity.remove::<DepthPrepass>();
+        }
+    }
+    match config.graphics.sharpening.strength() {
+        Some(strength) => {
+            entity.insert(ContrastAdaptiveSharpening {
+                sharpening_strength: strength,
+                ..default()
+            });
+        }
+        None => {
+            entity.remove::<ContrastAdaptiveSharpening>();
         }
     }
 }
