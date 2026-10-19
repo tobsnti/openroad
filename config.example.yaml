@@ -111,6 +111,11 @@ graphics:
   #
   # The log says which one was chosen and why ("graphics preset: ...").
   # Restart to change it.
+  #
+  # The Video pane's "Graphics Preset (openroad)" row sets the same thing and
+  # outranks this key, exactly as the other saved quality rows outrank theirs;
+  # it lands in user_settings.yaml and takes effect on the next start. One more
+  # click on it past `ultra` hands the choice back to this file.
   preset: auto
   bloom:
     # enabled: true

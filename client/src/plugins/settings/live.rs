@@ -247,9 +247,13 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                thereafter changes solely via the dev-tools-gated hotkey N \
                (environment::seed_environment_settings_from_config, \
                environment::apply_render_mode) — a later config-only edit to \
-               render_mode does not move the live Sun. Brightness and the \
-               unbacked quality rows have no feature behind them yet and say \
-               so in the pane",
+               render_mode does not move the live Sun. `preset` has one more \
+               writer since the Video pane's Graphics Preset row became \
+               settable: `video.preset_override` in user_settings.yaml, read \
+               by main before ClientConfig::load so the chosen layer goes \
+               under config.yaml — restart-only by construction, and the row \
+               says so. Brightness is the one control in the pane with no \
+               feature behind it, and it says so there",
     },
     SettingsGroup {
         field: "hud",
