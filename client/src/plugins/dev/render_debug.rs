@@ -267,7 +267,8 @@ pub struct RenderDebugSettings {
     /// requires, so the off state matches pre-bloom rendering exactly.
     pub enable_bloom: bool,
     pub backface_culling: bool,
-    /// Fraction of the window the 3D view renders at (`graphics.render_scale`).
+    /// Share of the window the 3D view renders at (`graphics.render_scale`);
+    /// above 1.0 it supersamples.
     /// Seeded from config; live here so a resolution ladder is five `make perf
     /// set` calls in one session rather than five relaunches. See
     /// `config::graphics::RenderScale` for why the HUD is unaffected.

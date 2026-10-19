@@ -390,8 +390,17 @@ graphics:
   # is ~28% fewer 3D pixels; 0.75 is ~44% fewer.
   #
   # 1.0 (the default) retargets nothing at all and is byte-identical to having
-  # no render scale. Valid range 0.25..=1.0; anything else falls back to 1.0
+  # no render scale. Valid range 0.25..=2.0; a value outside it clamps into it,
+  # and one that is no scale at all (0, negative, NaN) falls back to 1.0 - both
   # with a warning.
+  #
+  # Above 1.0 the same mechanism is supersampling: the world renders larger than
+  # the window and the composite resolves it down. That is the one anti-aliasing
+  # lever that needs no vendor and no SDK - it works on Metal, on Vulkan/DX12 and
+  # in the browser - but the cost is quadratic: 2.0 asks for four times the
+  # fragments. No preset sets it; it is yours to turn on. The target is capped at
+  # 8192px per edge (wgpu's guaranteed maximum), so a 5K window trims the scale
+  # rather than failing to allocate.
   #
   # It is also the measurement instrument: mirrored onto RenderDebugSettings, so
   # `make perf set render_scale=0.8` runs a resolution ladder in one session

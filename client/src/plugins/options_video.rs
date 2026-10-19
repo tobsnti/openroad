@@ -29,7 +29,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
-use crate::plugins::config::graphics::FoliageMode;
+use crate::plugins::config::graphics::{FoliageMode, RenderScale};
 use crate::plugins::config::preset::QualityPreset;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::options::{GameOptions, GraphicProfile};
@@ -642,6 +642,14 @@ pub(crate) enum ExtraRow {
     /// Named after the original's own *sight range* vocabulary, which is the
     /// closest thing it has to this concept.
     FoliageSightRange,
+    /// `graphics.render_scale` — the 3D view's resolution as a share of the
+    /// window, the largest single lever in the frame (the cost tracks pixels,
+    /// see `config::graphics::RenderScale`). Live.
+    ///
+    /// Above 1.0 it is supersampling, which is why this row is also the
+    /// answer to "can I have DLSS": it needs no vendor and no SDK, and it
+    /// works on every backend we run on.
+    RenderScale,
     /// The graphics preset (`graphics.preset`): the one row that moves every
     /// other value at once, which is what a weak machine needs first.
     ///
@@ -654,8 +662,9 @@ pub(crate) enum ExtraRow {
     Preset,
 }
 
-const EXTRA_ROWS: [ExtraRow; 4] = [
+const EXTRA_ROWS: [ExtraRow; 5] = [
     ExtraRow::Preset,
+    ExtraRow::RenderScale,
     ExtraRow::FoliageMode,
     ExtraRow::FoliageDensity,
     ExtraRow::FoliageSightRange,
@@ -673,6 +682,9 @@ const SIGHT_RANGE_STEPS: [f32; 4] = [150.0, 300.0, 600.0, 0.0];
 /// deliberately the first: without it a single click would take the choice
 /// away from the file for good, and there would be no way back to it from the
 /// window. The rest follow the order `config.example.yaml` documents.
+/// Render-scale steps. 1.0 is the native default and sits in the middle: the
+/// two below it buy frames, the two above spend them on supersampling.
+const RENDER_SCALE_STEPS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 const PRESET_STEPS: [Option<QualityPreset>; 6] = [
     None,
     Some(QualityPreset::Auto),
@@ -692,6 +704,7 @@ impl ExtraRow {
             ExtraRow::FoliageDensity => "Grass Density (openroad)",
             ExtraRow::FoliageSightRange => "Grass Sight Range (openroad)",
             ExtraRow::Preset => "Graphics Preset (openroad)",
+            ExtraRow::RenderScale => "Render Scale (openroad)",
         }
     }
 
@@ -706,6 +719,19 @@ impl ExtraRow {
                 FoliageMode::Both => "Authored + Bundled".to_string(),
             },
             ExtraRow::FoliageDensity => format!("{:.1}x", foliage.density),
+            // What is in effect, not what the file says: a hand-edited 3.0
+            // clamps, and the row has to show where it landed.
+            ExtraRow::RenderScale => {
+                let factor = config.graphics.render_scale.factor();
+                let percent = (factor * 100.0).round();
+                if factor > 1.0 {
+                    format!("{percent:.0}% (supersampled)")
+                } else if factor < 1.0 {
+                    format!("{percent:.0}% (upscaled)")
+                } else {
+                    "100% (native)".to_string()
+                }
+            }
             ExtraRow::FoliageSightRange => {
                 if foliage.view_distance > 0.0 {
                     format!("{:.0}", foliage.view_distance)
@@ -751,6 +777,11 @@ impl ExtraRow {
             }
             ExtraRow::FoliageSightRange => {
                 foliage.view_distance = next_step(&SIGHT_RANGE_STEPS, foliage.view_distance)
+            }
+            ExtraRow::RenderScale => {
+                let graphics = &mut config.graphics;
+                graphics.render_scale =
+                    RenderScale(next_step(&RENDER_SCALE_STEPS, graphics.render_scale.0))
             }
             ExtraRow::Preset => {
                 let at = PRESET_STEPS
@@ -1254,6 +1285,7 @@ mod tests {
                 ExtraRow::FoliageDensity => DENSITY_STEPS.len(),
                 ExtraRow::FoliageSightRange => SIGHT_RANGE_STEPS.len(),
                 ExtraRow::Preset => PRESET_STEPS.len(),
+                ExtraRow::RenderScale => RENDER_SCALE_STEPS.len(),
             };
             let mut seen = vec![start.clone()];
             for _ in 0..steps {
@@ -1299,6 +1331,44 @@ mod tests {
             ExtraRow::Preset.value_text(&config, &options),
             "low (next start; now auto (high))",
             "a pending choice must name both halves, or the row looks broken"
+        );
+    }
+
+    /// Supersampling has to be reachable from the window, or "let me have the
+    /// maximum" stays a config-file secret. The row walks past 100% rather
+    /// than stopping there.
+    #[test]
+    fn the_render_scale_row_reaches_both_sides_of_native() {
+        let mut config = test_config();
+        let mut options = GameOptions::default();
+        let mut seen = Vec::new();
+        for _ in 0..RENDER_SCALE_STEPS.len() {
+            seen.push(config.graphics.render_scale.0);
+            ExtraRow::RenderScale.cycle(&mut config, &mut options);
+        }
+        assert!(
+            seen.iter().any(|scale| *scale < 1.0),
+            "no step below native: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|scale| *scale > 1.0),
+            "no supersampling step: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|scale| **scale == 1.0).count(),
+            1,
+            "native must be reachable exactly once per lap: {seen:?}"
+        );
+        // and the row names which side of native it is on
+        config.graphics.render_scale = RenderScale(2.0);
+        assert_eq!(
+            ExtraRow::RenderScale.value_text(&config, &options),
+            "200% (supersampled)"
+        );
+        config.graphics.render_scale = RenderScale(0.5);
+        assert_eq!(
+            ExtraRow::RenderScale.value_text(&config, &options),
+            "50% (upscaled)"
         );
     }
 
