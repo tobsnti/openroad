@@ -19,7 +19,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle};
 use bevy::ui::UiTargetCamera;
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui_widgets::{Activate, Button, TextInput};
 
 use packets::agent::character_data::ItemTypeData;
 use packets::agent::prelude::InventoryOperationRequest;
@@ -915,6 +915,7 @@ pub fn sync_gold_modal(
                         panel
                             .spawn((
                                 GoldAmountInput,
+                                TextInput,
                                 EditableText {
                                     visible_lines: Some(1.0),
                                     allow_newlines: false,
