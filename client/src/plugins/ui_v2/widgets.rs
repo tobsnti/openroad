@@ -99,7 +99,6 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
         FocusRing
         Node { width: percent(100), height: percent(100) }
         Children [
-            (
                 M
                 TextInput
                 EditableText { visible_lines: {Some(1.0)}, allow_newlines: false }
@@ -112,8 +111,7 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
                 TextColor(Color::NONE)
                 TextCursorStyle { color: Color::WHITE }
                 TabIndex({tab})
-            ),
-            (
+            --
                 PasswordEcho
                 Text("")
                 Node {
@@ -131,7 +129,6 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
                 // the plaintext password is never shown)
                 TargetColor(Srgba::WHITE)
                 Pickable::IGNORE
-            ),
         ]
     }
 }

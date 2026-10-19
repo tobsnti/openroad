@@ -2,7 +2,8 @@ use bevy::app::App;
 use bevy::dev_tools::fps_overlay::FpsOverlayPlugin;
 use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
-use bevy::ui::UiTargetCamera;
+use bevy::ui::{Pressed, UiTargetCamera};
+use bevy::ui_widgets::Button;
 // use bevy_prototype_debug_lines::DebugLinesPlugin;
 use crate::plugins::config::ClientConfig;
 use crate::AppMode;
@@ -217,7 +218,7 @@ fn spawn_dev_windows_button(
         .spawn((
             DevWindowsButton,
             Name::from("Dev Windows Toggle"),
-            Interaction::default(),
+            Button,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(8.0),
@@ -249,13 +250,16 @@ fn spawn_dev_windows_button(
 }
 
 /// Flip the visibility on click; dim the label while the windows are hidden.
+///
+/// 0.20 retired `Interaction` for `Hovered` + `Pressed`. `Pressed` is a marker,
+/// so `Added<Pressed>` is the press *edge* that `Changed<Interaction>` was.
 fn on_dev_windows_button(
-    interactions: Query<&Interaction, (Changed<Interaction>, With<DevWindowsButton>)>,
+    pressed: Query<(), (Added<Pressed>, With<DevWindowsButton>)>,
     mut visible: ResMut<DevWindowsVisible>,
     mut labels: Query<&mut TextColor, With<DevWindowsButtonLabel>>,
 ) {
-    for interaction in interactions.iter() {
-        if *interaction == Interaction::Pressed {
+    for _ in pressed.iter() {
+        {
             visible.0 = !visible.0;
             for mut color in labels.iter_mut() {
                 color.0 = if visible.0 {

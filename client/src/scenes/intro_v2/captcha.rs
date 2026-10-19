@@ -194,10 +194,8 @@ fn captcha_modal(
         Name("Captcha Modal V2")
         TabGroup::new(0)
         Children [
-            (
                 @modal_plate(window, CAPTCHA_BOX_W, CAPTCHA_BOX_H)
                 Children [
-                    (
                         Text({caption})
                         TextFont { font: FontSourceTemplate::Handle({caption_font}), font_size: {FontSize::Px(12.0)} }
                         TextColor(Color::WHITE)
@@ -209,8 +207,7 @@ fn captcha_modal(
                             left: px(85),
                             top: px(18),
                         }
-                    ),
-                    (
+                    --
                         Text({notice})
                         TextFont { font: FontSourceTemplate::Handle({description_font}), font_size: {FontSize::Px(12.0)} }
                         TextColor(Color::WHITE)
@@ -222,8 +219,7 @@ fn captcha_modal(
                             left: px(32),
                             top: px(40),
                         }
-                    ),
-                    (
+                    --
                         ImageNode { image: {captcha_image} }
                         Node {
                             position_type: PositionType::Absolute,
@@ -232,8 +228,7 @@ fn captcha_modal(
                             top: px(80),
                             left: px(33),
                         }
-                    ),
-                    (
+                    --
                         @text_input(input_font, 0)
                         CaptchaInput
                         EditableTextFilter::new(char::is_alphanumeric)
@@ -245,8 +240,7 @@ fn captcha_modal(
                             left: px(260),
                             top: px(88),
                         }
-                    ),
-                    (
+                    --
                         @image_button(confirm_button_style(assets), 55.0, 18.0)
                         Node {
                             position_type: PositionType::Absolute,
@@ -258,10 +252,8 @@ fn captcha_modal(
                         Children [
                             // @label() starts transparent for the fade systems,
                             // which never run on this modal, so force it white.
-                            (
                                 @label(&confirm, confirm_font, 12.0)
                                 TextColor(Color::WHITE)
-                            ),
                         ]
                         on(move |_activate: On<Activate>,
                             connection_query: Query<&SilkroadConnection, With<GatewayConnection>>,
@@ -275,17 +267,14 @@ fn captcha_modal(
                             let Ok(input) = input_query.single() else {
                                 return;
                             };
-
                             let frame = Packet::from(LoginCaptchaConfirmRequest {
                                 code: input.value().to_string(),
                             })
                             .into();
-
                             connection
                                 .get_sender()
                                 .send(frame)
                                 .expect("failed to send LoginCaptchaConfirmRequest");
-
                             commands.remove_resource::<CaptchaImageV2>();
                             if let Ok(modal) = modal_query.single() {
                                 commands.entity(modal).despawn();
@@ -297,9 +286,7 @@ fn captcha_modal(
                                 ));
                             }
                         })
-                    ),
                 ]
-            ),
         ]
     }
 }

@@ -29,10 +29,8 @@ pub fn splash_logo(assets: &IntroV2Assets) -> impl Scene {
         }
         Pickable::IGNORE
         Children [
-            (
                 ImageNode { image: {logo} }
                 Pickable::IGNORE
-            ),
         ]
     }
 }

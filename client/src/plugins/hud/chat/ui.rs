@@ -368,29 +368,25 @@ fn chat_window(
         Hovered
         Children [
             // --- header: whisper/hide buttons + tab cells -------------------
-            (
                 Node {
                     width: percent(100),
                     height: px(HEADER_H * s),
                 }
                 Pickable::IGNORE
                 Children [
-                    (
                         @image_button(whisper_style, wb_w, wb_h)
                         Node { position_type: PositionType::Absolute, left: px(wb_l), top: px(wb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.whisper_panel_open = !state.whisper_panel_open;
                         })
-                    ),
-                    (
+                    --
                         @image_button(hide_style, hb_w, hb_h)
                         Node { position_type: PositionType::Absolute, left: px(hb_l), top: px(hb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.collapsed = !state.collapsed;
                         })
-                    ),
+                    --
                     // tab strip: five fixed 51px cells at 45..300
-                    (
                         Node {
                             position_type: PositionType::Absolute,
                             left: px(TAB_X0 * s),
@@ -401,17 +397,15 @@ fn chat_window(
                         }
                         Pickable::IGNORE
                         Children [
-                            (@tab_cell(asset_server, fonts, ChatTab::All)),
-                            (@tab_cell(asset_server, fonts, ChatTab::Party)),
-                            (@tab_cell(asset_server, fonts, ChatTab::Guild)),
-                            (@tab_cell(asset_server, fonts, ChatTab::Alliance)),
-                            (@tab_cell(asset_server, fonts, ChatTab::Academy)),
+                            @tab_cell(asset_server, fonts, ChatTab::All)--
+                            @tab_cell(asset_server, fonts, ChatTab::Party)--
+                            @tab_cell(asset_server, fonts, ChatTab::Guild)--
+                            @tab_cell(asset_server, fonts, ChatTab::Alliance)--
+                            @tab_cell(asset_server, fonts, ChatTab::Academy)
                         ]
-                    ),
                 ]
-            ),
+            --
             // --- body: frame bg, message list, scrollbar --------------------
-            (
                 ChatBody
                 Node {
                     width: percent(100),
@@ -419,7 +413,6 @@ fn chat_window(
                 }
                 Pickable::IGNORE
                 Children [
-                    (
                         ImageNode { image: {bg_up}, image_mode: NodeImageMode::Stretch, rect: {Some(bg_up_crop)} }
                         Node {
                             position_type: PositionType::Absolute,
@@ -427,8 +420,7 @@ fn chat_window(
                             width: px(BG_W * s), height: px(BG_CAP_H * s),
                         }
                         Pickable::IGNORE
-                    ),
-                    (
+                    --
                         ImageNode { image: {bg_mid}, image_mode: NodeImageMode::Stretch, rect: {Some(bg_mid_crop)} }
                         Node {
                             position_type: PositionType::Absolute,
@@ -436,8 +428,7 @@ fn chat_window(
                             width: px(BG_W * s),
                         }
                         Pickable::IGNORE
-                    ),
-                    (
+                    --
                         ImageNode { image: {bg_down}, image_mode: NodeImageMode::Stretch, rect: {Some(bg_down_crop)} }
                         Node {
                             position_type: PositionType::Absolute,
@@ -445,9 +436,8 @@ fn chat_window(
                             width: px(BG_W * s), height: px(BG_CAP_H * s),
                         }
                         Pickable::IGNORE
-                    ),
+                    --
                     // the scrollable list; wheel-scrolling handled by an observer
-                    (
                         ChatMessageList
                         Hovered
                         Node {
@@ -465,10 +455,9 @@ fn chat_window(
                             let current = computed.scroll_position.y * computed.inverse_scale_factor;
                             scroll_list_to(&mut pos, computed, &mut state, current - scroll.y * WHEEL_STEP);
                         })
-                    ),
+                    --
                     // scrollbar spanning the body's full height:
                     // up arrow / track+thumb / down arrow
-                    (
                         Node {
                             position_type: PositionType::Absolute,
                             left: px(0), top: px(0), bottom: px(0),
@@ -477,7 +466,6 @@ fn chat_window(
                         }
                         Pickable::IGNORE
                         Children [
-                            (
                                 ChatScrollArrow { up: true }
                                 Button
                                 Hovered
@@ -497,11 +485,10 @@ fn chat_window(
                                     mut state: ResMut<ChatState>| {
                                     scroll_list_by(&mut list, &mut state, -ARROW_STEP);
                                 })
-                            ),
+                            --
                             // No track art: a CIFVerticalScroll is only a
                             // thumb + two arrows (ifverticalscroll.txt), so
                             // the chat backdrop shows through behind the thumb.
-                            (
                                 ChatScrollTrack
                                 Node {
                                     width: px(GUTTER_W * s),
@@ -509,7 +496,6 @@ fn chat_window(
                                 }
                                 Pickable::IGNORE
                                 Children [
-                                    (
                                         ChatScrollThumb
                                         // Button + Hovered + ImageButtonStyle feed
                                         // update_image_button_visuals for the
@@ -551,10 +537,8 @@ fn chat_window(
                                             let delta = drag.distance.y * content_h / track_h;
                                             scroll_list_to(&mut pos, computed, &mut state, start + delta);
                                         })
-                                    ),
                                 ]
-                            ),
-                            (
+                            --
                                 ChatScrollArrow { up: false }
                                 Button
                                 Hovered
@@ -574,13 +558,10 @@ fn chat_window(
                                     mut state: ResMut<ChatState>| {
                                     scroll_list_by(&mut list, &mut state, ARROW_STEP);
                                 })
-                            ),
                         ]
-                    ),
                 ]
-            ),
+            --
             // --- bottom row: zoom button + input ----------------------------
-            (
                 ChatBottomRow
                 Node {
                     width: percent(100),
@@ -589,16 +570,14 @@ fn chat_window(
                 }
                 Pickable::IGNORE
                 Children [
-                    (
                         @image_button(zoom_style, zb_w, zb_h)
                         Node { position_type: PositionType::Absolute, left: px(zb_l), top: px(zb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.expanded = !state.expanded;
                         })
-                    ),
+                    --
                     // GDR_CHAT_STA_PENALTY — outside the window to the right,
                     // hidden until the server restricts chat (0x302D)
-                    (
                         ChatPenaltyLabel
                         @label("", penalty_font, TAB_FONT_SIZE * hud_scale())
                         TextColor(PENALTY_COLOR)
@@ -609,17 +588,15 @@ fn chat_window(
                             display: Display::None,
                         }
                         Pickable::IGNORE
-                    ),
+                    --
                     // GDR_CHAT_MODE_BTN + its CreateChatMode dropdown body
-                    (
                         ChatModeButton
                         @image_button(mode_style, mb_w, mb_h)
                         Node { position_type: PositionType::Absolute, left: px(mb_l), top: px(mb_t) }
                         on(|_: On<Activate>, mut state: ResMut<ChatState>| {
                             state.mode_open = !state.mode_open;
                         })
-                    ),
-                    (
+                    --
                         ChatModePopup
                         Node {
                             position_type: PositionType::Absolute,
@@ -631,12 +608,10 @@ fn chat_window(
                         }
                         GlobalZIndex(51)
                         Children [
-                            (
                                 ImageNode { image: {mode_bg_up}, image_mode: NodeImageMode::Stretch, rect: {Some(mode_up_crop)} }
                                 Node { width: percent(100), height: px(MODE_CAP_H * s) }
                                 Pickable::IGNORE
-                            ),
-                            (
+                            --
                                 ImageNode { image: {mode_bg_mid}, image_mode: NodeImageMode::Stretch, rect: {Some(mode_mid_crop)} }
                                 Node {
                                     width: percent(100),
@@ -644,21 +619,18 @@ fn chat_window(
                                     flex_direction: FlexDirection::Column,
                                 }
                                 Children [
-                                    (@mode_row(fonts, ui_strings, ChatTab::All)),
-                                    (@mode_row(fonts, ui_strings, ChatTab::Party)),
-                                    (@mode_row(fonts, ui_strings, ChatTab::Guild)),
-                                    (@mode_row(fonts, ui_strings, ChatTab::Alliance)),
-                                    (@mode_row(fonts, ui_strings, ChatTab::Academy)),
+                                    @mode_row(fonts, ui_strings, ChatTab::All)--
+                                    @mode_row(fonts, ui_strings, ChatTab::Party)--
+                                    @mode_row(fonts, ui_strings, ChatTab::Guild)--
+                                    @mode_row(fonts, ui_strings, ChatTab::Alliance)--
+                                    @mode_row(fonts, ui_strings, ChatTab::Academy)
                                 ]
-                            ),
-                            (
+                            --
                                 ImageNode { image: {mode_bg_down}, image_mode: NodeImageMode::Stretch, rect: {Some(mode_down_crop)} }
                                 Node { width: percent(100), height: px(MODE_CAP_H * s) }
                                 Pickable::IGNORE
-                            ),
                         ]
-                    ),
-                    (
+                    --
                         ChatInputRow
                         ImageNode { image: {atlas_input}, image_mode: NodeImageMode::Stretch, rect: {Some(input_crop)} }
                         Node {
@@ -668,16 +640,12 @@ fn chat_window(
                             padding: {UiRect::horizontal(Val::Px(6.0 * hud_scale()))},
                         }
                         Children [
-                            (
                                 @text_input(input_font, 0)
                                 ChatInputBox
-                            ),
                         ]
-                    ),
                 ]
-            ),
+            --
             // --- whisper-partner panel (floats above the tab bar) -----------
-            (
                 ChatWhisperPanel
                 ImageNode { image: {atlas_whisper}, image_mode: NodeImageMode::Stretch, rect: {Some(whisper_crop)} }
                 Node {
@@ -689,12 +657,10 @@ fn chat_window(
                     padding: {UiRect::axes(Val::Px(10.0 * hud_scale()), Val::Px(8.0 * hud_scale()))},
                 }
                 Children [
-                    (
                         @label(&whisper_title, whisper_title_font, TAB_FONT_SIZE * hud_scale())
                         TextColor(Color::WHITE)
                         Node { height: px(14.0 * hud_scale()) }
-                    ),
-                    (
+                    --
                         ChatWhisperEntries
                         Node {
                             width: percent(100),
@@ -703,9 +669,7 @@ fn chat_window(
                             overflow: {Overflow::clip()},
                         }
                         Pickable::IGNORE
-                    ),
                 ]
-            ),
         ]
     }
 }
@@ -747,7 +711,6 @@ fn tab_cell(asset_server: &AssetServer, fonts: &FontAssets, tab: ChatTab) -> imp
             }
         })
         Children [
-            (
                 ChatTabLamp { tab: {tab} }
                 ImageNode {
                     image: {lamp},
@@ -761,11 +724,9 @@ fn tab_cell(asset_server: &AssetServer, fonts: &FontAssets, tab: ChatTab) -> imp
                     height: px(LAMP_SIZE.1 * hud_scale()),
                 }
                 Pickable::IGNORE
-            ),
-            (
+            --
                 ChatTabLabel { tab: {tab} }
                 @label(text, font, TAB_FONT_SIZE * hud_scale())
-            ),
         ]
     }
 }
@@ -811,10 +772,8 @@ fn mode_row(fonts: &FontAssets, ui_strings: &ClientUiStrings, tab: ChatTab) -> i
             state.mode_open = false;
         })
         Children [
-            (
                 ChatModeRowLabel { tab: {tab} }
                 @label(&text, font, TAB_FONT_SIZE * hud_scale())
-            ),
         ]
     }
 }
