@@ -28,7 +28,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{EditableText, EditableTextFilter, TextCursorStyle, TextEdit};
 use bevy::ui::UiTargetCamera;
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui_widgets::{Activate, Button, TextInput};
 
 use packets::agent::character_data::ItemTypeData;
 use packets::agent::prelude::InventoryOperationRequest;
@@ -1576,6 +1576,7 @@ pub fn sync_quantity_modal(
                         panel
                             .spawn((
                                 ModalAmountInput,
+                                TextInput,
                                 editable,
                                 EditableTextFilter::new(|c: char| c.is_ascii_digit()),
                                 input_box,

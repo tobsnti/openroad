@@ -30,7 +30,7 @@ use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui_widgets::{Activate, Button, TextInput};
 
 use packets::agent::party::{
     PartyMatchCreationRequest, PartyMatchEditedRequest, PartyMatchJoinResponse, PartySetup,
@@ -607,6 +607,7 @@ fn build_register(
     field.padding = UiRect::top(Val::Px(TITLE_PAD_TOP * s));
     plate.spawn((
         PartyTitleInput,
+        TextInput,
         // `EditableText` owns its own buffer, so the seed goes through `new`
         // — a `Text` component alongside it would render nothing and the field
         // would open blank on Change. This is what pre-fills the entry being

@@ -35,7 +35,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
 use bevy::ui::UiTargetCamera;
-use bevy::ui_widgets::{Activate, Button};
+use bevy::ui_widgets::{Activate, Button, TextInput};
 
 use crate::assets::FontAssets;
 use crate::plugins::hud::community::model::{CommunityState, LetterSubWindow};
@@ -350,6 +350,7 @@ fn spawn_input(
     node.padding = UiRect::all(Val::Px(2.0 * s));
     plate.spawn((
         marker,
+        TextInput,
         EditableText {
             visible_lines: if single_line { Some(1.0) } else { None },
             allow_newlines: !single_line,
