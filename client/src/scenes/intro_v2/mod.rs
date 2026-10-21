@@ -135,6 +135,12 @@ impl Plugin for IntroV2ScenePlugin {
                 LoadingStateConfig::new(SceneState::Loading).load_collection::<IntroV2Assets>(),
             )
             .init_resource::<server_select::SelectedShardV2>()
+            // The list rect fits `VISIBLE_ROWS` rows; a longer shard list is
+            // scrolled by respawning the rows from this offset, so the resource
+            // has to exist before the first `shard_rows_need_refresh` run
+            // condition reads it. `recut/09` never registered it, which is a
+            // parameter-validation panic `make ci` cannot see.
+            .init_resource::<server_select::ShardListScroll>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
                 (
@@ -340,7 +346,21 @@ impl Plugin for IntroV2ScenePlugin {
                 (
                     server_select::update_shard_row_visuals
                         .run_if(in_state(IntroV2State::ServerSelection)),
+                    // the slider's missing half: wheel input, the thumb that
+                    // tracks the offset, and Select's disabled state
+                    server_select::scroll_shard_list_with_wheel
+                        .run_if(in_state(IntroV2State::ServerSelection)),
+                    server_select::update_slider_thumb
+                        .run_if(in_state(IntroV2State::ServerSelection)),
+                    server_select::update_select_button_enabled
+                        .run_if(in_state(IntroV2State::ServerSelection)),
                     server_select::update_shard_name_text
+                        .run_if(in_state(SceneState::IntroV2))
+                        .run_if(resource_exists::<ShardList>),
+                    // Displayed server and *selected* server must not drift
+                    // apart, or Connect's "select a server first" contradicts
+                    // the row on screen.
+                    server_select::commit_remembered_shard
                         .run_if(in_state(SceneState::IntroV2))
                         .run_if(resource_exists::<ShardList>),
                 ),
@@ -445,6 +465,7 @@ fn spawn_chrome(
     mut commands: Commands,
     assets: Res<IntroV2Assets>,
     fonts: Res<crate::assets::FontAssets>,
+    ui_strings: Res<crate::plugins::textdata::ClientUiStrings>,
     cam_query: Query<Entity, With<Camera2d>>,
 ) {
     let Some(camera) = ui_camera(&cam_query) else {
@@ -470,7 +491,7 @@ fn spawn_chrome(
         .spawn_scene(login_form::login_form(&assets, &fonts))
         .insert((UiTargetCamera(camera), IntroV2Ui));
     commands
-        .spawn_scene(server_select::server_window(&assets, &fonts))
+        .spawn_scene(server_select::server_window(&assets, &fonts, &ui_strings))
         .insert((UiTargetCamera(camera), IntroV2Ui));
 }
 
