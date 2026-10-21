@@ -1009,10 +1009,11 @@ fn delete_modal(
 
     // The original's copy carries the 7-day reservation warning, which our
     // hand-written line dropped entirely (UIO_STT_CHAR_DEL_CONFIRM).
-    let warning = ui_strings
-        .get("UIO_STT_CHAR_DEL_CONFIRM")
-        .unwrap_or("The character will be deleted.")
-        .replace("\\n", "\n");
+    let warning = super::unescape_newlines(
+        ui_strings
+            .get("UIO_STT_CHAR_DEL_CONFIRM")
+            .unwrap_or("The character will be deleted."),
+    );
     let confirmation_text = format!("{character_name}\n\n{warning}");
     // The accept button reads "Delete" in the original, not "Confirm".
     let accept_label = ui_strings
@@ -1221,9 +1222,7 @@ pub fn on_character_delete_response(
             if let Some(line) = lobby_failure_line(&ui_strings, code) {
                 info_text_writer.write(InfoTextV2Update(line));
             }
-            if let Some(playback) = options.audio.fx_playback() {
-                commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
-            }
+            super::play_error_sound(&mut commands, &assets, &options);
         }
     }
 }
@@ -1353,9 +1352,7 @@ pub fn on_character_join_response(
                 commands.entity(entity).remove::<InteractionDisabled>();
             }
             commands.remove_resource::<PendingWorldJoin>();
-            if let Some(playback) = options.audio.fx_playback() {
-                commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
-            }
+            super::play_error_sound(&mut commands, &assets, &options);
         }
     }
 }
@@ -1468,7 +1465,7 @@ mod tests {
     fn the_deletion_warning_unescapes_its_line_breaks() {
         let raw = "The character will be deleted.\\nIf you delete the character, \
                    it will be reserved for 7 days.";
-        let shown = raw.replace("\\n", "\n");
+        let shown = super::super::unescape_newlines(raw);
         assert!(shown.contains('\n'), "literal \\n must become a real break");
         assert!(!shown.contains("\\n"), "no escapes may survive");
         assert_eq!(shown.lines().count(), 2);
