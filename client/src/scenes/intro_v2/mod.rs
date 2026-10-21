@@ -75,6 +75,43 @@ pub enum IntroV2State {
     CharacterCreate,
 }
 
+/// The original's five text slots as pixel sizes. The ladder itself is data, in
+/// points: `Media/server_dep/silkroad/event/event_interface.txt:2` reads
+/// `//titlefont : 0 = "9", 1 = "8", 2 = "12", 3 = "11", 4 = "15"`. Points to
+/// pixels at 96 dpi is x 4/3, so the five slots are 12 / 10.67 / 16 / 14.67 / 20
+/// px; the two fractional ones are rounded up to whole pixels, which is ours.
+const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
+
+/// Pixel font size of an intro control with resinfo `FontIndex` `font_index`.
+/// Unscaled on purpose: the intro draws its rects at the art's native size, so
+/// its text carries the same 1:1 factor as the box it sits in.
+///
+/// # Out of range: slot 0, not "the biggest slot"
+///
+/// An index above 4 names a slot the client never builds, so *some* rule is
+/// needed and the data decides which. Measured over the player's own corpus
+/// (`Media/resinfo/`, 247 files, 3740 `FontIndex=` attributes):
+///
+/// * The ladder is **not ordered**: 9, 8, 12, 11, 15 pt. A higher index is not
+///   a bigger font, so clamping an out-of-range index to the largest entry
+///   reads the index as a magnitude, which the ladder itself contradicts.
+/// * Out-of-range indices exist at exactly **three** sites in the whole corpus,
+///   all `FontIndex=7` in `resinfo/ifchatbubblewindow.txt:12,31,50`.
+/// * The text those three sit among is slot 0: the nine chat trees carry 107
+///   `FontIndex` attributes — these three sevens and 104 zeros.
+///
+/// So slot 0 is the neighbouring authored size at the only place the case can
+/// occur, and it is the one choice that does not invent a size ordering. What
+/// the original does with index 7 is unknown, so this is a reasoned openroad
+/// rule, not a transcribed one. It changes nothing on screen today: the intro
+/// trees (`resinfo/ps*.txt`) carry only index 0 (258 controls) and index 2 (80).
+pub(crate) const fn intro_font_px(font_index: usize) -> f32 {
+    if font_index >= FONT_INDEX_PX.len() {
+        return FONT_INDEX_PX[0];
+    }
+    FONT_INDEX_PX[font_index]
+}
+
 /// Marker for every UI root spawned by the intro v2 scene, used for cleanup.
 #[derive(Component, Default, Clone)]
 pub struct IntroV2Ui;
@@ -656,9 +693,99 @@ fn apply_background_music_options(
     }
 }
 
+/// Turns the **literal** two-character `\n` that textdata rows carry into a
+/// real newline; a Bevy `Text` node renders the backslash itself.
+///
+/// Deliberately not folded into `ClientUiStrings::get_or`: that accessor is
+/// used all over the client, and the resinfo corpus unescapes at *parse* time
+/// (`assets::resinfo::interface_text`) — textdata rows do not.
+pub(super) fn unescape_newlines(text: &str) -> String {
+    text.replace("\\n", "\n")
+}
+
+/// Replaces the `%d` placeholders of a textdata string, in order, with
+/// `values`. Extra placeholders are left as-is rather than dropped, so a
+/// template with more fields than we can fill stays recognisable.
+pub(super) fn fill_placeholders(template: &str, values: &[u32]) -> String {
+    let mut out = String::with_capacity(template.len() + 8);
+    let mut rest = template;
+    let mut values = values.iter();
+    while let Some(at) = rest.find("%d") {
+        out.push_str(&rest[..at]);
+        match values.next() {
+            Some(v) => out.push_str(&v.to_string()),
+            None => out.push_str("%d"),
+        }
+        rest = &rest[at + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Plays the original's `snd_error` once, honouring the audio options. Shared
+/// by every pregame refusal (login, captcha retry, lobby actions).
+pub(super) fn play_error_sound(
+    commands: &mut Commands,
+    assets: &IntroV2Assets,
+    options: &GameOptions,
+) {
+    if let Some(playback) = options.audio.fx_playback() {
+        commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The ladder is the data's, and it is **not ordered** — 9, 8, 12, 11, 15 pt
+    /// become 12, 11, 16, 15, 20 px. An out-of-range index therefore cannot be
+    /// clamped to the largest entry without reading the index as a magnitude;
+    /// it resolves to slot 0, the size its only real occurrence sits among
+    /// (`intro_font_px`).
+    #[test]
+    fn the_font_ladder_is_the_data_s_and_out_of_range_reads_slot_0() {
+        assert_eq!(
+            [
+                intro_font_px(0),
+                intro_font_px(1),
+                intro_font_px(2),
+                intro_font_px(3),
+                intro_font_px(4)
+            ],
+            [12.0, 11.0, 16.0, 15.0, 20.0]
+        );
+        // not monotonic: slot 1 is smaller than slot 0
+        assert!(intro_font_px(1) < intro_font_px(0));
+        // the only out-of-range index the corpus actually contains
+        assert_eq!(intro_font_px(7), intro_font_px(0));
+        assert_ne!(intro_font_px(7), intro_font_px(4), "not the biggest slot");
+    }
+
+    /// `%d` is filled in order. A template with more placeholders than values
+    /// keeps the surplus, so a row we cannot fully fill still reads as the
+    /// original's sentence instead of losing a field.
+    #[test]
+    fn placeholders_are_filled_in_order_and_surplus_ones_survive() {
+        assert_eq!(
+            fill_placeholders("%d days %d hours", &[7, 3]),
+            "7 days 3 hours"
+        );
+        assert_eq!(fill_placeholders("%d/%d", &[5]), "5/%d");
+        assert_eq!(fill_placeholders("no fields", &[1]), "no fields");
+        assert_eq!(fill_placeholders("%d", &[]), "%d");
+    }
+
+    /// textdata rows store their line breaks as the two characters `\` `n`.
+    /// Unlike the resinfo corpus, which unescapes while parsing, nothing
+    /// unescapes them on the way in, so the sentence renders as one run-on
+    /// line unless the caller does it.
+    #[test]
+    fn a_literal_backslash_n_becomes_a_real_newline() {
+        let shown = unescape_newlines("first\\nsecond");
+        assert_eq!(shown.lines().count(), 2);
+        assert!(!shown.contains("\\n"), "no escapes may survive");
+    }
 
     /// #645, ownership half: character creation lives *inside* the intro scene.
     /// The state graph is what makes creation share the char-select stage,
