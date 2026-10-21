@@ -1417,8 +1417,7 @@ pub fn update_explain_panel(
         text.0 = name;
     }
     if let Ok(mut text) = texts.p1().single_mut() {
-        // textdata carries the line breaks as the two characters `\` `n`.
-        text.0 = body.replace("\\n", "\n");
+        text.0 = super::unescape_newlines(&body);
     }
 }
 
@@ -1525,12 +1524,10 @@ fn create_confirm_modal(
     let ok_sound = assets.sound_button_sound_a.clone();
     let cancel_sound = assets.sound_button_sound_a.clone();
     let name_text = character_name.to_string();
-    let message = ui_strings
-        .get_or(
-            "UIO_NEWCHAR_MSG_CREATE",
-            "Do you want to create a new character?",
-        )
-        .replace("\\n", "\n");
+    let message = super::unescape_newlines(ui_strings.get_or(
+        "UIO_NEWCHAR_MSG_CREATE",
+        "Do you want to create a new character?",
+    ));
     let ok_text = ui_strings.get_or("UIO_COMMON_CTL_CREATE", "Create");
     let cancel_text = ui_strings.get_or("UIO_COMMON_CTL_CANCEL", "Cancel");
     let (nx, ny, nw, nh) = WCREATE_NAME_RECT;
@@ -1716,9 +1713,7 @@ pub fn on_character_create_response(
             for modal in modal_query.iter() {
                 commands.entity(modal).despawn();
             }
-            if let Some(playback) = options.audio.fx_playback() {
-                commands.spawn((AudioPlayer::new(assets.sound_error.clone()), playback));
-            }
+            super::play_error_sound(&mut commands, &assets, &options);
         }
     }
 }
