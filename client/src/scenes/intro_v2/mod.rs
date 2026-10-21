@@ -185,7 +185,10 @@ impl Plugin for IntroV2ScenePlugin {
             )
             .add_systems(
                 OnExit(IntroV2State::LoginForm),
-                fade::hide_screen::<login_form::LoginFormRoot>,
+                (
+                    fade::hide_screen::<login_form::LoginFormRoot>,
+                    captcha::despawn_captcha_modal,
+                ),
             )
             .add_systems(
                 OnEnter(IntroV2State::CharacterList),
@@ -356,12 +359,19 @@ impl Plugin for IntroV2ScenePlugin {
                     net::enter_presses_connect.run_if(in_state(IntroV2State::LoginForm)),
                     captcha::on_captcha_challenge,
                     captcha::on_captcha_confirm_response,
+                    // The modal is the only thing the screen takes input for
+                    // while it is up: caret into its one field, Enter confirms.
+                    captcha::focus_captcha_input,
+                    captcha::confirm_captcha_on_enter,
                 )
                     .run_if(in_state(SceneState::IntroV2)),
             )
             .add_systems(
                 Update,
-                captcha::spawn_captcha
+                // A new challenge replaces the modal it finds, it does not
+                // stack a second one on top of it (`close_open_captcha_modal`).
+                (captcha::close_open_captcha_modal, captcha::spawn_captcha)
+                    .chain()
                     .run_if(in_state(SceneState::IntroV2))
                     .run_if(resource_added::<captcha::CaptchaImageV2>),
             )
