@@ -27,6 +27,8 @@ use bevy_inspector_egui::prelude::ReflectInspectorOptions;
 use bevy_inspector_egui::quick::ResourceInspectorPlugin;
 use bevy_inspector_egui::InspectorOptions;
 
+use packets::agent::ingame::WeatherUpdate;
+
 use crate::assets::ifo::environment::{ColorGraph, EnvironmentProfile, FloatGraph, JMXVENVI};
 use crate::assets::ifo::IFOAsset;
 use crate::assets::m::block_splat_material::TerrainAmbientRatio;
@@ -51,6 +53,7 @@ pub mod celestial;
 pub mod lens_flare;
 pub mod light_visibility;
 pub mod reflections;
+pub mod weather;
 
 /// Marks the world's single directional light (spawned in `map::setup_lighting`).
 #[derive(Component)]
@@ -505,12 +508,23 @@ impl Plugin for EnvironmentPlugin {
             .init_resource::<ActiveEnvironment>()
             .init_resource::<EnvSmoothing>()
             .init_resource::<AppliedEnvColors>()
+            .register_type::<weather::Weather>()
+            .init_resource::<weather::Weather>()
+            // Also registered by `add_network_events`; repeated so the plugin
+            // stands alone in unit tests.
+            .add_message::<WeatherUpdate>()
             .add_plugins((
                 CelestialPlugin,
                 lens_flare::LensFlarePlugin,
                 light_visibility::ShadowGatedLightVisibilityPlugin,
             ))
             .add_systems(Startup, seed_environment_settings_from_config)
+            // Ungated on purpose: the 0x3809 consumer touches no scene
+            // resource, and the packet can land on the same frame as the state
+            // flip into the world (see `weather`). Leaving the world drops the
+            // zone's weather, like `cos::reset_cos_state` next door.
+            .add_systems(Update, weather::apply_weather_update)
+            .add_systems(OnExit(SceneState::GameWorld), weather::reset_weather)
             .init_resource::<crate::plugins::map::view_range::ViewRange>()
             .add_systems(
                 PreUpdate,
@@ -569,6 +583,11 @@ impl Plugin for EnvironmentPlugin {
                 ResourceInspectorPlugin::<TimeOfDay>::default()
                     .run_if(crate::plugins::dev::dev_windows_visible),
                 ResourceInspectorPlugin::<EnvironmentSettings>::default()
+                    .run_if(crate::plugins::dev::dev_windows_visible),
+                // The dev read site for 0x3809: until the rendering side can
+                // name kinds 2 and 3, this window is where the live wire is
+                // visible at all.
+                ResourceInspectorPlugin::<weather::Weather>::default()
                     .run_if(crate::plugins::dev::dev_windows_visible),
             ));
             // Debug env controls (N toggle, Shift+M pause, K/L scrub). Two
