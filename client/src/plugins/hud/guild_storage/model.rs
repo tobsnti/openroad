@@ -26,6 +26,7 @@
 
 use bevy::prelude::*;
 
+use packets::agent::character_data::ItemSection;
 use packets::agent::guild::GuildPermissions;
 use packets::agent::guild_storage::{
     parse_guild_storage_items, GuildStorageCloseRequest, GuildStorageDataBegin,
@@ -280,11 +281,22 @@ pub fn on_guild_storage_end(
             continue;
         }
         match parse_guild_storage_items(&raw, &*item_data) {
-            Ok((size, items)) => {
+            Ok(ItemSection {
+                size,
+                items,
+                stopped_at,
+            }) => {
                 info!(
                     "guild storage: data end (0x3254) — size {size}, {} items",
                     items.len()
                 );
+                if let Some(stop) = stopped_at {
+                    warn!(
+                        "guild storage: list cut short at record {} (ref {}) — the records \
+                         behind it are not shown; capture for decode",
+                        stop.index, stop.ref_id
+                    );
+                }
                 let gold = state.items.gold;
                 let mut slots = vec![None; size as usize];
                 for item in items {

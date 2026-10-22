@@ -1083,14 +1083,16 @@ fn read_item_section(
 
 /// Public entry to the item-section parser for other packets that carry the
 /// same `size:u8, count:u8, items…` shape (the storage list 0x3049). Discards
-/// the per-record trace the character-data parser keeps.
+/// the per-record trace the character-data parser keeps, but not the stop:
+/// a caller that drops [`ItemSection::stopped_at`] cannot tell a complete list
+/// from one cut short at an unresolvable ref, and would show the user a
+/// silently short warehouse (#425/#455 is the same defect inside 0x3013).
 pub fn parse_item_section(
     cursor: &mut Cursor<&[u8]>,
     resolver: &impl ItemClassResolver,
-) -> Result<(u8, Vec<InventoryItem>), SerializationError> {
+) -> Result<ItemSection, SerializationError> {
     let mut trace = Vec::new();
-    let section = read_item_section(cursor, resolver, &mut trace, None)?;
-    Ok((section.size, section.items))
+    read_item_section(cursor, resolver, &mut trace, None)
 }
 
 /// The tail's `unique_id + position`; the position must be plausible, which is
