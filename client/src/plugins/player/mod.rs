@@ -304,11 +304,26 @@ impl PlayerConfig {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum PlayerCommand {
     MoveTo(Vec3),
+    /// Walk along a heading with no destination, as the original's movement
+    /// body does when it carries an angle instead of coordinates: the order
+    /// never "arrives", only a wall or the next order ends it.
+    /// `Dir2` is the XZ plane of render space (`x` → x, `y` → z).
+    MoveHeading(Dir2),
     // Suggestions:
     // Attack(BattleTarget),
     // UseSkill(Skill)
+}
+
+impl PlayerCommand {
+    fn is_movement(&self) -> bool {
+        matches!(
+            self,
+            PlayerCommand::MoveTo(_) | PlayerCommand::MoveHeading(_)
+        )
+    }
 }
 
 #[derive(Default, Resource)]
@@ -318,49 +333,64 @@ impl PlayerCommands {
     pub fn has_any_commands(&self) -> bool {
         return self.0.len() > 0;
     }
-    /// Whether the player is currently walking toward a target. The `MoveTo`
-    /// order stays queued while moving and is cleared once the target is
-    /// reached or the path is blocked, so this drives the run animation.
+    /// Whether the player is currently walking. The movement order stays queued
+    /// while moving and is cleared once the target is reached or the path is
+    /// blocked, so this drives the run animation.
     pub fn is_moving(&self) -> bool {
-        self.0
-            .iter()
-            .any(|command| matches!(command, PlayerCommand::MoveTo(_)))
+        self.0.iter().any(PlayerCommand::is_movement)
     }
 
     /// The queued walk destination, if any — what the combat gap-close
-    /// checks for staleness against a drifting target.
+    /// checks for staleness against a drifting target. A heading walk has no
+    /// destination to go stale.
     pub fn move_destination(&self) -> Option<Vec3> {
         self.0.iter().find_map(|command| match command {
             PlayerCommand::MoveTo(position) => Some(*position),
+            PlayerCommand::MoveHeading(_) => None,
         })
     }
     pub fn move_to(&mut self, position: Vec3) {
-        // Check if there's an old MoveTo command and replace it if found
-        if let Some(index) = self
-            .0
-            .iter()
-            .position(|command| matches!(command, PlayerCommand::MoveTo(_)))
-        {
-            self.0[index] = PlayerCommand::MoveTo(position);
+        self.set_movement(PlayerCommand::MoveTo(position));
+    }
+
+    /// Walk along `heading` (render-space XZ) until blocked.
+    pub fn move_heading(&mut self, heading: Dir2) {
+        self.set_movement(PlayerCommand::MoveHeading(heading));
+    }
+
+    /// The player walks toward one thing at a time, so a new movement order
+    /// replaces the queued one in place — including across the two kinds, or a
+    /// stale heading would keep steering after a click on the ground.
+    fn set_movement(&mut self, command: PlayerCommand) {
+        if let Some(index) = self.0.iter().position(PlayerCommand::is_movement) {
+            self.0[index] = command;
         } else {
-            // If no old MoveTo command exists, push a new one
-            self.0.push(PlayerCommand::MoveTo(position));
+            self.0.push(command);
         }
     }
+
     /// Cancel any pending movement (e.g. when the server rejects a move).
     pub fn stop(&mut self) {
-        self.0
-            .retain(|command| !matches!(command, PlayerCommand::MoveTo(_)));
+        self.0.retain(|command| !command.is_movement());
     }
 }
 
-/// A request to move the player to a render-space point, emitted on click-to-move
+/// A movement order from the player's own input, emitted on click-to-move
 /// (`nav::decal::place_decal_on_click`). It's always applied locally right away
 /// (optimistic prediction); in GameWorld the networked path additionally sends a
 /// movement request and reconciles against the server's response (see
 /// `game_scene::send_movement_request` / `on_movement_response`).
-#[derive(Message)]
-pub struct PlayerMoveOrder(pub Vec3);
+///
+/// The two variants are the two forms the original's movement body carries (see
+/// [`packets::agent::ingame::MovementRequest`]) — a click that hit walkable
+/// ground has a destination, a click into the sky only has a direction.
+#[derive(Message, Clone, Copy)]
+pub enum PlayerMoveOrder {
+    /// Walk to this render-space point.
+    To(Vec3),
+    /// Walk along this render-space XZ direction until something blocks it.
+    Heading(Dir2),
+}
 
 pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
@@ -428,7 +458,10 @@ fn apply_local_move_order(
         return;
     }
     for order in orders.read() {
-        player_commands.move_to(order.0);
+        match *order {
+            PlayerMoveOrder::To(position) => player_commands.move_to(position),
+            PlayerMoveOrder::Heading(heading) => player_commands.move_heading(heading),
+        }
     }
 }
 
@@ -560,32 +593,39 @@ fn handle_player_commands(
         return;
     }
     if let Ok((_entity, mut transform, speed, mut nav_location)) = player_query.single_mut() {
-        let Some(PlayerCommand::MoveTo(target)) = player_commands.0.first() else {
+        let current_xz = transform.translation.xz();
+        // Both movement orders reduce to "step along a unit XZ direction"; only
+        // a destination also has a distance, and therefore an arrival. Copied
+        // out of the queue because the arrival arm clears it.
+        let Some(&command) = player_commands.0.first() else {
             return;
         };
-        let target = *target;
-        let current_xz = transform.translation.xz();
-        let target_xz = target.xz();
-        let to_target = target_xz - current_xz;
-        let distance = to_target.length();
+        let (direction, remaining) = match command {
+            PlayerCommand::MoveTo(target) => {
+                let target_xz = target.xz();
+                let to_target = target_xz - current_xz;
+                let distance = to_target.length();
 
-        if distance <= PLAYER_TARGET_EPSILON {
-            // Snap to the target XZ, but take the height from the nav surface,
-            // not the click target's Y. The target's Y came from the cursor
-            // raycast against the terrain height field, which sits *below* an
-            // ice sheet — using it directly dropped the player through the ice
-            // onto the lake bed on arrival. `ground()` resolves the surface the
-            // player is actually on (ice included; see plugins::nav).
-            let (height, location) = nav_raycast
-                .ground(target_xz, transform.translation.y, *nav_location)
-                .unwrap_or((target.y, *nav_location));
-            transform.translation = Vec3::new(target_xz.x, height, target_xz.y);
-            *nav_location = location;
-            player_commands.0.clear();
-            return;
-        }
-
-        let direction = to_target / distance;
+                if distance <= PLAYER_TARGET_EPSILON {
+                    // Snap to the target XZ, but take the height from the nav
+                    // surface, not the click target's Y. The target's Y came
+                    // from the cursor raycast against the terrain height field,
+                    // which sits *below* an ice sheet — using it directly
+                    // dropped the player through the ice onto the lake bed on
+                    // arrival. `ground()` resolves the surface the player is
+                    // actually on (ice included; see plugins::nav).
+                    let (height, location) = nav_raycast
+                        .ground(target_xz, transform.translation.y, *nav_location)
+                        .unwrap_or((target.y, *nav_location));
+                    transform.translation = Vec3::new(target_xz.x, height, target_xz.y);
+                    *nav_location = location;
+                    player_commands.0.clear();
+                    return;
+                }
+                (to_target / distance, Some(distance))
+            }
+            PlayerCommand::MoveHeading(heading) => (heading.as_vec2(), None),
+        };
 
         // Turn to face the walking direction (yaw only, around Y). The SRO body
         // faces -Z, so we add PI to the +Z yaw to point the front along the move
@@ -603,7 +643,8 @@ fn handle_player_commands(
             .map(|s| s.current())
             .filter(|v| *v > 0.0)
             .unwrap_or(PLAYER_MOVE_SPEED);
-        let step = (move_speed * time.delta_secs()).min(distance);
+        let full_step = move_speed * time.delta_secs();
+        let step = remaining.map_or(full_step, |distance| full_step.min(distance));
         let next_xz = current_xz + direction * step;
 
         // One stateful query does both the wall test and the ground snap,
@@ -2664,6 +2705,38 @@ fn revive_player_animation(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The player walks toward one thing at a time, so the two movement orders
+    /// replace each other instead of queueing up — a stale heading left behind
+    /// a ground click would keep steering the character.
+    #[test]
+    fn a_movement_order_replaces_the_queued_one_whichever_kind_it_is() {
+        let mut commands = PlayerCommands::default();
+        commands.move_to(Vec3::new(10.0, 0.0, 20.0));
+        commands.move_heading(Dir2::X);
+        assert!(commands.is_moving(), "a heading walk is movement");
+        assert_eq!(
+            commands.move_destination(),
+            None,
+            "the destination is gone with the order that carried it"
+        );
+        assert_eq!(commands.0.len(), 1, "one movement order at a time");
+
+        commands.move_to(Vec3::new(1.0, 0.0, 2.0));
+        assert_eq!(commands.move_destination(), Some(Vec3::new(1.0, 0.0, 2.0)));
+        assert_eq!(commands.0.len(), 1, "one movement order at a time");
+    }
+
+    /// Stopping has to reach a heading walk too: it is the server's "no" to a
+    /// sky click, and the wall case drops the order through the same path.
+    #[test]
+    fn stopping_clears_a_heading_walk() {
+        let mut commands = PlayerCommands::default();
+        commands.move_heading(Dir2::NEG_Y);
+        commands.stop();
+        assert!(!commands.is_moving());
+        assert!(!commands.has_any_commands());
+    }
 
     /// A weapon swap must invalidate the clip set. Before this the set was
     /// built once and never compared against the stance the character wanted,
