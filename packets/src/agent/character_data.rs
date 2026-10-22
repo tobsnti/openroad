@@ -1346,6 +1346,9 @@ mod test {
                                    // ITEM_COS_P_FLUTE is 3/2/1/1 (growth pet, no rent field).
     const PET_SCROLL_RENTABLE: u32 = 10365;
     const PET_SCROLL_GROWTH: u32 = 7488;
+    /// A ref no resolver routes, standing in for the rows the server's item
+    /// table has and the client's itemdata does not (live: 46551, 23273).
+    const UNROUTABLE: u32 = 999_999;
 
     fn resolver() -> MockResolver {
         MockResolver {
@@ -1396,16 +1399,21 @@ mod test {
         full_body_with_autopotion(0, 0, 0, 0)
     }
 
-    /// `full_body()` with the four 0x3013 auto-potion tail fields set. Both
-    /// in-tree captures carry zeros there (see
+    /// `full_body()` with the four 0x3013 auto-potion tail fields set. The
+    /// in-tree 38-byte tail capture carries zeros there (see
     /// `real_0x3013_extras_tail_carries_the_autopotion_settings`), so the only
     /// way to prove the fields are read at the right offsets — and not just
     /// zero-by-accident — is to vary them.
     fn full_body_with_autopotion(hp: u16, mp: u16, universal: u16, delay: u8) -> Vec<u8> {
-        let b = stats_block(Body::default())
-            // inventory: size 45, 2 items
-            .u8(45)
-            .u8(2)
+        // inventory: size 45, 2 items
+        let inventory =
+            expendable_record(equipment_record(stats_block(Body::default()).u8(45).u8(2)));
+        body_after_inventory(inventory, hp, mp, universal, delay).0
+    }
+
+    /// The equipment record: slot 6, no rent, one mag param, one socket.
+    fn equipment_record(b: Body) -> Body {
+        b
             // item 1: equipment in slot 6, no rent
             .u8(6)
             .u32(0)
@@ -1423,11 +1431,17 @@ mod test {
             .u32(7)
             .u8(2) // binding tag: advanced elixir
             .u8(0) // none
-            // item 2: expendable stack of 50 in slot 13, no rent
-            .u8(13)
-            .u32(0)
-            .u32(PILLS)
-            .u16(50)
+    }
+
+    /// The expendable record: a stack of 50 in slot 13, no rent.
+    fn expendable_record(b: Body) -> Body {
+        b.u8(13).u32(0).u32(PILLS).u16(50)
+    }
+
+    /// Everything behind the inventory section, with the four auto-potion tail
+    /// fields as given.
+    fn body_after_inventory(b: Body, hp: u16, mp: u16, universal: u16, delay: u8) -> Body {
+        b
             // avatar inventory: size 5, empty
             .u8(5)
             .u8(0)
@@ -1498,8 +1512,30 @@ mod test {
             .u8(delay) // auto potion delay
             .u8(0) // blocked whisper count
             .u32(0x00010001)
-            .u8(0);
-        b.0
+            .u8(0)
+    }
+
+    /// `full_body()` with a third inventory record whose ref no resolver can
+    /// route, sitting BETWEEN the two routable ones, carrying the `stack:u16`
+    /// body go-sro writes for the starter-kit expendables no client itemdata
+    /// lists (live 2026-08-11: ref 46551, slot 0x12).
+    ///
+    /// The neighbours are the point. A resync proves a width by replaying the
+    /// whole forward pass, so width 2 only wins because every other width
+    /// shifts the record behind the offender onto bytes whose ref id resolves
+    /// to nothing — with the offender last there would be nothing left to
+    /// derail, several widths would explain the blob, and the resync would
+    /// (correctly) refuse to pick one.
+    fn full_body_with_unroutable(stack: u16) -> Vec<u8> {
+        let inventory = expendable_record(
+            equipment_record(stats_block(Body::default()).u8(45).u8(3))
+                // item 2: slot 18, no rent, unroutable ref, body = stack:u16
+                .u8(18)
+                .u32(0)
+                .u32(UNROUTABLE)
+                .u16(stack),
+        );
+        body_after_inventory(inventory, 0, 0, 0, 0).0
     }
 
     #[test]
@@ -1601,85 +1637,27 @@ mod test {
         assert_eq!(info.state.expect("state").run_speed, 50.0);
     }
 
-    /// Live capture (packet_dump/0x3013.log), see the test using it.
-    const FRESH_CHAR_0X3013_HEX: &str = "1a2e828d740700002201010000000000000000000000000000000000000000a086010000000000000000c8000000c800\
-         0000010000000000000000006d1300000000001703000000000000000000000027000000000100020001000000008303\
-         000000000000000000000027000000000100020002000000005f03000000000000000000000027000000000100020003\
-         00000000cb0300000000000000000000002700000000010002000400000000a703000000000000000000000027000000\
-         00010002000500000000ef03000000000000000000000027000000000100020006000000006b00000000000000000000\
-         00004500000000010002000700000000fb0000000000000000000000002e000000000100020009000000002b07000000\
-         00000000000000000000000000010002000a000000004f0700000000000000000000000000000000010002000b000000\
-         00070700000000000000000000000000000000010002000c000000000707000000000000000000000000000000000100\
-         02000d00000000855f0000e8030e00000000895f0000e8030f00000000815f000014001000000000805f000014001100\
-         0000007e5f000014001200000000d7b50000010013000000005d5f000000000000000000000000000000000100020005\
-         000001010100000001020100000001030100000001110100000001120100000001130100000001140100000002000201\
-         0001000000000000000000beab0100a862496873440000a041de12dc4394e600010094e6000000009a99994101007042\
-         0000c84200050050656e697300000001000000000000000000000000000000ff5700a004000000000200000001000000\
-         000000000000000100010000";
-
-    /// Live capture (packet_dump/0x3013.log), see the test using it.
-    const OLD_CHAR_0X3013_HEX: &str = "1a2e2117730700002211117f520100000000006f0100009804000000000000bea4010000000200000000c50000002503\
-         0000010000000000000000006d1b00000000001f01000000000000000000000030000000000100020001000000008b01\
-         00000000000000000000002f000000000100020002000000006701000000000000000000000030000000000100020003\
-         00000000d30100000000000000000000003000000000010002000400000000af01000000000000000000000030000000\
-         00010002000500000000f70100000000000000000000003000000000010002000600000000b800000001a01d35100200\
-         000031000000000100020009000000002b0700000000000000000000000000000000010002000a000000004f07000000\
-         00000000000000000000000000010002000b00000000070700000000000000000000000000000000010002000c000000\
-         00070700000000000000000000000000000000010002000d00000000855f0000e7030e00000000895f0000e7030f0000\
-         0000815f00000d001000000000805f00000f0011000000007e5f0000140012000000000b0f0000080013000000005d5f\
-         000000000000000000000000000000000100020014000000003700000001001500000000de1b00000100160000000047\
-         0000000000000000000000003c00000000010002001700000000eb1b000001001800000000fb00000000000000000000\
-         00002e000000000100020019000000000b00000001001a000000003e00000014001b000000005e04000001ed88303000\
-         0000003800000000010002001c0000000004000000010005000001010100000001020100000001030100000001110100\
-         00000112010000000113010000110114010000000200018e00000001015f0500000102010001000000000000000000a2\
-         ab0100a8618f376f447e6f02c27961ae44328b000100328b0000000000008041000048420000c8420004003132333400\
-         000001000000000000000000000000000000ff5702a0050000000002000000010701014aeb0300640000000000000000\
-         0100010000";
-
-    fn hex_bytes(hex: &str) -> Vec<u8> {
-        let clean: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        clean
-            .as_bytes()
-            .chunks(2)
-            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
-            .collect()
-    }
-
-    /// The client-side classes of every ref in the fresh char's blob,
-    /// mirroring the user's v1.188 itemdata — WITHOUT the go-sro starter-kit
-    /// ref 46551 (absent from every known client itemdata).
-    fn fresh_char_resolver(with_46551: bool) -> MockResolver {
-        let mut classes = HashMap::new();
-        for eq in [
-            791, 899, 863, 971, 935, 1007, 107, 251, 1835, 1871, 1799, 24413,
-        ] {
-            classes.insert(eq, ItemClass::Equipment);
-        }
-        for exp in [24446, 24448, 24449, 24453, 24457] {
-            classes.insert(exp, ItemClass::Expendable { tid3: 1, tid4: 1 });
-        }
-        if with_46551 {
-            classes.insert(46551, ItemClass::Expendable { tid3: 1, tid4: 1 });
-        }
-        MockResolver { classes }
+    /// `resolver()` plus a route for the otherwise unroutable ref — the
+    /// reference parse a resync result is compared against.
+    fn resolver_routing_unroutable() -> MockResolver {
+        let mut routed = resolver();
+        routed
+            .classes
+            .insert(UNROUTABLE, ItemClass::Expendable { tid3: 1, tid4: 1 });
+        routed
     }
 
     #[test]
-    fn live_fresh_char_unresolvable_starter_item_is_resynced() {
-        // The 2026-08-11 live capture that falsified the zero-byte-Unknown
-        // assumption: go-sro grants starter-kit ref 46551 (slot 0x12,
-        // expendable stack 1) which no client itemdata can route.
-        //
-        // #425: stopping there threw away every section behind the offender.
-        // The resync must instead *prove* the body width from the blob — the
-        // only width that lets the rest of the packet parse to its last byte
-        // with the expected id in the tail is the real 2-byte stack — and then
-        // deliver the whole packet. The offender itself stays uninterpreted
-        // (`ItemTypeData::Unknown`): its class is still unknown, only its
-        // width is now known. Reference: the same blob parsed with a resolver
-        // that routes 46551.
-        let raw = hex_bytes(FRESH_CHAR_0X3013_HEX);
-        let info = parse_character_info(&raw, Some(0x1ABBE), &fresh_char_resolver(false));
+    fn resync_proves_the_width_and_delivers_the_rest() {
+        // #425: stopping on a record whose width we cannot derive threw away
+        // every section behind it. The resync must instead *prove* the width
+        // from the blob — only one width lets the rest parse to the last byte
+        // with the expected id in the tail — and then deliver the whole packet.
+        // The offender itself stays uninterpreted (`ItemTypeData::Unknown`):
+        // its class is still unknown, only its width is now known. Reference:
+        // the same bytes parsed with a resolver that routes the ref.
+        let raw = full_body_with_unroutable(7);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
 
         assert_eq!(info.failed_stage, None);
         assert!(info.fully_parsed);
@@ -1687,98 +1665,86 @@ mod test {
         assert_eq!(
             info.recovered_body,
             Some(RecoveredItemBody {
-                ref_id: 46551,
+                ref_id: UNROUTABLE,
                 body_len: 2,
             })
         );
 
-        let complete = parse_character_info(&raw, Some(0x1ABBE), &fresh_char_resolver(true));
+        let complete = parse_character_info(&raw, Some(UNIQUE_ID), &resolver_routing_unroutable());
         let reference = complete.inventory.expect("reference inventory");
         let items = info.inventory.expect("inventory");
         assert_eq!(items.len(), reference.len());
         for (got, want) in items.iter().zip(reference.iter()) {
             assert_eq!((got.slot, got.ref_id), (want.slot, want.ref_id));
-            if got.ref_id == 46551 {
+            if got.ref_id == UNROUTABLE {
                 // Width recovered, body deliberately not interpreted.
                 assert_eq!(got.data, ItemTypeData::Unknown);
             } else {
                 assert_eq!(got.data, want.data);
             }
         }
-        // The offender is no longer the end of the packet: everything behind
-        // it arrives too.
+        // The offender is no longer the end of the packet: everything behind it
+        // arrives too.
         assert_eq!(info.avatar_items, complete.avatar_items);
         assert_eq!(info.masteries, complete.masteries);
         assert_eq!(info.skills, complete.skills);
         assert_eq!(info.job, complete.job);
-        let spawn = info.spawn.expect("spawn");
-        assert_eq!(spawn.unique_id, 0x1ABBE);
-        assert_eq!(spawn.region, 0x62A8);
-        assert_eq!(info.name.as_deref(), Some("Penis"));
+        assert_eq!(info.spawn, complete.spawn);
+        assert_eq!(info.name, complete.name);
+        assert_eq!(info.extras, complete.extras);
     }
 
     #[test]
     fn resync_declines_when_no_width_explains_the_blob() {
         // The resync is only allowed to cross a record when a width makes the
-        // *whole* blob parse. Cut the capture's last byte off and no width can
-        // — so the parse must fall back to today's behaviour: stop on the
-        // offender, keep the records read before it, and salvage the tail via
-        // the anchor scan. It must never pick a width just to get past.
-        let mut raw = hex_bytes(FRESH_CHAR_0X3013_HEX);
+        // *whole* blob parse. Cut the last byte off and none can — so the parse
+        // must fall back to today's behaviour: stop on the offender, keep the
+        // records read before it, and salvage the tail via the anchor scan. It
+        // must never pick a width just to get past.
+        let mut raw = full_body_with_unroutable(7);
         raw.pop();
-        let info = parse_character_info(&raw, Some(0x1ABBE), &fresh_char_resolver(false));
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
 
         assert_eq!(info.recovered_body, None);
         assert_eq!(info.failed_stage, Some("inventory"));
-        let complete = parse_character_info(&raw, Some(0x1ABBE), &fresh_char_resolver(true))
-            .inventory
-            .expect("reference inventory");
-        let stop_index = complete
-            .iter()
-            .position(|i| i.ref_id == 46551)
-            .expect("offender is in the reference parse");
-        assert!(
-            stop_index > 0,
-            "capture must have items before the offender"
-        );
-        assert_eq!(info.inventory.as_deref(), Some(&complete[..stop_index]));
         let stop = info.item_stop.expect("stop recorded");
-        assert_eq!(stop.ref_id, 46551);
-        assert_eq!(stop.index as usize, stop_index);
+        assert_eq!(stop.ref_id, UNROUTABLE);
+        assert_eq!(stop.index, 1, "the offender is the second record");
+        let items = info.inventory.expect("inventory");
+        assert_eq!(items.len(), 1, "the record before the offender survives");
+        assert_eq!(items[0].ref_id, SWORD);
         let offender = info.item_trace.last().expect("offender traced");
         assert_eq!(offender.class, ItemClass::Unknown);
-        assert_eq!(offender.slot, 0x12);
+        assert_eq!(offender.slot, 18);
         let spawn = info.spawn.expect("anchor spawn");
-        assert_eq!(spawn.unique_id, 0x1ABBE);
-        assert_eq!(spawn.region, 0x62A8);
+        assert_eq!(spawn.unique_id, UNIQUE_ID);
+        assert_eq!(spawn.region, 0x60A8);
     }
 
     #[test]
-    fn live_fresh_char_parses_fully_once_the_ref_resolves() {
-        // Same bytes, resolver additionally routes 46551 as a plain
-        // expendable: the whole blob parses to the byte count and the real
-        // chest (ref 899) sits in equip slot 1 — proving the fix is about
+    fn body_parses_fully_once_the_ref_resolves() {
+        // Same bytes, resolver additionally routes the ref as a plain
+        // expendable: the whole blob parses to its byte count and the records
+        // around the offender keep their slots — proving the resync is about
         // classification, not offsets.
-        let raw = hex_bytes(FRESH_CHAR_0X3013_HEX);
-        let info = parse_character_info(&raw, Some(0x1ABBE), &fresh_char_resolver(true));
+        let raw = full_body_with_unroutable(7);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver_routing_unroutable());
 
         assert!(info.fully_parsed, "failed at {:?}", info.failed_stage);
+        assert_eq!(info.recovered_body, None);
+        assert_eq!(info.forward_parsed_to, raw.len());
         let items = info.inventory.expect("inventory");
-        assert_eq!(items.len(), 19);
-        let chest = items
-            .iter()
-            .find(|i| i.slot == 1)
-            .expect("slot 1 populated");
-        assert_eq!(chest.ref_id, 899);
-        let starter = items
-            .iter()
-            .find(|i| i.ref_id == 46551)
-            .expect("starter item");
-        assert!(matches!(
-            starter.data,
-            ItemTypeData::Expendable { stack_count: 1, .. }
-        ));
-        assert_eq!(info.name.as_deref(), Some("Penis"));
+        assert_eq!(items.len(), 3);
+        assert_eq!((items[0].slot, items[0].ref_id), (6, SWORD));
+        assert_eq!((items[2].slot, items[2].ref_id), (13, PILLS));
+        assert_eq!(
+            items[1].data,
+            ItemTypeData::Expendable {
+                stack_count: 7,
+                assimilation_prob: None,
+                mag_params: vec![],
+            }
+        );
     }
 
     #[test]
@@ -1795,7 +1761,7 @@ mod test {
             // item 1: unroutable ref in slot 10
             .u8(10)
             .u32(0)
-            .u32(999_999)
+            .u32(UNROUTABLE)
             // item 2 (never reached): expendable stack of 50 in slot 13
             .u8(13)
             .u32(0)
@@ -1808,9 +1774,9 @@ mod test {
         assert!(section.items.is_empty(), "the offender is the first record");
         let stop = section.stopped_at.expect("stop recorded");
         assert_eq!(stop.index, 0);
-        assert_eq!(stop.ref_id, 999_999);
+        assert_eq!(stop.ref_id, UNROUTABLE);
         let offender = trace.last().expect("trace keeps the offender");
-        assert_eq!(offender.ref_id, 999_999);
+        assert_eq!(offender.ref_id, UNROUTABLE);
         assert_eq!(offender.class, ItemClass::Unknown);
     }
 
@@ -2001,7 +1967,7 @@ mod test {
             .u8(1)
             .u8(6)
             .u32(0)
-            .u32(999_999) // unknown item ref -> zero-body record
+            .u32(UNROUTABLE) // unknown item ref -> zero-body record
             .raw(&[0xFF; 24]) // filler the forward pass cannot interpret
             .u32(UNIQUE_ID)
             .u16(0x60A8)
@@ -2031,7 +1997,7 @@ mod test {
         // the section stopped on its very first record, so it yields an empty
         // list (#455) rather than nothing — and nothing after it is parsed
         assert_eq!(info.inventory.as_deref(), Some(&[][..]));
-        assert_eq!(info.item_stop.expect("stop recorded").ref_id, 999_999);
+        assert_eq!(info.item_stop.expect("stop recorded").ref_id, UNROUTABLE);
         assert_eq!(info.masteries, None);
         let spawn = info.spawn.expect("anchor must find the spawn");
         assert_eq!(spawn.unique_id, UNIQUE_ID);

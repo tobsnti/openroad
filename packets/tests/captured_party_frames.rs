@@ -11,57 +11,13 @@
 //! `OPENROAD_PACKET_DUMP_DIR`, and without it the test reports that it found
 //! nothing to do rather than passing silently on an empty set.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bytes::Bytes;
 use packets::agent::party::{PartyData, PartyJoinResponse, PartyUpdate};
 
-/// One dump line is `<timestamp> <hex body> <marker>`; the body is the frame
-/// payload without the opcode header.
-fn bodies(path: &Path) -> Vec<Bytes> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .filter_map(|hex| {
-            (hex.len() % 2 == 0)
-                .then(|| {
-                    (0..hex.len())
-                        .step_by(2)
-                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-                        .collect::<Option<Vec<u8>>>()
-                })
-                .flatten()
-        })
-        .map(Bytes::from)
-        .collect()
-}
-
-/// Every `<dir>/**/<name>` the dump tree holds — one file per opcode per
-/// session, so the same opcode appears once per account directory.
-fn logs(root: &Path, name: &str) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let direct = root.join(name);
-    if direct.is_file() {
-        found.push(direct);
-    }
-    if let Ok(entries) = fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let nested = entry.path().join(name);
-            if nested.is_file() {
-                found.push(nested);
-            }
-        }
-    }
-    found
-}
-
-fn dump_root() -> Option<PathBuf> {
-    let root = PathBuf::from(std::env::var("OPENROAD_PACKET_DUMP_DIR").ok()?);
-    root.is_dir().then_some(root)
-}
+mod dump;
+use dump::{bodies, dump_root, logs};
 
 /// Decode + re-encode every frame of one opcode, returning how many were seen.
 fn replay<T>(root: &Path, name: &str) -> usize
