@@ -531,13 +531,13 @@ fn netcheck_drive_actions(
         2 => (-STEP, 0),
         _ => (0, -STEP),
     };
-    let req = MovementRequest {
-        region: driver.region,
-        x: driver.base_x + dx,
-        y: driver.base_y,
-        z: driver.base_z + dz,
-    };
-    let (region, x, y, z) = (req.region, req.x, req.y, req.z);
+    let (region, x, y, z) = (
+        driver.region,
+        driver.base_x + dx,
+        driver.base_y,
+        driver.base_z + dz,
+    );
+    let req = MovementRequest::ToPosition { region, x, y, z };
     if let Err(e) = conn.get_sender().send(Packet::from(req).into()) {
         error!("netcheck: failed to send MovementRequest: {}", e.0);
         return;

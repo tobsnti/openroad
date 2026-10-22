@@ -586,12 +586,17 @@ pub fn route_move_orders_while_mounted(
         if !local {
             continue; // 0x70C5 sender handles it
         }
+        // `RemoteMovement` walks toward a point, so it has nothing to do with a
+        // heading order (a sky click while mounted): the mount holds still.
+        let PlayerMoveOrder::To(target) = *order else {
+            continue;
+        };
         if let Some((mut movement, speed)) = index.get(uid).and_then(|e| movements.get_mut(e).ok())
         {
             if let Some(speed) = speed {
                 movement.speed = speed.current();
             }
-            movement.target = Some(order.0);
+            movement.target = Some(target);
         }
     }
 }

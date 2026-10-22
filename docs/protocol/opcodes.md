@@ -98,8 +98,8 @@ same handler there.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
-| `0x7021` | MovementRequest | C→S | wired |  |
-| `0xB021` | MovementResponse | S→C | wired |  |
+| `0x7021` | MovementRequest | C→S | wired | two forms: a destination, or a heading only — the click that hit no walkable ground (#3) |
+| `0xB021` | MovementResponse | S→C | wired | destination, or heading + `moving`; a moving heading is a walk, not a rejection |
 | `0xB023` | MovementPositionUpdate | S→C | wired |  |
 | `0xB024` | MovementAngleResponse | S→C | wired | turn-in-place; C→S half 0x7024 unwired (no builder, no capture) |
 | `0x30D0` | EntitySpeedUpdate | S→C | wired |  |

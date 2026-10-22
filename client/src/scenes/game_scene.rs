@@ -537,17 +537,37 @@ pub(crate) fn server_position_to_sro(region: u16, x: f32, y: f32, z: f32) -> Vec
     Vec3::new(-(rx as f32 * 1920.0 + x), y, rz as f32 * 1920.0 + z)
 }
 
-/// Convert an SRO heading to a render-space Y rotation. The heading is a `u16`
-/// mapping `0..65536` onto `0..2π`, measured as `atan2(Z, X)` in region-offset
-/// space (see go-sro). Render space mirrors world X, and the SRO body faces `-Z`
-/// — the same facing convention `PlayerPlugin` uses to turn the local player
-/// toward its move direction, so networked entities line up with it.
-fn heading_to_render_rotation(heading: u16) -> Quat {
+/// Convert an SRO heading to the render-space XZ direction it faces. The heading
+/// is a `u16` mapping `0..65536` onto `0..2π`, measured as `atan2(Z, X)` in
+/// region-offset space (see go-sro). Render space mirrors world X.
+///
+/// The original divides by `65535` instead (`FUN_008a5750`, and ×65535 in its
+/// movement-body writer `FUN_009ebbf0`) — 0.0055° at full scale, kept as is so
+/// this stays the exact inverse of [`render_direction_to_heading`].
+fn heading_to_render_direction(heading: u16) -> Dir2 {
     let theta = heading as f32 / 65536.0 * std::f32::consts::TAU;
     // Offset-space facing (cos θ, sin θ) over (X, Z); render mirrors the X axis.
-    let render_dir_x = -theta.cos();
-    let render_dir_z = theta.sin();
-    let yaw = render_dir_x.atan2(render_dir_z) + std::f32::consts::PI;
+    Dir2::new(Vec2::new(-theta.cos(), theta.sin()))
+        .expect("(cos, sin) is a unit vector for every heading")
+}
+
+/// Inverse of [`heading_to_render_direction`]: the heading to put on the wire
+/// for a render-space XZ direction, used by the heading form of a move order.
+fn render_direction_to_heading(direction: Dir2) -> u16 {
+    // Undo the X mirror, then measure the offset-space angle the same way.
+    let offset_angle = direction.y.atan2(-direction.x);
+    let theta = offset_angle.rem_euclid(std::f32::consts::TAU);
+    // Modular on purpose: a direction one ulp short of a full turn rounds up to
+    // the full turn, which is heading 0.
+    ((theta / std::f32::consts::TAU * 65536.0).round() as u32 % 65536) as u16
+}
+
+/// A render-space Y rotation facing an SRO heading. The SRO body faces `-Z` —
+/// the same facing convention `PlayerPlugin` uses to turn the local player
+/// toward its move direction, so networked entities line up with it.
+fn heading_to_render_rotation(heading: u16) -> Quat {
+    let direction = heading_to_render_direction(heading);
+    let yaw = direction.x.atan2(direction.y) + std::f32::consts::PI;
     Quat::from_rotation_y(yaw)
 }
 
@@ -574,9 +594,7 @@ pub(crate) fn render_to_server_position(
 }
 
 /// Send a movement request for a click-to-move order (authoritative: the player
-/// only walks when the server answers with a `MovementResponse`). Coordinates go
-/// out as raw region-local units (×10 scaling made the server wrap the
-/// destination several regions over — verified against a capture).
+/// only walks when the server answers with a `MovementResponse`).
 fn send_movement_request(
     mut orders: MessageReader<PlayerMoveOrder>,
     origin: Res<WorldOrigin>,
@@ -585,38 +603,8 @@ fn send_movement_request(
     cos_list: Res<crate::plugins::cos::ActiveCosList>,
 ) {
     for order in orders.read() {
-        let (region, x, y, z) = render_to_server_position(order.0, &origin);
-        // Coordinates are raw region-local units (verified against a capture:
-        // ×10 scaling made the server wrap the destination several regions over).
-        let (x, y, z) = (x.round() as i32, y.round() as i32, z.round() as i32);
-        // Mounted on a server-side COS: the order addresses the MOUNT via the
-        // pet-action envelope; the server answers with a MovementResponse for
-        // the COS uid and the rider is transform-slaved (mount.md §3). A
-        // local-only dev mount is driven by cos::riding instead — send nothing.
-        let request = match rider.0 {
-            Some(cos_uid) => {
-                if cos_list.get(cos_uid).is_none_or(|s| s.local_only) {
-                    continue;
-                }
-                debug!(
-                    "network: PetActionRequest::Movement cos={} region={:#06X} local=({},{},{})",
-                    cos_uid, region, x, y, z
-                );
-                Packet::from(packets::agent::pet::PetActionRequest::Movement {
-                    pet_unique_id: cos_uid,
-                    region,
-                    x,
-                    y,
-                    z,
-                })
-            }
-            None => {
-                debug!(
-                    "network: MovementRequest click_render=({:.1},{:.1},{:.1}) region={:#06X} local=({},{},{})",
-                    order.0.x, order.0.y, order.0.z, region, x, y, z
-                );
-                Packet::from(MovementRequest { region, x, y, z })
-            }
+        let Some(request) = move_request_packet(*order, &origin, &rider, &cos_list) else {
+            continue;
         };
         let Ok(conn) = conn.single() else {
             warn!("network: no agent connection to send MovementRequest");
@@ -624,6 +612,79 @@ fn send_movement_request(
         };
         if let Err(e) = conn.get_sender().send(request.into()) {
             error!("network: failed to send movement request: {}", e.0);
+        }
+    }
+}
+
+/// The packet a move order leaves as, or `None` when it must not be sent at all.
+///
+/// Three shapes, because the order and the mount both matter: a destination goes
+/// out as the movement request's position form with raw region-local units (×10
+/// scaling made the server wrap the destination several regions over — verified
+/// against a capture), a destination while mounted on a server-side COS
+/// addresses the MOUNT through the pet-action envelope (the server answers with
+/// a `MovementResponse` for the COS uid and the rider is transform-slaved,
+/// `mount.md` §3), and a heading goes out as the request's heading form.
+fn move_request_packet(
+    order: PlayerMoveOrder,
+    origin: &WorldOrigin,
+    rider: &crate::plugins::cos::RiderState,
+    cos_list: &crate::plugins::cos::ActiveCosList,
+) -> Option<Packet> {
+    let point = match order {
+        PlayerMoveOrder::To(point) => point,
+        PlayerMoveOrder::Heading(heading) => {
+            // The original reuses one movement body for 0x7021 and the pet
+            // envelope (0x70C5 action 1), but our pet builder only has the
+            // destination form — so a mounted heading order stays home rather
+            // than going out as the rider's own walk.
+            if rider.0.is_some() {
+                return None;
+            }
+            let angle = render_direction_to_heading(heading);
+            debug!(
+                "network: MovementRequest heading render=({:.2},{:.2}) angle={:#06X}",
+                heading.x, heading.y, angle
+            );
+            return Some(Packet::from(MovementRequest::ToHeading {
+                moving: true,
+                angle,
+            }));
+        }
+    };
+    let (region, x, y, z) = render_to_server_position(point, origin);
+    let (x, y, z) = (x.round() as i32, y.round() as i32, z.round() as i32);
+    match rider.0 {
+        // A local-only dev mount is driven by cos::riding instead — send nothing.
+        Some(cos_uid) => {
+            if cos_list.get(cos_uid).is_none_or(|s| s.local_only) {
+                return None;
+            }
+            debug!(
+                "network: PetActionRequest::Movement cos={} region={:#06X} local=({},{},{})",
+                cos_uid, region, x, y, z
+            );
+            Some(Packet::from(
+                packets::agent::pet::PetActionRequest::Movement {
+                    pet_unique_id: cos_uid,
+                    region,
+                    x,
+                    y,
+                    z,
+                },
+            ))
+        }
+        None => {
+            debug!(
+                "network: MovementRequest click_render=({:.1},{:.1},{:.1}) region={:#06X} local=({},{},{})",
+                point.x, point.y, point.z, region, x, y, z
+            );
+            Some(Packet::from(MovementRequest::ToPosition {
+                region,
+                x,
+                y,
+                z,
+            }))
         }
     }
 }
@@ -702,9 +763,21 @@ fn on_movement_response(
                 }
             }
         } else if is_local {
-            // No destination = the server rejected/stopped the move (a "nack").
-            debug!("network: MovementResponse uid={} stop", res.unique_id);
-            player_commands.stop();
+            // No destination: the order carries a heading instead. The original
+            // enters the same movement state here as it does for a destination
+            // (`FUN_008a5750` calls the same state transition in both arms), so
+            // a `moving` heading is a walk, not a rejection — only `moving = 0`
+            // is the stop/turn case. This is what confirms a sky click (#3).
+            if res.moving {
+                debug!(
+                    "network: MovementResponse uid={} heading angle={:#06X}",
+                    res.unique_id, res.angle
+                );
+                player_commands.move_heading(heading_to_render_direction(res.angle));
+            } else {
+                debug!("network: MovementResponse uid={} stop", res.unique_id);
+                player_commands.stop();
+            }
         } else if let Some(entity) = entities.get(res.unique_id) {
             // A remote entity stopped: clear its movement target.
             if let Ok(mut movement) = remote_movement.get_mut(entity) {
@@ -2117,5 +2190,107 @@ mod test {
     #[test]
     fn distant_travel_during_an_engagement_is_still_travel() {
         assert!(!is_attack_approach(400.0, 180.0));
+    }
+
+    /// The heading a sky click puts on the wire is exactly the one the arriving
+    /// heading decodes to, so a click and the server's echo of it agree. Both
+    /// directions are pinned because only the pair is meaningful: the mapping
+    /// mirrors world X, which is easy to get right in one direction only.
+    #[test]
+    fn a_heading_round_trips_through_its_render_direction() {
+        for heading in [0u16, 1, 4096, 16384, 32768, 49152, 60000, 65535] {
+            let direction = heading_to_render_direction(heading);
+            assert_eq!(
+                render_direction_to_heading(direction),
+                heading,
+                "heading {heading:#06X} -> {direction:?}"
+            );
+        }
+        // The X mirror, spelled out: offset-space angle 0 faces render -X.
+        assert_eq!(render_direction_to_heading(Dir2::NEG_X), 0);
+        assert_eq!(render_direction_to_heading(Dir2::Y), 16384);
+    }
+
+    /// #3: a click that hit nothing walkable goes out as the movement request's
+    /// heading form — opcode 0x7021 with `kind = 0`, no region, no coordinates.
+    /// Mounted it stays home, because the pet envelope has no heading form here.
+    #[test]
+    fn a_sky_click_leaves_as_the_heading_form() {
+        let origin = WorldOrigin(Vec3::ZERO);
+        let cos_list = crate::plugins::cos::ActiveCosList(Vec::new());
+        let order = PlayerMoveOrder::Heading(Dir2::NEG_X);
+
+        let packet = move_request_packet(
+            order,
+            &origin,
+            &crate::plugins::cos::RiderState(None),
+            &cos_list,
+        )
+        .expect("a sky click is sent");
+        let (opcode, body) = packet.into_serialize();
+        assert_eq!(opcode, 0x7021);
+        assert_eq!(&body[..], &[0x00, 0x01, 0x00, 0x00]);
+
+        assert!(
+            move_request_packet(
+                order,
+                &origin,
+                &crate::plugins::cos::RiderState(Some(77)),
+                &cos_list
+            )
+            .is_none(),
+            "a mounted heading order has no packet to go out as"
+        );
+    }
+
+    /// The other half of #3: the server's answer to a sky click carries a
+    /// heading instead of a destination, and this used to be read as "the move
+    /// was rejected" — the one line that stopped the walk a moment after it
+    /// started. `moving` separates the two cases.
+    #[test]
+    fn a_moving_heading_response_walks_the_player_and_a_still_one_stops_it() {
+        for (moving, expect_moving) in [(true, true), (false, false)] {
+            let mut world = World::new();
+            world.insert_resource(WorldOrigin(Vec3::ZERO));
+            world.insert_resource(LocalPlayer {
+                unique_id: Some(42),
+                ..default()
+            });
+            world.init_resource::<NetworkEntities>();
+            world.init_resource::<ActiveAttack>();
+            world.init_resource::<EquippedWeapon>();
+            world.init_resource::<PlayerCommands>();
+            world.init_resource::<Messages<MovementResponse>>();
+            world
+                .resource_mut::<PlayerCommands>()
+                .move_to(Vec3::X * 10.0);
+            world.write_message(MovementResponse {
+                unique_id: 42,
+                has_destination: false,
+                region: 0,
+                x: 0,
+                y: 0,
+                z: 0,
+                moving,
+                angle: 16384,
+            });
+
+            world
+                .run_system_once(on_movement_response)
+                .expect("on_movement_response runs");
+
+            let commands = world.resource::<PlayerCommands>();
+            assert_eq!(
+                commands.is_moving(),
+                expect_moving,
+                "moving={moving} should leave the player {}",
+                if expect_moving { "walking" } else { "stopped" }
+            );
+            assert_eq!(
+                commands.move_destination(),
+                None,
+                "a heading walk has no destination"
+            );
+        }
     }
 }

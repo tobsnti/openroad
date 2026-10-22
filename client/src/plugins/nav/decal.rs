@@ -106,7 +106,8 @@ fn spawn_cursor_decal(
 }
 
 /// On left click, moves the decal to the cursor's nav mesh contact point and
-/// shows it. Clicks that miss the nav mesh leave the decal where it was.
+/// shows it. A click that hits nothing walkable instead orders a walk along the
+/// cursor's heading (#3) and leaves the decal where it was.
 fn place_decal_on_click(
     buttons: Res<ButtonInput<MouseButton>>,
     cursor_cameras: Query<&GameCursorCamera>,
@@ -136,34 +137,56 @@ fn place_decal_on_click(
         return;
     }
 
-    let Some(hit) = cursor_cameras
+    let hit = cursor_cameras
         .iter()
         .filter_map(|camera| camera.cursor_ray)
-        .find_map(|ray| nav_raycast.cast_walkable(&ray))
-    else {
-        return;
-    };
+        .find_map(|ray| nav_raycast.cast_walkable(&ray));
 
     // A click that releases a carried item must not also walk the character.
     //
     // Six systems read `PlayerMoveOrder`, so suppressing it at the one emitter
     // is far cheaper than guarding all of them — the same shape as the mounted
     // guard in `player::apply_local_move_order`. What *is* a drop is decided by
-    // `hud::inventory::drop_item::detect_drop_on_nothing`, not here: this path
-    // only ever sees walkable ground, which turned out to be far narrower than
-    // "the player released on nothing".
+    // `hud::inventory::drop_item::detect_drop_on_nothing`, not here.
     if carry.is_some_and(|state| state.drag.is_some()) {
         return;
     }
 
+    let Some(hit) = hit else {
+        // Nothing walkable under the cursor — the sky, a cliff face, a roof.
+        // The original answers such a click with the heading form of its
+        // movement body (`FUN_009ebbf0`: kind 0, no destination, just an
+        // angle), and its own 0xB021 handler enters the same movement state as
+        // a destination order, so "click the sky and run that way" is the
+        // original behaviour, not an invention (#3). The decal stays where it
+        // is: a heading order has no ground point to mark.
+        let heading = cursor_cameras
+            .iter()
+            .filter_map(|camera| camera.cursor_ray)
+            .find_map(|ray| heading_of(&ray));
+        if let Some(heading) = heading {
+            move_orders.write(PlayerMoveOrder::Heading(heading));
+        }
+        return;
+    };
+
     // Issue a move order; whether it's applied locally (sandbox) or sent to the
     // server (in-game) is decided downstream.
-    move_orders.write(PlayerMoveOrder(hit.point));
+    move_orders.write(PlayerMoveOrder::To(hit.point));
 
     for (mut transform, mut visibility) in decals.iter_mut() {
         transform.translation = hit.point;
         *visibility = Visibility::Visible;
     }
+}
+
+/// The horizontal direction a cursor ray points in, which is the heading a
+/// click that hit nothing walkable asks the character to run along.
+///
+/// `None` when the ray is (near) vertical: straight up has no horizontal
+/// direction to run along, so there is no order to give.
+fn heading_of(ray: &Ray3d) -> Option<Dir2> {
+    Dir2::new(Vec2::new(ray.direction.x, ray.direction.z)).ok()
 }
 
 /// Re-drapes a decal's grid onto the walkable surface around it whenever the
@@ -258,4 +281,30 @@ pub fn decal_mesh() -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// A click into the sky still points somewhere on the ground plane: the
+    /// heading is the ray's horizontal projection, and the vertical part is
+    /// dropped rather than being treated as "no hit, no order" (#3).
+    #[test]
+    fn a_ray_into_the_sky_keeps_its_horizontal_heading() {
+        let ray = Ray3d::new(Vec3::ZERO, Dir3::new(Vec3::new(0.0, 1.0, -1.0)).unwrap());
+        let heading = heading_of(&ray).expect("a ray above the horizon still has a heading");
+        assert!(
+            (heading.as_vec2() - Vec2::new(0.0, -1.0)).length() < 1e-5,
+            "expected the -Z heading, got {heading:?}"
+        );
+    }
+
+    /// Straight up has no horizontal direction, so there is nothing to walk
+    /// along and no order to give.
+    #[test]
+    fn a_vertical_ray_has_no_heading() {
+        let ray = Ray3d::new(Vec3::ZERO, Dir3::Y);
+        assert!(heading_of(&ray).is_none());
+    }
 }

@@ -290,23 +290,41 @@ fn put_coords(buf: &mut BytesMut, region: u16, x: i32, y: i32, z: i32) {
     }
 }
 
-/// 0x7021 — client → server move order to a location (click-to-move). `x/y/z`
-/// are raw region-local units (a capture showed ×10 scaling made the server
-/// wrap the destination several regions over).
+/// 0x7021 — client → server move order. The leading byte picks between the two
+/// forms the original writes from one shared movement body
+/// (`sro_client.exe@FUN_009ebbf0`, used by this opcode and the pet envelope
+/// 0x70C5 action 1): a destination, or a bare heading with no destination at
+/// all — the form a click that hit no walkable ground uses (#3 "sky click").
 #[derive(Message, Clone, Debug, PartialEq)]
-pub struct MovementRequest {
-    pub region: u16,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
+pub enum MovementRequest {
+    /// `kind = 1` — walk to a location (click-to-move). `x/y/z` are raw
+    /// region-local units (a capture showed ×10 scaling made the server wrap
+    /// the destination several regions over).
+    ToPosition { region: u16, x: i32, y: i32, z: i32 },
+    /// `kind = 0` — run along `angle` until something stops us; the order
+    /// carries no distance. `moving` is the original's `+0x14` byte, which no
+    /// captured frame pins (none of the 26 127 `0xB021` bodies in `packet_dump/`
+    /// takes this branch); the only named reading we own is the sibling
+    /// `sro-rs-client` workspace's movement packets — "0 = standing rotation,
+    /// 1 = sky-walking".
+    ToHeading { moving: bool, angle: u16 },
 }
 
 impl From<MovementRequest> for Bytes {
     fn from(p: MovementRequest) -> Self {
         let mut buf = BytesMut::new();
-        buf.put_u8(1); // 1 = move to a location (vs 0 = turn to an angle)
-        buf.put_u16_le(p.region);
-        put_coords(&mut buf, p.region, p.x, p.y, p.z);
+        match p {
+            MovementRequest::ToPosition { region, x, y, z } => {
+                buf.put_u8(1);
+                buf.put_u16_le(region);
+                put_coords(&mut buf, region, x, y, z);
+            }
+            MovementRequest::ToHeading { moving, angle } => {
+                buf.put_u8(0);
+                buf.put_u8(moving as u8);
+                buf.put_u16_le(angle);
+            }
+        }
         buf.freeze()
     }
 }
@@ -315,9 +333,14 @@ impl TryFrom<Bytes> for MovementRequest {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
         let mut r = Reader::new(&value);
-        let _kind = r.u8()?; // 1 = location (the only form we build)
+        if r.u8()? == 0 {
+            return Ok(MovementRequest::ToHeading {
+                moving: r.u8()? != 0,
+                angle: r.u16()?,
+            });
+        }
         let region = r.u16()?;
-        Ok(MovementRequest {
+        Ok(MovementRequest::ToPosition {
             region,
             x: r.coord(region)?,
             y: r.coord(region)?,
@@ -327,8 +350,8 @@ impl TryFrom<Bytes> for MovementRequest {
 }
 
 /// 0xB021 — server → client movement update. We surface `unique_id` + the
-/// destination (or `angle` when it's a turn-in-place); the trailing source
-/// position is parsed to stay in sync but not exposed.
+/// destination (or `moving`/`angle` when the order carries a heading instead);
+/// the trailing source position is parsed to stay in sync but not exposed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct MovementResponse {
     pub unique_id: u32,
@@ -338,7 +361,10 @@ pub struct MovementResponse {
     pub x: i32,
     pub y: i32,
     pub z: i32,
-    /// Valid when `!has_destination`: heading.
+    /// Valid when `!has_destination`: the heading to run along, and whether the
+    /// entity moves along it at all. Same `+0x14` byte as
+    /// [`MovementRequest::ToHeading`]; `false` is the stop/turn case.
+    pub moving: bool,
     pub angle: u16,
 }
 
@@ -355,6 +381,7 @@ impl TryFrom<Bytes> for MovementResponse {
             x: 0,
             y: 0,
             z: 0,
+            moving: false,
             angle: 0,
         };
         if has_destination {
@@ -363,7 +390,7 @@ impl TryFrom<Bytes> for MovementResponse {
             out.y = r.coord(out.region)?;
             out.z = r.coord(out.region)?;
         } else {
-            let _moving = r.u8()?;
+            out.moving = r.u8()? != 0;
             out.angle = r.u16()?;
         }
         // Optional source position: region, X (short/int), Y (always f32), Z.
@@ -386,7 +413,7 @@ impl From<MovementResponse> for Bytes {
             buf.put_u16_le(p.region);
             put_coords(&mut buf, p.region, p.x, p.y, p.z);
         } else {
-            buf.put_u8(1); // moving
+            buf.put_u8(p.moving as u8);
             buf.put_u16_le(p.angle);
         }
         buf.put_u8(0); // has_source = 0
@@ -4731,7 +4758,7 @@ mod test {
 
     #[test]
     fn movement_request_overworld_uses_shorts() {
-        let req = MovementRequest {
+        let req = MovementRequest::ToPosition {
             region: 0x60A8,
             x: 10580,
             y: -77,
@@ -4747,7 +4774,7 @@ mod test {
 
     #[test]
     fn movement_request_dungeon_uses_ints() {
-        let req = MovementRequest {
+        let req = MovementRequest::ToPosition {
             region: 0x8001,
             x: 123456,
             y: -7,
@@ -4760,6 +4787,30 @@ mod test {
         assert_eq!(decoded, req);
     }
 
+    /// The heading form (#3 "sky click"): the exact 4-byte body the original's
+    /// writer produces — `u8 kind = 0`, `u8 moving`, `u16 angle` little-endian
+    /// (`FUN_009ebbf0`). No region and no coordinates, so the body width does
+    /// not depend on the region.
+    #[test]
+    fn movement_request_heading_is_kind_zero_plus_flag_and_angle() {
+        let req = MovementRequest::ToHeading {
+            moving: true,
+            angle: 0x3FFF,
+        };
+        let bytes: Bytes = req.clone().into();
+        assert_eq!(&bytes[..], &[0x00, 0x01, 0xFF, 0x3F]);
+        let decoded: MovementRequest = bytes.try_into().unwrap();
+        assert_eq!(decoded, req);
+
+        let turn = MovementRequest::ToHeading {
+            moving: false,
+            angle: 0,
+        };
+        let bytes: Bytes = turn.clone().into();
+        assert_eq!(&bytes[..], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(MovementRequest::try_from(bytes).unwrap(), turn);
+    }
+
     #[test]
     fn movement_response_destination_roundtrips() {
         let resp = MovementResponse {
@@ -4769,11 +4820,37 @@ mod test {
             x: 10580,
             y: -77,
             z: 14260,
+            moving: false,
             angle: 0,
         };
         let bytes: Bytes = resp.clone().into();
         let decoded: MovementResponse = bytes.try_into().unwrap();
         assert_eq!(decoded, resp);
+    }
+
+    /// The heading branch keeps the `moving` byte instead of dropping it: it is
+    /// what separates "run along this angle" from a stop, and the client now
+    /// reads it (`game_scene::on_movement_response`).
+    #[test]
+    fn movement_response_heading_roundtrips_both_moving_states() {
+        for moving in [false, true] {
+            let resp = MovementResponse {
+                unique_id: 352808,
+                has_destination: false,
+                region: 0,
+                x: 0,
+                y: 0,
+                z: 0,
+                moving,
+                angle: 0xC000,
+            };
+            let bytes: Bytes = resp.clone().into();
+            // uid(4) + has_destination(1) + moving(1) + angle(2) + has_source(1)
+            assert_eq!(bytes.len(), 9);
+            assert_eq!(bytes[5], moving as u8);
+            let decoded: MovementResponse = bytes.try_into().unwrap();
+            assert_eq!(decoded, resp);
+        }
     }
 
     #[test]

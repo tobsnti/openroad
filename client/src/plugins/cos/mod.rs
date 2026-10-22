@@ -968,7 +968,7 @@ mod test {
         app.update();
 
         app.world_mut()
-            .write_message(PlayerMoveOrder(Vec3::new(100.0, 0.0, 50.0)));
+            .write_message(PlayerMoveOrder::To(Vec3::new(100.0, 0.0, 50.0)));
         app.update();
         let movement = app.world().get::<RemoteMovement>(cos).unwrap();
         assert_eq!(
