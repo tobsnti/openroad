@@ -21,9 +21,10 @@ pub struct MasteryInfo {
     /// Parsed-but-unconsumed until mastery tooltips land.
     #[allow(dead_code)]
     pub tooltip_key: String,
-    /// Skill-window section header key (weapon/force/physical/...).
-    /// Parsed-but-unconsumed until textuisystem.txt is loaded.
-    #[allow(dead_code)]
+    /// Skill-window top-tab caption key (weapon/force/physical/...), consumed
+    /// by `hud::skill_window::model::top_tab_labels`. Col 5 names the caption
+    /// of the tab its mastery sits under, which is why one row per tab is
+    /// enough to label the whole bar.
     pub category_key: String,
     /// Column within the window group (CH: 0 = weapon, 1 = force).
     pub tab: u8,

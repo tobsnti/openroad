@@ -37,7 +37,8 @@ use crate::plugins::hud::inventory::ui::{drag_ghost_bundle, DragGhost};
 use crate::plugins::hud::magic_state_board::BuffIcon;
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::skill_window::model::{
-    mastery_group_abbrev, mastery_name, PracticeAction, SkillDrag, SkillTreeRace, SkillWindowState,
+    mastery_group_abbrev, mastery_name, top_tab_labels, PracticeAction, SkillDrag, SkillTreeRace,
+    SkillWindowState,
 };
 use crate::plugins::hud::skill_window::withdrawal::SkillWithdrawalState;
 use crate::plugins::hud::underbar::model::{PlayerProgress, QuickSlots, SlotAction};
@@ -887,8 +888,11 @@ pub fn refresh_skill_window(
     let s = hud_scale();
     let race = *race;
 
-    // the race's masteries under the selected top tab (mastery col 6)
-    let top_tabs = race.top_tabs();
+    // the race's masteries under the selected top tab (mastery col 6); the
+    // captions come from masterydata col 5 through textuisystem (see
+    // `model::top_tab_labels`), not from words written here
+    let top_tab_labels = top_tab_labels(race, &masteries, &ui_strings);
+    let top_tabs: Vec<&str> = top_tab_labels.iter().map(String::as_str).collect();
     let top_tab = (state.top_tab as usize).min(top_tabs.len() - 1) as u8;
     let mut tab_masteries: Vec<_> = masteries
         .iter()
