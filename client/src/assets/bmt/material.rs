@@ -244,6 +244,58 @@ pub fn cutout_alpha_mode(cutoff: f32, alpha_to_coverage: bool) -> AlphaMode {
     }
 }
 
+/// The cut-out threshold every `.bmt` material with an alpha channel gets: the
+/// original's alpha test, `ref 0x80` with `D3DCMP_GREATEREQUAL`, in bevy's
+/// 0..1 scale. Named because the live switch below has to recognise a cut-out
+/// again after [`AlphaMode::AlphaToCoverage`] has thrown the number away.
+pub const CUTOUT_ALPHA_CUTOFF: f32 = 0.5;
+
+/// Move the **already loaded** cut-out materials to `alpha_to_coverage`, and
+/// report how many changed.
+///
+/// Idea: [`CutoutAlphaToCoverage`] only reaches materials that are *built*
+/// after it changes, so a live A/B — one process, one scene, one frame apart —
+/// needs the loaded ones rewritten too. That is the same move
+/// `render_debug`'s `effect_ldr_additive` makes for effect materials, and this
+/// is its cut-out counterpart; the switch lives in `dev/render_debug.rs`, the
+/// rule stays here next to the one that built those materials.
+///
+/// The pass is exactly the inverse of [`cutout_alpha_mode`]: a material moves
+/// between `Mask(CUTOUT_ALPHA_CUTOFF)` and `AlphaToCoverage` and nothing else
+/// is touched. Every other threshold therefore stays where it is — in
+/// particular the sheen cut-outs at [`SHEEN_ALPHA_CUTOUT`] (1/255), whose
+/// alpha is a *sheen mask* rather than transparency, which is the exclusion
+/// the build-time path makes too.
+pub fn retarget_cutout_materials(
+    materials: &mut bevy::asset::Assets<StandardMaterial>,
+    alpha_to_coverage: bool,
+) -> usize {
+    let want = cutout_alpha_mode(CUTOUT_ALPHA_CUTOFF, alpha_to_coverage);
+    // ids first: `Assets::iter` borrows the whole collection, and the rewrite
+    // below needs it mutably (and marks each touched asset modified, which is
+    // what re-prepares its pipeline).
+    let cutouts: Vec<_> = materials
+        .iter()
+        .filter(|(_, material)| is_cutout(material.alpha_mode))
+        .map(|(id, _)| id)
+        .collect();
+    let mut changed = 0;
+    for id in cutouts {
+        if let Some(mut material) = materials.get_mut(id) {
+            if material.alpha_mode != want {
+                material.alpha_mode = want;
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// Whether `mode` is one of the two a cut-out can be in.
+fn is_cutout(mode: AlphaMode) -> bool {
+    mode == AlphaMode::AlphaToCoverage || mode == AlphaMode::Mask(CUTOUT_ALPHA_CUTOFF)
+}
+
 /// Loads a `.bmt` material set. Only the default (alpha-masked) variant of each
 /// material becomes a labeled sub-asset; the rim and sheen variants are built
 /// on demand by the spawn path (`SroMaterialVariants` in the client), because
@@ -525,7 +577,7 @@ impl SroMaterial {
                     if self.has_alpha_channel() && variant == MaterialVariant::Masked {
                         // the original engine's alpha test uses ref 0x80 with
                         // D3DCMP_GREATEREQUAL (seen in leaf Material ModData)
-                        AlphaMode::Mask(0.5)
+                        AlphaMode::Mask(CUTOUT_ALPHA_CUTOFF)
                     } else {
                         AlphaMode::Opaque
                     };
@@ -644,6 +696,50 @@ mod tests {
             );
         }
         assert_eq!(cutout_alpha_mode(0.25, false), AlphaMode::Mask(0.25));
+    }
+
+    /// The live switch moves a cut-out and nothing else: the sheen cut-out
+    /// (`Mask(1/255)`, a sheen mask rather than transparency) and a plain
+    /// blended material keep their modes, and flipping back restores the
+    /// original's own threshold — the number `AlphaToCoverage` does not carry.
+    #[test]
+    fn the_live_retarget_moves_cutouts_and_leaves_every_other_threshold() {
+        let mut materials = bevy::asset::Assets::<StandardMaterial>::default();
+        let cutout = materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Mask(CUTOUT_ALPHA_CUTOFF),
+            ..default()
+        });
+        let sheen = materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Mask(SHEEN_ALPHA_CUTOUT),
+            ..default()
+        });
+        let blended = materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
+
+        assert_eq!(retarget_cutout_materials(&mut materials, true), 1);
+        assert_eq!(
+            materials.get(&cutout).unwrap().alpha_mode,
+            AlphaMode::AlphaToCoverage
+        );
+        assert_eq!(
+            materials.get(&sheen).unwrap().alpha_mode,
+            AlphaMode::Mask(SHEEN_ALPHA_CUTOUT)
+        );
+        assert_eq!(
+            materials.get(&blended).unwrap().alpha_mode,
+            AlphaMode::Blend
+        );
+
+        // idempotent: a second run has nothing left to move
+        assert_eq!(retarget_cutout_materials(&mut materials, true), 0);
+
+        assert_eq!(retarget_cutout_materials(&mut materials, false), 1);
+        assert_eq!(
+            materials.get(&cutout).unwrap().alpha_mode,
+            AlphaMode::Mask(CUTOUT_ALPHA_CUTOFF)
+        );
     }
 
     /// The switch must not reach the sheen variants: there the alpha channel is

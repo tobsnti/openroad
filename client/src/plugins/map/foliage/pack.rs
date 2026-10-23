@@ -68,7 +68,7 @@ pub(super) fn extract_pack_models(
                     // thing alpha-to-coverage may dither (see
                     // `cutout_alpha_mode`)
                     alpha_mode: crate::assets::bmt::material::cutout_alpha_mode(
-                        0.5,
+                        crate::assets::bmt::material::CUTOUT_ALPHA_CUTOFF,
                         cutouts.enabled(),
                     ),
                     // both faces rasterize (cull off), but no double_sided
