@@ -26,6 +26,7 @@ use bevy::ui_widgets::Activate;
 
 use crate::assets::FontAssets;
 use crate::plugins::config::ClientConfig;
+use crate::plugins::hud::community::friend::spawn_friend_page;
 use crate::plugins::hud::community::guild::spawn_guild_page;
 use crate::plugins::hud::community::letter::spawn_letter_page;
 use crate::plugins::hud::community::model::{CommunityPage, CommunityState};
@@ -127,6 +128,11 @@ pub fn spawn_community_window(
             if page == CommunityPage::Letter {
                 entity.with_children(|letter| {
                     spawn_letter_page(letter, &asset_server, &fonts, &ui_strings, s);
+                });
+            }
+            if page == CommunityPage::Friend {
+                entity.with_children(|friend| {
+                    spawn_friend_page(friend, &asset_server, &fonts, &ui_strings, s);
                 });
             }
             if page == CommunityPage::Guild {
