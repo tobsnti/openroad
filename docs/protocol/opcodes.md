@@ -13,6 +13,13 @@ table and the macro disagree, so coverage stays honest.
   server→client handlers and 169 client→server builders (10 opcodes appear in both
   directions). Use 320 as the S→C denominator when quoting coverage: it counts
   server→client handlers only, so C→S requests never count against it.
+- **Two rows, one opcode:** an opcode whose two directions carry **different
+  bodies** is bound to one type per direction and therefore gets **one row per
+  direction** here. `scripts/check_opcode_ledger.py` compares the *set* of types
+  per opcode, so both rows must be present and both names must match the
+  `inbound`/`outbound` sections of the `packets!` registry. An opcode whose two
+  directions share a body stays one row with a combined Direction cell — that is
+  what `0x3080` does.
 - **Status legend:** `wired` = typed and fanned out; `experimental` = layout not
   yet capture-verified (marked EXPERIMENTAL in-code).
 - **Counter-list:** some ids must **never** become packet types — the original's
