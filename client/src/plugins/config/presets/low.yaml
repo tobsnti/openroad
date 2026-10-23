@@ -47,6 +47,8 @@ graphics:
     object_spawns_per_frame: 32
     resource_spawns_per_frame: 8
   depth_prepass: false
+  # no MSAA in this tier, so this would be a no-op anyway
+  foliage_alpha_to_coverage: false
   # PBR mode only; vanilla lighting draws no shadow maps at all
   shadows:
     enabled: false

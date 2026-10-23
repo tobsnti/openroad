@@ -119,6 +119,18 @@ fn apply_texture_detail(
     level.set(config.graphics.texture_detail.skipped_mips());
 }
 
+/// Follows `graphics.foliage_alpha_to_coverage` into the flag the `.bmt` loader
+/// and the foliage cards read ([`CutoutAlphaToCoverage`]). Withheld while the
+/// depth prepass is on — see the config key for the measurement behind that.
+///
+/// [`CutoutAlphaToCoverage`]: crate::assets::bmt::material::CutoutAlphaToCoverage
+fn apply_cutout_alpha_mode(
+    config: Res<crate::plugins::config::ClientConfig>,
+    cutouts: Res<crate::assets::bmt::material::CutoutAlphaToCoverage>,
+) {
+    cutouts.set(config.graphics.foliage_alpha_to_coverage && !config.graphics.depth_prepass);
+}
+
 pub struct SroAssetStructsPlugin;
 impl Plugin for SroAssetStructsPlugin {
     fn build(&self, app: &mut App) {
@@ -127,9 +139,10 @@ impl Plugin for SroAssetStructsPlugin {
             .init_asset::<JMXVDDJ>()
             .init_asset_loader::<ddj::DDJLoader>()
             // `graphics.texture_detail`, read by the DDJ loader
+            .init_resource::<crate::assets::bmt::material::CutoutAlphaToCoverage>()
             .add_systems(
                 bevy::app::PreUpdate,
-                apply_texture_detail.run_if(
+                (apply_texture_detail, apply_cutout_alpha_mode).run_if(
                     bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
                         crate::plugins::config::ClientConfig,
                     >,

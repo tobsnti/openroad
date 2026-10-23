@@ -443,6 +443,15 @@ graphics:
   # image-based lighting. Sheen materials keep their own sphere maps.
   # Restart-only.
   sky_reflections: false
+  # Cut-out edges - leaves, grass cards, grates - dither across the MSAA
+  # samples instead of being decided yes/no per pixel, so they stop crawling
+  # when the camera turns. Foliage is the largest alpha-tested area in the
+  # frame. A deliberate deviation: the original tests alpha hard (ref 0x80).
+  # Free where it cannot help: without MSAA bevy falls back to that same hard
+  # test, and it is withheld while depth_prepass is on, because that pass
+  # knows no coverage and would leave a fringe of uncovered samples nothing
+  # can fill. Preset default: on from `high` up. Restart-only.
+  # foliage_alpha_to_coverage: true
 # Combat presentation.
 combat:
   # Seconds a knocked-down body lies there (DOWN_RM, anim type 63) between the

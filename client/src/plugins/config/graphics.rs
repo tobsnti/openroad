@@ -121,6 +121,24 @@ pub struct GraphicsSettings {
     /// either. Sheen materials keep their own sphere maps either way. Restart-only.
     #[serde(default)]
     pub sky_reflections: bool,
+    /// Cut-out edges (leaves, grass cards, grates) dither across the MSAA
+    /// samples instead of being decided yes/no per pixel
+    /// (`assets::bmt::material::cutout_alpha_mode`). Foliage is the largest
+    /// alpha-tested area in the frame, so its crawling edges are the most
+    /// visible aliasing left after FXAA. A deliberate deviation: the original
+    /// tests alpha hard (ref 0x80, `D3DCMP_GREATEREQUAL`).
+    ///
+    /// Two measured conditions, both of which make it a no-op rather than a
+    /// cost: without MSAA bevy falls back to the hard test itself
+    /// (`bevy_pbr-0.20.0/src/material.rs:697-700`), and with
+    /// [`Self::depth_prepass`] on it is withheld here, because that pass does
+    /// not do alpha-to-coverage (`src/prepass/mod.rs:696`) and discards A2C at
+    /// 0.05 (`src/render/pbr_prepass_functions.wesl:17,30`) — a fringe texel
+    /// would write whole-pixel depth and the samples the main pass leaves
+    /// uncovered could no longer be filled by what is behind the leaf.
+    /// Restart-only: materials keep the mode they were loaded with.
+    #[serde(default)]
+    pub foliage_alpha_to_coverage: bool,
 }
 
 /// Which water shader the streamed water planes use.
