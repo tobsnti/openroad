@@ -571,25 +571,6 @@ mod test {
         assert_ne!(created.origin.0, summoned.origin.0);
         assert!(created.group.is_none() && summoned.group.is_none());
     }
-}
-
-/// Self-registration for the action/emote panel (#558). The HUD registry holds one line per
-/// window, so two windows landing in the same lap no longer collide on it.
-pub struct ActionPlugin;
-
-impl Plugin for ActionPlugin {
-    fn build(&self, app: &mut App) {
-        use crate::scenes::SceneState;
-
-        app.init_resource::<ActionWindowState>()
-            .add_systems(OnEnter(SceneState::GameWorld), spawn_action_window)
-            .add_systems(OnExit(SceneState::GameWorld), cleanup_action_window)
-            // built on enter, shown on demand
-            .add_systems(
-                Update,
-                apply_action_window_visibility.run_if(in_state(SceneState::GameWorld)),
-            );
-    }
 
     /// The Trace slot routes through the shared seam instead of building its
     /// own packet: one Trace sender for the window and the right-click menu.
@@ -648,5 +629,24 @@ impl Plugin for ActionPlugin {
             .iter_current_update_messages()
             .next()
             .is_none());
+    }
+}
+
+/// Self-registration for the action/emote panel (#558). The HUD registry holds one line per
+/// window, so two windows landing in the same lap no longer collide on it.
+pub struct ActionPlugin;
+
+impl Plugin for ActionPlugin {
+    fn build(&self, app: &mut App) {
+        use crate::scenes::SceneState;
+
+        app.init_resource::<ActionWindowState>()
+            .add_systems(OnEnter(SceneState::GameWorld), spawn_action_window)
+            .add_systems(OnExit(SceneState::GameWorld), cleanup_action_window)
+            // built on enter, shown on demand
+            .add_systems(
+                Update,
+                apply_action_window_visibility.run_if(in_state(SceneState::GameWorld)),
+            );
     }
 }
