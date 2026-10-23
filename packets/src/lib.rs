@@ -526,14 +526,50 @@ packets! {
     0x3255 => GuildStorageDataChunk,
     0x3254 => GuildStorageDataEnd,
 
-    // Alchemy — dismantle only (agent/alchemy.rs, docs/net-alchemy.md).
-    // Twenty opcodes in this block, ONE published body: `0x7157 {u8 count,
-    // u8[] slots}` -> `0xB157 {u8 result, if result == 2 u16 code}`
-    // (docs/re/systems/alchemy.md:44). Elixir 0x7150/0xB150, stone
-    // 0x7151/0xB151, manufacture+disjoin 0x7155/0xB155, socket 0x716A/0xB16A,
-    // the abort 0x3156 and the six unnamed neighbours have NO recorded layout
-    // in any source, so they stay unwired and are listed with their handler
-    // VAs in docs/net-alchemy.md rather than guessed at (#757).
+    // Alchemy (agent/alchemy.rs). Twenty opcodes in this block, and ONE
+    // grammar across the request half: `{u8 action, u8 type, u8 count,
+    // count x u8 slot}`, with `action = 1` (cancel) carrying nothing after it.
+    // Read off the builders themselves, which write the discriminators as
+    // literals: action 2 = fuse and action 1 = cancel
+    // (`sro_client.exe@008210f0` writes the bare `01` for BOTH 0x7150 and
+    // 0x7151); type 4 = magic stone / 5 = attribute stone (`@00825dc0`),
+    // 1 = disjoin (`@00821250`) and 2 = manufacture (`@008213b0`). The slot
+    // bytes go on the wire as `stored + 13`, i.e. the client holds bag-relative
+    // indices and sends absolute inventory slots — the same numbering
+    // `net::inventory` uses, so our send path passes absolute slots and adds
+    // nothing.
+    //
+    // So "fuse" is the action byte, not an opcode: the TYPE picks the opcode,
+    // which is why the alchemy box's Fuse button lands on 0x7150 (elixir) or
+    // 0x7151 (stone) depending on the material, while the four-tab window's
+    // Disjoint/Manufacture send the same action on 0x7155.
+    //
+    // `0x7150`'s type byte is the one discriminator with NO literal in any
+    // builder we hold — `@00825c50` takes it from its caller and no caller is
+    // in the corpus. `3` comes from the `AlchemyType` enum, which is 1:1 with
+    // the opcode split; that makes it [S], not [V]. Advanced elixir is type 8
+    // on the same opcode.
+    //
+    // Two builder generations exist for `0x7150`: `@00825c50` writes the
+    // grammar above, `@008214f0` writes `{u8 count, slots}` with no action and
+    // no type. Both have live callers and WHICH ONE 1.188's box reaches is [U];
+    // we implement `@00825c50`. A capture of one real fuse settles it, and
+    // there is none — no `packet_dump/0x715*.log` exists.
+    //
+    // `0x7157 {u8 count, u8[] slots}` -> `0xB157 {u8 result, if result == 2
+    // u16 code}` stays the one externally published body. The acks
+    // `0xB150`/`0xB151` are wired, but ONLY their refusal arm has wire
+    // evidence — the success and breakdown arms are read off the client that
+    // answers them, which is why the presenter diffs the item instead of
+    // trusting a delta field. `0x7155` is the four-tab window's half of the
+    // same grammar and is typed here (request only); its answer `0xB155`,
+    // socket 0x716A/0xB16A, the abort 0x3156 and the six unnamed neighbours
+    // stay unwired (#757).
+    0x7150 => AlchemyReinforceRequest,
+    0xB150 => AlchemyReinforceResponse,
+    0x7151 => AlchemyStoneRequest,
+    0xB151 => AlchemyStoneResponse,
+    0x7155 => Alchemy7155Request,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 

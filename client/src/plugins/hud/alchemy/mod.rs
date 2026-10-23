@@ -1,6 +1,8 @@
 pub mod enchant;
 pub mod grant;
 pub mod model;
+pub mod outcome;
+pub mod probability;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -29,6 +31,10 @@ impl Plugin for AlchemyPlugin {
                 (
                     model::toggle_alchemy_window
                         .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
+                    // The fuse ack presenter is a HUD system (it writes chat
+                    // lines and reads the box's page state), so it is gated on
+                    // the world scene like the rest of this module.
+                    outcome::apply_fuse_response,
                     ui::sync_alchemy_window,
                     ui::place_drop_on_alchemy,
                     grant::sync_grant_window,

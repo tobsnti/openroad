@@ -6,11 +6,15 @@
 //! the family is named by two independent opcode catalogs but has **no**
 //! recorded field layout anywhere: no `packet_dump/*.log`, no xBot parser
 //! ("xBot implements none of these — zero ALCHEMY hits in `Network/Agent.cs`",
-//! `alchemy.md:47`), and only call-site byte *counts* in the RE ledger. So
-//! this module models dismantle and nothing else, and
-//! `docs/net-alchemy.md` carries the other nineteen as a written list with
-//! their handler VAs and the reason each stays unwired. Inventing the missing
-//! bodies is the one defect the whole RE program exists to avoid (ADR-0009).
+//! `alchemy.md:47`), and only call-site byte *counts* in the RE ledger. So this
+//! module models dismantle plus the three requests the original client is seen
+//! to send: the alchemy box's two **fuse requests** (`0x7150` elixir, `0x7151`
+//! stone) and the four-tab window's `0x7155`, whose three bodies all end on
+//! their last slot. The rest is listed with the reason it stays unwired in the
+//! `packets!` block's own comment (`lib.rs`). Inventing a missing body is the
+//! one defect this whole effort exists to avoid, so the requests below carry
+//! their byte layout in a test and their **answers are not modelled here at
+//! all** — nothing has been seen to answer them.
 //!
 //! When those layouts do arrive, the ack shape is already decided by the item
 //! half: `character_data::EquipmentData` is byte-for-byte the original's item
@@ -18,6 +22,9 @@
 //! (`alchemy.md:135-137`) — reuse that type rather than adding a second one.
 
 use bevy::prelude::Message;
+use bytes::{BufMut, Bytes, BytesMut};
+
+use crate::agent::character_data::{InventoryItem, ItemClassResolver};
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;
@@ -44,6 +51,93 @@ impl AlchemyDismantleRequest {
             slot_count: slots.len() as u8,
             slots,
         }
+    }
+}
+
+/// 0x7155 — client → server: run an alchemy operation on the slots laid out in
+/// the window, or drop one that is open.
+///
+/// **Named after the opcode, not after a verb, because it carries two.** The
+/// four-tab window's buttons are *Disjoint*, *Dismantle*, *Manufacture* and
+/// *Strengthen*; two of them reach this opcode, which is `[V]` from the
+/// builders writing their type byte as a literal — `1` in
+/// `sro_client.exe@00821250`, `2` in `@008213b0`. A verb in the name would
+/// have to be wrong for one of those two, so the opcode is the name. *Fuse* is
+/// not in that window at all — it is the alchemy box's button, and that one
+/// sends `0x7150`/`0x7151` with its own type byte.
+///
+/// `[U]` on the wire: no frame of this opcode has been captured. A one-slot
+/// *Disjoint* is 4 bytes by the grammar (`02 01 01 <slot>`), but neither
+/// button could be triggered on the original client (the manufacture page
+/// takes neither armour nor recipe for the test character), and `packet_dump/`
+/// holds no `0x7155.log`. The clarifying measurement is one real frame.
+///
+/// The body is the family's one grammar (`lib.rs`): a leading action byte —
+/// [`ALCHEMY_REQUEST_TAG`] runs the operation, [`ALCHEMY_ACTION_CANCEL`] drops
+/// it — then the `AlchemyType` that tells this opcode's two verbs apart, then
+/// the slot count and the slots. A body that does not end on the last slot,
+/// and an action this type does not know, are kept whole rather than
+/// half-read.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum Alchemy7155Request {
+    /// The slots the operation works on, as inventory slot indices.
+    Slots {
+        /// The `AlchemyType` in the grammar's second byte:
+        /// [`ALCHEMY_TYPE_DISJOIN`] or [`ALCHEMY_TYPE_MANUFACTURE`]. Kept as a
+        /// `u8` because the value is data, not a variant — a type this client
+        /// has not seen must still round-trip.
+        alchemy_type: u8,
+        slots: Vec<u8>,
+    },
+    /// Sent when the window closes while an operation is still open.
+    Close,
+    /// Kept as it arrived, so nothing downstream reads a slot that is not there.
+    Unknown { raw: Bytes },
+}
+
+impl TryFrom<Bytes> for Alchemy7155Request {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        // Without the leading byte there is no operation to keep.
+        let op = *value.first().ok_or_else(|| {
+            SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "packet too short",
+            ))
+        })?;
+        let body = &value[1..];
+        match (op, body) {
+            (ALCHEMY_ACTION_CANCEL, []) => Ok(Alchemy7155Request::Close),
+            (ALCHEMY_REQUEST_TAG, [alchemy_type, count, slots @ ..])
+                if slots.len() == *count as usize =>
+            {
+                Ok(Alchemy7155Request::Slots {
+                    alchemy_type: *alchemy_type,
+                    slots: slots.to_vec(),
+                })
+            }
+            _ => Ok(Alchemy7155Request::Unknown { raw: value }),
+        }
+    }
+}
+
+impl From<Alchemy7155Request> for Bytes {
+    fn from(p: Alchemy7155Request) -> Self {
+        let mut buf = BytesMut::new();
+        match p {
+            Alchemy7155Request::Slots {
+                alchemy_type,
+                slots,
+            } => {
+                buf.put_u8(ALCHEMY_REQUEST_TAG);
+                buf.put_u8(alchemy_type);
+                buf.put_u8(slots.len() as u8);
+                buf.put_slice(&slots);
+            }
+            Alchemy7155Request::Close => buf.put_u8(ALCHEMY_ACTION_CANCEL),
+            Alchemy7155Request::Unknown { raw } => return raw,
+        }
+        buf.freeze()
     }
 }
 
@@ -75,10 +169,544 @@ impl AlchemyDismantleResponse {
     }
 }
 
+/// First byte of **both** fuse request bodies: `AlchemyAction::Fuse`. It is not
+/// a count and not a free action id — every builder in the family gates its
+/// whole body on this byte being `2` and writes nothing after it otherwise.
+///
+/// `[V]`: written as a literal `2` by `sro_client.exe@00825c50` (0x7150) and
+/// `@00825dc0` (0x7151), and checked against `2` by the 0x7155 builders
+/// `@00821250`, `@008213b0` and `@00825830`. The action byte is shared across
+/// the whole family; the opcode is picked by the type byte below.
+pub const ALCHEMY_REQUEST_TAG: u8 = 2;
+
+/// The one-byte body that aborts a running fuse, on either opcode.
+///
+/// `[V]`: `sro_client.exe@008210f0` is one function serving both opcodes — it
+/// picks 0x7150 or 0x7151 from its kind argument and writes the bare literal
+/// `1` on either.
+pub const ALCHEMY_ACTION_CANCEL: u8 = 1;
+
+/// Second byte of `0x7150`: the `AlchemyType`. **`[S]`, not `[V]`** — unlike
+/// its siblings below, no builder we hold writes this value as a literal:
+/// `sro_client.exe@00825c50` takes it from its caller, and no caller of that
+/// function is in the corpus. `3` is `AlchemyType::Elixir` from the enum, which
+/// maps 1:1 onto the opcode split. Advanced elixir is type `8` on the same
+/// opcode, so this is the elixir arm, not the whole opcode.
+pub const ALCHEMY_REINFORCE_OP_FUSE: u8 = 3;
+
+/// Second byte of `0x7151`: a magic stone. Which of the two kinds the player is
+/// holding is a **client-side classification of the item in the slot**, read off
+/// its itemdata type ids — not a choice the window offers.
+///
+/// `[V]`: `sro_client.exe@00825dc0` maps its own kind argument onto these two
+/// literals (`1 -> 4`, `2 -> 5`) right before writing the byte.
+pub const ALCHEMY_TYPE_MAGIC_STONE: u8 = 4;
+/// Second byte of `0x7151`: an attribute stone. Same builder, same `[V]`.
+pub const ALCHEMY_TYPE_ATTRIBUTE_STONE: u8 = 5;
+
+/// Second byte of `0x7155`: the four-tab window's *Disjoint*.
+///
+/// `[V]`: `sro_client.exe@00821250` writes the literal `1` here and
+/// `@008213b0` — the same builder shape, same opcode — writes `2`. The pair
+/// differs in this byte alone, which is what pins the byte to `AlchemyType`
+/// instead of leaving it unexplained.
+pub const ALCHEMY_TYPE_DISJOIN: u8 = 1;
+/// Second byte of `0x7155`: the four-tab window's *Manufacture*. Same pair,
+/// same `[V]` (`sro_client.exe@008213b0`).
+pub const ALCHEMY_TYPE_MANUFACTURE: u8 = 2;
+
+/// Smallest fuse the box can express: the equipment plus one material.
+///
+/// This is a **send-side limit, not just a comment**. On `0x7151` a one-slot
+/// body would differ from a bare *cancel* only in length, and the box cannot
+/// express such a fuse anyway — the page needs the equipment plus at least one
+/// material. Both constructors therefore refuse below this count instead of
+/// relying on the caller.
+pub const ALCHEMY_MIN_FUSE_SLOTS: usize = 2;
+
+/// The body both fuse requests share: `{u8 tag, u8 selector, u8 count,
+/// count × u8 inventory slot}`. The selector is the only difference between the
+/// two opcodes — `op` on `0x7150`, `AlchemyType` on `0x7151`.
+///
+/// The slot list leads with the **equipment** slot and continues with the
+/// materials in the window's own `CommandID` order. The slots are ordinary
+/// inventory slots, the same numbering `character_data::InventoryItem::slot`
+/// uses; the bag starts at 13, and the server refuses anything below that.
+fn write_fuse_body(selector: u8, slots: &[u8]) -> Bytes {
+    let mut out = Vec::with_capacity(slots.len() + 3);
+    out.push(ALCHEMY_REQUEST_TAG);
+    out.push(selector);
+    out.push(slots.len() as u8);
+    out.extend_from_slice(slots);
+    Bytes::from(out)
+}
+
+/// Reads [`write_fuse_body`] back in the server's order: tag, selector, count,
+/// slots. Reading the tag as a count is what makes a three-field body
+/// unreadable — `02 03 00` then parses "successfully" as a two-slot fuse.
+fn read_fuse_body(value: &Bytes, expected_selector: u8) -> Result<Vec<u8>, SerializationError> {
+    let (&tag, rest) = value.split_first().ok_or_else(short_packet)?;
+    if tag != ALCHEMY_REQUEST_TAG {
+        return Err(short_packet());
+    }
+    let (&selector, rest) = rest.split_first().ok_or_else(short_packet)?;
+    if selector != expected_selector {
+        // other selectors are other workers with other answers; refusing beats
+        // guessing a variant
+        return Err(short_packet());
+    }
+    let (&count, rest) = rest.split_first().ok_or_else(short_packet)?;
+    if count as usize != rest.len() {
+        return Err(short_packet());
+    }
+    Ok(rest.to_vec())
+}
+
+/// Anything whose first byte is not the tag is a cancel to the server, and the
+/// only cancel this client builds is the bare one-byte form.
+fn read_cancel(value: &Bytes) -> Option<()> {
+    (value.len() == 1 && value[0] == ALCHEMY_ACTION_CANCEL).then_some(())
+}
+
+fn short_packet() -> SerializationError {
+    SerializationError::IoError(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "packet too short",
+    ))
+}
+
+/// 0x7150 — client → server "fuse what is in the Equip Enhance page", or
+/// "cancel the fusing".
+///
+/// Body `{u8 tag = 2, u8 op = 3, u8 count, count × u8 inventory slot}` for a
+/// fuse, and a lone `{u8 1}` for a cancel. The cancel form is not a shorter
+/// fuse: it is *anything whose first byte is not the tag*.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum AlchemyReinforceRequest {
+    /// Fuse these inventory slots, equipment first.
+    Fuse { slots: Vec<u8> },
+    /// Abort a running fuse — the one-byte form.
+    Cancel,
+}
+
+impl AlchemyReinforceRequest {
+    /// A fuse of `slots`, or `None` below [`ALCHEMY_MIN_FUSE_SLOTS`].
+    pub fn fuse(slots: Vec<u8>) -> Option<Self> {
+        (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::Fuse { slots })
+    }
+}
+
+impl From<AlchemyReinforceRequest> for Bytes {
+    fn from(value: AlchemyReinforceRequest) -> Self {
+        match value {
+            AlchemyReinforceRequest::Cancel => Bytes::from_static(&[ALCHEMY_ACTION_CANCEL]),
+            AlchemyReinforceRequest::Fuse { slots } => {
+                write_fuse_body(ALCHEMY_REINFORCE_OP_FUSE, &slots)
+            }
+        }
+    }
+}
+
+impl TryFrom<Bytes> for AlchemyReinforceRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        if read_cancel(&value).is_some() {
+            return Ok(Self::Cancel);
+        }
+        Ok(Self::Fuse {
+            slots: read_fuse_body(&value, ALCHEMY_REINFORCE_OP_FUSE)?,
+        })
+    }
+}
+
+/// 0x7151 — client → server "fuse the stone that is in the Att.Grant page", or
+/// "cancel".
+///
+/// Body `{u8 tag = 2, u8 AlchemyType, u8 count, count × u8 inventory slot}` —
+/// the same four fields `0x7150` has, with the stone kind in the selector's
+/// place. The kind comes from the material's itemdata row, so a page holding a
+/// magic stone and a page holding an attribute stone differ in exactly that one
+/// byte.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum AlchemyStoneRequest {
+    /// Fuse these inventory slots, equipment first.
+    Fuse { stone_type: u8, slots: Vec<u8> },
+    /// Abort a running fuse — the one-byte form.
+    Cancel,
+}
+
+impl AlchemyStoneRequest {
+    /// Same refusal as [`AlchemyReinforceRequest::fuse`], for the same reason.
+    pub fn fuse(stone_type: u8, slots: Vec<u8>) -> Option<Self> {
+        (slots.len() >= ALCHEMY_MIN_FUSE_SLOTS).then_some(Self::Fuse { stone_type, slots })
+    }
+}
+
+impl From<AlchemyStoneRequest> for Bytes {
+    fn from(value: AlchemyStoneRequest) -> Self {
+        match value {
+            AlchemyStoneRequest::Cancel => Bytes::from_static(&[ALCHEMY_ACTION_CANCEL]),
+            AlchemyStoneRequest::Fuse { stone_type, slots } => write_fuse_body(stone_type, &slots),
+        }
+    }
+}
+
+impl TryFrom<Bytes> for AlchemyStoneRequest {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        if read_cancel(&value).is_some() {
+            return Ok(Self::Cancel);
+        }
+        let (&tag, rest) = value.split_first().ok_or_else(short_packet)?;
+        if tag != ALCHEMY_REQUEST_TAG {
+            return Err(short_packet());
+        }
+        let &stone_type = rest.first().ok_or_else(short_packet)?;
+        Ok(Self::Fuse {
+            stone_type,
+            slots: read_fuse_body(&value, stone_type)?,
+        })
+    }
+}
+
+/// What the ack says happened to the item, off its two discriminator bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlchemyOutcome {
+    /// `A != 0`: the record that follows *replaces* the item — success.
+    Success,
+    /// `A == 0`, `C != 0`: no item follows, the item is gone.
+    Breakdown,
+    /// `A == 0`, `C == 0`: the record that follows is the *same* item, mutated —
+    /// the fuse failed.
+    Failure,
+}
+
+/// `AlchemyAction` in the ack's second byte: the fuse was cancelled, or it ran.
+/// Any other value ends the packet.
+pub const ALCHEMY_ACTION_CANCEL_ACK: u8 = 1;
+/// … or it ran, and only then does an item-delivery block follow.
+pub const ALCHEMY_ACTION_FUSE_ACK: u8 = 2;
+
+/// 0xB150 — server → client ack for [`AlchemyReinforceRequest`].
+///
+/// ```text
+/// u8 result (1 ok / 2 error)
+///   result == 2 : u16 errorCode
+///   result == 1 : u8 action (1 cancel / 2 fuse)
+///     action == 2 : u8 A, u8 slot
+///       A == 0 : u8 C ; C == 0 -> <ITEM RECORD>
+///       A != 0 :          <ITEM RECORD>
+/// ```
+/// **Only the refusal arm has ever been seen on the wire**; the rest of this
+/// layout is read off the client that answers it, so the success and breakdown
+/// arms are unconfirmed. The ack carries **no** level delta and **no**
+/// durability delta — a caller recomputes both by diffing against the item that
+/// was in the slot.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct AlchemyReinforceResponse {
+    pub result: u8,
+    /// Only on `result == 2`. Unnamed on purpose: the error-code table is not in
+    /// our data, so the number stays a number. One value is known — see
+    /// [`ALCHEMY_ERROR_STONE_FAILED`].
+    pub error_code: Option<u16>,
+    /// Only on `result == 1`.
+    pub action: Option<u8>,
+    /// Only on a fuse: what happened, and which bag slot it happened to.
+    pub outcome: Option<(AlchemyOutcome, u8)>,
+    /// The unparsed item record, if one follows. Decode with [`Self::item`].
+    pub item_tail: Bytes,
+}
+
+/// The one error code with a known meaning: "the stone did not take", which the
+/// original answers with the ordinary failure line rather than a code.
+pub const ALCHEMY_ERROR_STONE_FAILED: u16 = 0x5423;
+
+impl AlchemyReinforceResponse {
+    pub fn is_success(&self) -> bool {
+        self.result != ALCHEMY_RESULT_ERROR
+    }
+
+    /// The mutated item, parsed by the one item parser this workspace has. The
+    /// record's own leading byte is the inventory slot the ack already named, so
+    /// it is prepended the way the pickup path does it.
+    pub fn item(&self, resolver: &impl ItemClassResolver) -> Option<InventoryItem> {
+        let (_, slot) = self.outcome?;
+        if self.item_tail.is_empty() {
+            return None;
+        }
+        let mut buf = Vec::with_capacity(self.item_tail.len() + 1);
+        buf.push(slot);
+        buf.extend_from_slice(&self.item_tail);
+        InventoryItem::read_with(&mut std::io::Cursor::new(buf.as_slice()), resolver).ok()
+    }
+}
+
+/// Shared body reader for the two fuse acks. `has_breakdown_flag` is the one
+/// difference between them: `0xB150` reads a "no item follows" byte on the
+/// `A == 0` branch, `0xB151` does not — it always has a record, so a stone
+/// attach cannot destroy the item.
+fn read_fuse_ack(
+    value: Bytes,
+    has_breakdown_flag: bool,
+) -> Result<AlchemyReinforceResponse, SerializationError> {
+    let mut out = AlchemyReinforceResponse {
+        result: *value.first().ok_or_else(short_packet)?,
+        error_code: None,
+        action: None,
+        outcome: None,
+        item_tail: Bytes::new(),
+    };
+    if out.result == ALCHEMY_RESULT_ERROR {
+        if value.len() < 3 {
+            return Err(short_packet());
+        }
+        out.error_code = Some(u16::from_le_bytes([value[1], value[2]]));
+        return Ok(out);
+    }
+    let Some(&action) = value.get(1) else {
+        return Ok(out);
+    };
+    out.action = Some(action);
+    if action != ALCHEMY_ACTION_FUSE_ACK {
+        // cancel, and every unknown action, end the packet
+        return Ok(out);
+    }
+    if value.len() < 4 {
+        return Err(short_packet());
+    }
+    let delivery = value[2];
+    let slot = value[3];
+    let mut rest = value.slice(4..);
+    let outcome = if delivery != 0 {
+        AlchemyOutcome::Success
+    } else if has_breakdown_flag {
+        let (&flag, _) = rest.split_first().ok_or_else(short_packet)?;
+        rest = rest.slice(1..);
+        if flag != 0 {
+            AlchemyOutcome::Breakdown
+        } else {
+            AlchemyOutcome::Failure
+        }
+    } else {
+        AlchemyOutcome::Failure
+    };
+    out.outcome = Some((outcome, slot));
+    out.item_tail = if outcome == AlchemyOutcome::Breakdown {
+        Bytes::new()
+    } else {
+        rest
+    };
+    Ok(out)
+}
+
+impl TryFrom<Bytes> for AlchemyReinforceResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        read_fuse_ack(value, true)
+    }
+}
+
+/// 0xB151 — server → client ack for [`AlchemyStoneRequest`]. Same body as
+/// [`AlchemyReinforceResponse`] minus the breakdown flag.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct AlchemyStoneResponse(pub AlchemyReinforceResponse);
+
+impl TryFrom<Bytes> for AlchemyStoneResponse {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        read_fuse_ack(value, false).map(Self)
+    }
+}
+
+/// Server → client only. The macro wants both directions for every registered
+/// opcode; building this ack is not a thing a client does.
+impl From<AlchemyStoneResponse> for Bytes {
+    fn from(_: AlchemyStoneResponse) -> Self {
+        unreachable!("0xB151 is server -> client only")
+    }
+}
+
+/// Server → client only, same reason.
+impl From<AlchemyReinforceResponse> for Bytes {
+    fn from(_: AlchemyReinforceResponse) -> Self {
+        unreachable!("0xB150 is server -> client only")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
+
+    /// The ack classifies by its two discriminators, not by the item that
+    /// follows. Both bodies are built here from the layout, because only the
+    /// refusal arm has ever been seen on the wire.
+    #[test]
+    fn the_reinforce_ack_classifies_by_a_and_c_not_by_the_item() {
+        // A != 0 -> success, and a record follows
+        let ok = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x01, 0x0D, 0xAA, 0xBB,
+        ]))
+        .unwrap();
+        assert_eq!(ok.outcome, Some((AlchemyOutcome::Success, 0x0D)));
+        assert_eq!(ok.item_tail.as_ref(), &[0xAA, 0xBB]);
+
+        // A == 0, C != 0 -> breakdown, and NO record follows
+        let gone =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x02, 0x00, 0x0D, 0x01]))
+                .unwrap();
+        assert_eq!(gone.outcome, Some((AlchemyOutcome::Breakdown, 0x0D)));
+        assert!(gone.item_tail.is_empty());
+
+        // A == 0, C == 0 -> failure, the same item comes back mutated
+        let failed = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x00, 0x0D, 0x00, 0xAA,
+        ]))
+        .unwrap();
+        assert_eq!(failed.outcome, Some((AlchemyOutcome::Failure, 0x0D)));
+        assert_eq!(failed.item_tail.as_ref(), &[0xAA]);
+    }
+
+    /// The refusal arm is the only one with wire evidence: `result == 2` then a
+    /// little-endian code, and nothing after it.
+    #[test]
+    fn the_refusal_arm_carries_a_code_and_stops() {
+        let refused =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x13, 0x54])).unwrap();
+        assert!(!refused.is_success());
+        assert_eq!(refused.error_code, Some(0x5413));
+        assert_eq!(refused.action, None);
+        assert_eq!(refused.outcome, None);
+        // the one code with a known meaning
+        let stone =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x23, 0x54])).unwrap();
+        assert_eq!(stone.error_code, Some(ALCHEMY_ERROR_STONE_FAILED));
+        // a refusal without its code is not a refusal we can read
+        assert!(AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x02, 0x13])).is_err());
+    }
+
+    /// A cancel ack ends after the action byte, and carries no outcome at all.
+    #[test]
+    fn the_cancel_ack_stops_after_its_action_byte() {
+        let cancelled =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x01])).unwrap();
+        assert!(cancelled.is_success());
+        assert_eq!(cancelled.action, Some(ALCHEMY_ACTION_CANCEL_ACK));
+        assert_eq!(cancelled.outcome, None);
+        assert!(cancelled.item_tail.is_empty());
+        // an unknown action is read as "ends here" rather than guessed at
+        let unknown =
+            AlchemyReinforceResponse::try_from(Bytes::from_static(&[0x01, 0x09])).unwrap();
+        assert_eq!(unknown.outcome, None);
+    }
+
+    /// The stone ack has no breakdown flag: on `A == 0` the record starts
+    /// immediately, so the same bytes mean different things on the two opcodes.
+    #[test]
+    fn the_stone_ack_has_no_breakdown_flag() {
+        let bytes = &[0x01, 0x02, 0x00, 0x0D, 0x01, 0xAA];
+        let stone = AlchemyStoneResponse::try_from(Bytes::from_static(bytes)).unwrap();
+        assert_eq!(stone.0.outcome, Some((AlchemyOutcome::Failure, 0x0D)));
+        assert_eq!(
+            stone.0.item_tail.as_ref(),
+            &[0x01, 0xAA],
+            "no flag is eaten"
+        );
+
+        let reinforce = AlchemyReinforceResponse::try_from(Bytes::from_static(bytes)).unwrap();
+        assert_eq!(reinforce.outcome, Some((AlchemyOutcome::Breakdown, 0x0D)));
+        assert_ne!(stone.0.outcome, reinforce.outcome);
+    }
+
+    /// The stone fuse is the **five-byte** form: tag, the stone kind, the count,
+    /// then the slots with the equipment leading. Four bytes without the tag
+    /// would reach the server as a *cancel*, because the server takes anything
+    /// whose first byte is not the tag as an abort.
+    #[test]
+    fn the_stone_fuse_leads_with_the_tag_then_the_kind() {
+        let request = AlchemyStoneRequest::fuse(ALCHEMY_TYPE_MAGIC_STONE, vec![19, 15]).unwrap();
+        let bytes: Bytes = request.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x02, 0x04, 0x02, 0x13, 0x0F]);
+        assert_eq!(AlchemyStoneRequest::try_from(bytes).unwrap(), request);
+
+        // the attribute stone differs in exactly one byte
+        let attribute =
+            AlchemyStoneRequest::fuse(ALCHEMY_TYPE_ATTRIBUTE_STONE, vec![19, 15]).unwrap();
+        let bytes: Bytes = attribute.into();
+        assert_eq!(bytes.as_ref(), &[0x02, 0x05, 0x02, 0x13, 0x0F]);
+    }
+
+    /// The elixir fuse has the same four fields, with the worker selector in the
+    /// kind's place.
+    #[test]
+    fn the_elixir_fuse_has_the_same_shape_with_its_own_selector() {
+        let request = AlchemyReinforceRequest::fuse(vec![19, 15, 16]).unwrap();
+        let bytes: Bytes = request.clone().into();
+        assert_eq!(bytes.as_ref(), &[0x02, 0x03, 0x03, 0x13, 0x0F, 0x10]);
+        assert_eq!(AlchemyReinforceRequest::try_from(bytes).unwrap(), request);
+    }
+
+    /// Both bodies are byte-identical apart from the selector — the structural
+    /// fact that lets one writer serve both opcodes.
+    #[test]
+    fn both_fuse_bodies_differ_only_in_the_selector() {
+        let slots = vec![19, 15];
+        let elixir: Bytes = AlchemyReinforceRequest::fuse(slots.clone()).unwrap().into();
+        let stone: Bytes = AlchemyStoneRequest::fuse(ALCHEMY_TYPE_MAGIC_STONE, slots)
+            .unwrap()
+            .into();
+        assert_eq!(elixir.len(), stone.len());
+        assert_eq!(elixir[0], stone[0], "the same tag leads both");
+        assert_ne!(elixir[1], stone[1], "only the selector differs");
+        assert_eq!(elixir[2..], stone[2..], "count and slots are the same");
+    }
+
+    /// The cancel form is the bare one byte on both opcodes, and it is not a
+    /// truncated fuse: a longer body that is not tagged is refused rather than
+    /// read as an abort.
+    #[test]
+    fn the_cancel_form_is_the_bare_one_byte() {
+        let bytes: Bytes = AlchemyReinforceRequest::Cancel.into();
+        assert_eq!(bytes.as_ref(), &[0x01]);
+        assert_eq!(
+            AlchemyReinforceRequest::try_from(bytes).unwrap(),
+            AlchemyReinforceRequest::Cancel
+        );
+        let bytes: Bytes = AlchemyStoneRequest::Cancel.into();
+        assert_eq!(bytes.as_ref(), &[0x01]);
+        assert_eq!(
+            AlchemyStoneRequest::try_from(bytes).unwrap(),
+            AlchemyStoneRequest::Cancel
+        );
+        // untagged and longer than the cancel: not ours
+        assert!(AlchemyReinforceRequest::try_from(Bytes::from_static(&[0x01, 0x00])).is_err());
+    }
+
+    /// A one-slot fuse never becomes a packet: the page cannot express it, and
+    /// on the stone opcode it would sit one byte away from a cancel.
+    #[test]
+    fn a_one_slot_fuse_is_refused_before_it_is_built() {
+        assert!(AlchemyReinforceRequest::fuse(vec![19]).is_none());
+        assert!(AlchemyReinforceRequest::fuse(Vec::new()).is_none());
+        assert!(AlchemyStoneRequest::fuse(ALCHEMY_TYPE_MAGIC_STONE, vec![19]).is_none());
+        assert!(AlchemyReinforceRequest::fuse(vec![19, 15]).is_some());
+    }
+
+    /// A count that does not match the slots that follow is refused, so a
+    /// truncated frame cannot become a shorter fuse.
+    #[test]
+    fn a_count_that_disagrees_with_the_body_is_refused() {
+        // says three slots, carries two
+        assert!(AlchemyReinforceRequest::try_from(Bytes::from_static(&[
+            0x02, 0x03, 0x03, 0x13, 0x0F
+        ]))
+        .is_err());
+        // a foreign selector is another worker, not this request
+        assert!(AlchemyReinforceRequest::try_from(Bytes::from_static(&[
+            0x02, 0x06, 0x02, 0x13, 0x0F
+        ]))
+        .is_err());
+    }
 
     /// No `packet_dump/0xb157.log` exists — the server in reach never answered
     /// a dismantle — so both directions are asserted against the published
@@ -96,6 +724,78 @@ mod tests {
         let bytes: Bytes = empty.clone().into();
         assert_eq!(bytes.as_ref(), &[0x00]);
         assert_eq!(AlchemyDismantleRequest::try_from(bytes).unwrap(), empty);
+    }
+
+    /// The body the original client sends for a single selected slot: one
+    /// slot, the inventory index it sits in.
+    #[test]
+    fn dismantle_request_matches_the_original_clients_body() {
+        let wire = Bytes::from_static(&[0x01, 0x0D]);
+        let decoded = AlchemyDismantleRequest::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded, AlchemyDismantleRequest::new(vec![13]));
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// The three bodies the grammar admits on 0x7155: *Disjoint* with one
+    /// slot, *Manufacture* with five, and the close. The second byte is the
+    /// `AlchemyType` that tells the first two apart. Built from the builders'
+    /// grammar, not from a capture — there is none of this opcode.
+    #[test]
+    fn the_7155_request_reads_the_slot_and_close_bodies() {
+        let wire = Bytes::from_static(&[0x02, 0x01, 0x01, 0x1B]);
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            Alchemy7155Request::Slots {
+                alchemy_type: ALCHEMY_TYPE_DISJOIN,
+                slots: vec![27],
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+
+        let wire = Bytes::from_static(&[0x02, 0x02, 0x05, 0x12, 0x13, 0x17, 0x18, 0x19]);
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            Alchemy7155Request::Slots {
+                alchemy_type: ALCHEMY_TYPE_MANUFACTURE,
+                slots: vec![18, 19, 23, 24, 25],
+            }
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+
+        let wire = Bytes::from_static(&[0x01]);
+        let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded, Alchemy7155Request::Close);
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A count that does not match the slots that follow is worth less than the
+    /// bytes it came in as, so it keeps them.
+    #[test]
+    fn the_7155_request_keeps_a_body_it_cannot_close() {
+        for body in [
+            // one slot short of the count
+            &[0x02, 0x01, 0x02, 0x1B][..],
+            // one slot too many
+            &[0x02, 0x01, 0x01, 0x1B, 0x1C][..],
+            // the close with a body behind it
+            &[0x01, 0x00][..],
+            // an operation nobody has a body for
+            &[0x03, 0x01, 0x01, 0x1B][..],
+        ] {
+            let wire = Bytes::copy_from_slice(body);
+            let decoded = Alchemy7155Request::try_from(wire.clone()).unwrap();
+            assert_eq!(decoded, Alchemy7155Request::Unknown { raw: wire.clone() });
+            let back: Bytes = decoded.into();
+            assert_eq!(back, wire);
+        }
+        // Without the leading byte there is not even an operation to keep.
+        assert!(Alchemy7155Request::try_from(Bytes::new()).is_err());
     }
 
     /// `{u8 result, if result == 2 u16 errorCode}` — success is one byte, a
