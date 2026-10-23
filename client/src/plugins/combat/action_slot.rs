@@ -121,6 +121,14 @@ const ACK_TIMEOUT_SECS: f64 = 2.0;
 /// same answer.
 const MAX_ATTEMPTS: u8 = 2;
 
+/// How long the client believes a `Started` it was never told the end of.
+///
+/// Generous on purpose: the server frees its own slot in a median 1.38 s
+/// (`packet_dump/0xb074.log`) and the longest cast chain runs 5.1 s, so this
+/// cannot cut a real action short. It only stops a missing `Ended` from
+/// latching the slot shut for the rest of the session.
+const SERVER_BUSY_TIMEOUT_SECS: f64 = 8.0;
+
 /// The client's model of the server's single action slot, plus the one thing
 /// the player most recently asked it to do.
 #[derive(Resource, Default)]
@@ -130,6 +138,8 @@ pub struct ActionSlot {
     /// into server state until it answers — the server also runs actions we
     /// never requested (it restarts its own auto-attack loop after a cast).
     server_busy: bool,
+    /// When the running action was accepted, for [`SERVER_BUSY_TIMEOUT_SECS`].
+    busy_since: Option<f64>,
     /// Our request between the send and its first ack.
     in_flight: Option<InFlight>,
     next: Option<Pending>,
@@ -211,6 +221,26 @@ impl ActionSlot {
         {
             let flight = self.in_flight.take().expect("checked above");
             debug!("action slot: no ack for {:?} — releasing", flight.action);
+        }
+        // The same bound on the other half of `occupied()`. `server_busy` is
+        // set by a `Started` and cleared ONLY by an `Ended`, so a server that
+        // never sends one latches the slot shut for the rest of the session:
+        // every later intent then waits out the buffer and is dropped as
+        // stale, which is what "went stale" means in a log with no sends after
+        // it. Measured 2026-10-23: 375 `0xB074` frames in one session, every
+        // one of them `Started`, not a single `Ended`; `0xB071` never arrived
+        // either.
+        //
+        // This is a bound, not a claim about the wire. If an `Ended` does
+        // arrive the flag clears the same frame as before; the timeout only
+        // decides how long the client believes an end it was never told about.
+        if self
+            .busy_since
+            .is_some_and(|at| now - at > SERVER_BUSY_TIMEOUT_SECS)
+        {
+            self.busy_since = None;
+            self.server_busy = false;
+            debug!("action slot: no Ended for the running action — releasing the slot");
         }
     }
 
@@ -295,9 +325,11 @@ pub fn apply_action_acks(
             ObjectActionResponse::Started { .. } => {
                 slot.in_flight = None;
                 slot.server_busy = true;
+                slot.busy_since = Some(now);
             }
             ObjectActionResponse::Ended { .. } => {
                 slot.server_busy = false;
+                slot.busy_since = None;
             }
             // A refusal on the request's own merits (a cooldown the client's
             // execution-time mirror never saw start, a precondition we do not
@@ -486,6 +518,37 @@ mod tests {
     /// Past the buffer window the fight has moved on: firing then would act on
     /// an intent the player has forgotten, possibly at a dead target. Dropped,
     /// not sent late.
+    /// The defect this bound exists for: a `Started` with no `Ended` behind it
+    /// used to latch `occupied()` for the rest of the session, so every later
+    /// press waited out the buffer and was dropped as stale. Measured
+    /// 2026-10-23: 375 `0xB074` frames in one session, all `Started`, none
+    /// `Ended`.
+    #[test]
+    fn a_started_without_an_ended_stops_latching_the_slot() {
+        let mut slot = ActionSlot::default();
+        slot.server_busy = true;
+        slot.busy_since = Some(0.0);
+        assert!(slot.occupied(), "the action really is running at first");
+
+        slot.release_stalled_send(SERVER_BUSY_TIMEOUT_SECS - 0.1);
+        assert!(slot.occupied(), "a running action is not cut short");
+
+        slot.release_stalled_send(SERVER_BUSY_TIMEOUT_SECS + 0.1);
+        assert!(
+            !slot.occupied(),
+            "an end we were never told about is assumed"
+        );
+
+        // An `Ended` that does arrive still clears it the same frame, and the
+        // timeout must not then fire on a stale timestamp.
+        slot.server_busy = true;
+        slot.busy_since = Some(100.0);
+        slot.server_busy = false;
+        slot.busy_since = None;
+        slot.release_stalled_send(200.0);
+        assert!(!slot.occupied());
+    }
+
     #[test]
     fn a_stale_intent_is_dropped_rather_than_fired_late() {
         let mut slot = ActionSlot::default();
