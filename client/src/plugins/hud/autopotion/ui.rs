@@ -30,7 +30,7 @@ use crate::plugins::hud::autopotion::model::{
     AutoPotionRow, AutoPotionSettings, AutoPotionState, MAX_PERCENT,
 };
 use crate::plugins::hud::game_window::{self, abs_node};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -584,7 +584,7 @@ pub fn cleanup_autopotion_window(
 fn text_font(fonts: &FontAssets, size: f32, s: f32) -> TextFont {
     TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     }
 }

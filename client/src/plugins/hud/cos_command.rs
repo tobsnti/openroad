@@ -37,7 +37,7 @@ use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::hud::cos::model::{CosPage, CosWindowState};
 use crate::plugins::hud::cos::state::CosState;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::NetworkId;
 use crate::plugins::player::Player;
 use crate::plugins::settings::keymap::{
@@ -625,7 +625,7 @@ pub fn sync_cos_command_bar(
                                 Text::default(),
                                 TextFont {
                                     font: fonts.nine.clone().into(),
-                                    font_size: FontSize::Px(CAPTION_FONT_SIZE * s),
+                                    font_size: FontSize::Px(text_px(CAPTION_FONT_SIZE, s)),
                                     ..default()
                                 },
                                 TextColor(Color::WHITE),

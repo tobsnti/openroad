@@ -42,7 +42,7 @@ use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::modal_dialog::{
     modal_interior, modal_plate_node, modal_scrim_node, spawn_modal_frame,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
@@ -229,7 +229,7 @@ pub fn sync_drop_confirm(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: bevy::text::FontSize::Px(size * s),
+        font_size: bevy::text::FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = crate::plugins::ui_v2::style::ImageButtonStyle {

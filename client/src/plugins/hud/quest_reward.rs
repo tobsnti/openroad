@@ -34,7 +34,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::{
     ClientItemData, ClientItemIndex, ClientQuestRewards, ClientUiStrings,
 };
@@ -224,7 +224,7 @@ pub fn sync_quest_reward_window(
                     ),
                     TextFont {
                         font: fonts.nine.clone().into(),
-                        font_size: FontSize::Px(9.0 * hud_scale()),
+                        font_size: FontSize::Px(text_px(9.0, hud_scale())),
                         ..default()
                     },
                     TextColor(Color::WHITE),

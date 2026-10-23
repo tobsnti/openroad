@@ -50,7 +50,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::exchange::model::{self, ExchangeSession, ExchangeState};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::ui::format_thousands;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
@@ -273,7 +273,7 @@ pub fn sync_exchange_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 

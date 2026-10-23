@@ -89,7 +89,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::gauge::{gauge_crop_node, gauge_fill_width, GaugeArt};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::underbar::cast::UseItemRequest;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::NetworkId;
@@ -492,7 +492,7 @@ fn build_row(
         Text::new(cast.label.clone()),
         TextFont {
             font: fonts.two.clone().into(),
-            font_size: bevy::text::FontSize::Px(8.0 * s),
+            font_size: bevy::text::FontSize::Px(text_px(8.0, s)),
             ..default()
         },
         TextColor(NAME_COLOR),

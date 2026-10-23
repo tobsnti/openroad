@@ -41,7 +41,7 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::community::model::{CommunityState, LetterSubWindow};
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -155,7 +155,7 @@ pub fn apply_letter_sub_window(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = ImageButtonStyle {

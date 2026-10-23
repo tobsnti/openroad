@@ -46,7 +46,7 @@ use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
 use crate::plugins::hud::flipbook::Flipbook;
 use crate::plugins::hud::game_window::scaled;
 use crate::plugins::hud::gauge::{gauge, gauge_fill_width};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::net::entities::NetworkId;
@@ -480,8 +480,8 @@ fn mini_info(
     let mp_font = fonts.nine.clone();
 
     let s = hud_scale();
-    let name_size = NAME_FONT_SIZE * s;
-    let bar_size = BAR_FONT_SIZE * s;
+    let name_size = text_px(NAME_FONT_SIZE, s);
+    let bar_size = text_px(BAR_FONT_SIZE, s);
 
     let (por_l, por_t, por_w, por_h) = scaled(PORTRAIT_RECT, s);
     let (name_l, name_t, name_w, name_h) = scaled(NAME_RECT, s);
@@ -702,7 +702,7 @@ fn stat_label(
     justify: Justify,
 ) -> impl Scene {
     let s = hud_scale();
-    let size = DRAWER_FONT_SIZE * s;
+    let size = text_px(DRAWER_FONT_SIZE, s);
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label(text, font, size)
@@ -723,7 +723,7 @@ fn stat_label(
 /// [`refresh_stat_drawer`] from the stat sheet.
 fn stat_value(font: Handle<Font>, stat: CinfoStat, rect: (f32, f32, f32, f32)) -> impl Scene {
     let s = hud_scale();
-    let size = DRAWER_FONT_SIZE * s;
+    let size = text_px(DRAWER_FONT_SIZE, s);
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label("", font, size)

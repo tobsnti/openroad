@@ -31,6 +31,7 @@ use bevy::ui_widgets::Button;
 
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
 /// Every `ub_new_wnd_` piece is 20x20, so the border is one piece wide.
@@ -231,7 +232,7 @@ pub fn spawn_context_menu(
                 Text::new(item.label.clone()),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(ROW_FONT * s),
+                    font_size: FontSize::Px(text_px(ROW_FONT, s)),
                     ..default()
                 },
                 TextColor(ROW_TEXT),

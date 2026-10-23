@@ -47,7 +47,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::twodt::{Jmxv2dtType, JMXV2DT};
 use crate::assets::FontAssets;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::ClientUiStrings;
@@ -382,7 +382,7 @@ fn rebuild_free_pvp_panel(
                                 Text::new(caption),
                                 TextFont {
                                     font: fonts.nine.clone().into(),
-                                    font_size: FontSize::Px(CAPTION_FONT * s),
+                                    font_size: FontSize::Px(text_px(CAPTION_FONT, s)),
                                     ..default()
                                 },
                                 TextColor(entry.color()),

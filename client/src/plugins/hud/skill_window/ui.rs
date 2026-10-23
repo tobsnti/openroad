@@ -35,7 +35,7 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::spawn_game_window;
 use crate::plugins::hud::inventory::ui::{drag_ghost_bundle, DragGhost};
 use crate::plugins::hud::magic_state_board::BuffIcon;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::skill_window::model::{
     mastery_group_abbrev, mastery_name, PracticeAction, SkillDrag, SkillTreeRace, SkillWindowState,
 };
@@ -271,7 +271,7 @@ pub fn spawn_skill_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 
@@ -906,7 +906,7 @@ pub fn refresh_skill_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 
@@ -2219,7 +2219,7 @@ pub fn update_skill_tooltip(
                             Text::new(line),
                             TextFont {
                                 font: fonts.two.clone().into(),
-                                font_size: FontSize::Px(8.0 * hud_scale()),
+                                font_size: FontSize::Px(text_px(8.0, hud_scale())),
                                 ..default()
                             },
                             TextColor(if met {
@@ -2399,7 +2399,7 @@ pub fn apply_practice_prompt(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     commands.entity(window.content).with_children(|content| {

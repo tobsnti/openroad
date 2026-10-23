@@ -66,7 +66,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{DisplayName, NetworkEntities};
@@ -368,7 +368,7 @@ pub fn sync_petition_dialog(
 
     let text_font = TextFont {
         font: fonts.nine.clone().into(),
-        font_size: FontSize::Px(9.0 * hud_scale()),
+        font_size: FontSize::Px(text_px(9.0, hud_scale())),
         ..default()
     };
     let img = |rect: (f32, f32, f32, f32), path: String| {

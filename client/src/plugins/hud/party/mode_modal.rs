@@ -39,7 +39,7 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::modal_dialog::{modal_plate_node, modal_scrim_node, spawn_modal_frame};
 use crate::plugins::hud::party::ui::PartyWindowRequest;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::party::{PartyCreateSetup, PartyRoster};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
@@ -177,7 +177,7 @@ pub fn sync_party_mode_modal(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 

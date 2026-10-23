@@ -43,7 +43,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::textdata::skilldata::SkillData;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{self, GameWindow, WindowGeometry};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::underbar::model::PlayerProgress;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
@@ -238,7 +238,7 @@ pub fn apply_skill_withdrawal(
     };
     let font = TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(12.0 * s),
+        font_size: FontSize::Px(text_px(12.0, s)),
         ..default()
     };
 

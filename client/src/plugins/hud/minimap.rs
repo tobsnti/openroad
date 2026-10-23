@@ -29,7 +29,7 @@ use crate::assets::FontAssets;
 use crate::plugins::assets::sro::MediaArchive;
 use crate::plugins::dungeon::ActiveDungeon;
 use crate::plugins::hud::game_window::scaled;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::world_map::model::{MapMarkers, MarkerKind};
 use crate::plugins::map::terrain::REGION_SIZE;
 use crate::plugins::net::entities::{DisplayName, RemoteEntity, UniqueMonster};
@@ -594,17 +594,17 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             }
             Pickable::IGNORE
         --
-            @label("", area_font, TEXT_FONT_SIZE * s)
+            @label("", area_font, text_px(TEXT_FONT_SIZE, s))
             MinimapAreaText
             TextColor({AREA_NAME_COLOR})
             Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
         --
-            @label("", x_font, TEXT_FONT_SIZE * s)
+            @label("", x_font, text_px(TEXT_FONT_SIZE, s))
             MinimapPosXText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
         --
-            @label("", z_font, TEXT_FONT_SIZE * s)
+            @label("", z_font, text_px(TEXT_FONT_SIZE, s))
             MinimapPosZText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
@@ -634,7 +634,7 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             Visibility::Hidden
             Pickable::IGNORE
         --
-            @label("", floor_font, TEXT_FONT_SIZE * s)
+            @label("", floor_font, text_px(TEXT_FONT_SIZE, s))
             MinimapFloorText
             TextColor(Color::WHITE)
             Node {

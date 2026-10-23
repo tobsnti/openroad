@@ -46,7 +46,7 @@ use crate::plugins::hud::modal_dialog::{modal_plate_node, modal_scrim_node, spaw
 use crate::plugins::hud::party::model::effective_setup;
 use crate::plugins::hud::party::ui::PartyWindowRequest;
 use crate::plugins::hud::party_matching::model::{MatchDialog, PartyMatchState};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::party::{PartyCreateSetup, PartyRoster};
 use crate::plugins::textdata::{ClientMasteryData, ClientUiStrings};
@@ -276,7 +276,7 @@ pub fn sync_match_dialogs(
     let s = hud_scale();
     let font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 
@@ -1147,7 +1147,7 @@ fn spawn_footer(
                 Text::new(ui_strings.get_or(key, fallback).to_string()),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(8.5 * s),
+                    font_size: FontSize::Px(text_px(8.5, s)),
                     ..default()
                 },
                 TextColor(Color::WHITE),

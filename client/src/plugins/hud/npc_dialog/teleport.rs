@@ -46,7 +46,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::npc_dialog::model::{NpcDialogState, OpenTeleport};
 use crate::plugins::hud::npc_dialog::ui::DialogClosing;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{CharacterRef, NetworkId};
@@ -217,7 +217,7 @@ pub fn sync_teleport_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 

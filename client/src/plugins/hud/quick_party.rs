@@ -58,7 +58,7 @@ use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_wid
 use crate::plugins::hud::party::model::{
     member_vitals, quick_party_rows, we_lead, QUICK_PARTY_ROWS,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::{DisplayName, EntityVitals, RemoteEntity};
 use crate::plugins::net::party::{PartyAction, PartyRoster};
 use crate::plugins::player::Player;
@@ -295,7 +295,7 @@ fn spawn_slot_children(
         Text::new(""),
         TextFont {
             font: fonts.two.clone().into(),
-            font_size: FontSize::Px(8.0 * s),
+            font_size: FontSize::Px(text_px(8.0, s)),
             ..default()
         },
         TextColor(Color::WHITE),

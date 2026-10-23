@@ -39,7 +39,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::store::model::{
     BuybackEntry, PendingStoreOp, StoreHoveredGood, StoreOp, StoreState, BUYBACK_TRAY_DEPTH,
 };
@@ -414,7 +414,7 @@ pub fn sync_store_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
@@ -899,7 +899,7 @@ pub fn sync_repair_confirm(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = ImageButtonStyle {
@@ -1457,7 +1457,7 @@ pub fn sync_quantity_modal(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = ImageButtonStyle {

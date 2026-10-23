@@ -43,7 +43,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::scenes::SceneState;
 
@@ -364,7 +364,7 @@ fn label(
             Text::new(content),
             TextFont {
                 font: font.into(),
-                font_size: FontSize::Px(LABEL_FONT * s),
+                font_size: FontSize::Px(text_px(LABEL_FONT, s)),
                 ..default()
             },
             TextColor(color),
@@ -584,7 +584,7 @@ fn spawn_button(
                 Text::new(caption.to_string()),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(LABEL_FONT * s),
+                    font_size: FontSize::Px(text_px(LABEL_FONT, s)),
                     ..default()
                 },
                 TextColor(BUTTON_CAPTION_COLOR),

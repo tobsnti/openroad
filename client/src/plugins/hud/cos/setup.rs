@@ -36,6 +36,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::cos::state::CosState;
 use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -209,7 +210,7 @@ pub fn build_setup_page(
 ) {
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let image = |rect: (f32, f32, f32, f32), path: String| {

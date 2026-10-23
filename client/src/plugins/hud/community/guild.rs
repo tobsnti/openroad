@@ -46,6 +46,7 @@ use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_width};
 use crate::plugins::hud::inventory::ui::format_thousands;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::net::entities::NetworkId;
 use crate::plugins::net::guild::{GuildAction, GuildRoster};
 use crate::plugins::textdata::ClientUiStrings;
@@ -539,7 +540,7 @@ pub fn spawn_guild_page(
 ) {
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let image = |rect: (f32, f32, f32, f32), path: String| {

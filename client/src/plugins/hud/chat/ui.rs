@@ -40,7 +40,7 @@ use super::model::{
     MAX_RENDERED_LINES, WHISPER_FROM_FALLBACK, WHISPER_FROM_KEY, WHISPER_TO_FALLBACK,
     WHISPER_TO_KEY,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 
 // --- Layout constants (resinfo/ifchatviewer.txt, window space) --------------
 
@@ -930,7 +930,7 @@ pub fn refresh_chat_list(
                 Text(line.display_with(whisper_from, whisper_to)),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(MESSAGE_FONT_SIZE * s),
+                    font_size: FontSize::Px(text_px(MESSAGE_FONT_SIZE, s)),
                     ..default()
                 },
                 TextColor(line.kind.color(&colors)),

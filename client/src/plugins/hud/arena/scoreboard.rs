@@ -44,7 +44,7 @@ use bevy::ui::UiTargetCamera;
 
 use crate::assets::twodt::{Jmxv2dtType, JMXV2DT};
 use crate::assets::FontAssets;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::scenes::SceneState;
 
 use super::{ArenaRankRow, ArenaState};
@@ -194,7 +194,7 @@ fn rebuild_board(
             Text::new(text),
             TextFont {
                 font: fonts.nine.clone().into(),
-                font_size: FontSize::Px(size * s),
+                font_size: FontSize::Px(text_px(size, s)),
                 ..default()
             },
             TextColor(color),

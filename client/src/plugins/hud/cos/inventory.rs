@@ -28,6 +28,7 @@ use packets::agent::pet::{CosKind, COS_INVENTORY_PAGE_SLOTS};
 use crate::assets::FontAssets;
 use crate::plugins::hud::cos::state::CosState;
 use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::scale::text_px;
 
 /// `CIFLattice com_lattice_` — the 7×4 grid's rect inside the page.
 const LATTICE_RECT: (f32, f32, f32, f32) = (41.0, 59.0, 252.0, 144.0);
@@ -124,7 +125,7 @@ pub fn build_inventory_page(
         Text::new(""),
         TextFont {
             font: fonts.two.clone().into(),
-            font_size: FontSize::Px(8.0 * s),
+            font_size: FontSize::Px(text_px(8.0, s)),
             ..default()
         },
         TextColor(Color::WHITE),
@@ -191,7 +192,7 @@ pub fn build_inventory_page(
                     Text::new(""),
                     TextFont {
                         font: fonts.nine.clone().into(),
-                        font_size: FontSize::Px(6.0 * s),
+                        font_size: FontSize::Px(text_px(6.0, s)),
                         ..default()
                     },
                     TextColor(Color::WHITE),

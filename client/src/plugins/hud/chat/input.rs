@@ -27,7 +27,7 @@ use crate::plugins::textdata::ClientUiStrings;
 
 use super::model::{ChatHistory, ChatLine, ChatLineKind, ChatState, ChatTab};
 use super::ui::{ChatInputBox, ChatWhisperEntries};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 
 /// A parsed outgoing message.
 #[derive(Debug, PartialEq)]
@@ -534,7 +534,7 @@ pub fn refresh_whisper_panel(
                     Text(display),
                     TextFont {
                         font: font.clone().into(),
-                        font_size: FontSize::Px(11.0 * hud_scale()),
+                        font_size: FontSize::Px(text_px(11.0, hud_scale())),
                         ..default()
                     },
                     TextColor(Color::WHITE),

@@ -26,7 +26,7 @@ use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_width};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::{drag_ghost_bundle, DragGhost, DRAG_GHOST_SIZE};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::skill_window::model::SkillDrag;
 use crate::plugins::hud::underbar::model::{
     PlayerProgress, QuickSlots, SlotAction, PAGES, SKILL_EXP_PER_SP, SLOTS_PER_PAGE,
@@ -477,7 +477,7 @@ fn spawn_slot_icon(
             Text::new(""),
             TextFont {
                 font: fonts.nine.clone().into(),
-                font_size: FontSize::Px(TEXT_FONT_SIZE * hud_scale()),
+                font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, hud_scale())),
                 ..default()
             },
             TextColor(Color::WHITE),
@@ -505,7 +505,7 @@ fn spawn_text<'a>(
         Text::new(""),
         TextFont {
             font: fonts.nine.clone().into(),
-            font_size: FontSize::Px(TEXT_FONT_SIZE * hud_scale()),
+            font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, hud_scale())),
             ..default()
         },
         TextColor(color),
