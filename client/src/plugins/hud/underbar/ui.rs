@@ -400,8 +400,9 @@ fn spawn_bar_content(
         fonts,
     );
 
-    // the raised button cluster + the item mall button. Only Option is wired
-    // (toggles the Esc/system window); the rest log until their windows exist.
+    // the raised button cluster + the item mall button. Menu, Community,
+    // Option and Mall all open their windows; nothing here logs a stub any
+    // more.
     spawn_image_button(bar, asset_server, MENU_BTN_RECT, "ub_menu_button").observe(on_menu_button);
     spawn_image_button(bar, asset_server, COMMUNITY_BTN_RECT, "ub_community_button").observe(
         |_: On<Activate>, mut community: ResMut<CommunityState>| {
@@ -410,9 +411,12 @@ fn spawn_bar_content(
     );
     spawn_image_button(bar, asset_server, OPTION_BTN_RECT, "ub_option_button")
         .observe(on_option_button);
+    // the mall button opens the one pane of that window we can fill: the
+    // My-Info silk balance (`hud/item_mall`). The shop half waits on a
+    // purchase opcode we do not have.
     spawn_image_button(bar, asset_server, MALL_BTN_RECT, "ub_mall_button").observe(
-        |_: On<Activate>| {
-            debug!("underbar: item mall not implemented yet");
+        |_: On<Activate>, mut mall: ResMut<crate::plugins::hud::item_mall::ItemMallState>| {
+            mall.open = !mall.open;
         },
     );
 }
