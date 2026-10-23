@@ -22,6 +22,14 @@ use crate::plugins::skybox::SKY_COLOR_HEX;
 // rendering — deferred is a renderer-wide switch that would also drop `specular_transmission`
 // support, so real reflections are a separate, deliberate follow-up rather than bundled here.
 //
+// Two of the parts are depth cues rather than surface detail, and they are *fed into* the
+// base material rather than blended on top of it: the fragment shader measures the water
+// column out of the depth prepass and writes `thickness`-relative `attenuation_distance`,
+// `attenuation_color` and `specular_transmission` into its own copy of the material before
+// lighting runs. So `attenuation_color` set here would be overwritten every frame and is
+// deliberately left at bevy's default; `attenuation_distance` is the one the configuration
+// owns, because it is also the on/off switch (see `absorption_distance`).
+//
 // The low-graphics tier (`graphics.water.quality: low`) deliberately does not use this: it
 // keeps the flat, non-transmissive `LowQualityWaterMaterial` in `water_material.rs`, which
 // has neither the transmissive pass's per-frame main-texture copy nor the SSR march, and
@@ -42,6 +50,37 @@ pub struct WaterExtension {
     pub normal_map: Handle<Image>,
 }
 
+/// Water column, in world units, over which the shore fades — the shipped default.
+///
+/// A look parameter, not a measurement, and the ranking report says so (`§3.2`: "die
+/// Absorptionskurve selbst ist ein freier Parameter"). The anchor is this game's own scale:
+/// one terrain block is 320 units (`water_patch_mesh`), so 24 units is a fourteenth of a
+/// block — wide enough that a beach reads as a gradient from a normal camera distance, narrow
+/// enough that a knee-deep ford still shows its water.
+pub const DEFAULT_SHORE_FADE: f32 = 24.0;
+
+/// Depth, in world units, at which the transmitted light has fallen to the water texture's
+/// own colour once — i.e. what `graphics.water.absorption = 1.0` means.
+///
+/// Same class of value as [`DEFAULT_SHORE_FADE`] and the same anchor. 64 units is a fifth of
+/// a terrain block; with the player's `water101.ddj` (linear ~0.10/0.23/0.22, so red is
+/// absorbed about twice as fast as green and blue — real water's own order) that is a gentle
+/// gradient over a pond and a dark bottom in a lake.
+pub const ABSORPTION_FULL_DEPTH: f32 = 64.0;
+
+/// `graphics.water.absorption` (0..=1) as bevy's `StandardMaterial::attenuation_distance`.
+///
+/// Inverse, because the wire protocol of Beer-Lambert is a *distance*: twice the strength is
+/// half the distance. Zero returns infinity, which is also the switch — bevy only sets
+/// `ATTENUATION_ENABLED` for a finite distance (`pbr_material.rs:1206`), so the whole
+/// absorption branch disappears rather than being computed and multiplied by one.
+pub fn absorption_distance(absorption: f32) -> f32 {
+    if absorption <= 0.0 {
+        return f32::INFINITY;
+    }
+    ABSORPTION_FULL_DEPTH / absorption.min(1.0)
+}
+
 /// Std140 layout, field order must match the `WaterHqSettings` struct in `water_hq.wesl`.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct WaterHqSettings {
@@ -59,7 +98,15 @@ pub struct WaterHqSettings {
     pub distortion_strength: f32,
     /// Fresnel exponent; higher values narrow the reflection tint to shallower angles.
     pub fresnel_power: f32,
-    _padding: f32,
+    /// Water column, in world units, over which the surface fades into whatever is behind it
+    /// (`graphics.water.shore_fade`; 0 switches the fade off). It is a *column* width, not a
+    /// screen width: the shore softens over the first `shore_fade` units of water the view ray
+    /// passes through, so a shallow slope fades over more ground than a steep one, which is
+    /// what makes a beach and a quay wall look different.
+    ///
+    /// Took the slot the explicit `_padding` float held, so the std140 size is unchanged —
+    /// see `the_uniform_layout_still_fits_three_std140_rows`.
+    pub shore_fade: f32,
 }
 
 impl Default for WaterHqSettings {
@@ -72,7 +119,7 @@ impl Default for WaterHqSettings {
             ripple_tiling: 2.3,
             distortion_strength: 1.2,
             fresnel_power: 4.0,
-            _padding: 0.0,
+            shore_fade: DEFAULT_SHORE_FADE,
         }
     }
 }
@@ -89,5 +136,58 @@ impl MaterialExtension for WaterExtension {
     /// occluding what's behind it).
     fn enable_prepass() -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// `shore_fade` took the slot the explicit `_padding` float held. The Rust struct and the
+    /// WESL one have to agree byte for byte, and a mismatch is a silently wrong binding that
+    /// no compile error and no unit test of behaviour would catch — so pin the size: three
+    /// std140 rows, exactly as before this field existed.
+    #[test]
+    fn the_uniform_layout_still_fits_three_std140_rows() {
+        assert_eq!(
+            <WaterHqSettings as ShaderType>::min_size().get(),
+            48,
+            "water_hq.wesl's WaterHqSettings must be the same 48 bytes"
+        );
+    }
+
+    /// Absorption is a strength in the configuration and a distance on the wire, and the two
+    /// run opposite ways. Zero must come out as infinity rather than as a huge number: that is
+    /// what clears bevy's `ATTENUATION_ENABLED` flag and removes the branch instead of
+    /// computing it and multiplying by one.
+    #[test]
+    fn absorption_strength_inverts_into_a_distance_and_zero_switches_it_off() {
+        assert!(absorption_distance(0.0).is_infinite());
+        assert!(absorption_distance(-1.0).is_infinite());
+        assert_eq!(absorption_distance(1.0), ABSORPTION_FULL_DEPTH);
+        assert_eq!(absorption_distance(0.5), ABSORPTION_FULL_DEPTH * 2.0);
+        // out of range clamps rather than inverting past full strength
+        assert_eq!(absorption_distance(4.0), ABSORPTION_FULL_DEPTH);
+        // monotonic: more strength is never more distance
+        let mut previous = f32::INFINITY;
+        for step in 1..=10 {
+            let distance = absorption_distance(step as f32 / 10.0);
+            assert!(distance <= previous, "{distance} > {previous}");
+            previous = distance;
+        }
+    }
+
+    /// The shipped water must still be water: the shore fade is on by default (that is the
+    /// point of the slice) and the reflection strength the Video pane reads as "On" is
+    /// untouched by it.
+    #[test]
+    fn the_shipped_defaults_carry_a_shore_fade_and_keep_the_reflection_strength() {
+        let settings = WaterHqSettings::default();
+        assert_eq!(settings.shore_fade, DEFAULT_SHORE_FADE);
+        assert!(settings.shore_fade > 0.0, "0 is the off switch");
+        assert_eq!(
+            settings.sky_tint.w, 0.55,
+            "map::water_options reads this as On"
+        );
     }
 }

@@ -19,7 +19,12 @@
 //      only shades pixels present in the *deferred gbuffer* and runs before the transmissive
 //      phase this water renders in; calling the raymarcher here sidesteps both while keeping
 //      the see-through refraction. Rays that miss (offscreen geometry, grazing angles) fall
-//      back to the flat sky tint. Requires `DepthPrepass` on the camera (see camera.rs);
+//      back to the flat sky tint.
+//   4. Read the water column out of the same depth prepass and let `StandardMaterial`'s own
+//      transmission turn it into two cues: Beer-Lambert absorption toward the water texture's
+//      own colour, and a soft shore where the column runs out — instead of the flat 320-unit
+//      block plane cutting the terrain on a hard line.
+//      Requires `DepthPrepass` on the camera (see camera.rs);
 //      without a depth prepass this compiles down to the sky-tint-only fallback. Msaa does
 //      *not* need to be off: this material shader is compiled through the normal mesh
 //      pipeline, not bevy's built-in SSR pipeline, so `USE_DEPTH_SAMPLERS` (which would force
@@ -35,7 +40,9 @@ import bevy_pbr::render::mesh_view_bindings::{globals, view_transmission_texture
 @if(DEPTH_PREPASS)
 import bevy_pbr::render::mesh_view_bindings::depth_prepass_texture;
 @if(DEPTH_PREPASS)
-import bevy_pbr::render::view_transformations::position_world_to_ndc;
+import bevy_pbr::render::view_transformations::{position_world_to_ndc, depth_ndc_to_view_z};
+@if(DEPTH_PREPASS)
+import bevy_pbr::prepass::utils::prepass_depth;
 @if(DEPTH_PREPASS)
 import bevy_pbr::ssr::raymarch::{
     depth_ray_march_new_from_depth,
@@ -51,7 +58,7 @@ struct WaterHqSettings {
     ripple_tiling: f32,
     distortion_strength: f32,
     fresnel_power: f32,
-    _padding: f32,
+    shore_fade: f32,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100)
@@ -72,6 +79,29 @@ const SSR_LINEAR_STEPS: u32 = 10u;
 const SSR_BISECTION_STEPS: u32 = 5u;
 @if(DEPTH_PREPASS)
 const SSR_DEPTH_THICKNESS: f32 = 4.0;
+
+// Water column along the view ray at this pixel, in world units, or a negative value when the
+// prepass has nothing opaque behind it.
+//
+// Idea: this material deliberately stays out of the depth prepass
+// (`water_hq_material.rs::enable_prepass`), so the prepass sample at a water pixel is the
+// *lakebed*, not the surface. The difference of the two linear view depths is therefore the
+// distance the view ray travels through water — the one quantity both depth cues below need.
+// Same two lines bevy's own forward decal uses for its depth fade
+// (`bevy_pbr-0.20.0/src/decal/forward.wesl:36-38`).
+@if(DEPTH_PREPASS)
+fn water_column(frag_coord: vec4<f32>) -> f32 {
+    let bed_ndc = prepass_depth(frag_coord, 0u);
+    // Reverse-Z: 0.0 is the far plane, so nothing opaque was drawn here (water against the
+    // sky at the edge of the streamed region). Report "not measured" instead of inventing a
+    // depth, and the caller keeps the look this shader has without a prepass at all.
+    if bed_ndc <= 0.0 {
+        return -1.0;
+    }
+    // Both are negative in front of the camera (view -Z is forward) and the bed is the
+    // farther of the two, so surface minus bed is the positive path length.
+    return max(depth_ndc_to_view_z(frag_coord.z) - depth_ndc_to_view_z(bed_ndc), 0.0);
+}
 
 // Reflected scene color for the ray `P_world + t*R_world`, or `fallback` (the sky tint) if
 // the ray leaves the screen or hits nothing. Hits sample the view transmission texture — the
@@ -137,12 +167,59 @@ fn fragment(
     let up = pbr_input.world_normal;
     pbr_input.N = normalize(up * tangent_normal.z + vec3(tangent_normal.x, 0.0, tangent_normal.y));
 
+    // Depth cues. Both are the measured water column handed to `StandardMaterial`'s *own*
+    // transmission rather than a second blend of our own, so fog, exposure and tonemapping
+    // keep being applied exactly once and in bevy's order.
+    //
+    // `shore` stays 1.0 — "full water" — on every path that cannot measure a column: no depth
+    // prepass, nothing opaque behind the pixel, or `shore_fade` switched off. That is the
+    // honest fallback: identical to the image this shader produced before.
+    var shore = 1.0;
+    @if(DEPTH_PREPASS) {
+        let column = water_column(pbr_input.frag_coord);
+        if column > 0.0 {
+            // (a) Absorption. bevy computes `pow(attenuation_color, thickness /
+            // attenuation_distance)` on the transmitted light alone
+            // (`pbr_functions.wesl:839-845`), which is Beer-Lambert — so the work is to feed
+            // it, not to repeat it. The colour is the water's own texture: the player's
+            // `water101.ddj` already says what this water looks like, and taking a tint from
+            // it beats inventing three numbers here. `thickness` keeps its material value
+            // because it has a second job — it scales the refraction offset
+            // (`transmission.wesl:40`) — so the column is folded into the *distance*:
+            // `thickness / (d * thickness / column)` is `column / d`, and the refraction
+            // stays exactly as it is today.
+            pbr_input.material.attenuation_color = vec4(pbr_input.material.base_color.rgb, 1.0);
+            pbr_input.material.attenuation_distance *= pbr_input.material.thickness / column;
+
+            // (b) Soft shore. Where there is no water column there is no water to shade, so
+            // the surface hands the pixel over to what is behind it. Pushing transmission to
+            // 1 drops the diffuse term (`pbr_functions.wesl:273`) and pushing the base colour
+            // to white stops the transmitted light being tinted by water that is not there
+            // (`specular_transmissive_color` is `specular_transmission * base_color`,
+            // `pbr_functions.wesl:343`) — without that second half a shore reads as a dark
+            // band instead of a fading one, because this water texture is dark in linear
+            // space.
+            if water_settings.shore_fade > 0.0 {
+                shore = saturate(column / water_settings.shore_fade);
+                pbr_input.material.base_color = vec4(
+                    mix(vec3(1.0), pbr_input.material.base_color.rgb, shore),
+                    pbr_input.material.base_color.a,
+                );
+                pbr_input.material.specular_transmission =
+                    mix(1.0, pbr_input.material.specular_transmission, shore);
+            }
+        }
+    }
+
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
 
     // Fresnel: reflections dominate at grazing angles, refraction when looking straight down.
     let n_dot_v = max(dot(pbr_input.N, pbr_input.V), 0.0001);
-    let fresnel = pow(1.0 - n_dot_v, water_settings.fresnel_power) * water_settings.sky_tint.a;
+    // `shore` also scales the reflection: a surface that has handed its pixel to the lakebed
+    // must not keep mirroring the sky, or the soft shore gets a bright rim instead of a hard
+    // one.
+    let fresnel = pow(1.0 - n_dot_v, water_settings.fresnel_power) * water_settings.sky_tint.a * shore;
     @if(DEPTH_PREPASS)
     let reflect_dir = reflect(-pbr_input.V, pbr_input.N);
     @if(DEPTH_PREPASS)

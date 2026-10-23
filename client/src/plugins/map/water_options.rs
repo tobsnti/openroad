@@ -36,7 +36,7 @@ use bevy::prelude::*;
 use crate::plugins::config::ClientConfig;
 
 use super::terrain::WaterNormalMaterial;
-use super::water_hq_material::{HighQualityWaterMaterial, WaterHqSettings};
+use super::water_hq_material::{absorption_distance, HighQualityWaterMaterial, WaterHqSettings};
 
 /// Reflection blend strength for "On": whatever the material ships with.
 fn reflection_strength() -> f32 {
@@ -69,11 +69,46 @@ pub fn apply_water_reflection_option(
     }
 }
 
+/// Follows `graphics.water.shore_fade` / `graphics.water.absorption` into the
+/// high-quality water material.
+///
+/// Two keys, two homes, because the shader reads them from two places: the
+/// fade is a uniform field it samples per fragment, while the absorption is
+/// `StandardMaterial::attenuation_distance` — that is both the divisor of
+/// bevy's Beer-Lambert term and the flag that removes the branch entirely when
+/// it is infinite (`water_hq_material::absorption_distance`).
+///
+/// Same scope as [`apply_water_reflection_option`]: high tier only, and only
+/// *visible* where the camera has a depth prepass, since without one the
+/// shader cannot measure a water column.
+pub fn apply_water_depth_options(
+    config: Res<ClientConfig>,
+    handle: Option<Res<WaterNormalMaterial>>,
+    mut materials: ResMut<Assets<HighQualityWaterMaterial>>,
+) {
+    let Some(handle) = handle else {
+        return;
+    };
+    let Some(mut material) = materials.get_mut(&handle.0) else {
+        return;
+    };
+    let shore_fade = config.graphics.water.shore_fade.max(0.0);
+    let attenuation = absorption_distance(config.graphics.water.absorption);
+    // Guarded writes, as above: a material change re-prepares the whole
+    // extended bind group.
+    if material.extension.settings.shore_fade != shore_fade {
+        material.extension.settings.shore_fade = shore_fade;
+    }
+    if material.base.attenuation_distance != attenuation {
+        material.base.attenuation_distance = attenuation;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::plugins::map::water_hq_material::WaterExtension;
+    use crate::plugins::map::water_hq_material::{WaterExtension, ABSORPTION_FULL_DEPTH};
 
     /// The shipped file, as everywhere else in the tree: `ClientConfig` has no
     /// `Default`, and the example is the only config whose values are reviewed.
@@ -145,6 +180,75 @@ mod tests {
         set_reflection(&mut app, true);
         app.update();
         assert_eq!(strength(&app), Some(reflection_strength()));
+    }
+
+    fn set_depth_keys(app: &mut App, shore_fade: f32, absorption: f32) {
+        let mut config = app.world_mut().resource_mut::<ClientConfig>();
+        config.graphics.water.shore_fade = shore_fade;
+        config.graphics.water.absorption = absorption;
+    }
+
+    /// The depth cues as a behaviour test, both ways: the two keys must reach
+    /// the uniform and the base material's attenuation, and `0` must switch
+    /// each off — infinity for the absorption, because that is what clears
+    /// bevy's `ATTENUATION_ENABLED` and drops the branch.
+    #[test]
+    fn the_depth_keys_reach_the_material_and_zero_switches_them_off() {
+        let mut app = App::new();
+        app.insert_resource(test_config())
+            .init_resource::<Assets<HighQualityWaterMaterial>>()
+            .add_systems(Update, apply_water_depth_options);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<HighQualityWaterMaterial>>()
+            .add(HighQualityWaterMaterial {
+                base: StandardMaterial::default(),
+                extension: WaterExtension {
+                    settings: WaterHqSettings::default(),
+                    normal_map: Handle::default(),
+                },
+            });
+        app.world_mut()
+            .insert_resource(WaterNormalMaterial(handle.clone()));
+
+        let read = |app: &App| {
+            let materials = app.world().resource::<Assets<HighQualityWaterMaterial>>();
+            let material = materials.get(&handle).expect("the material is there");
+            (
+                material.extension.settings.shore_fade,
+                material.base.attenuation_distance,
+            )
+        };
+
+        set_depth_keys(&mut app, 12.0, 0.5);
+        app.update();
+        assert_eq!(read(&app), (12.0, ABSORPTION_FULL_DEPTH * 2.0));
+
+        set_depth_keys(&mut app, 0.0, 0.0);
+        app.update();
+        let (fade, attenuation) = read(&app);
+        assert_eq!(fade, 0.0);
+        assert!(
+            attenuation.is_infinite(),
+            "a finite distance keeps bevy's attenuation branch alive"
+        );
+    }
+
+    /// The low water tier control, for the depth keys too: no high-quality
+    /// material means nothing to write, not a panic on the missing resource.
+    #[test]
+    fn the_depth_keys_leave_the_low_water_tier_alone() {
+        let mut app = App::new();
+        app.insert_resource(test_config())
+            .init_resource::<Assets<HighQualityWaterMaterial>>()
+            .add_systems(Update, apply_water_depth_options);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<Assets<HighQualityWaterMaterial>>()
+                .is_empty(),
+            "the low tier must not gain a high-quality material"
+        );
     }
 
     /// The control that keeps the claim honest: on the low water tier there is

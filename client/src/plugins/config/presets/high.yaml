@@ -21,6 +21,11 @@ graphics:
   tonemapping: tony_mc_mapface
   water:
     quality: high
+    # Soft shore and depth absorption. Both need `depth_prepass`, which is
+    # false here today, so they are inert until that switch is measured
+    # (GFX-MODERN-RANGLISTE.md 3.2) - set, not guessed, when it flips.
+    shore_fade: 24.0
+    absorption: 1.0
   objects:
     factor: 150.0
     min_distance: 1200.0

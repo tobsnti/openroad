@@ -395,9 +395,18 @@ graphics:
   # water_hq.wesl multiplies the Fresnel term, so false removes the look but
   # not its cost - the shader still marches. The low tier has no reflection to
   # switch.
+  # The depth cues read the camera's depth prepass to measure how much water a
+  # pixel looks through: `shore_fade` is the column, in world units, over which
+  # the surface fades into what is behind it instead of cutting the terrain on a
+  # hard line, and `absorption` (0..1) is how fast the light coming through is
+  # swallowed - toward the colour of your own water texture, not a value here.
+  # Both are inert without `depth_prepass`, which `ultra` is the only preset to
+  # set today; 0 switches either off.
   # water:
     # quality: high
     # reflection: true
+    # shore_fade: 24.0
+    # absorption: 1.0
   # Fraction of the window the 3D view renders at. The HUD is always composited
   # at the window's native size, so text and icons stay sharp; only the world
   # softens, and an FXAA post pass already runs over it.

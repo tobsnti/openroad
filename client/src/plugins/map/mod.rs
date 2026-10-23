@@ -17,7 +17,7 @@ use crate::plugins::map::terrain::{
     TerrainMesh, WaterIceMaterial, WaterLowMaterial, WaterNormalMaterial,
 };
 use crate::plugins::map::water_hq_material::{
-    HighQualityWaterMaterial, WaterExtension, WaterHqSettings,
+    absorption_distance, HighQualityWaterMaterial, WaterExtension, WaterHqSettings,
 };
 use crate::scenes::SceneState;
 use crate::GameState;
@@ -125,11 +125,15 @@ impl Plugin for MapPlugin {
             // material, the same shape `effects::apply_effect_quality` uses.
             .add_systems(
                 Update,
-                water_options::apply_water_reflection_option.run_if(
-                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
-                        crate::plugins::config::ClientConfig,
-                    >,
-                ),
+                (
+                    water_options::apply_water_reflection_option,
+                    water_options::apply_water_depth_options,
+                )
+                    .run_if(
+                        bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                            crate::plugins::config::ClientConfig,
+                        >,
+                    ),
             )
             .add_systems(
                 Update,
@@ -242,7 +246,14 @@ pub fn setup_terrain_mesh(
             specular_transmission: 0.9,
             diffuse_transmission: 0.1,
             ior: 1.33,
+            // Also the unit the shader's depth absorption divides by, so it must stay
+            // non-zero (`water_hq.wesl`, cue (a)).
             thickness: 1.0,
+            // Turns bevy's Beer-Lambert branch on (`ATTENUATION_ENABLED` is set only for a
+            // finite distance); the shader then scales it by the measured water column per
+            // pixel. `graphics.water.absorption` owns this value through
+            // `absorption_distance`.
+            attenuation_distance: absorption_distance(1.0),
             perceptual_roughness: 0.02,
             metallic: 0.0,
             reflectance: 0.02,
