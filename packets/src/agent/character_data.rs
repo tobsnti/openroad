@@ -22,8 +22,10 @@
 //! variable middle is discarded and the tail is rebuilt via the anchor scan —
 //! find the known unique id's little-endian bytes and read the position that
 //! immediately follows (go-sro writes `UniqueID` then `WritePosition`), then
-//! continue with movement/state/name from there. The spawn position and the
-//! movement speeds therefore never depend on the riskiest parsing.
+//! continue with movement/state/name from there, and behind the name with the
+//! job and extras blocks when they land exactly on the blob's last byte
+//! ([`read_anchored_tail_rest`]). The spawn position, the movement speeds and
+//! the session blocks therefore never depend on the riskiest parsing.
 //!
 //! Anchor verified against a live vSRO 1.88 capture (offset 501: unique_id
 //! `0x56228` → region `0x60A8`, x 1058.0, y -7.68, z 1426.0 — a Jangan spawn).
@@ -868,6 +870,7 @@ pub fn parse_character_info(
                     if let Ok(name) = read_string(&mut cursor) {
                         if name_plausible(&name) {
                             fallback.name = Some(name);
+                            read_anchored_tail_rest(raw, &mut cursor, &mut fallback);
                         }
                     }
                 }
@@ -875,6 +878,46 @@ pub fn parse_character_info(
         }
     }
     fallback
+}
+
+/// Continue the anchor-rebuilt tail past the name, through the job block and
+/// the account/session extras.
+///
+/// Idea: both blocks sit *behind* the anchor, so reading them needs no
+/// knowledge of the item width the forward pass choked on. They are also the
+/// only wire source for four live client features — the hotkey bar layout, the
+/// auto-potion settings, the GM flag and the transport the character is riding
+/// — so dropping them turns those off for the whole session.
+///
+/// The acceptance rule is the strongest one available here and it is cheap:
+/// both blocks must parse **and** land exactly on the blob's last byte, so a
+/// partial read is discarded instead of half-applied. Measured on the user's
+/// 243 captured bodies with a resolver that routes nothing — the state of the
+/// hermetic replay test, where every body stops on its first item record:
+/// 243/243 land on the last byte, and all 243 yield the same job and extras
+/// the forward pass reads once the widths are known.
+///
+/// With the user's own itemdata those 243 bodies parse forward anyway today
+/// (the resync pins all three unknown refs), so this is the net for the next
+/// unknown ref rather than a daily win — the exact shape of the 2026-10-02
+/// live failure, where ref 46551 cost a character 189 of 639 bytes.
+/// (Local measurement mirror `fixes/messbank_cdtail.py`, 2026-10-23.)
+fn read_anchored_tail_rest(
+    raw: &[u8],
+    cursor: &mut Cursor<&[u8]>,
+    fallback: &mut ParsedCharacterInfo,
+) {
+    let Ok(job) = JobInfo::read_from(cursor) else {
+        return;
+    };
+    let Ok(extras) = PlayerExtras::read_from(cursor) else {
+        return;
+    };
+    if cursor.position() as usize != raw.len() {
+        return;
+    }
+    fallback.job = Some(job);
+    fallback.extras = Some(extras);
 }
 
 /// The anchor-continued tail has no id to validate against, so gate the state
@@ -2009,6 +2052,47 @@ mod test {
         let items = info.inventory.expect("inventory");
         assert_eq!(items.len(), 1, "the record before the offender survives");
         assert_eq!(items[0].ref_id, SWORD);
+    }
+
+    #[test]
+    fn an_undecidable_width_no_longer_costs_the_job_and_extras_blocks() {
+        // The resync declines on this blob (both readings keep the slot
+        // order), so the tail is rebuilt from the position anchor. Everything
+        // behind the anchor needs no knowledge of the offending width, and the
+        // two blocks behind the name are the client's only source for the
+        // hotkey bar, the auto-potion settings, the GM flag and the ridden
+        // transport. Measured on the user's 243 captured bodies with a
+        // resolver that routes nothing: the anchor tail lands on the blob's
+        // last byte in 243/243, carrying the same job and extras the forward
+        // pass reads once the widths are known (`fixes/messbank_cdtail.py`).
+        let raw = full_body_with_shadowed_unroutable(19);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.recovered_body, None, "no width may be claimed here");
+        assert_eq!(info.name.as_deref(), Some("Hero"));
+        let job = info.job.expect("job block behind the anchor");
+        assert_eq!(job.job_level, 1);
+        let extras = info.extras.expect("extras block behind the anchor");
+        assert_eq!(extras.jid, 77);
+        assert!(extras.gm);
+        // The record's final field: proof the reader walked the whole extras
+        // block instead of stopping somewhere inside it.
+        assert_eq!(extras.unk_u32, 0x0001_0001);
+    }
+
+    #[test]
+    fn a_partial_anchor_tail_is_not_half_applied() {
+        // The same blob one byte short: the extras block can no longer land on
+        // the last byte, so neither block is applied. A tail read from a wrong
+        // offset is the one thing this path must not hand on, so the rule is
+        // all-or-nothing rather than "keep whatever parsed".
+        let mut raw = full_body_with_shadowed_unroutable(19);
+        raw.pop();
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.name.as_deref(), Some("Hero"), "the name still arrives");
+        assert_eq!(info.job, None);
+        assert_eq!(info.extras, None);
     }
 
     #[test]
