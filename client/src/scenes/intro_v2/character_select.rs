@@ -40,7 +40,7 @@ use super::fade::{FadeToBlack, FadeToBlackTimer};
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{IntroV2State, IntroV2Ui};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 
 /// Root marker of the Create/Cancel button row.
 #[derive(Component, Default, Clone)]
@@ -761,7 +761,7 @@ pub(crate) fn info_box(
 
     let s = hud_scale();
     // vanilla FontIndex 2 is a small UI font; 11px fits the 13px-high cells
-    let font_size = 11.0 * s;
+    let font_size = text_px(11.0, s);
     let row_h = 13.0 * s;
 
     let window_w = 228.0 * s;

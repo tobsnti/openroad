@@ -28,6 +28,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::FontAssets;
 use crate::plugins::hud::community::model::{CommunityState, LetterSubWindow};
 use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::textdata::ClientUiStrings;
 
 // --- Layout constants (resinfo/ifletter.txt, page-local units) --------------
@@ -103,7 +104,7 @@ pub fn spawn_letter_page(
 ) {
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let image = |rect: (f32, f32, f32, f32), path: String| {

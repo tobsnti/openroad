@@ -38,7 +38,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::textdata::collectionbook::CollectionTheme;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::{ClientCollectionBook, ClientTextNames, ClientUiStrings};
 
 /// The `int_window_` board (`255,179,663,344`) is our content area; every rect
@@ -183,7 +183,7 @@ pub fn refresh_collection_window(
             Text::new(content),
             TextFont {
                 font: font.into(),
-                font_size: FontSize::Px(size * s),
+                font_size: FontSize::Px(text_px(size, s)),
                 ..default()
             },
             TextColor(Color::WHITE),

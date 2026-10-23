@@ -24,7 +24,7 @@ use crate::assets::textdata::worldmap::{
 };
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{self, abs_node};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::hud::world_map::model::{
     player_global_xz, MapMarkers, MarkerKind, WorldMapFollow, WorldMapState,
@@ -235,7 +235,7 @@ pub fn sync_world_map_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let canvas_size = match (dungeon, map) {

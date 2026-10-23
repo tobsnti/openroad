@@ -43,7 +43,7 @@ use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::textdata::gameguide::{GuideKind, GuideNode};
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::{ClientGameGuide, ClientUiStrings};
 use crate::scenes::SceneState;
 
@@ -238,7 +238,7 @@ pub fn refresh_game_guide_window(
             Text::new(content),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(size * s),
+                font_size: FontSize::Px(text_px(size, s)),
                 ..default()
             },
             TextColor(Color::WHITE),
@@ -344,7 +344,7 @@ pub fn refresh_game_guide_window(
                             Text::new(body),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(BODY_FONT * s),
+                                font_size: FontSize::Px(text_px(BODY_FONT, s)),
                                 ..default()
                             },
                             TextColor(Color::WHITE),
@@ -421,7 +421,7 @@ fn spawn_row(
             Text::new(label),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(ROW_FONT * s),
+                font_size: FontSize::Px(text_px(ROW_FONT, s)),
                 ..default()
             },
             TextColor(color),

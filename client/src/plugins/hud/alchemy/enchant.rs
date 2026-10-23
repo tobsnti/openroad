@@ -48,7 +48,7 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::art::art_path;
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::DragGhost;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
@@ -462,7 +462,7 @@ fn rebuild_enchant_window(
                 Text::new(caption),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(CAPTION_FONT * s),
+                    font_size: FontSize::Px(text_px(CAPTION_FONT, s)),
                     ..default()
                 },
                 TextColor(Color::WHITE),

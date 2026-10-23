@@ -30,7 +30,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::{DragGhost, InventoryRoot};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::storage::model::{
     PendingStorageOp, StorageHoveredItem, StorageOp, StorageState, STORAGE_SLOTS_PER_PAGE,
 };
@@ -231,7 +231,7 @@ pub fn sync_storage_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 
@@ -843,7 +843,7 @@ pub fn sync_gold_modal(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = ImageButtonStyle {

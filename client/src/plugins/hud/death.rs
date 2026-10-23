@@ -60,7 +60,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::{ray_intersects_aabb, transform_aabb_to_world};
 use crate::plugins::cursor::GameCursorCamera;
 use crate::plugins::hud::game_window;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::ClientUiStrings;
@@ -345,7 +345,7 @@ pub fn sync_death_window(
                             Text::new(label),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(9.5 * s),
+                                font_size: FontSize::Px(text_px(9.5, s)),
                                 ..default()
                             },
                             TextColor(Color::WHITE),
@@ -371,7 +371,7 @@ pub fn sync_death_window(
                     Text::new(String::new()),
                     TextFont {
                         font: font.clone().into(),
-                        font_size: FontSize::Px(9.0 * s),
+                        font_size: FontSize::Px(text_px(9.0, s)),
                         ..default()
                     },
                     TextColor(Color::srgb(1.0, 0.75, 0.4)),

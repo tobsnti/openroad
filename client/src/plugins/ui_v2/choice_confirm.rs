@@ -37,7 +37,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::FontAssets;
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::ClientUiStrings;
 
 /// Registry rect `0,0,226,190` — the two-option size. Taller requests keep the
@@ -201,7 +201,7 @@ pub fn sync_choice_confirm(
     let (pw, ph) = (PLATE.0, plate_height(rows));
     let text_font = TextFont {
         font: fonts.nine.clone().into(),
-        font_size: FontSize::Px(9.0 * s),
+        font_size: FontSize::Px(text_px(9.0, s)),
         ..default()
     };
     let img = |rect: (f32, f32, f32, f32), path: String| {

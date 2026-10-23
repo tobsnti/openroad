@@ -30,7 +30,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::character_info::model::{balance_text, CharacterInfoState, PlayerStats};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::underbar::model::PlayerProgress;
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
@@ -225,7 +225,7 @@ pub fn spawn_character_info_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 

@@ -30,6 +30,7 @@ use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::Button;
 
 use crate::assets::FontAssets;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
 /// Art extents of the frame pieces.
@@ -410,7 +411,7 @@ pub fn spawn_game_window_with(
                         Text::new(title.to_string()),
                         TextFont {
                             font: fonts.two.clone().into(),
-                            font_size: FontSize::Px(8.5 * s),
+                            font_size: FontSize::Px(text_px(8.5, s)),
                             ..default()
                         },
                         TextColor(TITLE_COLOR),

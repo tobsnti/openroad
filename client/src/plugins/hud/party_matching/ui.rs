@@ -54,7 +54,7 @@ use crate::plugins::hud::party_matching::dialogs::PROGRESS_TIMEOUT_SECS;
 use crate::plugins::hud::party_matching::model::{
     MatchDialog, MatchSort, PartyMatchState, ReloadMatchList, MATCH_ROWS,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
@@ -301,7 +301,7 @@ pub fn spawn_match_window(
 
     let font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 
@@ -780,7 +780,7 @@ fn spawn_action_button(
                 Text::new(caption.to_string()),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(8.5 * s),
+                    font_size: FontSize::Px(text_px(8.5, s)),
                     ..default()
                 },
                 TextColor(Color::srgb_u8(255, 247, 202)),

@@ -48,7 +48,7 @@ use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_wid
 use crate::plugins::hud::party::model::{
     effective_setup, member_vitals, mode_keys, roster_rows, we_lead, PartyWindowState, PARTY_ROWS,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::DisplayName;
 use crate::plugins::net::party::{PartyAction, PartyCreateSetup, PartyRoster};
 use crate::plugins::player::Player;
@@ -255,7 +255,7 @@ pub fn spawn_party_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let art = |path: String| asset_server.load::<Image>(path);
@@ -622,7 +622,7 @@ fn spawn_row_button(
                 ),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(8.0 * s),
+                    font_size: FontSize::Px(text_px(8.0, s)),
                     ..default()
                 },
                 TextColor(TEXT_COLOR),
@@ -673,7 +673,7 @@ fn spawn_footer_button(
                 Text::new(caption.to_string()),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(8.5 * s),
+                    font_size: FontSize::Px(text_px(8.5, s)),
                     ..default()
                 },
                 TextColor(TEXT_COLOR),

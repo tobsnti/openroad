@@ -30,7 +30,7 @@ use crate::plugins::hud::game_window;
 use crate::plugins::hud::npc_dialog::model::{
     DialogPage, NpcDialogState, OpenGuildStorage, OpenStorage, OpenStore, OpenTeleport,
 };
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{CharacterRef, DisplayName, NetworkId, NpcTalkOptions};
 use crate::plugins::textdata::{
@@ -220,7 +220,7 @@ pub fn sync_dialog_window(
 
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
 

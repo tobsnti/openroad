@@ -45,6 +45,7 @@ use crate::plugins::hud::community::model::{CommunityPage, CommunityState};
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::party::model::PartyWindowState;
 use crate::plugins::hud::party_matching::model::PartyMatchState;
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::system_window::{spawn_system_window, SystemWindow};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
@@ -357,7 +358,7 @@ fn spawn_menu_popup(
                 Text::new(ui_strings.get_or(key, fallback).to_string()),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(LABEL_FONT_SIZE * s),
+                    font_size: FontSize::Px(text_px(LABEL_FONT_SIZE, s)),
                     ..default()
                 },
                 TextColor(LABEL_COLOR),

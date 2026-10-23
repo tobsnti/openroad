@@ -38,7 +38,7 @@ use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::DragGhost;
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SIDE, MODAL_TOP};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientTextNames, ClientUiStrings};
@@ -219,7 +219,7 @@ pub fn sync_grant_window(
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let image = |rect: (f32, f32, f32, f32), path: String| {

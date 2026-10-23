@@ -42,7 +42,7 @@ use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::paperdoll::{PaperDollTarget, PaperDollView, PaperDollYaw};
 use crate::plugins::hud::inventory::tooltip;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::window_positions::PersistedWindow;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::character_info::CharacterInfo;
@@ -557,7 +557,7 @@ fn spawn_tab_strip(
                         Text::new(format!("Page {}", page + 1)),
                         TextFont {
                             font: fonts.two.clone().into(),
-                            font_size: FontSize::Px(7.0 * s),
+                            font_size: FontSize::Px(text_px(7.0, s)),
                             ..default()
                         },
                         TextColor(Color::WHITE),
@@ -676,7 +676,7 @@ fn spawn_inventory_panel(
             Text::new("0"),
             TextFont {
                 font: fonts.two.clone().into(),
-                font_size: FontSize::Px(7.5 * s),
+                font_size: FontSize::Px(text_px(7.5, s)),
                 ..default()
             },
             TextColor(Color::srgb_u8(255, 217, 128)),
@@ -691,7 +691,7 @@ fn spawn_inventory_panel(
             Text::new("Gold"),
             TextFont {
                 font: fonts.two.clone().into(),
-                font_size: FontSize::Px(7.5 * s),
+                font_size: FontSize::Px(text_px(7.5, s)),
                 ..default()
             },
             TextColor(Color::WHITE),
@@ -713,7 +713,7 @@ fn spawn_slot_count(cell: &mut ChildSpawnerCommands, fonts: &FontAssets, s: f32)
         Text::new(""),
         TextFont {
             font: fonts.nine.clone().into(),
-            font_size: FontSize::Px(6.0 * s),
+            font_size: FontSize::Px(text_px(6.0, s)),
             ..default()
         },
         TextColor(Color::WHITE),

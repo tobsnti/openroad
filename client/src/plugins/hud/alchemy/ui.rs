@@ -76,7 +76,7 @@ use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::DragGhost;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
@@ -518,7 +518,7 @@ pub fn sync_alchemy_window(
                 Text::new(ui_strings.get_or(key, fallback).to_string()),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(TEXT_FONT_SIZE * s),
+                    font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, s)),
                     ..default()
                 },
                 TextColor(if active {
@@ -541,7 +541,7 @@ pub fn sync_alchemy_window(
             }),
             TextFont {
                 font: fonts.two.clone().into(),
-                font_size: FontSize::Px(TEXT_FONT_SIZE * s),
+                font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, s)),
                 ..default()
             },
             TextColor(PML_TEXT_COLOR),
@@ -599,7 +599,7 @@ pub fn sync_alchemy_window(
                 Text::new(chance_line(&ui_strings, chance)),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(CHANCE_FONT_SIZE * s),
+                    font_size: FontSize::Px(text_px(CHANCE_FONT_SIZE, s)),
                     ..default()
                 },
                 TextColor(PAGE_TEXT_COLOR),
@@ -633,7 +633,7 @@ pub fn sync_alchemy_window(
                     ),
                     TextFont {
                         font: fonts.two.clone().into(),
-                        font_size: FontSize::Px(TEXT_FONT_SIZE * s),
+                        font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, s)),
                         ..default()
                     },
                     TextColor(BUTTON_TEXT_COLOR),

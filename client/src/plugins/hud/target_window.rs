@@ -30,7 +30,7 @@ use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::game_window::scaled;
 use crate::plugins::hud::gauge::{gauge, gauge_fill_width, GaugeArt};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::{
     CharacterRef, DisplayName, EntityAilments, EntityVitals, MonsterRarity, RemoteBuffs,
     RemoteEntity,
@@ -352,7 +352,7 @@ pub fn spawn_target_window(
                 Node { width: px(ICON_SIZE * s), height: px(ICON_SIZE * s) }
                 Pickable::IGNORE
             --
-                @label("", name_font, NAME_FONT_SIZE * s)
+                @label("", name_font, text_px(NAME_FONT_SIZE, s))
                 TwRarityText
                 TextColor(Color::WHITE)
         ]

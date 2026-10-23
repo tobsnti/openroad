@@ -48,7 +48,7 @@ use crate::plugins::combat::{AttackOrder, PickupOrder};
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::RemoteMovement;
@@ -272,7 +272,7 @@ pub fn spawn_action_window(
                 ),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(CAPTION_FONT * s),
+                    font_size: FontSize::Px(text_px(CAPTION_FONT, s)),
                     ..default()
                 },
                 TextColor(Color::WHITE),

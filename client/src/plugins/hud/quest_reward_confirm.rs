@@ -35,7 +35,7 @@ use bevy::ui_widgets::{Activate, Button};
 use crate::assets::FontAssets;
 use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
 use crate::plugins::hud::quest_reward::QuestRewardState;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::{
     ClientItemData, ClientItemIndex, ClientQuestRewards, ClientUiStrings,
 };
@@ -156,7 +156,7 @@ pub fn sync_quest_reward_confirm(
 
     let text_font = TextFont {
         font: fonts.nine.clone().into(),
-        font_size: FontSize::Px(9.0 * hud_scale()),
+        font_size: FontSize::Px(text_px(9.0, hud_scale())),
         ..default()
     };
     let img = |rect: (f32, f32, f32, f32), path: String| {

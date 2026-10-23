@@ -44,7 +44,7 @@ use crate::plugins::hud::art::art_path;
 use crate::plugins::hud::game_window::{self, abs_node, GameWindowStyle};
 use crate::plugins::hud::item_mall::ItemMallState;
 use crate::plugins::hud::player_mini_info::{PlayerVitals, PortraitTarget};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::silk::SilkBalance;
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -273,7 +273,7 @@ pub fn spawn_my_info_window(
 fn text_font(fonts: &FontAssets, px: f32, s: f32) -> TextFont {
     TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(px * s),
+        font_size: FontSize::Px(text_px(px, s)),
         ..default()
     }
 }

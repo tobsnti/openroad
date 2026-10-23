@@ -55,7 +55,7 @@ use bevy::text::FontSize;
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{self, abs_node, spawn_game_window_with};
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::stall::model::{StallState, StallTradingState};
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -267,7 +267,7 @@ pub fn refresh_stall_window(
             Text::new(content),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(FONT * s),
+                font_size: FontSize::Px(text_px(FONT, s)),
                 ..default()
             },
             TextColor(color),

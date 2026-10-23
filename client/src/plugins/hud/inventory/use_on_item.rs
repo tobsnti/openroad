@@ -20,6 +20,7 @@
 use bevy::prelude::*;
 
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
+use crate::plugins::hud::scale::text_px;
 use crate::plugins::hud::underbar::cast::UseItemRequest;
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
@@ -179,7 +180,7 @@ pub fn sync_use_on_item_confirm(
     let s = crate::plugins::hud::scale::hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: bevy::text::FontSize::Px(size * s),
+        font_size: bevy::text::FontSize::Px(text_px(size, s)),
         ..default()
     };
     let button_style = crate::plugins::ui_v2::style::ImageButtonStyle {

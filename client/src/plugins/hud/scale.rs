@@ -66,6 +66,38 @@ pub fn apply_hud_scale(config: Res<ClientConfig>) {
     set_hud_scale(config.hud.hud_scale);
 }
 
+/// Scale a **text** size the way [`hud_scale`] scales a rect, then round to a
+/// whole pixel.
+///
+/// The rounding is the point. A rect may land on a half pixel — that is half a
+/// pixel of stretched texture and nobody sees it — but a font size may not:
+/// at the shipped scale 1.5 every odd design value becomes a half
+/// (`11 -> 16.5`, `9 -> 13.5`, `8.5 -> 12.75`), and a fractional em rasterises
+/// the glyphs off the pixel grid. That is the blurry half of "font and spacing
+/// do not fit" — the one open `[U]` the font arc left
+/// (`FONT-PX-REST-UND-BILANZ.md`).
+///
+/// One rule, one place; a surface that writes `FontSize::Px(design * s)`
+/// itself is the bug this replaces.
+///
+/// # What is taken from where
+///
+/// The *rule* is the one `port/07-hud-frame` `1a19b65dc` already settled.
+/// Two deliberate differences from that branch:
+///
+/// * **Its font ladder is not taken.** Ours lives in
+///   [`crate::assets::resinfo::interface_text::font_index_px`] and falls back
+///   to slot **0** — the index 3547 of 3739 authored controls use — where that
+///   branch clamps to the largest slot. Ours is the corpus-backed one.
+/// * **The scale is a parameter, not a global read.** That branch's helper
+///   reads [`hud_scale`] because its call sites had no scale in hand; nearly
+///   every surface here already holds one (`let s = hud_scale()`, or an `s:
+///   f32` a window builder was handed), and silently re-reading the global
+///   would ignore the value the caller passed.
+pub fn text_px(design_px: f32, scale: f32) -> f32 {
+    (design_px * scale).round()
+}
+
 pub struct HudScalePlugin;
 
 impl Plugin for HudScalePlugin {
@@ -141,5 +173,82 @@ mod test {
             assert_eq!(hud_scale(), 2.25, "{bad} was accepted");
         }
         set_hud_scale(restore);
+    }
+
+    /// The defect this exists for: at the shipped scale every odd design size
+    /// lands on a half pixel. The scale is passed in, so this test does not
+    /// race the process global the one above writes.
+    #[test]
+    fn the_shipped_scale_turns_odd_design_sizes_into_whole_pixels() {
+        // The three shapes the tree actually holds: the font ladder's odd
+        // entries, the inline halves, and an even value that was never broken.
+        assert_eq!(text_px(11.0, DEFAULT_HUD_SCALE), 17.0); // was 16.5
+        assert_eq!(text_px(9.0, DEFAULT_HUD_SCALE), 14.0); // was 13.5
+        assert_eq!(text_px(8.5, DEFAULT_HUD_SCALE), 13.0); // was 12.75
+        assert_eq!(text_px(12.0, DEFAULT_HUD_SCALE), 18.0); // already whole
+        for design in [
+            6.0f32, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 11.0, 12.0, 15.0, 16.0, 20.0,
+        ] {
+            let px = text_px(design, DEFAULT_HUD_SCALE);
+            assert_eq!(px.fract(), 0.0, "{design} scaled to {px}");
+        }
+    }
+
+    /// Rounding must not collapse a size to zero — a 0 px font draws nothing,
+    /// which would be a worse bug than a blurry one. `round` keeps anything
+    /// from 0.5 px up, and the smallest design size in the tree is 6.0.
+    #[test]
+    fn a_small_design_size_survives_the_rounding() {
+        assert_eq!(text_px(6.0, 1.0), 6.0);
+        assert_eq!(text_px(6.0, 0.25), 2.0);
+        // the degenerate end is the caller's to avoid; stated, not hidden
+        assert_eq!(text_px(6.0, 0.01), 0.0);
+    }
+
+    /// The rule has to stay in one place. A surface that writes
+    /// `FontSize::Px(design * s)` again is back to a fractional em, and no
+    /// compile error says so — so the tree is scanned for that shape, the same
+    /// way the test above scans for a re-declared scale constant.
+    ///
+    /// Rects are deliberately not covered: `ICON_SIZE * hud_scale()` is a
+    /// *rect*, and half a pixel of stretched texture is what the module doc
+    /// says is fine.
+    #[test]
+    fn no_surface_scales_a_font_size_without_the_rounding_rule() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (line, text) in text.lines().enumerate() {
+                    let text = text.trim();
+                    if text.starts_with("//") || !text.contains("FontSize::Px(") {
+                        continue;
+                    }
+                    let scaled = text.contains("* s)") || text.contains("* hud_scale())");
+                    if scaled {
+                        offenders.push(format!("{}:{}", path.display(), line + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these sites scale a font size without rounding it to a whole              pixel — call `text_px(design, scale)` instead: {offenders:?}"
+        );
     }
 }

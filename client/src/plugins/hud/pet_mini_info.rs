@@ -29,7 +29,7 @@ use crate::plugins::hud::cos::state::CosState;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::gauge::{gauge_art_node, gauge_crop_node, gauge_fill_width};
 use crate::plugins::hud::player_mini_info::PlayerMiniInfoRoot;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::{EntityVitals, NetworkEntities};
 use crate::plugins::textdata::{ClientCharacterData, ClientUiStrings};
 
@@ -123,7 +123,7 @@ pub fn spawn_pet_mini_info(
                         Text::new(""),
                         TextFont {
                             font: fonts.nine.clone().into(),
-                            font_size: FontSize::Px(8.0 * s),
+                            font_size: FontSize::Px(text_px(8.0, s)),
                             ..default()
                         },
                         TextColor(NAME_COLOR),
@@ -140,7 +140,7 @@ pub fn spawn_pet_mini_info(
                         Text::new(""),
                         TextFont {
                             font: fonts.nine.clone().into(),
-                            font_size: FontSize::Px(8.0 * s),
+                            font_size: FontSize::Px(text_px(8.0, s)),
                             ..default()
                         },
                         TextColor(NAME_COLOR),
