@@ -65,7 +65,9 @@ use packets::Packet;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
-use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
+use crate::plugins::hud::modal_dialog::{
+    modal_plate_node, modal_scrim_node, MODAL_BOTTOM, MODAL_SIDE, MODAL_TOP,
+};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
@@ -392,26 +394,11 @@ pub fn sync_petition_dialog(
             Name::from("Invite Petition"),
             UiTargetCamera(camera),
             GlobalZIndex(95),
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..default()
-            },
-            BackgroundColor(MODAL_SCRIM),
+            modal_scrim_node(),
         ))
         .with_children(|scrim| {
             scrim
-                .spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: Val::Px(PLATE.0 * hud_scale()),
-                        height: Val::Px(PLATE.1 * hud_scale()),
-                        margin: UiRect::all(Val::Auto),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ))
+                .spawn((modal_plate_node(PLATE.0, PLATE.1, hud_scale()),))
                 .with_children(|plate| {
                     let (w, h) = PLATE;
                     let side_h = h - MODAL_TOP - MODAL_BOTTOM;
