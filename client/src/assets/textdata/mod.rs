@@ -17,6 +17,7 @@ use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
 use crate::assets::textdata::masterydata::MasteryData;
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::NpcChat;
+use crate::assets::textdata::npcpos::NpcPositions;
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{QuestRewardItems, QuestRewardModes, QuestRewardValues};
 use crate::assets::textdata::shops::ShopTable;
@@ -43,6 +44,7 @@ pub mod magicoption;
 pub mod masterydata;
 pub mod names;
 pub mod npcchat;
+pub mod npcpos;
 pub mod quest;
 pub mod questreward;
 pub mod shops;
@@ -114,6 +116,9 @@ pub enum Textdata {
     /// table shape as textuisystem.
     SpeechText(UiSystemText),
     NpcChat(NpcChat),
+    /// `npcpos.txt` — the authored NPC spawn positions, so a position can be
+    /// turned back into a `ref_obj_id` without the NPC being spawned.
+    NpcPos(NpcPositions),
     Shops(ShopTable),
     Teleport(TeleportTable),
     WorldMap(WorldMapTable),
@@ -172,6 +177,7 @@ impl AssetLoader for TextdataLoader {
             && !file_stem.starts_with("textuisystem")
             && !file_stem.starts_with("textquest_speech")
             && !file_stem.starts_with("npcchat")
+            && !file_stem.starts_with("npcpos")
             && !file_stem.starts_with("refshopgroup")
             && !file_stem.starts_with("teleportdata")
             && !file_stem.starts_with("worldmap_mapinfo")
@@ -290,6 +296,8 @@ impl AssetLoader for TextdataLoader {
             Ok(Textdata::SpeechText(UiSystemText::parse(&content)))
         } else if file_stem.starts_with("npcchat") {
             Ok(Textdata::NpcChat(NpcChat::parse(&content)))
+        } else if file_stem.starts_with("npcpos") {
+            Ok(Textdata::NpcPos(NpcPositions::parse(&content)))
         } else if file_stem.starts_with("refshopgroup") {
             // refshopgroup.txt is the entry point of the ref-shop chain: the
             // six sibling files are read raw here (they never load standalone)

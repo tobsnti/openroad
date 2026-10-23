@@ -18,6 +18,7 @@ use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
 use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
+use crate::assets::textdata::npcpos::NpcPositions;
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{
     QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValues,
@@ -249,6 +250,12 @@ impl ClientLevelData {
 pub struct ClientTextNames(Option<TextdataNames>);
 
 impl ClientTextNames {
+    /// Seed the resource directly, bypassing the asset pipeline (tests only).
+    #[cfg(test)]
+    pub(crate) fn from_table(table: TextdataNames) -> Self {
+        Self(Some(table))
+    }
+
     /// Localized display string for an `SN_*` key, from the textdataname
     /// tables (item/mob/npc names).
     pub fn name(&self, key: &str) -> Option<&str> {
@@ -629,6 +636,48 @@ impl ClientNpcChat {
     }
 }
 
+/// The authored NPC spawn positions (`npcpos.txt`).
+#[derive(Resource, Default)]
+pub struct ClientNpcPos(Option<NpcPositions>);
+
+impl ClientNpcPos {
+    /// Seed the resource directly, bypassing the asset pipeline (tests only).
+    #[cfg(test)]
+    pub(crate) fn from_table(table: NpcPositions) -> Self {
+        Self(Some(table))
+    }
+
+    /// The single NPC the data authors at this position — see
+    /// [`NpcPositions::ref_at`] for the tolerance and for why two candidates
+    /// resolve to nothing.
+    pub fn ref_at(&self, region: u16, x: f32, z: f32) -> Option<i32> {
+        self.0.as_ref().and_then(|table| table.ref_at(region, x, z))
+    }
+}
+
+/// The display name the player's own data gives the NPC at this position, or
+/// `None` when no single NPC is authored there or a link of the chain is
+/// missing.
+///
+/// Idea: three tables of the player's own, and the only naming route that
+/// needs nothing spawned — `npcpos.txt` turns a position into a `ref_obj_id`,
+/// `characterdata_*.txt` turns that into the row's `SN_*` name key, and the
+/// `textdataname.txt` shards turn the key into the string. A quest mark points
+/// at an NPC the player has usually never been near, so the spawned-entity
+/// name the rest of the HUD uses is simply not there to ask.
+pub fn authored_npc_name(
+    positions: &ClientNpcPos,
+    characters: &ClientCharacterData,
+    names: &ClientTextNames,
+    region: u16,
+    x: f32,
+    z: f32,
+) -> Option<String> {
+    let ref_id = positions.ref_at(region, x, z)?;
+    let key = characters.get(&ref_id)?.name_key()?;
+    names.name(key).map(str::to_string)
+}
+
 /// Quest reward tables (`refqusetreward.txt` + `refquestrewarditems.txt`).
 #[derive(Resource, Default)]
 pub struct ClientQuestRewards(Option<(QuestRewardModes, QuestRewardValues, QuestRewardItems)>);
@@ -747,6 +796,7 @@ impl Plugin for TextdataPlugin {
             .init_resource::<ClientUiStrings>()
             .init_resource::<ClientSpeechText>()
             .init_resource::<ClientNpcChat>()
+            .init_resource::<ClientNpcPos>()
             .init_resource::<ClientShops>()
             .init_resource::<ClientItemIndex>()
             .init_resource::<ClientCharacterIndex>()
@@ -789,6 +839,7 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/collectionbook_theme.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textquest_speech&name.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/npcchat.txt"),
+        asset_server.load("media://server_dep/silkroad/textdata/npcpos.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/refshopgroup.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/teleportdata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/worldmap_mapinfo.txt"),
@@ -966,6 +1017,10 @@ fn add_resource_when_textdata_loaded(
                 Textdata::NpcChat(chat) => {
                     info!("loaded {} npc chat entries", chat.0.len());
                     commands.insert_resource(ClientNpcChat(Some(chat)))
+                }
+                Textdata::NpcPos(positions) => {
+                    info!("loaded {} authored npc positions", positions.len());
+                    commands.insert_resource(ClientNpcPos(Some(positions)))
                 }
                 Textdata::Shops(shops) => {
                     info!("loaded {} npc shops", shops.by_npc.len());
@@ -1148,5 +1203,56 @@ mod tests {
         assert_eq!(row.asset_path(), "data://prim/snd/ui/uibutton_a.wav");
         assert_eq!(row.gain(), 0.8);
         assert_eq!(loaded.sounds(&click).len(), 2);
+    }
+
+    /// The naming chain a quest mark depends on, all three links fed with
+    /// literal rows from the player's own files: `npcpos.txt` row for ref 2003
+    /// (the target of the captured `0x30D6` at region 25000), its
+    /// `characterdata_5000.txt` codename/name-key columns, and the
+    /// `textdata_object.txt` string that key resolves to. The answer is the one
+    /// the data really holds, not a shape this test invented.
+    #[test]
+    fn a_position_resolves_to_the_npc_name_its_own_tables_hold() {
+        let positions = ClientNpcPos(Some(NpcPositions::parse(
+            "2003\t25000\t332.73001\t0.0\t1406.7\r\n",
+        )));
+        let mut row = vec![String::new(); 60];
+        row[2] = "NPC_CH_SMITH".to_string();
+        row[5] = "SN_NPC_CH_SMITH".to_string();
+        let characters = ClientCharacterData::from_table(CharacterData(
+            [(2003, CharacterDataRow(row))].into_iter().collect(),
+        ));
+        let names = ClientTextNames(Some(TextdataNames(
+            [(
+                "SN_NPC_CH_SMITH".to_string(),
+                "Blacksmith Chulsan".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        )));
+
+        // the captured mark for this target carries the truncated (332, 1406)
+        assert_eq!(
+            authored_npc_name(&positions, &characters, &names, 25000, 332.0, 1406.0),
+            Some("Blacksmith Chulsan".to_string())
+        );
+        // nothing authored there: no name rather than a neighbour's
+        assert_eq!(
+            authored_npc_name(&positions, &characters, &names, 25000, 900.0, 900.0),
+            None
+        );
+        // and the chain is only as long as its links — a ref whose name key
+        // resolves to nothing must not fall back to the key or the codename
+        assert_eq!(
+            authored_npc_name(
+                &positions,
+                &characters,
+                &ClientTextNames::default(),
+                25000,
+                332.0,
+                1406.0
+            ),
+            None
+        );
     }
 }
