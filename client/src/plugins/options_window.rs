@@ -22,6 +22,7 @@ use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::options_audio::{refresh_audio_rows, spawn_audio_pane};
 use crate::plugins::options_camera::{refresh_sight_radios, spawn_camera_pane};
 use crate::plugins::options_game::{refresh_game_toggles, spawn_game_pane};
@@ -93,6 +94,20 @@ const BUTTON_FONT: &str = crate::assets::BUNDLED_FALLBACK_FACE;
 /// loads, and then it is a wrong *key*, not just a wrong fallback (#597).
 const TITLE_KEY: &str = "UIIT_PAG_OPTION";
 const TITLE_FALLBACK: &str = "Option";
+
+/// The window's own block is the source for both its caption and its footer:
+/// `GDR_OPTION:CIFOption` (`ifsystemwnd.txt:149`, the block that also carries
+/// [`TITLE_KEY`]) and the four bottom buttons
+/// `GDR_OPTION_BTN_{DEF,OK,CANC,APPLY}` (`ifoption.txt:69,50,31,12`) all carry
+/// `FontIndex=0`, which is 12 px on the ladder ([`font_index_px`]). The 13 px
+/// title and 11 px button captions this replaced were picked by eye.
+const TEXT_FONT_INDEX: usize = 0;
+/// The tab captions keep a size of their own, and it is **ours**: the classic
+/// tree has no tab strip to read a `FontIndex` from — the original draws the
+/// strip in code (see [`TAB_ON_DDJ`]) — and the strip is already squeezed, five
+/// 120x24 tabs into a 386 px hull, so the caption stays a step under the
+/// window's authored size instead of growing into its neighbour.
+const TAB_LABEL_PX: f32 = 11.0;
 
 const TAB_ON_DDJ: &str = "media://interface/option/opt_long_tab_on.ddj";
 const TAB_OFF_DDJ: &str = "media://interface/option/opt_long_tab_off.ddj";
@@ -242,7 +257,7 @@ pub(crate) fn spawn_options_window(
                 Text::new(ui_strings.get_or(TITLE_KEY, TITLE_FALLBACK).to_string()),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(13.0),
+                    font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(Color::srgb(0.92, 0.86, 0.62)),
@@ -319,7 +334,7 @@ pub(crate) fn spawn_options_window(
                             Text::new(ui_strings.get_or(key, fallback).to_string()),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(11.0),
+                                font_size: FontSize::Px(TAB_LABEL_PX),
                                 ..default()
                             },
                             TextColor(TAB_LABEL_COLOR),
@@ -433,7 +448,7 @@ pub(crate) fn spawn_options_window(
                         Text::new(ui_strings.get_or(key, fallback).to_string()),
                         TextFont {
                             font: font.clone().into(),
-                            font_size: FontSize::Px(11.0),
+                            font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                             ..default()
                         },
                         TextColor(Color::WHITE),
@@ -514,6 +529,19 @@ fn on_close(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The title and the footer take their size from the two blocks this file
+    /// already transcribes: `GDR_OPTION:CIFOption` and
+    /// `GDR_OPTION_BTN_{DEF,OK,CANC,APPLY}` all carry `FontIndex=0`, which the
+    /// ladder answers with 12 px. The tab captions are the one text here the
+    /// data does not define — the classic tree has no tab strip — so they stay
+    /// deliberately smaller instead of borrowing a number that fits nothing.
+    #[test]
+    fn the_title_and_footer_sizes_are_the_blocks_own_font_index() {
+        assert_eq!(TEXT_FONT_INDEX, 0);
+        assert_eq!(font_index_px(TEXT_FONT_INDEX), 12.0);
+        assert!(TAB_LABEL_PX < font_index_px(TEXT_FONT_INDEX));
+    }
 
     /// #597-1. `ifoption.txt` gives the footer buttons no size, so the size
     /// comes from the texture — and the texture has to be measured, not

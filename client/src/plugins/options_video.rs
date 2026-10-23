@@ -29,6 +29,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::config::graphics::{FoliageMode, RenderMode, RenderScale};
 use crate::plugins::config::preset::QualityPreset;
 use crate::plugins::config::ClientConfig;
@@ -64,6 +65,16 @@ const LIST_H: f32 = 191.0;
 /// Row pitch of the 4th-gen slot list; the classic tree carries no pitch, and
 /// the row inventory there is `[U]`.
 const ROW_H: f32 = 22.0;
+
+/// Every text in the pane takes its size from the tree: all eight blocks of the
+/// live `APPLY_UI_4TH` branch carry `FontIndex=0` — the two profile tabs
+/// `GDR_OPT_VIDEO_ST_CTRL_1`/`_2` (`ifoption_video.txt:31,12`), the two row
+/// labels `GDR_OPT_VIDEO_ST_SS`/`_ST_BR` (`:107,69`), their value controls
+/// `GDR_OPT_VIDEO_CB_SS`/`_SP_BR` (`:88,50`) and the detail list
+/// `GDR_OPT_VIDEO_DETAIL_OPT` (`:145`) — and slot 0 of the ladder is 12 px
+/// ([`font_index_px`]). The file agrees with itself: [`LABEL_H`] is 12, exactly
+/// one 12 px line. The 11 px this replaced appears nowhere in the data.
+const TEXT_FONT_INDEX: usize = 0;
 
 const BOARD_DDJ: &str = "media://interface/option/opt_video_control_03.ddj";
 const TAB_DDJ: &str = "media://interface/option/opt_video_tab_back.ddj";
@@ -649,7 +660,7 @@ pub(crate) fn spawn_video_pane(
                 Text::new(ui_strings.get_or(key, english).to_string()),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(11.0),
+                    font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(if index == 0 {
@@ -883,6 +894,10 @@ fn next_step(steps: &[f32], current: f32) -> f32 {
     }
 }
 
+/// openroad's own rows, so they carry no block of their own — but they are rows
+/// *of the original's list*, so they take that list's `FontIndex` like the
+/// thirteen vanilla rows above them ([`TEXT_FONT_INDEX`]). Their colour and
+/// their "(openroad)" caption are what mark them as ours, not a second size.
 fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: ExtraRow) {
     let mut entity = list.spawn((
         Node {
@@ -909,7 +924,7 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
             Text::new(row.label()),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(OPENROAD_COLOR),
@@ -924,7 +939,7 @@ fn spawn_extra_row(list: &mut ChildSpawnerCommands, font: &Handle<Font>, row: Ex
             Text::new(String::new()),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(OPENROAD_COLOR),
@@ -1017,7 +1032,7 @@ fn spawn_detail_row(
             Text::new(ui_strings.get_or(row.key, row.english).to_string()),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(if live { LABEL_COLOR } else { UNBACKED_COLOR }),
@@ -1031,7 +1046,7 @@ fn spawn_detail_row(
             Text::new(row_value_text(row, options, GraphicProfileTab::One)),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(if live { VALUE_COLOR } else { UNBACKED_COLOR }),
@@ -1072,7 +1087,7 @@ fn spawn_static_label(
         Text::new(text.to_string()),
         TextFont {
             font: font.clone().into(),
-            font_size: FontSize::Px(11.0),
+            font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
             ..default()
         },
         TextColor(color),
@@ -1099,7 +1114,7 @@ fn spawn_value_text(
         Text::new(text.to_string()),
         TextFont {
             font: font.clone().into(),
-            font_size: FontSize::Px(11.0),
+            font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
             ..default()
         },
         TextColor(color),
@@ -1220,6 +1235,18 @@ pub(crate) fn apply_bloom_option(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every text in the pane is one size, and that size is the tree's: all
+    /// eight blocks of the live branch carry `FontIndex=0`, which the ladder
+    /// answers with 12 px — the same 12 the file gives `LABEL_H`, so the size
+    /// and the box it sits in come out of one source. The 11 px this replaced
+    /// was in neither.
+    #[test]
+    fn the_pane_takes_its_text_size_from_the_trees_font_index() {
+        assert_eq!(TEXT_FONT_INDEX, 0);
+        assert_eq!(font_index_px(TEXT_FONT_INDEX), 12.0);
+        assert_eq!(LABEL_H, 12.0);
+    }
 
     #[test]
     fn detail_rows_cover_the_named_sroptionset_ids() {

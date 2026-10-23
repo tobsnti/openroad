@@ -37,6 +37,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -52,6 +53,15 @@ const ROW_H: f32 = 24.0;
 const ROW_LABEL: (f32, f32, f32, f32) = (14.0, 8.0, 70.0, 16.0);
 const ROW_MARK: (f32, f32, f32, f32) = (93.0, 8.0, 31.0, 16.0);
 const ROW_CHECKBOX: (f32, f32, f32, f32) = (130.0, 6.0, 16.0, 16.0);
+
+/// Both texts take their size from the tree. The two section headers
+/// `GDR_GAME_OPTION_TAB_1`/`_2` (`ifoption_game.txt:31,12`) and the slot
+/// prototype's two statics `GDR_GAME_OPTION_SLOT_STA1`/`_STA2`
+/// (`ifgameoptionslot.txt:50,31`) all carry `FontIndex=0`, which is 12 px on the
+/// ladder ([`font_index_px`]) — and the prototype's own `70x16` and `31x16`
+/// rects hold that line with room to spare. The header was already 12 px; the
+/// rows' 11 px was in neither file.
+const TEXT_FONT_INDEX: usize = 0;
 
 const CHECKBOX_OFF: &str = "media://interface/ifcommon/com_checkbutton_off.ddj";
 const CHECKBOX_ON: &str = "media://interface/ifcommon/com_checkbutton_on.ddj";
@@ -239,7 +249,7 @@ pub(crate) fn spawn_game_pane(
             ),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(12.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(HEADER_COLOR),
@@ -331,7 +341,7 @@ fn spawn_toggle_row(
             Text::new(ui_strings.get_or(row.key, row.english).to_string()),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(color),
@@ -346,7 +356,7 @@ fn spawn_toggle_row(
                 Text::new("-".to_string()),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(11.0),
+                    font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(LABEL_INERT),

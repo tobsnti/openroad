@@ -24,6 +24,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::config::input::MouseScheme;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::settings::keymap::KEY_ACTIONS;
@@ -54,7 +55,15 @@ const ROW_H: f32 = 18.0;
 const LABEL_W: f32 = 200.0;
 const KEY_BTN_W: f32 = 96.0;
 const FONT: &str = crate::assets::BUNDLED_FALLBACK_FACE;
-const FONT_SIZE: f32 = 11.0;
+/// One size for the whole pane, and it is the tree's: all five blocks of
+/// `ifoption_input.txt` carry `FontIndex=0` — the key list
+/// `GDR_OPT_INPUT_OPTION` (`:88`), whose rows these texts are, the
+/// `UIIT_STT_MOUSE` title `GDR_OPT_INPUT_FRAME_TITLE_2` (`:50`, a `337x12`
+/// rect, exactly one 12 px line) and the mouse radio `GDR_OP_INPUT_RADIOBTN`
+/// (`:12`) — and slot 0 of the ladder is 12 px. `font_index_px` is a `const fn`,
+/// so the resolution happens here and the four call sites stay as they are. The
+/// 11 px this replaced was not in the file.
+const FONT_SIZE: f32 = font_index_px(0);
 /// Same button art the window shell uses for its own rows.
 const COM_BUTTON_DDJ: &str = "media://interface/ifcommon/com_button.ddj";
 
