@@ -7,17 +7,14 @@
 //! recorded field layout anywhere: no `packet_dump/*.log`, no xBot parser
 //! ("xBot implements none of these — zero ALCHEMY hits in `Network/Agent.cs`",
 //! `alchemy.md:47`), and only call-site byte *counts* in the RE ledger. So this
-//! module models dismantle plus the two **fuse requests** the alchemy box sends
-//! (`0x7150` elixir, `0x7151` stone); the rest is listed with the reason it
-//! stays unwired in the `packets!` block's own comment (`lib.rs`). Inventing a missing
-//! body is the one defect this whole effort exists to avoid, so the
-//! two fuse requests below carry their byte layout in a test and their
-//! **answers are not modelled here at all** — nothing has been seen to answer
-//! them.
-//!
-//! One of those nineteen is typed here anyway, and for a reason that does not
-//! weaken the rule: the 0x7155 request has three bodies the original client sends
-//! on it, all of which end on their last slot. Its answer stays unwired.
+//! module models dismantle plus the three requests the original client is seen
+//! to send: the alchemy box's two **fuse requests** (`0x7150` elixir, `0x7151`
+//! stone) and the four-tab window's `0x7155`, whose three bodies all end on
+//! their last slot. The rest is listed with the reason it stays unwired in the
+//! `packets!` block's own comment (`lib.rs`). Inventing a missing body is the
+//! one defect this whole effort exists to avoid, so the requests below carry
+//! their byte layout in a test and their **answers are not modelled here at
+//! all** — nothing has been seen to answer them.
 //!
 //! When those layouts do arrive, the ack shape is already decided by the item
 //! half: `character_data::EquipmentData` is byte-for-byte the original's item
@@ -57,11 +54,6 @@ impl AlchemyDismantleRequest {
     }
 }
 
-/// [`Alchemy7155Request::Close`]: the window went away with an operation open.
-pub const ALCHEMY_7155_OP_CLOSE: u8 = 1;
-/// [`Alchemy7155Request::Slots`]: the operation names the slots it works on.
-pub const ALCHEMY_7155_OP_SLOTS: u8 = 2;
-
 /// 0x7155 — client → server: run an alchemy operation on the slots laid out in
 /// the window, or drop one that is open.
 ///
@@ -73,22 +65,25 @@ pub const ALCHEMY_7155_OP_SLOTS: u8 = 2;
 /// * *Manufacture* sends the **same opcode** with 8 bytes.
 ///
 /// *Fuse* does not appear in that window at all — it is the alchemy box's
-/// button, and that one sends `0x7150`/`0x7151` with a different body. The
-/// earlier name `AlchemyFuseRequest` therefore described something this
-/// opcode never did; a verb in the name would have to be wrong for one of the
-/// two operations, so the opcode is the name.
+/// button, and that one sends `0x7150`/`0x7151` with its own type byte. A verb
+/// in the name would have to be wrong for one of the two operations, so the
+/// opcode is the name.
 ///
-/// A leading `u8` picks the operation. A body that does not end on the last
-/// slot, and an operation this type does not know, are kept whole rather than
+/// The body is the family's one grammar (`lib.rs`): a leading action byte —
+/// [`ALCHEMY_REQUEST_TAG`] runs the operation, [`ALCHEMY_ACTION_CANCEL`] drops
+/// it — then the `AlchemyType` that tells this opcode's two verbs apart, then
+/// the slot count and the slots. A body that does not end on the last slot,
+/// and an action this type does not know, are kept whole rather than
 /// half-read.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum Alchemy7155Request {
     /// The slots the operation works on, as inventory slot indices.
     Slots {
-        /// One byte ahead of the slot count. Its two known values go with the
-        /// two buttons that reach this opcode, but what it enumerates is [U],
-        /// so it is carried rather than named.
-        unknown: u8,
+        /// The `AlchemyType` in the grammar's second byte:
+        /// [`ALCHEMY_TYPE_DISJOIN`] or [`ALCHEMY_TYPE_MANUFACTURE`]. Kept as a
+        /// `u8` because the value is data, not a variant — a type this client
+        /// has not seen must still round-trip.
+        alchemy_type: u8,
         slots: Vec<u8>,
     },
     /// Sent when the window closes while an operation is still open.
@@ -109,12 +104,12 @@ impl TryFrom<Bytes> for Alchemy7155Request {
         })?;
         let body = &value[1..];
         match (op, body) {
-            (ALCHEMY_7155_OP_CLOSE, []) => Ok(Alchemy7155Request::Close),
-            (ALCHEMY_7155_OP_SLOTS, [unknown, count, slots @ ..])
+            (ALCHEMY_ACTION_CANCEL, []) => Ok(Alchemy7155Request::Close),
+            (ALCHEMY_REQUEST_TAG, [alchemy_type, count, slots @ ..])
                 if slots.len() == *count as usize =>
             {
                 Ok(Alchemy7155Request::Slots {
-                    unknown: *unknown,
+                    alchemy_type: *alchemy_type,
                     slots: slots.to_vec(),
                 })
             }
@@ -127,13 +122,16 @@ impl From<Alchemy7155Request> for Bytes {
     fn from(p: Alchemy7155Request) -> Self {
         let mut buf = BytesMut::new();
         match p {
-            Alchemy7155Request::Slots { unknown, slots } => {
-                buf.put_u8(ALCHEMY_7155_OP_SLOTS);
-                buf.put_u8(unknown);
+            Alchemy7155Request::Slots {
+                alchemy_type,
+                slots,
+            } => {
+                buf.put_u8(ALCHEMY_REQUEST_TAG);
+                buf.put_u8(alchemy_type);
                 buf.put_u8(slots.len() as u8);
                 buf.put_slice(&slots);
             }
-            Alchemy7155Request::Close => buf.put_u8(ALCHEMY_7155_OP_CLOSE),
+            Alchemy7155Request::Close => buf.put_u8(ALCHEMY_ACTION_CANCEL),
             Alchemy7155Request::Unknown { raw } => return raw,
         }
         buf.freeze()
@@ -202,6 +200,17 @@ pub const ALCHEMY_REINFORCE_OP_FUSE: u8 = 3;
 pub const ALCHEMY_TYPE_MAGIC_STONE: u8 = 4;
 /// Second byte of `0x7151`: an attribute stone. Same builder, same `[V]`.
 pub const ALCHEMY_TYPE_ATTRIBUTE_STONE: u8 = 5;
+
+/// Second byte of `0x7155`: the four-tab window's *Disjoint*.
+///
+/// `[V]`: `sro_client.exe@00821250` writes the literal `1` here and
+/// `@008213b0` — the same builder shape, same opcode — writes `2`. The pair
+/// differs in this byte alone, which is what pins the byte to `AlchemyType`
+/// instead of leaving it unexplained.
+pub const ALCHEMY_TYPE_DISJOIN: u8 = 1;
+/// Second byte of `0x7155`: the four-tab window's *Manufacture*. Same pair,
+/// same `[V]` (`sro_client.exe@008213b0`).
+pub const ALCHEMY_TYPE_MANUFACTURE: u8 = 2;
 
 /// Smallest fuse the box can express: the equipment plus one material.
 ///
@@ -725,8 +734,9 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// The three bodies the original client sends on 0x7155: one slot, five
-    /// slots, and the close.
+    /// The three bodies the original client sends on 0x7155: *Disjoint* with
+    /// one slot, *Manufacture* with five, and the close. The second byte is
+    /// the `AlchemyType` that tells the first two apart.
     #[test]
     fn the_7155_request_reads_the_slot_and_close_bodies() {
         let wire = Bytes::from_static(&[0x02, 0x01, 0x01, 0x1B]);
@@ -734,7 +744,7 @@ mod tests {
         assert_eq!(
             decoded,
             Alchemy7155Request::Slots {
-                unknown: 0x01,
+                alchemy_type: ALCHEMY_TYPE_DISJOIN,
                 slots: vec![27],
             }
         );
@@ -746,7 +756,7 @@ mod tests {
         assert_eq!(
             decoded,
             Alchemy7155Request::Slots {
-                unknown: 0x02,
+                alchemy_type: ALCHEMY_TYPE_MANUFACTURE,
                 slots: vec![18, 19, 23, 24, 25],
             }
         );
