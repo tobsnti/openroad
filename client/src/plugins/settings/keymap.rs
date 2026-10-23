@@ -319,6 +319,9 @@ pub const KEY_ACTIONS: [KeyAction; 32] = [
 pub const KEY_CHARACTER: u16 = 3001;
 /// Opens the COS/companion window (`docs/re/ui/cos-pet-window.md`).
 pub const KEY_COS_INFO: u16 = 3016;
+/// Opens the action/emote panel (`hud::action`). `A` by default, and the
+/// panel's own caption says so ("Action ( A )", `textuisystem.txt:2254`).
+pub const KEY_ACTION_PANEL: u16 = 3004;
 pub const KEY_INVENTORY: u16 = 3002;
 pub const KEY_SKILL: u16 = 3003;
 /// Opens the party roster page (`docs/re/ui/hud-party-window.md`). `P` by
@@ -538,8 +541,7 @@ mod tests {
     fn every_bound_key_is_either_consumed_or_declared_unwired() {
         /// Ids whose consumer does not exist yet. Every entry is a row the
         /// pane draws without effect; removing one means wiring it.
-        const NOT_YET_WIRED: [(u16, &str); 12] = [
-            (3004, "KeyAction — no action window yet"),
+        const NOT_YET_WIRED: [(u16, &str); 11] = [
             (3006, "KeyQuest — no quest journal yet"),
             (3007, "KeyCommunity — no community window yet"),
             (3009, "KeyBerserkerMode — no berserk trigger yet"),
@@ -619,9 +621,10 @@ mod tests {
     /// A missing entry is not cosmetic: `consumed()` falls back to searching for
     /// `key_for(<id>`, which a site calling `pressed(KEY_COS_RIDE)` never
     /// matches.
-    const KEY_CONSTS: [(u16, &str); 14] = [
+    const KEY_CONSTS: [(u16, &str); 15] = [
         (3001, "KEY_CHARACTER"),
         (3002, "KEY_INVENTORY"),
+        (3004, "KEY_ACTION_PANEL"),
         (3003, "KEY_SKILL"),
         (3005, "KEY_PARTY"),
         (3008, "KEY_WORLD_MAP"),

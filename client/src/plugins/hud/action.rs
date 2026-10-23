@@ -53,6 +53,8 @@ use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::RemoteMovement;
 use crate::plugins::player::Player;
+use crate::plugins::settings::keymap::KEY_ACTION_PANEL;
+use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::{ClientActionCommands, ClientUiStrings};
 
 /// The page extent the four sub-frames tile: `0,240,364,117` is the last row,
@@ -621,6 +623,27 @@ fn spawn_outline(
     }
 }
 
+/// `KeyAction` (id 3004, `A` by default) toggles the panel.
+///
+/// The panel has been built and registered since #307 and its own caption
+/// reads "Action ( A )" (`textuisystem.txt:2254`), but nothing read the
+/// binding: the Key Map tab offered the key and the press did nothing. Same
+/// shape as every other window shortcut (`party::model::toggle_party`) —
+/// rebindable through the tab, and silent while the chat input is capturing.
+pub fn toggle_action_window(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<crate::plugins::hud::chat::model::ChatState>,
+    options: Res<GameOptions>,
+    mut state: ResMut<ActionWindowState>,
+) {
+    let Some(key) = options.key_for(KEY_ACTION_PANEL) else {
+        return;
+    };
+    if keys.just_pressed(key) && !chat.input_open {
+        state.open = !state.open;
+    }
+}
+
 pub fn apply_action_window_visibility(
     state: Res<ActionWindowState>,
     mut roots: Query<&mut Node, With<ActionWindowRoot>>,
@@ -654,6 +677,55 @@ pub fn cleanup_action_window(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::plugins::hud::chat::model::ChatState;
+
+    /// The panel was built, registered and reachable only from the under-bar
+    /// menu: `A` was offered by the Key Map tab and did nothing. It must also
+    /// stay quiet while the chat input is capturing keys.
+    #[test]
+    fn the_shortcut_toggles_the_panel_but_not_while_chat_is_capturing() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ChatState>()
+            .init_resource::<GameOptions>()
+            .init_resource::<ActionWindowState>()
+            .add_systems(Update, toggle_action_window);
+
+        // Bound explicitly, so this asserts the panel's behaviour rather than
+        // the contents of a table it does not own.
+        assert!(app
+            .world_mut()
+            .resource_mut::<GameOptions>()
+            .bind_key(KEY_ACTION_PANEL, KeyCode::KeyA));
+
+        // `reset` before `press`: a key already held records no just_pressed.
+        let press = |app: &mut App| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset(KeyCode::KeyA);
+            keys.press(KeyCode::KeyA);
+            app.update();
+        };
+
+        press(&mut app);
+        assert!(app.world().resource::<ActionWindowState>().open);
+        press(&mut app);
+        assert!(!app.world().resource::<ActionWindowState>().open);
+
+        app.world_mut().resource_mut::<ChatState>().input_open = true;
+        press(&mut app);
+        assert!(!app.world().resource::<ActionWindowState>().open);
+    }
+
+    /// The shipped default resolves the panel's key without any binding of its
+    /// own — `SROptionSet.dat` id 3004 is `0x41`, and the caption agrees.
+    #[test]
+    fn the_shipped_default_opens_the_panel() {
+        let options = GameOptions::default();
+        assert_eq!(options.key_for(KEY_ACTION_PANEL), Some(KeyCode::KeyA));
+        // and `A` is free: no dev hotkey claims it
+        assert!(!crate::plugins::dev::DEV_HOTKEY_COLLISIONS.contains(&KeyCode::KeyA));
+        assert!(!crate::plugins::dev::DEV_UNGATED_HOTKEY_COLLISIONS.contains(&KeyCode::KeyA));
+    }
 
     /// The four `CIFSubFrame` rects, verbatim from `ifaction.txt`, and the page
     /// they tile.
@@ -912,7 +984,15 @@ impl Plugin for ActionPlugin {
             // built on enter, shown on demand
             .add_systems(
                 Update,
-                apply_action_window_visibility.run_if(in_state(SceneState::GameWorld)),
+                (
+                    // The guard belongs to the toggle alone: on the tuple it
+                    // would also stop the visibility system, so the panel would
+                    // freeze open while a text field has focus.
+                    toggle_action_window
+                        .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
+                    apply_action_window_visibility,
+                )
+                    .run_if(in_state(SceneState::GameWorld)),
             );
     }
 }
