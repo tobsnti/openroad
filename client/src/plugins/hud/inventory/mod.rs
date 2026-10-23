@@ -6,6 +6,7 @@
 pub mod drop_item;
 pub mod model;
 pub mod paperdoll;
+pub mod split;
 pub mod tooltip;
 pub mod ui;
 pub mod use_on_item;
@@ -25,6 +26,8 @@ impl Plugin for InventoryPlugin {
             .init_resource::<use_on_item::PendingItemUse>()
             .init_resource::<use_on_item::UseOnItemConfirm>()
             .init_resource::<drop_item::DropConfirm>()
+            .init_resource::<split::SplitPrompt>()
+            .init_resource::<split::SplitAmount>()
             .add_message::<drop_item::DroppedOnNothing>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_inventory_window)
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_inventory_window)
@@ -89,10 +92,23 @@ impl Plugin for InventoryPlugin {
                     ),
                     // Its own group: the first is at Bevy's 20-system tuple
                     // limit and the second is the drop-to-ground flow, which
-                    // this has nothing to do with.
-                    (model::predict_ammo_consumption,),
+                    // this has nothing to do with. The split box joins here
+                    // for the arity, not for an order — `sync_split_amount`
+                    // reads the box `sync_split_modal` spawned and
+                    // `close_split_with_window` follows the window's own open
+                    // flag, both of which hold whichever way round they run.
+                    (
+                        model::predict_ammo_consumption,
+                        split::sync_split_modal,
+                        split::sync_split_amount,
+                        split::close_split_with_window,
+                    ),
                 )
                     .run_if(super::hud_scenes.or_else(in_state(SceneState::WorldSandbox))),
-            );
+            )
+            // Ungated on purpose: it only reaps entities that already carry
+            // the marker, and the split box is a root of its own, so a scene
+            // change must not be able to leave its scrim on screen.
+            .add_systems(PostUpdate, split::despawn_closing_split);
     }
 }

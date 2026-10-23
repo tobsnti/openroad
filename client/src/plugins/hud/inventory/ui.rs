@@ -499,13 +499,19 @@ pub fn cleanup_inventory_window(
             With<tooltip::InventoryTooltipRoot>,
             With<DragGhost>,
             With<crate::plugins::hud::inventory::paperdoll::PaperDollClone>,
+            // The split box is its own root (it targets the UI camera, not the
+            // window), so leaving the scene has to take it along or the scrim
+            // outlives the window it was opened on.
+            With<super::split::SplitModalRoot>,
         )>,
     >,
+    mut split: ResMut<super::split::SplitPrompt>,
     mut commands: Commands,
 ) {
     for entity in roots.iter() {
         commands.entity(entity).despawn();
     }
+    split.prompt = None;
     commands.remove_resource::<PaperDollTarget>();
 }
 
@@ -2041,6 +2047,7 @@ pub fn on_slot_press(
         });
         return;
     }
+    let was_idle = state.drag.is_none();
     match state.drag {
         None => {
             let cursor = press.pointer.position;
@@ -2064,6 +2071,43 @@ pub fn on_slot_press(
             }
             end_carry(&mut state, &ghosts, &mut commands);
         }
+    }
+    // Shift-click on a bag stack asks to split it instead of starting a carry
+    // — the original's own gesture (Shift held plus container `0x46` in its
+    // item-click dispatcher, see `inventory::split`). The keyboard read and
+    // the prompt write go through `commands.queue`, because this observer is
+    // already at Bevy's 16-parameter ceiling and a 17th makes the whole tuple
+    // fail the trait with an error that names no type.
+    //
+    // Queued AFTER `begin_carry`, since commands run in order: the ghost that
+    // carry spawned must exist when this closure despawns it, or it is left
+    // orphaned on the cursor with `drag` already cleared.
+    if was_idle {
+        commands.queue(move |world: &mut World| {
+            let shift = world
+                .get_resource::<ButtonInput<KeyCode>>()
+                .is_some_and(|keys| {
+                    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
+                });
+            if !shift {
+                return;
+            }
+            // The carry is undone here rather than prevented: the shift state
+            // is only readable inside this closure, which runs after the
+            // observer.
+            if super::split::open_split_prompt(world, slot) {
+                if let Some(mut state) = world.get_resource_mut::<InventoryState>() {
+                    state.drag = None;
+                }
+                let ghosts: Vec<Entity> = world
+                    .query_filtered::<Entity, With<DragGhost>>()
+                    .iter(world)
+                    .collect();
+                for ghost in ghosts {
+                    world.entity_mut(ghost).despawn();
+                }
+            }
+        });
     }
 }
 
