@@ -265,9 +265,9 @@ packets! {
     // evidence are wired: 0x3011 is source- and capture-verified, 0x304D rests
     // on a single capture. Their two siblings stay documented-only until a
     // capture exists — 0x305C ENTITY_DISPLAY_EFFECT (level-up glow, transform
-    // and buff visuals) and 0x3091 EMOTE_USE (one opcode aliased in both
-    // directions); neither has a parser in the original, so no layout is
-    // invented for them here.
+    // and buff visuals). 0x3091 EMOTE_USE is wired below in the inbound/outbound
+    // sections: it is aliased in both directions AND carries a different body
+    // each way, which is exactly what those sections are for.
     0x3011 => CharacterDied,
     0x304D => DropUnlocked,
 
@@ -717,6 +717,19 @@ packets! {
     // docs/net-stall-0x30B7.md §9.
     0xB0B3 => StallTalkResponse,
     0x30BB => EntityStallTitleUpdate
+
+    // --- opcodes whose two directions carry different bodies ---------------
+    //
+    // Not "opcodes that travel both ways" — 0x2001, 0x2113 and 0x3080 do that
+    // with ONE body and stay ordinary entries above. These are the ones where
+    // the two directions disagree about the body, so one type cannot serve
+    // both.
+    ;
+    // Emote. We send the bare code; what arrives names the character first.
+    // Builder sro_client.exe@00794278, inbound handler @008A7950 — see
+    // EmoteRequest/EmoteUpdate for which half is measured and which is not.
+    inbound { 0x3091 => EmoteUpdate }
+    outbound { 0x3091 => EmoteRequest }
 }
 
 /// A compact hex preview of a packet body, for validating layouts against live

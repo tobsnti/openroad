@@ -40,7 +40,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
-use packets::agent::prelude::CharacterActionRequest;
+use packets::agent::prelude::{CharacterActionRequest, EmoteRequest};
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
@@ -389,6 +389,8 @@ pub enum SelfVerb {
     SitStand,
     /// Ask for the gait we are *not* in.
     Gait,
+    /// Play one of the seven authored emotes (`0x3091`), by its wire code.
+    Emote(u8),
 }
 
 /// The four verbs this window can already express, each named by the sender
@@ -419,7 +421,32 @@ pub fn verb_for(command_id: u32) -> SlotVerb {
         ACTION_COMMAND_EXCHANGE => SlotVerb::OnTarget(TargetVerb::Exchange),
         ACTION_COMMAND_PARTY => SlotVerb::OnTarget(TargetVerb::Party),
         ACTION_COMMAND_AUTO_GET => SlotVerb::OnTarget(TargetVerb::Pickup),
-        _ => SlotVerb::Unwired,
+        // 4000..=4006. The code is not the slot order, so it comes from
+        // `EMOTE_CODES` rather than from arithmetic on the id.
+        id => match EmoteRequest::for_command(id) {
+            Some(request) => SlotVerb::OnSelf(SelfVerb::Emote(request.emote)),
+            None => SlotVerb::Unwired,
+        },
+    }
+}
+
+/// Put one of this window's own one-byte requests on the wire, or say why not.
+/// Shared by the posture and emote slots: both are packets nothing else in the
+/// client builds, so there is still exactly one sender per verb.
+fn send_self(
+    conn: &Query<&SilkroadConnection, With<AgentConnection>>,
+    packet: Packet,
+    command_id: u32,
+) {
+    let Ok(conn) = conn.single() else {
+        warn!("action window: no agent connection for command {command_id}");
+        return;
+    };
+    if let Err(e) = conn.get_sender().send(packet.into()) {
+        error!(
+            "network: failed to send action-window command {command_id}: {}",
+            e.0
+        );
     }
 }
 
@@ -462,6 +489,10 @@ fn on_slot_activate(
             // selection to resolve and no order message to go through — this
             // is the only verb family the window owns outright.
             let request = match verb {
+                SelfVerb::Emote(emote) => {
+                    send_self(&conn, Packet::from(EmoteRequest { emote }), id);
+                    return;
+                }
                 SelfVerb::SitStand => CharacterActionRequest::sit_stand(),
                 // `walking` is the gait the server last put us in; the button
                 // asks for the other one.
@@ -470,15 +501,9 @@ fn on_slot_activate(
                 ),
             };
             // Sent here rather than through an order message because nothing
-            // else in the client sends 0x704F — the same shape the mini-info's
+            // else in the client sends these — the same shape the mini-info's
             // berserk button uses for its own one-byte request.
-            let Ok(conn) = conn.single() else {
-                warn!("action window: no agent connection for command {id}");
-                return;
-            };
-            if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
-                error!("network: failed to send 0x704F: {}", e.0);
-            }
+            send_self(&conn, Packet::from(request), id);
             return;
         }
         SlotVerb::OnTarget(verb) => verb,
@@ -856,10 +881,18 @@ mod test {
         ] {
             assert_eq!(verb_for(id), want, "command {id}");
         }
-        // Authored rows with no wire path yet: the emotes need 0x3091, which
-        // is a two-direction opcode this registry cannot express yet (see the
-        // report); 1004/1009/1014..=1017 have no sourced send path at all.
-        for id in [1004, 1009, 1014, 1017, 4000, 5000] {
+        // The seven emotes, by their wire code rather than their slot order.
+        for (id, code) in [(4000, 0), (4001, 6), (4002, 1), (4005, 3), (4006, 4)] {
+            assert_eq!(
+                verb_for(id),
+                SlotVerb::OnSelf(SelfVerb::Emote(code)),
+                "command {id}"
+            );
+        }
+        // Authored rows with no sourced send path at all. 5000 sits in the
+        // emote panel but is the COS charm, not an emote — it must not pick up
+        // a neighbour's code.
+        for id in [1004, 1009, 1014, 1017, 5000] {
             assert_eq!(verb_for(id), SlotVerb::Unwired, "command {id}");
         }
     }
