@@ -35,6 +35,7 @@ use packets::agent::prelude::{
 use packets::Packet;
 
 use crate::assets::bsr::resource::SroResource;
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::commands::{MeshIndexMap, SpawnedFromResource};
 use crate::net::connection::SilkroadConnection;
@@ -100,8 +101,22 @@ const PIP_POSITIONS: [(f32, f32); 5] = [
 const PIP_SIZE: f32 = 8.0;
 
 const LEVEL_COLOR: Color = Color::srgb_u8(255, 217, 83);
+/// 10 px is **ours**: `GDR_PMI_TXT_ID`/`_LEVEL` carry `FontIndex=0` (12 px)
+/// like 49 of the tree's 51 blocks, but 10 is on no ladder in either unit, so
+/// this is an invented size rather than a mis-converted one. It needs a
+/// decision and a visual check, not an arithmetic fix — left as it is.
 const NAME_FONT_SIZE: f32 = 10.0;
-const BAR_FONT_SIZE: f32 = 9.0;
+/// The HP/MP overlays are the tree's **only two `FontIndex=1` blocks**:
+/// `GDR_PMI_TXT_HP` (`ifplayerminiinfo.txt:823`, index on `:829`) and
+/// `GDR_PMI_TXT_MP` (`:804`, `:810`). Slot 1 is 8 pt = **11 px** — *smaller*
+/// than slot 0, which is the ladder's non-monotonicity showing up in real data,
+/// and the reason an index may never be read as a magnitude
+/// ([`font_index_px`]). Their `124x12` boxes hold that line with a pixel spare.
+const BAR_FONT_SIZE: f32 = font_index_px(1);
+/// The derived-stat drawer's ten labels and their values are ordinary
+/// `FontIndex=0` blocks like the rest of the tree: 12 px, which is exactly the
+/// `47x12` / `65x12` row height they are authored in.
+const DRAWER_FONT_SIZE: f32 = font_index_px(0);
 
 // --- Expanded stat drawer ----------------------------------------------------
 //
@@ -684,7 +699,7 @@ fn stat_label(
     justify: Justify,
 ) -> impl Scene {
     let s = hud_scale();
-    let size = BAR_FONT_SIZE * s;
+    let size = DRAWER_FONT_SIZE * s;
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label(text, font, size)
@@ -705,7 +720,7 @@ fn stat_label(
 /// [`refresh_stat_drawer`] from the stat sheet.
 fn stat_value(font: Handle<Font>, stat: CinfoStat, rect: (f32, f32, f32, f32)) -> impl Scene {
     let s = hud_scale();
-    let size = BAR_FONT_SIZE * s;
+    let size = DRAWER_FONT_SIZE * s;
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label("", font, size)
@@ -1562,6 +1577,20 @@ pub fn update_caution_overlays(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The panel is the one place in the HUD where the tree names **two**
+    /// slots: the HP/MP overlays are its only `FontIndex=1` blocks and the
+    /// drawer is slot 0. Slot 1 is the *smaller* size, so the higher index must
+    /// produce the smaller number — read the index as a magnitude and this
+    /// fails. Both boxes are authored one line tall.
+    #[test]
+    fn the_bar_overlays_use_the_trees_smaller_slot() {
+        assert_eq!(BAR_FONT_SIZE, 11.0);
+        assert_eq!(DRAWER_FONT_SIZE, 12.0);
+        assert!(BAR_FONT_SIZE < DRAWER_FONT_SIZE);
+        assert_eq!(HP_TEXT_RECT.3, 12.0);
+        assert_eq!(CINFO_ROW_H, 12.0);
+    }
 
     /// The hwan aura is the one thing `PlayerVitals::hwan_level` (0x30DF) can
     /// drive without inventing anything: on while the server says the player

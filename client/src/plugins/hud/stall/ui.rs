@@ -52,6 +52,7 @@
 use bevy::prelude::*;
 use bevy::text::FontSize;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{self, abs_node, spawn_game_window_with};
 use crate::plugins::hud::scale::hud_scale;
@@ -134,7 +135,13 @@ const ROW_PLATE_DDJ: &str = "media://interface/stall/stl_slot_02.ddj";
 
 /// Font sizes: the tree carries `FontIndex=0` everywhere, and this lane draws
 /// that index at 9 px (see the sibling windows).
-const FONT: f32 = 9.0;
+/// All 14 blocks of `ifstall.txt` carry `FontIndex=0` = 9 pt = 12 px
+/// ([`font_index_px`]): the title plate `GDR_STALL_STALLTITLE` (`:82`, index on
+/// `:88`), the greeting `GDR_STALL_GREETING` (`:63`, `:69`) and the state badge
+/// `GDR_STALL_OWNERSTATE_MSG` (`:25`, `:31`). Both plates are 28 tall and the
+/// badge text 18, so the authored boxes hold the line with room. The 9 px here
+/// was the legend's *point* value used as pixels.
+const FONT: f32 = font_index_px(0);
 /// `GDR_BTN_TRADINGSTATE` is the one cream label in the file
 /// (`FontColor="255,254,251,216"`, ARGB).
 const TRADING_LABEL_COLOR: Color = Color::srgb_u8(254, 251, 216);

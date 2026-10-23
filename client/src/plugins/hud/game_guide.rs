@@ -39,6 +39,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 use std::collections::HashSet;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::textdata::gameguide::{GuideKind, GuideNode};
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
@@ -89,8 +90,15 @@ const SCROLL_LINE: &str = "media://interface/guide/gd_scroll_line.ddj";
 const INDEX_BUTTON: &str = "media://interface/guide/gd_index_button_close.ddj";
 
 const TITLE_FONT: f32 = 10.0;
-const ROW_FONT: f32 = 9.0;
-const BODY_FONT: f32 = 9.0;
+/// The drawer rows and the page body both have a block, and both say the same
+/// slot: `GDR_GGMAIN_TITLE` (`ifggmainslot.txt:6`, index on `:12`, `131x12`)
+/// and `GDR_GGSUB_TITLE` (`ifggsubslot.txt:25`, `:31`, `107x12`) for the rows,
+/// `GDR_GUIDE_DATA_PML` (`ifgameguide.txt:120`, `:126`) for the body —
+/// `FontIndex=0` = 9 pt = 12 px ([`font_index_px`]), like all 21 blocks of the
+/// four trees. Both row boxes are exactly one 12 px line tall. The 9 px here
+/// was the legend's *point* value used as pixels.
+const ROW_FONT: f32 = font_index_px(0);
+const BODY_FONT: f32 = font_index_px(0);
 
 /// Which categories are unfolded and which page is shown.
 #[derive(Resource, Default)]

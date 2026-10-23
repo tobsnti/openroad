@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
@@ -109,7 +110,14 @@ const MALL_BTN_RECT: (f32, f32, f32, f32) = (749.0, 12.0, 36.0, 36.0);
 
 const EXP_TEXT_COLOR: Color = Color::srgb_u8(241, 255, 220);
 const SP_TEXT_COLOR: Color = Color::srgb_u8(255, 220, 86);
-const TEXT_FONT_SIZE: f32 = 9.0;
+/// All 76 blocks of `ifunderbar.txt` carry `FontIndex=0` = 9 pt = 12 px
+/// ([`font_index_px`]), and the two gauge readouts corroborate it exactly:
+/// `GDR_STATIC_EXP` (`:886`, index on `:892`) is `198x12` and `GDR_STATIC_SP`
+/// (`:924`, `:930`) is `48x12` — one 12 px line each. The 9 px here was that
+/// legend's *point* value used as pixels. The page digit's `17x11` box and the
+/// cooldown overlay (no authored text block at all) ride along on the same
+/// size, which is what the tree's one answer implies.
+const TEXT_FONT_SIZE: f32 = font_index_px(0);
 
 // --- Markers ----------------------------------------------------------------
 
