@@ -2855,6 +2855,66 @@ impl From<BuffRemainTime> for Bytes {
     }
 }
 
+/// 0x704F — client → server: the character's own posture and gait, one byte.
+///
+/// The action window's two toggle slots send it (`actionwnddata.txt` 1000
+/// `UIIT_CTL_TOG_SIT_STAND_TT`, 1001 `UIIT_CTL_TOG_RUN_WALK_TT`). Builder
+/// `sro_client.exe@0081e750`, which opens the packet at `:0081e777`
+/// (`push 0x704f`) and writes a single byte.
+///
+/// Value evidence, separated by how strong it is:
+/// - `4` sit/stand toggle — **[V]**, 7 frames captured off the **original**
+///   1.188 client through the proxy chain documented in
+///   `capture-orig/STATE.md` (`dump/S1-alchemy`, `dump/S2-progress`,
+///   2026-09-29). Every one of those seven is `04`.
+/// - `2` walk — **[S]**, two one-byte `02` frames in two other `c2s/0x704f.log`
+///   copies whose capture session is not documented. The value agrees with
+///   [`MOTION_STATE_WALK`], which is what makes it credible rather than the
+///   frame alone.
+/// - `3` run — **[U]**, it appears in **no** frame in any dump tree on this
+///   machine. It is here because it is the other half of the same gait pair
+///   and matches [`MOTION_STATE_RUN`]; a capture of one walk/run toggle in
+///   the "running" direction settles it.
+///
+/// One byte total: there is no sub-command and no target. A toggle carries no
+/// state because the server owns it — the client asks, the server answers with
+/// the posture/movement push it already sends.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, Default, PartialEq)]
+pub struct CharacterActionRequest {
+    pub action: u8,
+}
+
+/// [`CharacterActionRequest::action`]: switch to walking. Same encoding as the
+/// movement-state byte the server reports back ([`MOTION_STATE_WALK`]).
+pub const CHARACTER_ACTION_WALK: u8 = MOTION_STATE_WALK;
+/// [`CharacterActionRequest::action`]: switch to running ([`MOTION_STATE_RUN`]).
+pub const CHARACTER_ACTION_RUN: u8 = MOTION_STATE_RUN;
+/// [`CharacterActionRequest::action`]: toggle sitting/standing. Unlike the two
+/// above this is a *toggle*, not a state — the capture shows the same `04` for
+/// sitting down and for getting up.
+pub const CHARACTER_ACTION_SIT_STAND: u8 = 4;
+
+impl CharacterActionRequest {
+    /// Toggle between sitting and standing.
+    pub fn sit_stand() -> Self {
+        Self {
+            action: CHARACTER_ACTION_SIT_STAND,
+        }
+    }
+
+    /// Ask for walking or running. `walking` is the state being *asked for*,
+    /// not the one being left.
+    pub fn gait(walking: bool) -> Self {
+        Self {
+            action: if walking {
+                CHARACTER_ACTION_WALK
+            } else {
+                CHARACTER_ACTION_RUN
+            },
+        }
+    }
+}
+
 /// 0x70A7 — client → server: the hwan (jahwan / berserk) activation request.
 ///
 /// One byte. The original's builder writes exactly one
@@ -3564,6 +3624,29 @@ mod test {
     /// Discriminant 3 (Trace) appears in **none** of them — it is decompile-
     /// sourced only (`sro_client.exe@00793bc3`), which is why it is pinned by
     /// the hand-built frame above rather than by a capture.
+    /// The one byte, against the frames themselves. The seven `04` lines come
+    /// off the **original** 1.188 client (`capture-orig/STATE.md` documents the
+    /// proxy chain); `02` has two undocumented-session frames; `03` has none
+    /// anywhere, which is why it is marked [U] on the constant.
+    #[test]
+    fn character_action_request_is_one_captured_byte() {
+        let wire: Bytes = CharacterActionRequest::sit_stand().into();
+        assert_eq!(&wire[..], &[0x04]);
+        assert_eq!(
+            CharacterActionRequest::try_from(wire).unwrap().action,
+            CHARACTER_ACTION_SIT_STAND
+        );
+
+        let wire: Bytes = CharacterActionRequest::gait(true).into();
+        assert_eq!(&wire[..], &[0x02]);
+        assert_eq!(CharacterActionRequest::gait(false).action, 0x03);
+
+        // The gait values are the movement-state encoding, not a private one:
+        // reading them apart would desync the ask from the server's answer.
+        assert_eq!(CHARACTER_ACTION_WALK, MOTION_STATE_WALK);
+        assert_eq!(CHARACTER_ACTION_RUN, MOTION_STATE_RUN);
+    }
+
     #[test]
     fn attack_and_pickup_roundtrip_captured_c2s_frames() {
         // attack on uid 8195
