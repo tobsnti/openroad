@@ -207,7 +207,7 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                was loaded with, and the ground-tile arrays are built once). \
                Next \
                camera spawn, i.e. the next scene: `msaa`, `fxaa`, \
-               `depth_prepass`, `sky_reflections` \
+               `sharpening`, `depth_prepass`, `sky_reflections` \
                (camera::apply_window_camera_msaa on Added<Camera>), \
                `tonemapping` and `shadows.filtering` (the spawn sites). \
                Every original quality row of the options window except \
@@ -216,7 +216,10 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                and again on every change (options_video::overlay_saved_rows, \
                apply_config_rows). Each is then as live as its key. \
                `sheen.enabled` is restart-only (BmtMaterialDefaults, built \
-               once in main). `lens_flare`, `effect_quality`, \
+               once in main), and so is `foliage_alpha_to_coverage`: \
+               assets::apply_cutout_alpha_mode moves the flag live, but a \
+               material keeps the alpha mode it was built with, like \
+               `texture_detail` above. `lens_flare`, `effect_quality`, \
                `objects.animate` and `view.character_distance` are live \
                (environment::lens_flare, effects::apply_effect_quality, \
                animation_culling, map::view_range::cull_distant_characters). \

@@ -44,6 +44,7 @@ pub(super) fn extract_pack_models(
     mut library: ResMut<FoliageLibrary>,
     asset_server: Res<AssetServer>,
     config: Res<crate::plugins::config::ClientConfig>,
+    cutouts: Res<crate::assets::bmt::material::CutoutAlphaToCoverage>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let scale = config.graphics.foliage.pack.scale.max(0.01);
@@ -63,7 +64,13 @@ pub(super) fn extract_pack_models(
                 let material = materials.add(StandardMaterial {
                     base_color: Color::WHITE,
                     base_color_texture: Some(handle.clone()),
-                    alpha_mode: AlphaMode::Mask(0.5),
+                    // the card's alpha is its silhouette, so it is the one
+                    // thing alpha-to-coverage may dither (see
+                    // `cutout_alpha_mode`)
+                    alpha_mode: crate::assets::bmt::material::cutout_alpha_mode(
+                        0.5,
+                        cutouts.enabled(),
+                    ),
                     // both faces rasterize (cull off), but no double_sided
                     // normal flip — the cards carry up normals so both faces
                     // shade like the ground (see native.rs foliage_material)

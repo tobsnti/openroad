@@ -7,10 +7,12 @@
 //! 1.0. Enabling bloom flips the main pass to a float target, which is what
 //! actually lets those emitters read as "glowing" instead of "white".
 
+use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::post_process::bloom::Bloom;
 use bevy::reflect::Reflect;
 use serde::Deserialize;
 
+use crate::assets::m::block_splat_material::TerrainSlopeSampling;
 use crate::plugins::map::water_hq_material::DEFAULT_SHORE_FADE;
 
 /// The two lighting modes the client can run, mutually exclusive — see
@@ -75,6 +77,9 @@ pub struct GraphicsSettings {
     /// FXAA post pass on the window cameras — see [`FxaaSetting`].
     #[serde(default)]
     pub fxaa: FxaaSetting,
+    /// Contrast-adaptive sharpening behind FXAA — see [`Sharpening`].
+    #[serde(default)]
+    pub sharpening: Sharpening,
     /// Mip levels dropped from world textures — see [`TextureDetail`].
     #[serde(default)]
     pub texture_detail: TextureDetail,
@@ -84,6 +89,24 @@ pub struct GraphicsSettings {
     /// Particle effect quality — see [`EffectQuality`].
     #[serde(default)]
     pub effect_quality: EffectQuality,
+    /// Soft particles: how many world units before an opaque surface an
+    /// effect plate starts fading out, so smoke, fire and auras stop ending
+    /// in a straight line on the ground (`effects::EffectSoftFade`). 0 = off.
+    ///
+    /// Needs `depth_prepass`; without it the shader path is compiled out and
+    /// this value does nothing. Forced to 0 on `EffectQuality::Low` — effects
+    /// carry the frame's heaviest overdraw, and the cost here is one depth
+    /// read per effect fragment.
+    ///
+    /// Not transcribed from the original, which had no such parameter: a
+    /// deliberate addition under ADR-0009, so the number is a free choice and
+    /// is anchored rather than measured — the presets use 10, about half the
+    /// height of an unscaled ~19-unit character
+    /// (`scenes/intro_v2/character_select.rs:110`), which is the scale effect
+    /// plates are authored at. Whether that is the *best* band needs a
+    /// playtest. 0 (the default) is off. Live.
+    #[serde(default)]
+    pub effect_soft_fade: f32,
     /// The sun's lens flare (the original's Lens Flare option), composited
     /// from your own `Map.pk2` `sun/lens*` sprites
     /// (`environment/lens_flare.rs`). Six small additive quads plus a
@@ -123,6 +146,24 @@ pub struct GraphicsSettings {
     /// either. Sheen materials keep their own sphere maps either way. Restart-only.
     #[serde(default)]
     pub sky_reflections: bool,
+    /// Cut-out edges (leaves, grass cards, grates) dither across the MSAA
+    /// samples instead of being decided yes/no per pixel
+    /// (`assets::bmt::material::cutout_alpha_mode`). Foliage is the largest
+    /// alpha-tested area in the frame, so its crawling edges are the most
+    /// visible aliasing left after FXAA. A deliberate deviation: the original
+    /// tests alpha hard (ref 0x80, `D3DCMP_GREATEREQUAL`).
+    ///
+    /// Two measured conditions, both of which make it a no-op rather than a
+    /// cost: without MSAA bevy falls back to the hard test itself
+    /// (`bevy_pbr-0.20.0/src/material.rs:697-700`), and with
+    /// [`Self::depth_prepass`] on it is withheld here, because that pass does
+    /// not do alpha-to-coverage (`src/prepass/mod.rs:696`) and discards A2C at
+    /// 0.05 (`src/render/pbr_prepass_functions.wesl:17,30`) — a fringe texel
+    /// would write whole-pixel depth and the samples the main pass leaves
+    /// uncovered could no longer be filled by what is behind the leaf.
+    /// Restart-only: materials keep the mode they were loaded with.
+    #[serde(default)]
+    pub foliage_alpha_to_coverage: bool,
 }
 
 /// Which water shader the streamed water planes use.
@@ -496,6 +537,61 @@ impl Anisotropy {
                 );
                 4
             }
+        }
+    }
+}
+
+/// Strength of the contrast-adaptive sharpening pass on the window cameras
+/// (`graphics.sharpening`), 0.0 (off) to 1.0.
+///
+/// The pass exists because the two cheapest quality levers this client has
+/// both pay in sharpness: [`FxaaSetting`] smooths edges by blurring them, and
+/// [`RenderScale`] below 1.0 renders fewer pixels than the window shows. CAS
+/// raises local contrast where there is detail and leaves flat areas alone,
+/// which is what the pairing was built for — see
+/// `camera::apply_window_camera_msaa` for the wiring and the one limit.
+///
+/// The original client has no post-processing, so any value above 0.0 is a
+/// deliberate deviation (ADR 0009) whose purpose is readability. 0.6 is bevy's
+/// own default (`contrast_adaptive_sharpening/mod.rs:60`) and is kept as ours;
+/// the preset ladder moves it the one way the measurement justifies: hardest
+/// where the image is upscaled (`low: 0.8`, `render_scale: 0.75`), softest
+/// where it is rendered at native resolution with every other quality lever on
+/// (`ultra: 0.5`). Read when a camera is spawned, so a change takes effect on
+/// the next scene.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(transparent)]
+pub struct Sharpening(pub f32);
+
+impl Default for Sharpening {
+    fn default() -> Self {
+        Self(0.6)
+    }
+}
+
+impl Sharpening {
+    /// The component to hang on a main-view camera.
+    ///
+    /// Out-of-range and non-finite values clamp into 0.0..=1.0 rather than
+    /// reaching the shader: above 1.0 bevy's own note is "extreme artifacts
+    /// and fireflies" (`contrast_adaptive_sharpening/mod.rs:94`), and it
+    /// clamps there too — doing it here as well is what lets the component say
+    /// what is actually in effect. At 0.0 bevy drops the pass entirely in
+    /// extract (`:87-90`), so "off" costs nothing.
+    pub fn to_cas(self) -> ContrastAdaptiveSharpening {
+        let strength = if self.0.is_finite() {
+            self.0.clamp(0.0, 1.0)
+        } else {
+            bevy::log::warn_once!(
+                "graphics.sharpening: {} is not a usable strength; using 0",
+                self.0
+            );
+            0.0
+        };
+        ContrastAdaptiveSharpening {
+            enabled: strength > 0.0,
+            sharpening_strength: strength,
+            ..Default::default()
         }
     }
 }
@@ -1014,6 +1110,20 @@ pub struct TerrainGraphicsSettings {
     /// Which draw path renders terrain ground — see [`TerrainPipeline`].
     /// Restart-only: it decides which render pipeline is registered.
     pub pipeline: TerrainPipeline,
+    /// Sample cliff albedo from the side as well as from above
+    /// (`terrain_splat.wesl`, `slope_projection`): `off` is the original's
+    /// top-down projection, which stretches a ground tile by `1 / cos(slope)`
+    /// — double at 60 degrees, unbounded on a wall. `blend` adds one
+    /// projection on fragments past 60 degrees, `full` adds both and
+    /// cross-fades them.
+    ///
+    /// Only the albedo UV changes; tile choice and splat weights stay the
+    /// original's XZ lookup. Costs up to two extra texture samples on the
+    /// 9.4% of the map's footprint that is that steep (measured over the
+    /// player's own `Map.pk2` — see `SLOPE_START` in the shader), and nothing
+    /// at all on flatter ground. `off` in `low`, which is also the setting a
+    /// GL-baseline GPU wants.
+    pub slope_sampling: TerrainSlopeSampling,
 }
 
 /// The two terrain ground draw paths. Both sample the same global ground-tile arrays
@@ -1050,6 +1160,7 @@ impl TerrainGraphicsSettings {
         use crate::assets::m::block_splat_material::{TerrainLightingMode, TerrainRenderParams};
         TerrainRenderParams {
             lightmap_flip_v: self.lightmap_flip_v,
+            slope_sampling: self.slope_sampling,
             lighting_mode: match render_mode {
                 RenderMode::Vanilla => TerrainLightingMode::Baked,
                 RenderMode::Pbr => TerrainLightingMode::Dynamic,
@@ -1255,6 +1366,38 @@ impl BloomSettings {
 mod gpu_option_tests {
     use super::*;
 
+    /// The tiers have to stay ordered in work, and `low` has to stay off:
+    /// it is the preset `auto` picks for a GL-baseline GPU, where two extra
+    /// texture samples per steep fragment are the last thing wanted.
+    #[test]
+    fn slope_sampling_is_off_by_default_and_rises_with_the_tier() {
+        use crate::plugins::config::preset::QualityPreset;
+        let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(empty.terrain.slope_sampling, TerrainSlopeSampling::Off);
+
+        let tier = |preset: QualityPreset| -> TerrainSlopeSampling {
+            let yaml = preset.layer().expect("concrete tiers have a layer");
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let graphics: GraphicsSettings =
+                serde_yaml::from_value(value.as_mapping().unwrap()["graphics"].clone()).unwrap();
+            graphics.terrain.slope_sampling
+        };
+        assert_eq!(tier(QualityPreset::Low), TerrainSlopeSampling::Off);
+        assert_eq!(tier(QualityPreset::Medium), TerrainSlopeSampling::Blend);
+        assert_eq!(tier(QualityPreset::High), TerrainSlopeSampling::Full);
+        assert_eq!(tier(QualityPreset::Ultra), TerrainSlopeSampling::Full);
+    }
+
+    /// The key reaches the GPU: `to_render_params` is the only path from this
+    /// config to `terrain_params[2].w`.
+    #[test]
+    fn the_key_is_carried_into_the_render_params() {
+        let settings: TerrainGraphicsSettings =
+            serde_yaml::from_str("slope_sampling: full").unwrap();
+        let params = settings.to_render_params(RenderMode::Vanilla);
+        assert_eq!(params.slope_sampling, TerrainSlopeSampling::Full);
+    }
+
     #[test]
     fn bindless_and_sky_reflections_default_off() {
         let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
@@ -1266,5 +1409,55 @@ mod gpu_option_tests {
             serde_yaml::from_str("bindless_materials: true\nsky_reflections: true").unwrap();
         assert!(set.bindless_materials);
         assert!(set.sky_reflections);
+    }
+}
+
+#[cfg(test)]
+mod sharpening_tests {
+    use super::*;
+
+    /// The serde default and the derived `GraphicsSettings::default()` have to
+    /// agree, or a `config.yaml` without the key renders differently from one
+    /// with the documented value written out.
+    #[test]
+    fn an_absent_key_is_bevys_own_default_strength() {
+        let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(empty.sharpening, Sharpening(0.6));
+        assert_eq!(GraphicsSettings::default().sharpening, Sharpening(0.6));
+        let set: GraphicsSettings = serde_yaml::from_str("sharpening: 0.8").unwrap();
+        assert_eq!(set.sharpening, Sharpening(0.8));
+    }
+
+    /// 0.0 is the documented "off", and it has to reach the component as a
+    /// *disabled* pass: bevy skips extracting it then, so off costs nothing.
+    #[test]
+    fn zero_is_off_and_every_other_strength_is_enabled() {
+        let off = Sharpening(0.0).to_cas();
+        assert!(!off.enabled);
+        assert_eq!(off.sharpening_strength, 0.0);
+
+        let on = Sharpening(0.8).to_cas();
+        assert!(on.enabled);
+        assert_eq!(on.sharpening_strength, 0.8);
+    }
+
+    /// A hand-edited file must not reach the shader with a strength bevy calls
+    /// "extreme artifacts and fireflies", and a non-finite value must not
+    /// reach it at all.
+    #[test]
+    fn an_out_of_range_strength_clamps_instead_of_reaching_the_shader() {
+        assert_eq!(Sharpening(5.0).to_cas().sharpening_strength, 1.0);
+        assert_eq!(Sharpening(-1.0).to_cas().sharpening_strength, 0.0);
+        assert!(!Sharpening(-1.0).to_cas().enabled);
+        assert_eq!(Sharpening(f32::NAN).to_cas().sharpening_strength, 0.0);
+        assert!(!Sharpening(f32::INFINITY).to_cas().enabled);
+    }
+
+    /// The denoise flag stays off: bevy's own guidance is "you probably
+    /// shouldn't use this" (`contrast_adaptive_sharpening/mod.rs:50`), and
+    /// nothing in this client adds film grain for it to protect.
+    #[test]
+    fn denoising_stays_off() {
+        assert!(!Sharpening(0.6).to_cas().denoise);
     }
 }

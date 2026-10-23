@@ -11,6 +11,8 @@ graphics:
     character_distance: 2500.0
   msaa: 1
   fxaa: true
+  # bevy's own default, and the FXAA above is what it compensates
+  sharpening: 0.6
   texture_detail: full
   anisotropy: 4
   bloom:
@@ -36,12 +38,20 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
+  # no MSAA in this tier, so this would be a no-op anyway
+  foliage_alpha_to_coverage: false
   shadows:
     enabled: true
     cascades: 1
     map_size: 1024
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: medium
+  # no depth_prepass in this preset, so the fade would be inert anyway
+  effect_soft_fade: 0.0
   lens_flare: false
   dungeon:
     max_lights: 16
+  # One extra ground projection on fragments past 60 degrees (9.4% of the
+  # map's footprint, measured) — the cheap half of the cliff fix.
+  terrain:
+    slope_sampling: blend

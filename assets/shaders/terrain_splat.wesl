@@ -20,8 +20,6 @@ import bevy_pbr::render::pbr_functions::{
     calculate_tbn_mikktspace,
 };
 import bevy_pbr::render::mesh_view_bindings::{view, lights};
-import bevy_pbr::render::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT;
-import bevy_pbr::render::shadows::fetch_directional_shadow;
 import bevy_pbr::render::mesh_bindings::mesh;
 import bevy_core_pipeline::tonemapping::tone_mapping;
 
@@ -150,9 +148,11 @@ var lightmap_tex: texture_2d<f32>;
 //            maps). Note: only the dynamic lighting mode substitutes real shadows —
 //            baked bypasses apply_pbr_lighting, so strength 0 there just
 //            leaves the ground unshaded;
-//   [2].w  = extra sun-shadow darkening (vanilla player-shadow boost, 0 = off/PBR):
-//            multiplies the lit ground by 1-[2].w where the shadow map is fully
-//            occluded, sampled manually below so it works in every lighting mode.
+//   [2].w  = slope-aware albedo sampling: 0 = off (XZ only, as before),
+//            1 = one extra projection on steep fragments, 2 = both.
+//            Was an extra sun-shadow darkening that had been dead (always 0)
+//            since vanilla stopped casting the Sun's shadow maps; the slot was
+//            kept for the next parameter rather than reworking this layout.
 @group(constants::MATERIAL_BIND_GROUP) @binding(6)
 var<uniform> terrain_params: array<vec4<f32>, 3>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(7)
@@ -161,6 +161,85 @@ var tile_array_1: texture_2d_array<f32>;
 var tile_array_2: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(9)
 var tile_array_3: texture_2d_array<f32>;
+
+// Slope-aware albedo sampling: on a steep fragment the ground texture is also sampled from
+// the side, so a cliff stops being a vertically smeared top-down texture.
+//
+// # The idea
+//
+// The ground UV is a top-down XZ projection (`sample_splat`'s `uv`), which stretches a tile
+// by exactly `1 / |n.y|` along the slope — a 60-degree wall shows it at double length, a
+// vertical one at infinity. A side projection has the opposite problem, so the fix is the
+// standard one: sample the same tile a second (and third) time with the ZY and XY planes as
+// UV and cross-fade by the normal.
+//
+// **What stays authentic:** this touches the albedo *UV only*. Which tile a fragment uses and
+// how the four corner tiles are weighted remain the original's XZ lookup in `tile_map`
+// (`sample_splat`), splat scale codes included, and the baked lightmap keeps its own XZ UV —
+// both are authored data, while a projection is a drawing choice (ADR-0009).
+//
+// The vertical axis is the fragment's **world** Y, not a block-local one: the height field is
+// absolute (`JMXVMAPM` stores a float height per vertex, no per-block origin), so there is no
+// authored Y origin to restart the pattern at. That makes the side pattern continuous across
+// block borders, and its phase relative to the XZ pattern is UNKNOWN rather than chosen.
+struct SlopeProjection {
+    // World Y and its screen-space derivatives — the vertical UV axis of both side planes.
+    h: f32,
+    dh: vec2<f32>,
+    // Blend weights: `.x` = ZY plane, `.y` = the authentic XZ plane, `.z` = XY. Sums to 1,
+    // and is exactly `(0, 1, 0)` wherever the feature is off or the ground is not steep —
+    // which is what makes the flat case bit-identical to the single-sample path.
+    w: vec3<f32>,
+}
+
+// Where "steep" begins, as `|n.y|`: 0.5 is 60 degrees from flat.
+//
+// This is a choice of how much stretch to tolerate, and it names its number: the XZ
+// projection stretches the tile by `1 / |n.y|`, so 0.5 is "two times". Measured over the
+// player's own `Map.pk2` (4644 `.m` files, 41.9M region-grid vertices, central differences on
+// the same 20-unit grid `region_normal` builds its vertex normals from): **9.4%** of the map's
+// footprint and 24.8% of its true surface area lean past 60 degrees, while the next step down
+// (45 degrees, 1.41x stretch) would take 19.6% / 37.4% — twice the extra samples for a stretch
+// that is barely visible. Everything flatter keeps exactly today's single sample.
+const SLOPE_START: f32 = 0.5;
+
+// Weights for the three planes. `terrain_params[2].w` selects: 0 = off, 1 = one extra
+// projection, 2 = both.
+fn slope_projection(world_normal: vec3<f32>, h: f32, dh: vec2<f32>) -> SlopeProjection {
+    var out: SlopeProjection;
+    out.h = h;
+    out.dh = dh;
+    out.w = vec3(0.0, 1.0, 0.0);
+    let mode = terrain_params[2].w;
+    if mode < 0.5 {
+        return out;
+    }
+    // `abs` because only the axis matters, not the facing: terrain normals point up, but the
+    // region's mesh is X-mirrored by its own transform and `prepare_world_normal` may flip a
+    // back face.
+    let n = abs(normalize(world_normal));
+    // 0 while the surface is flatter than the threshold, 1 on a vertical wall.
+    let lean = saturate((SLOPE_START - n.y) / SLOPE_START);
+    if lean <= 0.0 {
+        return out;
+    }
+    // Which side plane: a wall whose normal leans along X is textured with (Z, Y) and vice
+    // versa. `n.x + n.z` is zero only for a vertical normal, which `lean` has already excluded.
+    let zy_share = n.x / max(n.x + n.z, 1e-5);
+    if mode < 1.5 {
+        // One extra sample instead of two: the dominant side plane takes the whole slope
+        // share. On a wall facing a cardinal direction that is the same picture as the full
+        // mode; only a 45-degree-facing corner shows one plane instead of the mix.
+        if zy_share >= 0.5 {
+            out.w = vec3(lean, 1.0 - lean, 0.0);
+        } else {
+            out.w = vec3(0.0, 1.0 - lean, lean);
+        }
+    } else {
+        out.w = vec3(lean * zy_share, 1.0 - lean, lean * (1.0 - zy_share));
+    }
+    return out;
+}
 
 @fragment
 fn fragment(
@@ -188,8 +267,14 @@ fn fragment(
     let ground = vec2(-in.world_position.x, in.world_position.z);
     let dground_dx = dpdx(ground);
     let dground_dy = dpdy(ground);
+    // Vertical axis of the two side projections (see `slope_projection`), with its
+    // derivatives taken here for the same reason as the ground plane's: dpdx/dpdy are
+    // derivative ops and belong in uniform control flow.
+    let height = in.world_position.y;
+    let dheight = vec2(dpdx(height), dpdy(height));
+    let slope = slope_projection(in.world_normal, height, dheight);
 
-    var color = sample_splat(region_x, region_z, dground_dx, dground_dy);
+    var color = sample_splat(region_x, region_z, dground_dx, dground_dy, slope);
     // Modulate the ground albedo by the baked lightmap before lighting: shadowed ground stays dark
     // under any dynamic sun/ambient, adding SRO's static baked shadows as an albedo/occlusion layer.
     // [2].z is lightmap_enabled as a hard 0.0/1.0 (never fractional — see
@@ -240,36 +325,6 @@ fn fragment(
         // fully baked: the lightmap (already multiplied into base_color above) is the
         // entire lighting, like the original fixed-function ground
         out.color = pbr_input.material.base_color;
-    }
-    // Vanilla player-shadow boost ([2].w): inside a cascaded shadow, apply_pbr_lighting
-    // only removes the sun's *direct* term, and with SRO's ambient magnitudes (comparable
-    // to the sun, see EnvironmentSettings::ambient_brightness) that reads far too faint.
-    // Darken the lit result by the sun's shadow factor directly — a stand-in for the
-    // original client's dark projected player shadow (in vanilla mode only the player
-    // casts). Sampled manually instead of relying on apply_pbr_lighting so the
-    // baked mode gets the player shadow too. The branch is on a buffer value; either way
-    // the block stays legal:
-    // fetch_directional_shadow's hardware path uses textureSampleCompareLevel,
-    // which needs no derivatives and is allowed in non-uniform control flow.
-    let shadow_strength = terrain_params[2].w;
-    if shadow_strength > 0.0 {
-        let view_z = dot(vec4(
-            view.view_from_world[0].z,
-            view.view_from_world[1].z,
-            view.view_from_world[2].z,
-            view.view_from_world[3].z,
-        ), in.world_position);
-        var shadow = 1.0;
-        for (var i = 0u; i < lights.n_directional_lights; i = i + 1u) {
-            if (lights.directional_lights[i].flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u {
-                continue;
-            }
-            shadow = min(
-                shadow,
-                fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy),
-            );
-        }
-        out.color = vec4(out.color.rgb * mix(1.0 - shadow_strength, 1.0, shadow), out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
@@ -354,7 +409,7 @@ fn sample_lightmap(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2
 // fast path below is legal: branching around an *implicit*-derivative `textureSample` would be
 // undefined per WGSL's uniformity rules, since derivatives need every fragment in a 2x2 quad to
 // run the same fetch.
-fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f32>) -> vec4<f32> {
+fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f32>, slope: SlopeProjection) -> vec4<f32> {
     // Which block, and where inside it. Vertices sit every 20 units, 17 per block edge, and the
     // fragment is strictly inside the block (region_x < REGION_SIZE => local < BLOCK_SIZE), so
     // `i0` lands in 0..15 and `i0 + 1` never leaves the block's own 17 vertices. That is what
@@ -389,7 +444,7 @@ fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f3
     // to a single sample.
     if v00.r == v10.r && v00.r == v01.r && v00.r == v11.r
         && v00.g == v10.g && v00.g == v01.g && v00.g == v11.g {
-        return sample(1.0, v00.g, v00.r, uv, duv_dx, duv_dy);
+        return sample(1.0, v00.g, v00.r, uv, duv_dx, duv_dy, slope);
     }
 
     let w00 = (1.0 - tx) * (1.0 - tz);
@@ -401,16 +456,16 @@ fn sample_splat(region_x: f32, region_z: f32, duv_dx: vec2<f32>, duv_dy: vec2<f3
     // Each corner carries its own tiling scale, so a tile used at different scales across a
     // region still renders correctly — that used to be approximated by a single per-texel scale
     // read from the dominant corner.
-    if w00 > 0.0 { color += sample(w00, v00.g, v00.r, uv, duv_dx, duv_dy); }
-    if w10 > 0.0 { color += sample(w10, v10.g, v10.r, uv, duv_dx, duv_dy); }
-    if w01 > 0.0 { color += sample(w01, v01.g, v01.r, uv, duv_dx, duv_dy); }
-    if w11 > 0.0 { color += sample(w11, v11.g, v11.r, uv, duv_dx, duv_dy); }
+    if w00 > 0.0 { color += sample(w00, v00.g, v00.r, uv, duv_dx, duv_dy, slope); }
+    if w10 > 0.0 { color += sample(w10, v10.g, v10.r, uv, duv_dx, duv_dy, slope); }
+    if w01 > 0.0 { color += sample(w01, v01.g, v01.r, uv, duv_dx, duv_dy, slope); }
+    if w11 > 0.0 { color += sample(w11, v11.g, v11.r, uv, duv_dx, duv_dy, slope); }
 
     return color;
 }
 
 // `tile` is the map's raw 10-bit tile id (see the header comment above `tile_map`'s declaration).
-fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>, duv_dy: vec2<f32>) -> vec4<f32> {
+fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>, duv_dy: vec2<f32>, slope: SlopeProjection) -> vec4<f32> {
     let splat_scale = get_splat_scale(splat);
     // 16, not 4: one texture repeat spans `320 * splat_scale` world units (a 320-unit block
     // has 16 20-unit tiles), so splat_scale 1.0 => exactly one repeat per block (1x1), 0.25 =>
@@ -421,7 +476,34 @@ fn sample(contrib: f32, splat: u32, tile: u32, uv: vec2<f32>, duv_dx: vec2<f32>,
     let scale = 1.0 / (20.0 * max_uv);
     let uv2 = uv * scale;
 
-    return sample_tile(tile, uv2, duv_dx * scale, duv_dy * scale) * contrib;
+    // The authentic top-down projection, at full weight unless a side plane takes a share.
+    var color = sample_tile(tile, uv2, duv_dx * scale, duv_dy * scale) * slope.w.y;
+    // Both side branches are skipped on flat ground, which is where the cost bound comes from.
+    // Branching around a `textureSampleGrad` is legal in non-uniform control flow because its
+    // derivatives are arguments, not implicit — the same property the uniform-tile fast path
+    // above and the lightmap branch in `fragment` already rely on.
+    if slope.w.x > 0.0 {
+        // ZY plane: the wall's horizontal axis is Z, its vertical axis world Y.
+        let zy = vec2(uv.y, slope.h) * scale;
+        color += sample_tile(
+            tile,
+            zy,
+            vec2(duv_dx.y, slope.dh.x) * scale,
+            vec2(duv_dy.y, slope.dh.y) * scale,
+        ) * slope.w.x;
+    }
+    if slope.w.z > 0.0 {
+        // XY plane: horizontal axis X.
+        let xy = vec2(uv.x, slope.h) * scale;
+        color += sample_tile(
+            tile,
+            xy,
+            vec2(duv_dx.x, slope.dh.x) * scale,
+            vec2(duv_dy.x, slope.dh.y) * scale,
+        ) * slope.w.z;
+    }
+
+    return color * contrib;
 }
 
 // Tile `id` is layer `id % 256` of `tile_array_<id / 256>`. The array varies per fragment, so

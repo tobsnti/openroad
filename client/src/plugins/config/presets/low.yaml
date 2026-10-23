@@ -16,6 +16,9 @@ graphics:
   # scale upscale softens edges anyway
   msaa: 1
   fxaa: false
+  # hardest of the four: this preset is the only one whose image is upscaled
+  # (render_scale 0.75 below), and the sharpening happens before that stretch
+  sharpening: 0.8
   # model textures and ground tiles one mip level down: ~1/4 of their VRAM
   texture_detail: half
   # plain trilinear: anisotropic taps cost texture bandwidth an old card lacks
@@ -51,11 +54,20 @@ graphics:
     object_spawns_per_frame: 32
     resource_spawns_per_frame: 8
   depth_prepass: false
+  # no MSAA in this tier, so this would be a no-op anyway
+  foliage_alpha_to_coverage: false
   # PBR mode only; vanilla lighting draws no shadow maps at all
   shadows:
     enabled: false
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: low
+  # soft particles off: effects are the frame's heaviest overdraw
+  effect_soft_fade: 0.0
   lens_flare: false
   dungeon:
     max_lights: 8
+  # Slope-aware ground sampling off: on a GL-baseline GPU (what `auto` picks
+  # this tier for) the two extra texture samples per steep fragment are the
+  # last thing wanted. Cliffs keep the original's stretched top-down tile.
+  terrain:
+    slope_sampling: "off"

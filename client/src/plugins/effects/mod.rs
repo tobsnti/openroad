@@ -20,6 +20,7 @@ pub mod trail;
 use std::time::Duration;
 
 use bevy::app::{App, Plugin, PostUpdate, PreUpdate, Update};
+use bevy::asset::Assets;
 use bevy::ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::{Res, ResMut, Resource};
@@ -124,14 +125,42 @@ impl Default for EffectQualityScale {
     }
 }
 
-/// Follows `graphics.effect_quality` into [`EffectQualityScale`].
+/// Soft-particle fade distance in world units, 0 = off. Follows
+/// `graphics.effect_soft_fade`, forced to 0 on `EffectQuality::Low`.
+///
+/// Why the quality tier overrides the option rather than scaling it: the cost
+/// of this effect is one depth `textureLoad` per effect fragment, and effects
+/// carry the heaviest overdraw in the frame. A narrower fade distance would
+/// look cheaper without *being* cheaper — only skipping the read is cheaper,
+/// and `effect_params.w == 0` is what makes the shader skip it.
+#[derive(Resource, Default)]
+pub struct EffectSoftFade(pub f32);
+
+/// Follows `graphics.effect_quality` into [`EffectQualityScale`], and
+/// `graphics.effect_soft_fade` into [`EffectSoftFade`].
 fn apply_effect_quality(
     config: Res<crate::plugins::config::ClientConfig>,
     mut scale: ResMut<EffectQualityScale>,
+    mut soft_fade: ResMut<EffectSoftFade>,
+    mut materials: ResMut<Assets<SroEffectMaterial>>,
 ) {
     let wanted = config.graphics.effect_quality.particle_scale();
     if scale.0 != wanted {
         scale.0 = wanted;
+    }
+    let wanted_fade =
+        if config.graphics.effect_quality == crate::plugins::config::graphics::EffectQuality::Low {
+            0.0
+        } else {
+            config.graphics.effect_soft_fade.max(0.0)
+        };
+    if soft_fade.0 != wanted_fade {
+        soft_fade.0 = wanted_fade;
+        // Same shape as the render-debug additive-intensity dial: only on an
+        // actual change, because a material write re-prepares its bind group.
+        for (_, mat) in materials.iter_mut() {
+            mat.set_soft_fade(wanted_fade);
+        }
     }
 }
 
@@ -164,6 +193,7 @@ impl Plugin for EffectsPlugin {
             .init_resource::<EffectLdrAdditive>()
             .init_resource::<EffectPlaybackSpeed>()
             .init_resource::<EffectQualityScale>()
+            .init_resource::<EffectSoftFade>()
             .add_systems(
                 PreUpdate,
                 apply_effect_quality.run_if(

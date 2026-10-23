@@ -141,6 +141,9 @@ pub struct FoliagePlugin;
 impl Plugin for FoliagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FoliageLibrary>()
+            // the pack cards read the cut-out mode the same way the .bmt
+            // loader does; the loader also inits it, whichever comes first
+            .init_resource::<crate::assets::bmt::material::CutoutAlphaToCoverage>()
             .add_systems(
                 PreUpdate,
                 apply_foliage_settings.run_if(crate::plugins::settings::live::config_changed),

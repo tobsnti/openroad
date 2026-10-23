@@ -12,6 +12,8 @@ graphics:
     character_distance: 0.0
   msaa: 4
   fxaa: true
+  # bevy's own default, and the FXAA above is what it compensates
+  sharpening: 0.6
   texture_detail: full
   anisotropy: 4
   bloom:
@@ -39,12 +41,19 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
+  # leaf and grate edges dither across the MSAA samples
+  foliage_alpha_to_coverage: true
   shadows:
     enabled: true
     cascades: 2
     map_size: 2048
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: high
+  # armed, but dormant until depth_prepass is on (ultra-only today)
+  effect_soft_fade: 10.0
   lens_flare: true
   dungeon:
     max_lights: 16
+  # Both side projections on steep ground, cross-faded by the normal.
+  terrain:
+    slope_sampling: full

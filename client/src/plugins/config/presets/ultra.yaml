@@ -12,6 +12,8 @@ graphics:
     character_distance: 0.0
   msaa: 4
   fxaa: true
+  # softest: native resolution with MSAA 4 on top leaves the least to recover
+  sharpening: 0.5
   texture_detail: full
   anisotropy: 16
   bloom:
@@ -40,12 +42,18 @@ graphics:
     resource_spawns_per_frame: 24
   # measured a net win even on an iGPU (docs/perf-remote.md, vegetation overdraw)
   depth_prepass: true
+  # on, but withheld while depth_prepass is on (see graphics.rs)
+  foliage_alpha_to_coverage: true
   shadows:
     enabled: true
     cascades: 4
     map_size: 2048
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: high
+  effect_soft_fade: 10.0
   lens_flare: true
   dungeon:
     max_lights: 32
+  # Both side projections on steep ground, cross-faded by the normal.
+  terrain:
+    slope_sampling: full

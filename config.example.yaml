@@ -339,6 +339,16 @@ graphics:
   # 1920x1080 on an integrated GPU) and the only edge smoothing once msaa is 1.
   # Applies to cameras spawned afterwards (the next scene).
   # fxaa: true
+  # Contrast-adaptive sharpening behind FXAA, 0.0 (off) to 1.0. The two cheap
+  # quality levers above both pay in sharpness - fxaa blurs edges, a
+  # render_scale below 1.0 renders fewer pixels than the window shows - and this
+  # pass raises local contrast where there is detail while leaving flat areas
+  # alone. A full-screen fragment pass, no compute, so it runs on the GL
+  # backend too. 0.6 is bevy's default; above 1.0 it would only add artifacts
+  # and is clamped. The original client has no post-processing: this is a
+  # deliberate readability improvement (ADR 0009), and 0.0 turns it off
+  # entirely. Applies to cameras spawned afterwards (the next scene).
+  # sharpening: 0.6
   # How much of each world texture's mip chain is uploaded: full | half |
   # quarter. half starts model textures and ground tiles one level down (half
   # the width and height, ~1/4 of their VRAM); quarter one further (~1/16).
@@ -452,6 +462,15 @@ graphics:
   # image-based lighting. Sheen materials keep their own sphere maps.
   # Restart-only.
   sky_reflections: false
+  # Cut-out edges - leaves, grass cards, grates - dither across the MSAA
+  # samples instead of being decided yes/no per pixel, so they stop crawling
+  # when the camera turns. Foliage is the largest alpha-tested area in the
+  # frame. A deliberate deviation: the original tests alpha hard (ref 0x80).
+  # Free where it cannot help: without MSAA bevy falls back to that same hard
+  # test, and it is withheld while depth_prepass is on, because that pass
+  # knows no coverage and would leave a fringe of uncovered samples nothing
+  # can fill. Preset default: on from `high` up. Restart-only.
+  # foliage_alpha_to_coverage: true
 # Combat presentation.
 combat:
   # Seconds a knocked-down body lies there (DOWN_RM, anim type 63) between the

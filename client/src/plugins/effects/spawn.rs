@@ -94,6 +94,7 @@ pub struct EffectSpawnAssets<'w> {
     pub quad: Res<'w, EffectQuad>,
     pub additive_intensity: Res<'w, crate::plugins::effects::EffectAdditiveIntensity>,
     pub ldr_additive: Res<'w, crate::plugins::effects::EffectLdrAdditive>,
+    pub soft_fade: Res<'w, crate::plugins::effects::EffectSoftFade>,
 }
 
 pub trait EffectCommandsExt {
@@ -585,6 +586,7 @@ pub fn spawn_node_tree(
                 material.params.x = material.base_color_scale * assets.additive_intensity.0;
             }
             material.set_ldr_additive(assets.ldr_additive.0);
+            material.set_soft_fade(assets.soft_fade.0);
             material
         };
         let material = if uv_animated {

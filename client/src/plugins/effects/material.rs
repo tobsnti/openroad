@@ -38,9 +38,11 @@ pub struct SroEffectMaterial {
     pub uv_offset_scale: Vec4,
     /// x = color multiplier ([`ADDITIVE_EFFECT_BOOST`] × the color texture-op
     /// scale), y = alpha multiplier (the alpha texture-op scale), z = LDR
-    /// additive mode (see [`ldr_mode`]), w unused. Static per material — a
-    /// pure function of the blend combo + texture ops, so the shared-material
-    /// scheme is unaffected.
+    /// additive mode (see [`ldr_mode`]), w = soft-particle fade distance in
+    /// world units (0 = off, see [`SroEffectMaterial::set_soft_fade`]).
+    /// Static per material — x/y/z are a pure function of the blend combo +
+    /// texture ops and w is global, so the shared-material scheme is
+    /// unaffected.
     #[uniform(3)]
     pub params: Vec4,
     #[texture(1)]
@@ -108,6 +110,17 @@ impl SroEffectMaterial {
     pub fn set_ldr_additive(&mut self, on: bool) {
         self.ldr_additive = on;
         self.params.z = ldr_mode(self.src_blend, self.dst_blend, on);
+    }
+
+    /// Soft-particle fade distance in world units, 0 = off.
+    ///
+    /// Not part of [`SroEffectMaterialKey`] on purpose: it changes a uniform,
+    /// not the pipeline, so a live option change re-prepares bind groups but
+    /// does not recompile anything. It is also global rather than per-node —
+    /// the effect files carry no such parameter, so this is a deliberate
+    /// addition with a free choice of value (ADR-0009), not a transcribed one.
+    pub fn set_soft_fade(&mut self, world_units: f32) {
+        self.params.w = world_units.max(0.0);
     }
 }
 
@@ -315,5 +328,41 @@ mod tests {
         assert_eq!(d3d_blend_factor(6), BlendFactor::OneMinusSrcAlpha);
         assert_eq!(d3d_blend_factor(1), BlendFactor::Zero);
         assert_eq!(d3d_blend_factor(11), BlendFactor::SrcAlphaSaturated);
+    }
+
+    /// The soft fade must reach the uniform the shaders read, and never go
+    /// negative — a negative distance would invert `saturate` and make a plate
+    /// *opaque* exactly where it should disappear.
+    #[test]
+    fn the_soft_fade_lands_in_params_w_and_clamps_at_zero() {
+        let mut material = SroEffectMaterial::default();
+        assert_eq!(material.params.w, 0.0, "off until the option sets it");
+        material.set_soft_fade(2.5);
+        assert_eq!(material.params.w, 2.5);
+        material.set_soft_fade(-1.0);
+        assert_eq!(material.params.w, 0.0);
+    }
+
+    /// The fade is a uniform, not a pipeline input: changing it must NOT
+    /// re-specialize anything, or a live option change would recompile every
+    /// effect pipeline in the frame it is moved.
+    #[test]
+    fn the_soft_fade_is_not_part_of_the_pipeline_key() {
+        let mut material = SroEffectMaterial::default();
+        let before = SroEffectMaterialKey::from(&material);
+        material.set_soft_fade(3.0);
+        assert_eq!(before, SroEffectMaterialKey::from(&material));
+    }
+
+    /// The three LDR modes the shaders branch on, pinned here because the fade
+    /// has to be applied differently in each: mode 1 premultiplies the faded
+    /// alpha into the color, mode 2 must fade the color itself (its blend
+    /// ignores alpha), mode 0 fades the alpha only.
+    #[test]
+    fn the_ldr_modes_the_fade_branches_on_are_the_documented_three() {
+        assert_eq!(ldr_mode(5, 2, true), 1.0, "SrcAlpha/One premultiplies");
+        assert_eq!(ldr_mode(2, 2, true), 2.0, "One/One ignores alpha");
+        assert_eq!(ldr_mode(5, 6, true), 0.0, "alpha blend: plain D3D path");
+        assert_eq!(ldr_mode(5, 2, false), 0.0, "emulation off: plain D3D path");
     }
 }

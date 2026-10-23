@@ -162,6 +162,11 @@ choice made there is saved in `user_settings.yaml` and wins over
 `config.yaml`, the same as the original's own options file. The keys a preset controls are
 commented out in `config.example.yaml`, with notes on what each costs.
 
+Every preset also runs a sharpening pass over the 3D view. It gives back the
+drawing that edge smoothing and a reduced render resolution take away, so it is
+strongest in `low`. The original client has no such pass, so if you want the
+plain image, set `graphics.sharpening: 0.0`.
+
 The one that matters most on an old machine is how far the world is drawn.
 Every streamed region costs memory, draw calls and per-frame work:
 
