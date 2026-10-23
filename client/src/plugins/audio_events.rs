@@ -81,6 +81,20 @@ pub const INTRO_FALLBACK_SOUNDS: [(&str, &str, &str); 4] = [
 ];
 
 /// `UI / SND_ERROR` -> `ui\Error.wav` (80).
+/// `UI / SND_WINDOW_OPEN` -> `ui\uiwinopen.wav`, volume 80. From the table the
+/// client actually loads (`textdata.rs:805` ->
+/// `server_dep/silkroad/textdata/effectsound.txt:54`), whose description column
+/// reads "윈도우 오픈" — window open. One row, so no variant pick.
+/// The archive's second copy, `resinfo/effectsound.txt:49`, agrees on file and
+/// volume.
+const WINDOW_OPEN: (&str, &str) = ("UI", "SND_WINDOW_OPEN");
+/// `UI / SND_WINDOW_CLOSE` -> `ui\uiwinclose.wav`, volume 80
+/// (`…/textdata/effectsound.txt:55`, "윈도우 클로즈"). The handle literal
+/// `0x00d9b18c` has
+/// **30** xrefs in the original, every one an `IFxxx` window class
+/// (`docs/re/ui/ui-motion-and-sound.md` §1.4) — which is why this is hooked
+/// once on the shared shell and not per window.
+const WINDOW_CLOSE: (&str, &str) = ("UI", "SND_WINDOW_CLOSE");
 const ERROR: (&str, &str) = ("UI", "SND_ERROR");
 /// `UI / SND_LEVUP` -> `ui\itlevelup.wav` (80).
 const LEVUP: (&str, &str) = ("UI", "SND_LEVUP");
@@ -100,6 +114,16 @@ const EQUIP: (&str, &str) = ("ITEM", "SND_EQUIP");
 /// lookup rather than silently playing the Chinese row to a European.
 const LEVUP_RACES: [&str; 3] = ["CHINESS", "UROPIAN", "ARABIAN"];
 
+/// How many window sounds may be spawned in one frame, per direction.
+///
+/// **openroad choice, no original source.** Leaving the world despawns every
+/// open window at once — fourteen `OnExit(SceneState::GameWorld)` cleanups do
+/// it today (`hud/action.rs:645`, `hud/game_guide.rs:511`, … ) — and a dozen
+/// copies of the same 100 ms sample in one frame is a crack of noise, not a
+/// window sound. One per frame per direction leaves the single-window case
+/// exact, which is the case a player actually hears.
+const MAX_WINDOW_SOUNDS_PER_FRAME: usize = 1;
+
 pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
@@ -113,6 +137,10 @@ impl Plugin for AudioEventsPlugin {
                 // neither the HUD nor combat, and Bevy panics the schedule on
                 // a missing system parameter instead of skipping the system,
                 // so each one is gated on its own message store.
+                // No message store to gate on: this one watches a component.
+                // It needs no HUD resource, so it is safe wherever the plugin
+                // itself is built.
+                play_window_sounds,
                 play_error_sound.run_if(resource_exists::<Messages<ShowToast>>),
                 play_level_up_sound.run_if(resource_exists::<Messages<EntityLevelUp>>),
                 play_repair_sound.run_if(resource_exists::<Messages<ItemRepairResponse>>),
@@ -208,6 +236,56 @@ pub fn play(
 /// The `(object, handle)` pair as an address.
 fn address((object, handle): (&str, &str)) -> SoundAddress {
     SoundAddress::new(object, handle)
+}
+
+/// Window open/close, hooked once on the shared shell.
+///
+/// [`WindowAnchor`](crate::plugins::hud::game_window::WindowAnchor) marks the
+/// root of every framed in-game window, and those roots are spawned and
+/// despawned by their own toggles (`hud/inventory/ui.rs:430` spawns,
+/// `:507` despawns), so component add/remove *is* the open/close signal. That
+/// is the original's own shape: one handle referenced from 30 window classes.
+///
+/// `[U]` — two things this deliberately does not cover:
+///
+/// * Windows that hide instead of despawning would be silent. Measured on this
+///   tree: the 24 shells that go through `spawn_game_window*` all despawn their
+///   root (the `Visibility::Hidden` hits in those files are rows, ghosts and
+///   tooltips, not window roots), so the case does not exist today.
+/// * The pregame screens and the Esc/options windows do not use this shell at
+///   all, so they keep whatever they do now — `server_select.rs` plays
+///   `SND_WINDOW_CLOSE` by hand, which the original does at none of its 30
+///   close sites.
+fn play_window_sounds(
+    opened: Query<(), Added<crate::plugins::hud::game_window::WindowAnchor>>,
+    mut closed: RemovedComponents<crate::plugins::hud::game_window::WindowAnchor>,
+    options: Res<GameOptions>,
+    sounds: Option<Res<ClientEffectSounds>>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+) {
+    let Some(sounds) = sounds else {
+        closed.clear();
+        return;
+    };
+    for _ in opened.iter().take(MAX_WINDOW_SOUNDS_PER_FRAME) {
+        play(
+            &mut commands,
+            &asset_server,
+            sounds.as_ref(),
+            &options.audio,
+            &address(WINDOW_OPEN),
+        );
+    }
+    for _ in closed.read().take(MAX_WINDOW_SOUNDS_PER_FRAME) {
+        play(
+            &mut commands,
+            &asset_server,
+            sounds.as_ref(),
+            &options.audio,
+            &address(WINDOW_CLOSE),
+        );
+    }
 }
 
 /// `SND_ERROR` on the warning toast — our error/warning path
@@ -440,6 +518,32 @@ mod test {
         };
         let folded = playback_for(channel(0.75), &row);
         assert!((folded.volume.to_linear() - 0.75).abs() < 1e-6);
+    }
+
+    /// The two window handles have to be spelled exactly as the table spells
+    /// them: `play` answers an unknown handle with silence, which is
+    /// indistinguishable from a handle the data really leaves empty. Both are
+    /// single-row in the shipped table — no variant pick is involved — and they
+    /// must not resolve to the *same* file, which is the copy-paste this pins.
+    #[test]
+    fn the_two_window_handles_resolve_to_their_own_single_row() {
+        let t = table();
+        let open = t.sounds(&address(WINDOW_OPEN));
+        let close = t.sounds(&address(WINDOW_CLOSE));
+        assert_eq!(open.len(), 1);
+        assert_eq!(close.len(), 1);
+        assert_eq!(open[0].volume, Some(80));
+        assert_eq!(close[0].volume, Some(80));
+        assert_ne!(open[0].asset_path(), close[0].asset_path());
+    }
+
+    /// One sound per frame per direction, and the direction matters: leaving
+    /// the world despawns every open window in the same frame, so the cap is
+    /// what keeps that from being a dozen overlapping copies. Pinned because
+    /// raising it is a one-character edit with an audible result.
+    #[test]
+    fn the_window_sound_cap_is_one_per_frame() {
+        assert_eq!(MAX_WINDOW_SOUNDS_PER_FRAME, 1);
     }
 
     /// The point of the whole module: a handle the table does not answer is

@@ -213,6 +213,18 @@ impl GameWindow {
     }
 }
 
+/// Marks the root of every shell this module spawns, so a system can watch
+/// windows appear and disappear without knowing any of them.
+///
+/// The one consumer today is the open/close sound
+/// ([`crate::plugins::audio_events`]): the original raises one handle,
+/// `snd_window_close`, from 30 different window classes, so the matching shape
+/// here is one marker on the shared shell rather than 24 hand-wired call
+/// sites. Our windows are spawned and despawned by their toggles, so
+/// `Added`/`RemovedComponents` on this marker *is* the open/close signal.
+#[derive(Component)]
+pub struct WindowAnchor;
+
 /// The window a title-bar drag moves, stored on the title bar.
 #[derive(Component)]
 struct ChromeDragTarget(Entity);
@@ -302,6 +314,7 @@ pub fn spawn_game_window_with(
     let root = commands
         .spawn((
             Name::from(format!("{title} Window")),
+            WindowAnchor,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(anchor_right_top.0),
