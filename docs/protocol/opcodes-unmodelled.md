@@ -78,4 +78,6 @@ without a server session:
 
 Handler addresses are deliberately not published here; they live in the local RE notes, the
 same way the rest of the decompiler material does (`CONTRIBUTING.md` on the retired knowledge
-base).
+base). What is worth knowing without them: every opcode above has a measured entry point in
+those notes, so a lane that wants one does not have to re-derive it — `0x3041` was looked up
+that way in October 2026, and the only thing still missing for it is a captured frame.
