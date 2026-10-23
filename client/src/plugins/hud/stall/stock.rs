@@ -2,13 +2,15 @@
 //!
 //! # The idea
 //!
-//! The receiving half of this chain is complete — a `0xB0BA` ack re-sends the
-//! whole listing and `owner::on_stall_update_response` replaces the grid from
-//! it — but there was no way to *raise* the question that produces a send, so
-//! an owner's stall could be opened, named and switched to "trading now" and
-//! stayed empty forever. This file is the question; the send is the slice
-//! behind it (`on_stock_button`, `0x70BA` types 1/2/3), and until it lands the
-//! box closes without touching the wire.
+//! The receiving half of this chain was already complete — a `0xB0BA` ack
+//! re-sends the whole listing and `owner::on_stall_update_response` replaces
+//! the grid from it — but there was no way to *raise* the question that
+//! produces a send, so an owner's stall could be opened, named and switched to
+//! "trading now" and stayed empty forever. This file is both halves: the
+//! question (the drop and the box) and the answer ([`on_stock_button`],
+//! `0x70BA` type 2 to list and type 1 to re-price, [`send_remove`] for type 3).
+//! It still writes nothing into [`StallState`] — the server owns the stall, so
+//! the grid changes when the ack arrives and not before.
 //!
 //! The gesture is the tree's existing one: an item dragged out of the
 //! inventory and released over a window is that window's business
@@ -43,13 +45,27 @@
 //! and `125 + 16 = 141` tall, with the 40-unit top strip already covering the
 //! topmost child at 44. A test re-derives it rather than trusting the two
 //! numbers.
+//!
+//! The two fields are digit-only text inputs in the shape `store::ui`'s
+//! quantity modal uses (one visible line, no newlines, a character filter
+//! rather than a parse that discards letters afterwards). The amount opens
+//! prefilled with the stack and takes focus; the price opens **empty**,
+//! because the player sets it and a prefilled price is a number the box could
+//! get wrong. A Confirm with no price typed sends nothing and keeps the box
+//! open — closing it would throw away an answer the player is still giving.
 
+use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::text::LineHeight;
-use bevy::ui_widgets::{Activate, Button};
+use bevy::text::{EditableText, EditableTextFilter, LineHeight, TextCursorStyle, TextEdit};
+use bevy::ui_widgets::{Activate, Button, TextInput};
 
 use packets::agent::character_data::ItemTypeData;
+use packets::agent::stall::StallUpdateRequest;
+use packets::Packet;
+
+use crate::net::connection::SilkroadConnection;
+use crate::plugins::net::agent::AgentConnection;
 
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::abs_node;
@@ -104,6 +120,37 @@ pub struct StockModal {
 #[derive(Component)]
 pub struct StockModalRoot;
 
+/// The amount field, and the number the player has typed into it.
+#[derive(Component)]
+pub struct StockAmountInput;
+
+/// Clamped to the prompt's stack by [`sync_stock_fields`]; a resource rather
+/// than a read of the field at send time so the clamp happens where it can be
+/// shown, not inside the click.
+#[derive(Resource, Default)]
+pub struct StockAmount(pub u16);
+
+#[derive(Component)]
+pub struct StockPriceInput;
+
+/// The price as typed. `0` is "not answered yet" — the send refuses it rather
+/// than listing an item for nothing.
+#[derive(Resource, Default)]
+pub struct StockPrice(pub u64);
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum StockButton {
+    Ok,
+    Cancel,
+}
+
+/// `0x70BA`'s trailing `unknown0`, written as `0` by the original in every
+/// captured body of this family (`packets/src/agent/stall.rs`).
+const UPDATE_UNKNOWN0: u16 = 0;
+/// `flea_market_tid_group`: the original writes the literal `1`
+/// (`StallUpdateRequest::ItemAdded`'s own doc).
+const FLEA_MARKET_TID_GROUP: u32 = 1;
+
 /// Plate size — derived from the authored children, see the module doc.
 const PLATE: (f32, f32) = (301.0, 141.0);
 
@@ -128,11 +175,11 @@ const PRICE_UNIT: (f32, f32, f32, f32) = (255.0, 72.0, 23.0, 12.0);
 const AMOUNT_EDIT: (f32, f32, f32, f32) = (20.0, 102.0, 42.0, 20.0);
 /// `GDR_MBS_STATIC_AMOUNT` (`:968`), key `UIIT_STT_UNIT`.
 const AMOUNT_UNIT: (f32, f32, f32, f32) = (64.0, 108.0, 12.0, 12.0);
-/// `GDR_MBS_BTN_CANCEL` (`:930`). Its sibling `GDR_MBS_BTN_OK` (`:949`,
-/// `123,101,76,24`) is deliberately **not** spawned here: an OK that closes
-/// without selling would be a button that lies, and the send is the next
-/// slice.
+/// `GDR_MBS_BTN_CANCEL` (`:930`).
 const CANCEL_BTN: (f32, f32, f32, f32) = (203.0, 101.0, 76.0, 24.0);
+/// `GDR_MBS_BTN_OK` (`:949`) — the arm that sends, which is why it was absent
+/// until now.
+const OK_BTN: (f32, f32, f32, f32) = (123.0, 101.0, 76.0, 24.0);
 
 const MSGBOX_DIR: &str = "media://interface/messagebox/";
 const BG_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_b.ddj";
@@ -222,6 +269,7 @@ pub fn sync_stock_modal(
     fonts: Res<FontAssets>,
     asset_server: Res<AssetServer>,
     cam_query: Query<Entity, With<Camera2d>>,
+    mut focus: ResMut<InputFocus>,
     mut commands: Commands,
 ) {
     if !modal.is_changed() {
@@ -262,6 +310,9 @@ pub fn sync_stock_modal(
         press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
         ..Default::default()
     };
+    // Captured out of the closure so the amount field can take focus once the
+    // box exists — the store's modal does the same with its quantity input.
+    let mut amount_field = None;
     let plate_art = |name: &str| -> ImageNode {
         ImageNode {
             image: asset_server.load(format!("{MSGBOX_DIR}{name}.ddj")),
@@ -339,51 +390,207 @@ pub fn sync_stock_modal(
                             Pickable::IGNORE,
                         ));
                     }
-                    // The two numbers, shown as the prefill they are. The edit
-                    // fields that make them typeable are the next slice; until
-                    // then the box asks the question and takes no answer.
-                    for (rect, value) in [
-                        (PRICE_EDIT, prompt.price.to_string()),
-                        (AMOUNT_EDIT, prompt.amount.to_string()),
-                    ] {
-                        plate.spawn((
-                            Text::new(value),
-                            text_font(9.0),
-                            TextColor(Color::WHITE),
-                            TextLayout::justify(Justify::Right),
-                            abs_node((rect.0 + 2.0, rect.1 + 3.0, rect.2 - 4.0, 12.0), s),
-                            Pickable::IGNORE,
-                        ));
-                    }
-                    plate
-                        .spawn((
-                            Button,
-                            Hovered::default(),
-                            abs_node(CANCEL_BTN, s),
-                            ImageNode {
-                                image: button_style.normal.clone(),
-                                image_mode: NodeImageMode::Stretch,
+                    // The two numbers the wire wants, as digit-only fields —
+                    // the same shape the store's quantity modal uses
+                    // (`store::ui`): one visible line, no newlines (so Enter
+                    // reaches the dialog), and a filter rather than a parse
+                    // that throws letters away afterwards. The amount opens
+                    // prefilled with the stack and takes focus; the price
+                    // opens empty, because the player sets it and the original
+                    // prefills nothing it could get wrong.
+                    let mut field =
+                        |rect: (f32, f32, f32, f32), prefill: Option<String>, max: usize| {
+                            let mut node = abs_node(rect, s);
+                            node.padding = UiRect::top(Val::Px(2.0 * s));
+                            let mut editable = EditableText {
+                                visible_lines: Some(1.0),
+                                allow_newlines: false,
+                                max_characters: Some(max),
                                 ..default()
-                            },
-                            button_style.clone(),
-                        ))
-                        .observe(on_stock_cancel)
-                        .with_children(|button| {
-                            button.spawn((
-                                Text::new(ui_strings.get_or("UIIT_CTL_CANCEL", "Cancel")),
+                            };
+                            if let Some(prefill) = prefill {
+                                editable.queue_edit(TextEdit::Insert(prefill.into()));
+                            }
+                            (
+                                TextInput,
+                                editable,
+                                EditableTextFilter::new(|c: char| c.is_ascii_digit()),
+                                node,
                                 text_font(9.0),
                                 TextColor(Color::WHITE),
-                                TextLayout::justify(Justify::Center),
-                                abs_node((0.0, 6.0, CANCEL_BTN.2, 12.0), s),
-                                Pickable::IGNORE,
-                            ));
-                        });
+                                TextLayout::justify(Justify::Right),
+                                TextCursorStyle {
+                                    color: Color::WHITE,
+                                    ..default()
+                                },
+                            )
+                        };
+                    // `price: u64` on the wire; 12 digits is what the field's
+                    // own 121-unit box holds at this size, and no stall price
+                    // the server accepts needs more.
+                    plate.spawn((StockPriceInput, field(PRICE_EDIT, None, 12)));
+                    amount_field = Some(
+                        plate
+                            .spawn((
+                                StockAmountInput,
+                                field(AMOUNT_EDIT, Some(prompt.amount.to_string()), 5),
+                            ))
+                            .id(),
+                    );
+                    for (button, rect, key, fallback) in [
+                        (StockButton::Ok, OK_BTN, "UIIT_CTL_CONFIRM", "Confirm"),
+                        (StockButton::Cancel, CANCEL_BTN, "UIIT_CTL_CANCEL", "Cancel"),
+                    ] {
+                        plate
+                            .spawn((
+                                button,
+                                Button,
+                                Hovered::default(),
+                                abs_node(rect, s),
+                                ImageNode {
+                                    image: button_style.normal.clone(),
+                                    image_mode: NodeImageMode::Stretch,
+                                    ..default()
+                                },
+                                button_style.clone(),
+                            ))
+                            .observe(on_stock_button)
+                            .with_children(|button| {
+                                button.spawn((
+                                    Text::new(ui_strings.get_or(key, fallback)),
+                                    text_font(9.0),
+                                    TextColor(Color::WHITE),
+                                    TextLayout::justify(Justify::Center),
+                                    abs_node((0.0, 6.0, rect.2, 12.0), s),
+                                    Pickable::IGNORE,
+                                ));
+                            });
+                    }
                 });
         });
+    // The amount is the field a player edits most often, and the box is modal
+    // anyway — the same first-field focus the store's quantity modal takes.
+    if let Some(field) = amount_field {
+        focus.set(field, FocusCause::Programmatic);
+    }
 }
 
-fn on_stock_cancel(_: On<Activate>, mut modal: ResMut<StockModal>) {
+/// The request a filled-in box stands for, or `None` while it is unanswered.
+///
+/// Pure on purpose: it is the one piece of this file a test can hold still, and
+/// it is where the two types part. A listing is `type 2` and names the
+/// inventory slot it comes from; a re-price is `type 1` and names only the row
+/// it changes, because the item is already on the stall. `price == 0` is not a
+/// free item, it is a box nobody has typed a price into yet.
+fn stock_request(prompt: &StockPrompt, amount: u16, price: u64) -> Option<StallUpdateRequest> {
+    if price == 0 || amount == 0 {
+        return None;
+    }
+    Some(match prompt.target {
+        StockTarget::Inventory(inventory_slot) => StallUpdateRequest::ItemAdded {
+            // The server picks the row; `0` is the only honest "wherever it
+            // fits", and the `0xB0BA` ack re-sends the whole listing anyway.
+            stall_slot: 0,
+            inventory_slot,
+            quantity: amount,
+            price,
+            flea_market_tid_group: FLEA_MARKET_TID_GROUP,
+            unknown0: UPDATE_UNKNOWN0,
+        },
+        StockTarget::Stall(stall_slot) => StallUpdateRequest::ItemUpdate {
+            stall_slot,
+            quantity: amount,
+            price,
+            unknown0: UPDATE_UNKNOWN0,
+        },
+    })
+}
+
+/// Confirm sends, Cancel closes. A Confirm with no price typed does neither:
+/// the box stays open, because closing it would throw the player's amount away
+/// for a question they have not finished answering.
+fn on_stock_button(
+    activate: On<Activate>,
+    buttons: Query<&StockButton>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    amount: Res<StockAmount>,
+    price: Res<StockPrice>,
+    mut modal: ResMut<StockModal>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    if *button == StockButton::Cancel {
+        modal.prompt = None;
+        return;
+    }
+    let Some(prompt) = modal.prompt.clone() else {
+        return;
+    };
+    let Some(request) = stock_request(&prompt, amount.0, price.0) else {
+        return;
+    };
+    let what = match prompt.target {
+        StockTarget::Inventory(_) => "stock",
+        StockTarget::Stall(_) => "reprice",
+    };
+    info!("stall: {what} {request:?} (0x70BA)");
+    super::net::send(&conn, Packet::from(request), what);
     modal.prompt = None;
+}
+
+/// `0x70BA` type 3 — take our own row back off sale. The grid is not touched
+/// here: the `0xB0BA` ack re-sends the whole listing and
+/// `owner::on_stall_update_response` applies it.
+pub fn send_remove(conn: &Query<&SilkroadConnection, With<AgentConnection>>, stall_slot: u8) {
+    super::net::send(
+        conn,
+        Packet::from(StallUpdateRequest::ItemRemoved {
+            stall_slot,
+            unknown0: UPDATE_UNKNOWN0,
+        }),
+        "remove",
+    );
+}
+
+/// Keep the two numbers in step with the two fields.
+///
+/// The clamp lives here rather than in the click for the reason the store's
+/// modal states: it is the value the box *stands for*, so it has to be the
+/// value anything else reads — and an empty amount field is 1, not 0.
+pub fn sync_stock_fields(
+    modal: Res<StockModal>,
+    amounts: Query<&EditableText, With<StockAmountInput>>,
+    prices: Query<&EditableText, With<StockPriceInput>>,
+    mut amount: ResMut<StockAmount>,
+    mut price: ResMut<StockPrice>,
+) {
+    let Some(prompt) = &modal.prompt else {
+        return;
+    };
+    if let Ok(editable) = amounts.single() {
+        let typed = editable
+            .value()
+            .to_string()
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(1)
+            .clamp(1, prompt.amount.max(1));
+        if amount.0 != typed {
+            amount.0 = typed;
+        }
+    }
+    if let Ok(editable) = prices.single() {
+        let typed = editable
+            .value()
+            .to_string()
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0);
+        if price.0 != typed {
+            price.0 = typed;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +634,60 @@ mod tests {
             .run_system_once(clear_stock_with_stall)
             .expect("the system runs");
         assert!(world.resource::<StockModal>().prompt.is_none());
+    }
+
+    /// The two types part on the target, and that is the whole difference the
+    /// wire sees: a listing names the bag slot it comes from (`type 2`), a
+    /// re-price names only the row it changes (`type 1`).
+    #[test]
+    fn a_listing_and_a_reprice_are_the_two_types_they_claim_to_be() {
+        let listing = StockPrompt {
+            target: StockTarget::Inventory(13),
+            ref_id: 1,
+            name: "x".into(),
+            amount: 5,
+            price: 0,
+        };
+        assert_eq!(
+            stock_request(&listing, 3, 900),
+            Some(StallUpdateRequest::ItemAdded {
+                stall_slot: 0,
+                inventory_slot: 13,
+                quantity: 3,
+                price: 900,
+                flea_market_tid_group: FLEA_MARKET_TID_GROUP,
+                unknown0: UPDATE_UNKNOWN0,
+            })
+        );
+        let reprice = StockPrompt {
+            target: StockTarget::Stall(2),
+            ..listing.clone()
+        };
+        assert_eq!(
+            stock_request(&reprice, 1, 50),
+            Some(StallUpdateRequest::ItemUpdate {
+                stall_slot: 2,
+                quantity: 1,
+                price: 50,
+                unknown0: UPDATE_UNKNOWN0,
+            })
+        );
+    }
+
+    /// A box nobody has typed a price into is not a free item: Confirm has
+    /// nothing to send, and the box stays open rather than throwing the
+    /// player's amount away.
+    #[test]
+    fn an_unanswered_box_sends_nothing() {
+        let prompt = StockPrompt {
+            target: StockTarget::Inventory(13),
+            ref_id: 1,
+            name: "x".into(),
+            amount: 5,
+            price: 0,
+        };
+        assert_eq!(stock_request(&prompt, 3, 0), None);
+        assert_eq!(stock_request(&prompt, 0, 900), None);
     }
 
     /// Every child rect is inside the plate's measured interior, and the plate
