@@ -828,7 +828,12 @@ fn dispatch(
             // resource (tests, headless harness) the command goes as before.
             match (ctx.cargo_aboard, confirm) {
                 (true, Some(confirm)) => confirm.pending = Some(uid),
-                _ => commands_out.write(CosCommand::Unsummon(uid)),
+                // Nothing aboard, or nowhere to put a dialog: send as before.
+                // Both arms have to be `()`, hence the braces — a bare
+                // `write(..)` arm returns its message id.
+                (true, None) | (false, _) => {
+                    commands_out.write(CosCommand::Unsummon(uid));
+                }
             }
         }
         CosBarButton::AiMode => {
@@ -1205,6 +1210,12 @@ mod tests {
                     subject: subject.clone(),
                     victim,
                     offensive: false,
+                    // The fixtures are a bare `CosStatus`, which carries no
+                    // bag at all, so nothing is aboard. That is also what
+                    // keeps `cells_act_on_the_bars_subject` honest: it counts
+                    // the commands a cell *sends*, and a loaded subject would
+                    // make the Unsummon line assert a dialog instead.
+                    cargo_aboard: false,
                     mounted: false,
                     window: Some(&mut window),
                 };
