@@ -7,6 +7,7 @@ use bevy::ui_widgets::Activate;
 
 use packets::gateway::Shard;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::net::gateway::shard_list::ShardList;
 use crate::plugins::settings::options::GameOptions;
@@ -17,7 +18,7 @@ use crate::plugins::ui_v2::widgets::{image_button, label};
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
 use super::login_form::{main_button_style, ShardNameText};
-use super::{intro_font_px, IntroV2State};
+use super::IntroV2State;
 
 /// Root marker of the server selection screen.
 #[derive(Component, Default, Clone)]
@@ -171,8 +172,8 @@ pub fn server_window(
     let window = assets.server_list_window.clone();
     let font = fonts.nine.clone();
     // `GDR_BTN_SACCEPT`/`GDR_BTN_SCANCEL` (`pstitle_europe.txt:539,558`) are
-    // `FontIndex=2` -> 16 px on the ladder (`intro_font_px`).
-    let button_px = intro_font_px(2);
+    // `FontIndex=2` -> 16 px on the ladder (`font_index_px`).
+    let button_px = font_index_px(2);
     // Both buttons get `SND_BUTTON_CLICK` and nothing else; `uiwinclose.wav` has
     // no basis here: `resinfo/effectsound.txt` maps `SND_BUTTON_CLICK` ->
     // `ui\uibutton_a.wav`/`uibutton_b.wav` (`:47`/`:48`) and `SND_WINDOW_CLOSE` ->
@@ -457,7 +458,7 @@ fn shard_row(
     let status_font = fonts.nine.clone();
     // The rows are the list control's own text: `GDR_LIST_SERVER`
     // (`pstitle_europe.txt:162`) is `FontIndex=0` -> 12 px.
-    let row_px = intro_font_px(0);
+    let row_px = font_index_px(0);
 
     let (status_color, status_text) = shard_status(shard, ui_strings);
 
