@@ -26,6 +26,7 @@ use bevy::text::EditableText;
 use bevy::ui::{InteractionDisabled, Overflow, ScrollPosition, UiTargetCamera};
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::config::chat::ChatColors;
 use crate::plugins::config::ClientConfig;
@@ -167,7 +168,13 @@ const CHAT_BG_SLICE_H: f32 = 4.0;
 
 const TAB_BG: &str = "media://interface/chattingwnd/chat_tab.ddj";
 
-const MESSAGE_FONT_SIZE: f32 = 12.0;
+/// The message list is one control repeated per tab, and all five carry
+/// `FontIndex=0` at the same `27,28,365,343` rect: `GDR_LIST_CHATTING`
+/// (`ifchatviewer.txt:219`, index on `:225`) with its `_CHATPARTY`,
+/// `_CHATGUILD`, `_CHATALLIACNE` and 2009-only `_APPRENTICE` twins. Slot 0 is
+/// 12 px ([`font_index_px`]) — the number that was already here, now with its
+/// origin rather than by agreement with `super::super::chat_bubble`.
+const MESSAGE_FONT_SIZE: f32 = font_index_px(0);
 const TAB_FONT_SIZE: f32 = 11.0;
 
 /// Logical-px scroll steps: mouse wheel notch and scrollbar arrow click.
