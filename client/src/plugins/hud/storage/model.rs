@@ -21,7 +21,7 @@
 
 use bevy::prelude::*;
 
-use packets::agent::character_data::InventoryItem;
+use packets::agent::character_data::{InventoryItem, ItemSection};
 use packets::agent::inventory::{InventoryOperationResponse, InventoryOperationResult};
 use packets::agent::storage::{
     parse_storage_items, StorageDataBegin, StorageDataChunk, StorageDataEnd, StorageDataRequest,
@@ -234,11 +234,26 @@ pub fn on_storage_end(
             continue;
         }
         match parse_storage_items(&raw, &*item_data) {
-            Ok((size, items)) => {
+            Ok(ItemSection {
+                size,
+                items,
+                stopped_at,
+            }) => {
                 info!(
                     "storage: data end (0x3048) — size {size}, {} items",
                     items.len()
                 );
+                // The section stops on a record whose width it cannot derive,
+                // and hands back what it read (#455). Saying so is the point:
+                // the list below is short, and a silent short list is
+                // indistinguishable from an empty warehouse slot.
+                if let Some(stop) = stopped_at {
+                    warn!(
+                        "storage: list cut short at record {} (ref {}) — the records behind it \
+                         are not shown; capture for decode",
+                        stop.index, stop.ref_id
+                    );
+                }
                 let gold = state.items.gold;
                 let mut slots = vec![None; size as usize];
                 for item in items {

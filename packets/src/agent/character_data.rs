@@ -370,6 +370,45 @@ pub struct QuestSection {
     pub active_count: u8,
 }
 
+/// A quest type whose record carries a remaining-time field. Not exercised by
+/// any captured body — [U], field layout from `silkroad-docs`
+/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:108`).
+pub const QUEST_TYPE_TIMED: u8 = 28;
+/// A quest type whose record has no objective list. Not exercised by any
+/// captured body — [U], same source as [`QUEST_TYPE_TIMED`].
+pub const QUEST_TYPE_NO_OBJECTIVES: u8 = 8;
+/// A quest type whose record is trailed by its target NPCs. Measured: 170 of
+/// the 765 captured records, and all 170 carry exactly one NPC id.
+pub const QUEST_TYPE_NPC_LIST: u8 = 88;
+
+/// One objective line of an active quest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestObjective {
+    pub id: u8,
+    pub enabled: bool,
+    /// Text key the client resolves through textdata, e.g.
+    /// `SN_CON_QNO_CH_SMITH_1`.
+    pub name: String,
+    pub tasks: Vec<u32>,
+}
+
+/// An active quest, as written between the completed-quest ids and the
+/// collection book.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveQuest {
+    pub ref_id: u32,
+    pub achievements: u8,
+    pub auto_share_required: u8,
+    /// Selects the two conditional blocks: [`QUEST_TYPE_TIMED`] prefixes
+    /// `time_remain`, [`QUEST_TYPE_NO_OBJECTIVES`] drops the objective list,
+    /// [`QUEST_TYPE_NPC_LIST`] appends `target_npcs`.
+    pub quest_type: u8,
+    pub time_remain: Option<u32>,
+    pub state: u8,
+    pub objectives: Vec<QuestObjective>,
+    pub target_npcs: Vec<u32>,
+}
+
 /// The collection-book head; entry shape unverified, so the parser only
 /// proceeds when no theme was started (go-sro sends none).
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
@@ -538,6 +577,7 @@ pub struct ParsedCharacterInfo {
     pub masteries: Option<Vec<Mastery>>,
     pub skills: Option<Vec<KnownSkill>>,
     pub completed_quests: Option<Vec<u32>>,
+    pub active_quests: Option<Vec<ActiveQuest>>,
     pub spawn: Option<ParsedCharacterData>,
     pub movement: Option<EntityMovement>,
     pub state: Option<EntityState>,
@@ -864,55 +904,105 @@ struct UnknownBody {
 /// Resync across a record whose width we cannot derive.
 ///
 /// Idea: we cannot classify the ref id (the server's item table has rows the
-/// client's itemdata does not — live refs 46551 and 23273), but we can *test*
-/// a width: assume the body is `n` bytes, replay the whole forward pass, and
-/// keep `n` only if every following section then parses and the pass consumes
-/// the blob to the last byte with the expected unique id in the tail. A wrong
-/// `n` shifts every later record, so it practically never survives that. The
-/// width is accepted only when it is the unique one that does — an ambiguous
-/// blob keeps today's stop-and-report behaviour rather than guessing.
+/// client's itemdata does not — live refs 46551, 46560 and 23273), but we can
+/// *test* a width: assume the body is `n` bytes, replay the whole forward
+/// pass, and keep `n` only if every following section then parses and the pass
+/// consumes the blob to the last byte with the expected unique id in the tail.
+/// A wrong `n` shifts every later record, so it practically never survives
+/// that.
+///
+/// That test is one equation, so it pins one unknown — and sometimes not even
+/// that: over the user's 243 captured bodies the stopper ref 46551 left
+/// *seven* widths (2, 29, 35, 41, 47, 53, 59) all explaining the blob, and the
+/// resync refused. The tie-break below is [`sections_in_slot_order`], which
+/// resolves exactly those nine captures to the width the next record header
+/// independently proves (2). An ambiguity that survives both keeps today's
+/// stop-and-report behaviour rather than guessing.
 fn recover_item_stop(
     raw: &[u8],
     expected_unique_id: Option<u32>,
     resolver: &impl ItemClassResolver,
     stop: ItemSectionStop,
 ) -> Option<ParsedCharacterInfo> {
-    let mut found: Option<ParsedCharacterInfo> = None;
+    let mut explained = Vec::new();
+    let mut ordered = Vec::new();
     for body_len in 0..=MAX_RECOVERED_BODY.min(raw.len().saturating_sub(stop.offset)) {
-        let mut candidate = ParsedCharacterInfo::default();
-        let mut cursor = Cursor::new(raw);
-        forward_parse(
-            &mut cursor,
-            resolver,
-            &mut candidate,
-            Some(UnknownBody {
-                offset: stop.offset,
-                body_len,
-            }),
-        );
-        candidate.forward_parsed_to = cursor.position() as usize;
-        let tail_ok = match (&candidate.spawn, expected_unique_id) {
-            (Some(spawn), Some(id)) => spawn.unique_id == id,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if candidate.failed_stage.is_some() || candidate.forward_parsed_to != raw.len() || !tail_ok
-        {
-            continue;
+        let attempt = replay_with_width(raw, expected_unique_id, resolver, stop, body_len);
+        if let Some(candidate) = attempt {
+            explained.push(body_len);
+            if sections_in_slot_order(&candidate) {
+                ordered.push(body_len);
+            }
         }
-        if found.is_some() {
-            // Two widths both explain the whole blob: we cannot tell them
-            // apart, so recover nothing.
-            return None;
-        }
-        candidate.fully_parsed = true;
-        candidate.recovered_body = Some(RecoveredItemBody {
-            ref_id: stop.ref_id,
-            body_len,
-        });
-        found = Some(candidate);
     }
-    found
+    // A single explanation wins outright; the slot order only decides between
+    // several, so a server that writes its slots in another order keeps
+    // exactly the behaviour it has today.
+    let body_len = match (explained.as_slice(), ordered.as_slice()) {
+        ([single], _) => *single,
+        (_, [single]) => *single,
+        _ => return None,
+    };
+    replay_with_width(raw, expected_unique_id, resolver, stop, body_len)
+}
+
+/// One resync attempt: replay the forward pass with `body_len` bytes assumed
+/// for the stopper record, and return the result only if it explains the whole
+/// blob (every stage parsed, reader at the last byte, expected id in the tail).
+fn replay_with_width(
+    raw: &[u8],
+    expected_unique_id: Option<u32>,
+    resolver: &impl ItemClassResolver,
+    stop: ItemSectionStop,
+    body_len: usize,
+) -> Option<ParsedCharacterInfo> {
+    let mut candidate = ParsedCharacterInfo::default();
+    let mut cursor = Cursor::new(raw);
+    forward_parse(
+        &mut cursor,
+        resolver,
+        &mut candidate,
+        Some(UnknownBody {
+            offset: stop.offset,
+            body_len,
+        }),
+    );
+    candidate.forward_parsed_to = cursor.position() as usize;
+    let tail_ok = match (&candidate.spawn, expected_unique_id) {
+        (Some(spawn), Some(id)) => spawn.unique_id == id,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if candidate.failed_stage.is_some() || candidate.forward_parsed_to != raw.len() || !tail_ok {
+        return None;
+    }
+    candidate.fully_parsed = true;
+    candidate.recovered_body = Some(RecoveredItemBody {
+        ref_id: stop.ref_id,
+        body_len,
+    });
+    Some(candidate)
+}
+
+/// Both item sections read in strictly ascending slot order, every slot inside
+/// the section's capacity.
+///
+/// Only a tie-break for the resync, never a parse rule: go-sro writes the
+/// section by iterating a Go map (`char_selection_join_handler.go:321`), whose
+/// order is deliberately randomised, so slot order is not a protocol
+/// guarantee. It is what the *captured* server does — 7117 records in 188
+/// sections, none unsorted, no slot at or above its section's size — which is
+/// enough to rank two widths that the blob alone cannot separate.
+fn sections_in_slot_order(info: &ParsedCharacterInfo) -> bool {
+    let ascending =
+        |items: &[InventoryItem]| items.windows(2).all(|pair| pair[0].slot < pair[1].slot);
+    let inventory = info.inventory.as_deref().unwrap_or(&[]);
+    let avatar = info.avatar_items.as_deref().unwrap_or(&[]);
+    ascending(inventory)
+        && ascending(avatar)
+        && info
+            .inventory_size
+            .is_none_or(|size| inventory.iter().all(|item| item.slot < size))
 }
 
 /// Run the staged forward pass, filling `info` section by section. Stops at
@@ -969,8 +1059,10 @@ fn forward_parse(
 
     let quests = stage!("quests", QuestSection::read_from(cursor));
     info.completed_quests = Some(quests.completed);
-    // Active quest records have an unverified shape; go-sro sends none.
-    stage!("active quests", nonzero_guard(quests.active_count as u32));
+    info.active_quests = Some(stage!(
+        "active quests",
+        read_active_quests(cursor, quests.active_count)
+    ));
     let collection = stage!("collection book", CollectionBook::read_from(cursor));
     stage!(
         "collection book",
@@ -988,6 +1080,80 @@ fn forward_parse(
     info.name = Some(stage!("name", read_string(cursor)));
     info.job = Some(stage!("job", JobInfo::read_from(cursor)));
     info.extras = Some(stage!("extras", PlayerExtras::read_from(cursor)));
+}
+
+/// Read the `count` active-quest records that follow the completed-quest ids.
+///
+/// Idea: the record is three conditional blocks hung off `quest_type`, which
+/// the derive cannot express, so it is read by hand like the movement block.
+/// The layout is the one `silkroad-docs`
+/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:94-133`) describes, verified
+/// against the user's captures before it was written: 85 bodies, 765 records,
+/// 935 objectives, and the block ends on the byte where the collection book
+/// and the expected tail unique id begin in all 85. Measured field values:
+/// `achievements` 16 and `auto_share_required` 0 in all 765 records,
+/// `quest_type` 24 (595) or 88 (170), `state` 1/7/8, 1 or 3 objectives each,
+/// `task_count` 1 throughout. The `quest_type` 8 and 28 branches are [U] — no
+/// captured body takes them; a wrong guess there costs the tail check, not a
+/// silent desync, because the forward pass is only trusted when it consumes
+/// the blob and the tail id matches.
+fn read_active_quests<T: Read + ReadBytesExt>(
+    reader: &mut T,
+    count: u8,
+) -> Result<Vec<ActiveQuest>, SerializationError> {
+    let mut quests = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let ref_id = u32::read_from(reader)?;
+        let achievements = u8::read_from(reader)?;
+        let auto_share_required = u8::read_from(reader)?;
+        let quest_type = u8::read_from(reader)?;
+        let time_remain = if quest_type == QUEST_TYPE_TIMED {
+            Some(u32::read_from(reader)?)
+        } else {
+            None
+        };
+        let state = u8::read_from(reader)?;
+        let mut objectives = Vec::new();
+        if quest_type != QUEST_TYPE_NO_OBJECTIVES {
+            let objective_count = u8::read_from(reader)?;
+            objectives.reserve(objective_count as usize);
+            for _ in 0..objective_count {
+                let id = u8::read_from(reader)?;
+                let enabled = bool::read_from(reader)?;
+                let name = read_string(reader)?;
+                let task_count = u8::read_from(reader)?;
+                let mut tasks = Vec::with_capacity(task_count as usize);
+                for _ in 0..task_count {
+                    tasks.push(u32::read_from(reader)?);
+                }
+                objectives.push(QuestObjective {
+                    id,
+                    enabled,
+                    name,
+                    tasks,
+                });
+            }
+        }
+        let mut target_npcs = Vec::new();
+        if quest_type == QUEST_TYPE_NPC_LIST {
+            let npc_count = u8::read_from(reader)?;
+            target_npcs.reserve(npc_count as usize);
+            for _ in 0..npc_count {
+                target_npcs.push(u32::read_from(reader)?);
+            }
+        }
+        quests.push(ActiveQuest {
+            ref_id,
+            achievements,
+            auto_share_required,
+            quest_type,
+            time_remain,
+            state,
+            objectives,
+            target_npcs,
+        });
+    }
+    Ok(quests)
 }
 
 /// A guard stage for counts whose record shape is unknown: fine while zero.
@@ -1083,14 +1249,16 @@ fn read_item_section(
 
 /// Public entry to the item-section parser for other packets that carry the
 /// same `size:u8, count:u8, items…` shape (the storage list 0x3049). Discards
-/// the per-record trace the character-data parser keeps.
+/// the per-record trace the character-data parser keeps, but not the stop:
+/// a caller that drops [`ItemSection::stopped_at`] cannot tell a complete list
+/// from one cut short at an unresolvable ref, and would show the user a
+/// silently short warehouse (#425/#455 is the same defect inside 0x3013).
 pub fn parse_item_section(
     cursor: &mut Cursor<&[u8]>,
     resolver: &impl ItemClassResolver,
-) -> Result<(u8, Vec<InventoryItem>), SerializationError> {
+) -> Result<ItemSection, SerializationError> {
     let mut trace = Vec::new();
-    let section = read_item_section(cursor, resolver, &mut trace, None)?;
-    Ok((section.size, section.items))
+    read_item_section(cursor, resolver, &mut trace, None)
 }
 
 /// The tail's `unique_id + position`; the position must be plausible, which is
@@ -1435,13 +1603,31 @@ mod test {
 
     /// The expendable record: a stack of 50 in slot 13, no rent.
     fn expendable_record(b: Body) -> Body {
-        b.u8(13).u32(0).u32(PILLS).u16(50)
+        expendable_record_at(b, 13, 50)
+    }
+
+    /// An expendable record in `slot` carrying `stack`, no rent — 11 bytes.
+    fn expendable_record_at(b: Body, slot: u8, stack: u16) -> Body {
+        b.u8(slot).u32(0).u32(PILLS).u16(stack)
     }
 
     /// Everything behind the inventory section, with the four auto-potion tail
-    /// fields as given.
+    /// fields as given and one completed, no active quest.
     fn body_after_inventory(b: Body, hp: u16, mp: u16, universal: u16, delay: u8) -> Body {
-        b
+        body_after_inventory_with_quests(b, hp, mp, universal, delay, |q| q.u16(1).u32(1).u8(0))
+    }
+
+    /// `body_after_inventory` with the quest block — completed count, completed
+    /// ids, active count, active records — written by `quests`.
+    fn body_after_inventory_with_quests(
+        b: Body,
+        hp: u16,
+        mp: u16,
+        universal: u16,
+        delay: u8,
+        quests: impl FnOnce(Body) -> Body,
+    ) -> Body {
+        let b = b
             // avatar inventory: size 5, empty
             .u8(5)
             .u8(0)
@@ -1459,11 +1645,8 @@ mod test {
             .u8(1)
             .u32(70)
             .u8(1)
-            .u8(2)
-            // quests: 1 completed, 0 active
-            .u16(1)
-            .u32(1)
-            .u8(0)
+            .u8(2);
+        quests(b)
             // collection book: unknown byte + 0 started themes
             .u8(0)
             .u32(0)
@@ -1534,6 +1717,33 @@ mod test {
                 .u32(0)
                 .u32(UNROUTABLE)
                 .u16(stack),
+        );
+        body_after_inventory(inventory, 0, 0, 0, 0).0
+    }
+
+    /// `full_body()` whose unroutable record carries a *complete, routable*
+    /// item record as its body (slot `shadow_slot`, 11 bytes), followed by the
+    /// real third record in slot 20.
+    ///
+    /// This is the live 46551 shape in miniature: two widths explain the whole
+    /// blob — 11 reads the shadow as the offender's body, 0 reads it as the
+    /// third record and the real third record as the avatar header — so the
+    /// blob alone cannot separate them. With `shadow_slot` below the
+    /// offender's 18 only one reading keeps the section in slot order; with it
+    /// above, both do and the ambiguity is genuine.
+    fn full_body_with_shadowed_unroutable(shadow_slot: u8) -> Vec<u8> {
+        let inventory = expendable_record_at(
+            expendable_record_at(
+                equipment_record(stats_block(Body::default()).u8(45).u8(3))
+                    // item 2: slot 18, no rent, unroutable ref
+                    .u8(18)
+                    .u32(0)
+                    .u32(UNROUTABLE),
+                shadow_slot,
+                9,
+            ),
+            20,
+            50,
         );
         body_after_inventory(inventory, 0, 0, 0, 0).0
     }
@@ -1719,6 +1929,57 @@ mod test {
         let spawn = info.spawn.expect("anchor spawn");
         assert_eq!(spawn.unique_id, UNIQUE_ID);
         assert_eq!(spawn.region, 0x60A8);
+    }
+
+    #[test]
+    fn resync_breaks_a_tie_on_the_slot_order() {
+        // Two widths explain the whole blob here (11 and 0 — see the fixture),
+        // and the blob-wide test cannot rank them: it is one equation, so it
+        // pins one unknown and no more. Measured on the user's captures, that
+        // is not academic — the live ref 46551 left *seven* widths standing
+        // (2, 29, 35, 41, 47, 53, 59) and the resync gave up on all nine
+        // bodies carrying it. The captured server writes its sections in
+        // ascending slot order (7117 records, 188 sections, none unsorted), so
+        // that order ranks the survivors: only width 11 keeps 6 < 18 < 20.
+        let raw = full_body_with_shadowed_unroutable(5);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert!(info.fully_parsed);
+        assert_eq!(
+            info.recovered_body,
+            Some(RecoveredItemBody {
+                ref_id: UNROUTABLE,
+                body_len: 11,
+            })
+        );
+        let slots: Vec<u8> = info
+            .inventory
+            .expect("inventory")
+            .iter()
+            .map(|item| item.slot)
+            .collect();
+        assert_eq!(slots, vec![6, 18, 20]);
+    }
+
+    #[test]
+    fn resync_declines_when_both_widths_keep_the_slot_order() {
+        // Same two explanations, but the shadow record sits in slot 19 —
+        // between the offender's 18 and the real 20 — so *both* readings are
+        // ascending and the tie-break has nothing to rank. The resync must
+        // then decline exactly as it does today rather than take the first
+        // width that fits: the slot order ranks candidates, it does not
+        // license a guess.
+        let raw = full_body_with_shadowed_unroutable(19);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.recovered_body, None);
+        assert_eq!(info.failed_stage, Some("inventory"));
+        let stop = info.item_stop.expect("stop recorded");
+        assert_eq!(stop.ref_id, UNROUTABLE);
+        assert_eq!(stop.index, 1);
+        let items = info.inventory.expect("inventory");
+        assert_eq!(items.len(), 1, "the record before the offender survives");
+        assert_eq!(items[0].ref_id, SWORD);
     }
 
     #[test]
@@ -2128,5 +2389,99 @@ mod test {
         assert_eq!(extras.auto_mp, 45);
         assert_eq!(extras.auto_universal, 30);
         assert_eq!(extras.auto_potion_delay, 4);
+    }
+
+    /// Two active quests in the shape the captures carry: one plain
+    /// (`quest_type` 24, three objectives) and one trailed by its target NPC
+    /// (`quest_type` 88) — the two types all 765 captured records use.
+    fn full_body_with_active_quests() -> Vec<u8> {
+        let inventory =
+            expendable_record(equipment_record(stats_block(Body::default()).u8(45).u8(2)));
+        body_after_inventory_with_quests(inventory, 0, 0, 0, 0, |q| {
+            q.u16(1)
+                .u32(1) // one completed quest
+                .u8(2) // two active quests
+                // quest 1: plain, three objectives, second one disabled
+                .u32(57)
+                .u8(16) // achievements
+                .u8(0) // auto share required
+                .u8(24) // quest type
+                .u8(1) // state
+                .u8(3) // objective count
+                .u8(1)
+                .u8(1)
+                .string("SN_CON_QNO_CH_GENARAL_1_01")
+                .u8(1)
+                .u32(0)
+                .u8(2)
+                .u8(0)
+                .string("SN_CON_QNO_CH_GENARAL_1_02")
+                .u8(1)
+                .u32(1)
+                .u8(3)
+                .u8(1)
+                .string("SN_CON_QNO_CH_GENARAL_1_03")
+                .u8(1)
+                .u32(0)
+                // quest 2: one objective, then the target-NPC list
+                .u32(3)
+                .u8(16)
+                .u8(0)
+                .u8(88) // quest type with the NPC list
+                .u8(7) // state
+                .u8(1) // objective count
+                .u8(1)
+                .u8(1)
+                .string("SN_CON_QNO_CH_SMITH_1")
+                .u8(1)
+                .u32(0)
+                .u8(1) // one target NPC
+                .u32(2037)
+        })
+        .0
+    }
+
+    #[test]
+    fn active_quests_no_longer_end_the_forward_pass() {
+        // Before: `nonzero_guard` refused any active quest, so a body carrying
+        // one lost every section behind it — measured on the user's captures,
+        // 85 of 243 bodies (all with 9 active quests, a 452-byte block). The
+        // record is now read, which is what lifts those 85 bodies from "the
+        // tail arrives via the anchor" to "parses completely".
+        let raw = full_body_with_active_quests();
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.failed_stage, None);
+        assert!(info.fully_parsed, "reader must consume the whole blob");
+        assert_eq!(info.completed_quests, Some(vec![1]));
+
+        let quests = info.active_quests.expect("active quests");
+        assert_eq!(quests.len(), 2);
+        assert_eq!(quests[0].ref_id, 57);
+        assert_eq!(quests[0].quest_type, 24);
+        assert_eq!(quests[0].state, 1);
+        assert_eq!(quests[0].time_remain, None);
+        assert_eq!(quests[0].objectives.len(), 3);
+        assert_eq!(quests[0].objectives[1].id, 2);
+        assert!(!quests[0].objectives[1].enabled);
+        assert_eq!(quests[0].objectives[1].name, "SN_CON_QNO_CH_GENARAL_1_02");
+        assert_eq!(quests[0].objectives[1].tasks, vec![1]);
+        assert!(
+            quests[0].target_npcs.is_empty(),
+            "type 24 carries no NPC list"
+        );
+
+        assert_eq!(quests[1].ref_id, 3);
+        assert_eq!(quests[1].quest_type, QUEST_TYPE_NPC_LIST);
+        assert_eq!(quests[1].state, 7);
+        assert_eq!(quests[1].objectives.len(), 1);
+        assert_eq!(quests[1].target_npcs, vec![2037]);
+
+        // The sections behind the quest block are exactly the ones a body
+        // without active quests delivers.
+        let plain = parse_character_info(&full_body(), Some(UNIQUE_ID), &resolver());
+        assert_eq!(info.spawn, plain.spawn);
+        assert_eq!(info.name, plain.name);
+        assert_eq!(info.extras, plain.extras);
     }
 }
