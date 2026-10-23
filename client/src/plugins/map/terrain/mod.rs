@@ -790,6 +790,11 @@ pub fn load_terrain_system(
                             Name::from(format!("Ground {}x{} ({})", block.x, block.z, terrain_name.as_str())),
                         )).with_children(|block_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| match &block.water_type {
                             WaterType::None => {}
+                            // `_wave_type` stays unread on purpose: the census in
+                            // `docs/formats/mapm-jmxvmapm.md` shows the byte restates
+                            // this block's own vertex grid (0 = plane below every
+                            // vertex, 1 = fully submerged, 2/3 = the water line
+                            // crosses it) and carries no wave information at all.
                             WaterType::Water(_wave_type, height) => {
                                 // plane mesh vertices are located around plane center
                                 let transform = Transform::from_xyz(320.0, *height, 320.0)

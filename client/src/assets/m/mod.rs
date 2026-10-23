@@ -36,6 +36,18 @@ pub struct TerrainBlock {
     pub aabb: Aabb,
 }
 
+/// The block's water surface: its kind, the `WaterWaveType` byte and the plane
+/// height.
+///
+/// The `u8` is **not** a wave parameter, despite the name the format carries.
+/// Measured over the player's whole corpus (census in
+/// `docs/formats/mapm-jmxvmapm.md`): on all 36,976 water blocks it restates the
+/// vertex grid exactly — 0 = the plane is below every vertex, 1 = every vertex
+/// is under it, 2 and 3 = the water line crosses the block, with no exception
+/// in either direction. What separates 2 from 3 is UNKNOWN; on ice the byte
+/// contradicts the grid in 103 of 955 blocks, so the grid is the source that
+/// cannot be wrong. It is kept because it is in the file, not because anything
+/// reads it (`scripts/re/census_water_wave_type.py` is the measurement).
 #[derive(Default, Copy, Clone)]
 pub enum WaterType {
     #[default]

@@ -113,3 +113,25 @@ sourced value and a magic number.
 
 Input is `corpus/client/strings.tsv` (static Ghidra output, machine-local; override the
 tree with `SRO_QUARANTINE_CORPUS`). Nothing is executed — it reads a TSV.
+
+## `census_water_wave_type.py` — what the `WaterWaveType` byte really is (#gfx)
+
+Every terrain block of a `*.m` region carries a `WaterWaveType` byte that the format
+references leave blank, and whose name invites a water shader to read it as a wave
+parameter. This census answers it from the player's own corpus: compare each block's
+289 vertex heights against that block's `WaterHeight`, and cross the resulting coverage
+against the byte.
+
+```bash
+python3 scripts/re/census_water_wave_type.py --map-dir ~/pk2/Map
+```
+
+Verdict, 4,644 regions: the byte **is** the coverage class — `0` = the plane lies below
+every vertex, `1` = every vertex is under it, `2`/`3` = the water line crosses the
+block, with **zero** contradicting blocks among all 36,976 water blocks. So it carries
+no wave information, and under ADR 0009 hanging a wave strength on it would be an
+invented meaning rather than a sourced one. What separates `2` from `3` stays `[U]`;
+the run prints the predicates that fail to. Full table: `docs/formats/mapm-jmxvmapm.md`.
+
+Stdlib only, reads `<z>/<x>.m` files; a missing map directory is reported and the run
+exits 0, because the corpus is the user's extraction and not in this repository.
