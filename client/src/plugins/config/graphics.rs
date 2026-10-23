@@ -222,6 +222,22 @@ pub struct WaterSettings {
     /// Beer-Lambert branch. The *colour* absorbed toward is not configurable:
     /// it is the player's own water texture (`water_hq.wesl`).
     pub absorption: f32,
+    /// Tint and sight distance while the camera itself is below a drawn water
+    /// plane (`environment::underwater`).
+    ///
+    /// The camera carries no collision and a shore walks right down into the
+    /// lake bed, so it does go under; without this the view is a flat sheet
+    /// with a hard edge. Neither the colour nor the reach is configurable,
+    /// because neither is invented: the tint is the live ENVI water colour of
+    /// the region and time of day, the reach is the water surface's own
+    /// extinction length (`ABSORPTION_FULL_DEPTH`).
+    ///
+    /// The v1.188 client has no underwater view at all, so `false` is the
+    /// faithful image and `true` is the stated improvement (ADR 0009). Off in
+    /// `low`: while submerged it swaps the linear distance band for an
+    /// exponential one, and that preset is where every per-pixel term counts.
+    /// Live.
+    pub underwater_view: bool,
 }
 
 impl Default for WaterSettings {
@@ -231,6 +247,7 @@ impl Default for WaterSettings {
             reflection: true,
             shore_fade: DEFAULT_SHORE_FADE,
             absorption: 1.0,
+            underwater_view: true,
         }
     }
 }

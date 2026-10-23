@@ -54,6 +54,7 @@ pub mod lens_flare;
 pub mod light_visibility;
 pub mod options;
 pub mod reflections;
+pub mod underwater;
 pub mod weather;
 
 /// Marks the world's single directional light (spawned in `map::setup_lighting`).
@@ -540,6 +541,9 @@ impl Plugin for EnvironmentPlugin {
                     record_region_env_ids,
                     resolve_active_environment,
                     apply_environment,
+                    // After the fog writer, because it replaces what that
+                    // wrote while the camera is under water (see there).
+                    underwater::apply_underwater_view,
                 )
                     .chain()
                     .run_if(in_state(GameState::Game))
