@@ -76,6 +76,19 @@ pub enum ChatUpdate {
     Guild { sender: String, message: String },
     #[sro_packet(value = 6)]
     Global { sender: String, message: String },
+    /// Chat type 7, the server's global notice: **one** string and no sender.
+    ///
+    /// Measured on a real vSRO server (`packet_dump/gf_guild/0x3026.log`): the
+    /// frame is 95 bytes, `07` + `u16 92` + 92 characters, and the body is
+    /// consumed **exactly** — a second string would have left bytes over. It
+    /// is also the only senderless kind in this enum, which is what
+    /// `ChatLine::display_with` renders as `(Notice):…`.
+    ///
+    /// Our own stub writes `07 u16+"Server" u16+<text>` instead (136 frames
+    /// across two session dumps on 2026-10-23), so against the stub this reads
+    /// the sender and drops the text. That is the stub deviating, not this
+    /// type: reading two strings here would make a real notice fail to parse
+    /// at all, because its single string eats the whole body.
     #[sro_packet(value = 7)]
     Notice { message: String },
     #[sro_packet(value = 9)]
@@ -192,6 +205,32 @@ mod tests {
         let bytes: Bytes = update.clone().into();
         assert_eq!(bytes.as_ref(), &[0x07, 0x02, 0x00, b'h', b'i']);
         assert_eq!(ChatUpdate::try_from(bytes).unwrap(), update);
+    }
+
+    /// The real server's notice, byte for byte: `packet_dump/gf_guild/0x3026.log`
+    /// (2026-09, 95 bytes). Pinned because the obvious "fix" for our stub's
+    /// two-string notice — reading a sender first — would break exactly this
+    /// frame: the sender read would swallow the message and the second read
+    /// would run off the end.
+    #[test]
+    fn a_real_servers_notice_is_one_string_that_fills_the_body() {
+        let text = "You're not allowed to use special characters in this \
+                    textfield. We've replaced them for you.";
+        let mut body = vec![0x07];
+        body.extend_from_slice(&(text.len() as u16).to_le_bytes());
+        body.extend_from_slice(text.as_bytes());
+        assert_eq!(body.len(), 95, "the captured frame is 95 bytes");
+
+        let update = ChatUpdate::try_from(Bytes::from(body.clone())).unwrap();
+        assert_eq!(
+            update,
+            ChatUpdate::Notice {
+                message: text.to_string()
+            }
+        );
+        // round-trips to the same 95 bytes: nothing of the body is left over
+        let back: Bytes = update.into();
+        assert_eq!(back.as_ref(), body.as_slice());
     }
 
     #[test]
