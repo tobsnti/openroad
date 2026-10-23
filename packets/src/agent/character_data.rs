@@ -904,55 +904,105 @@ struct UnknownBody {
 /// Resync across a record whose width we cannot derive.
 ///
 /// Idea: we cannot classify the ref id (the server's item table has rows the
-/// client's itemdata does not — live refs 46551 and 23273), but we can *test*
-/// a width: assume the body is `n` bytes, replay the whole forward pass, and
-/// keep `n` only if every following section then parses and the pass consumes
-/// the blob to the last byte with the expected unique id in the tail. A wrong
-/// `n` shifts every later record, so it practically never survives that. The
-/// width is accepted only when it is the unique one that does — an ambiguous
-/// blob keeps today's stop-and-report behaviour rather than guessing.
+/// client's itemdata does not — live refs 46551, 46560 and 23273), but we can
+/// *test* a width: assume the body is `n` bytes, replay the whole forward
+/// pass, and keep `n` only if every following section then parses and the pass
+/// consumes the blob to the last byte with the expected unique id in the tail.
+/// A wrong `n` shifts every later record, so it practically never survives
+/// that.
+///
+/// That test is one equation, so it pins one unknown — and sometimes not even
+/// that: over the user's 243 captured bodies the stopper ref 46551 left
+/// *seven* widths (2, 29, 35, 41, 47, 53, 59) all explaining the blob, and the
+/// resync refused. The tie-break below is [`sections_in_slot_order`], which
+/// resolves exactly those nine captures to the width the next record header
+/// independently proves (2). An ambiguity that survives both keeps today's
+/// stop-and-report behaviour rather than guessing.
 fn recover_item_stop(
     raw: &[u8],
     expected_unique_id: Option<u32>,
     resolver: &impl ItemClassResolver,
     stop: ItemSectionStop,
 ) -> Option<ParsedCharacterInfo> {
-    let mut found: Option<ParsedCharacterInfo> = None;
+    let mut explained = Vec::new();
+    let mut ordered = Vec::new();
     for body_len in 0..=MAX_RECOVERED_BODY.min(raw.len().saturating_sub(stop.offset)) {
-        let mut candidate = ParsedCharacterInfo::default();
-        let mut cursor = Cursor::new(raw);
-        forward_parse(
-            &mut cursor,
-            resolver,
-            &mut candidate,
-            Some(UnknownBody {
-                offset: stop.offset,
-                body_len,
-            }),
-        );
-        candidate.forward_parsed_to = cursor.position() as usize;
-        let tail_ok = match (&candidate.spawn, expected_unique_id) {
-            (Some(spawn), Some(id)) => spawn.unique_id == id,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        if candidate.failed_stage.is_some() || candidate.forward_parsed_to != raw.len() || !tail_ok
-        {
-            continue;
+        let attempt = replay_with_width(raw, expected_unique_id, resolver, stop, body_len);
+        if let Some(candidate) = attempt {
+            explained.push(body_len);
+            if sections_in_slot_order(&candidate) {
+                ordered.push(body_len);
+            }
         }
-        if found.is_some() {
-            // Two widths both explain the whole blob: we cannot tell them
-            // apart, so recover nothing.
-            return None;
-        }
-        candidate.fully_parsed = true;
-        candidate.recovered_body = Some(RecoveredItemBody {
-            ref_id: stop.ref_id,
-            body_len,
-        });
-        found = Some(candidate);
     }
-    found
+    // A single explanation wins outright; the slot order only decides between
+    // several, so a server that writes its slots in another order keeps
+    // exactly the behaviour it has today.
+    let body_len = match (explained.as_slice(), ordered.as_slice()) {
+        ([single], _) => *single,
+        (_, [single]) => *single,
+        _ => return None,
+    };
+    replay_with_width(raw, expected_unique_id, resolver, stop, body_len)
+}
+
+/// One resync attempt: replay the forward pass with `body_len` bytes assumed
+/// for the stopper record, and return the result only if it explains the whole
+/// blob (every stage parsed, reader at the last byte, expected id in the tail).
+fn replay_with_width(
+    raw: &[u8],
+    expected_unique_id: Option<u32>,
+    resolver: &impl ItemClassResolver,
+    stop: ItemSectionStop,
+    body_len: usize,
+) -> Option<ParsedCharacterInfo> {
+    let mut candidate = ParsedCharacterInfo::default();
+    let mut cursor = Cursor::new(raw);
+    forward_parse(
+        &mut cursor,
+        resolver,
+        &mut candidate,
+        Some(UnknownBody {
+            offset: stop.offset,
+            body_len,
+        }),
+    );
+    candidate.forward_parsed_to = cursor.position() as usize;
+    let tail_ok = match (&candidate.spawn, expected_unique_id) {
+        (Some(spawn), Some(id)) => spawn.unique_id == id,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if candidate.failed_stage.is_some() || candidate.forward_parsed_to != raw.len() || !tail_ok {
+        return None;
+    }
+    candidate.fully_parsed = true;
+    candidate.recovered_body = Some(RecoveredItemBody {
+        ref_id: stop.ref_id,
+        body_len,
+    });
+    Some(candidate)
+}
+
+/// Both item sections read in strictly ascending slot order, every slot inside
+/// the section's capacity.
+///
+/// Only a tie-break for the resync, never a parse rule: go-sro writes the
+/// section by iterating a Go map (`char_selection_join_handler.go:321`), whose
+/// order is deliberately randomised, so slot order is not a protocol
+/// guarantee. It is what the *captured* server does — 7117 records in 188
+/// sections, none unsorted, no slot at or above its section's size — which is
+/// enough to rank two widths that the blob alone cannot separate.
+fn sections_in_slot_order(info: &ParsedCharacterInfo) -> bool {
+    let ascending =
+        |items: &[InventoryItem]| items.windows(2).all(|pair| pair[0].slot < pair[1].slot);
+    let inventory = info.inventory.as_deref().unwrap_or(&[]);
+    let avatar = info.avatar_items.as_deref().unwrap_or(&[]);
+    ascending(inventory)
+        && ascending(avatar)
+        && info
+            .inventory_size
+            .is_none_or(|size| inventory.iter().all(|item| item.slot < size))
 }
 
 /// Run the staged forward pass, filling `info` section by section. Stops at
@@ -1551,7 +1601,12 @@ mod test {
 
     /// The expendable record: a stack of 50 in slot 13, no rent.
     fn expendable_record(b: Body) -> Body {
-        b.u8(13).u32(0).u32(PILLS).u16(50)
+        expendable_record_at(b, 13, 50)
+    }
+
+    /// An expendable record in `slot` carrying `stack`, no rent — 11 bytes.
+    fn expendable_record_at(b: Body, slot: u8, stack: u16) -> Body {
+        b.u8(slot).u32(0).u32(PILLS).u16(stack)
     }
 
     /// Everything behind the inventory section, with the four auto-potion tail
@@ -1660,6 +1715,33 @@ mod test {
                 .u32(0)
                 .u32(UNROUTABLE)
                 .u16(stack),
+        );
+        body_after_inventory(inventory, 0, 0, 0, 0).0
+    }
+
+    /// `full_body()` whose unroutable record carries a *complete, routable*
+    /// item record as its body (slot `shadow_slot`, 11 bytes), followed by the
+    /// real third record in slot 20.
+    ///
+    /// This is the live 46551 shape in miniature: two widths explain the whole
+    /// blob — 11 reads the shadow as the offender's body, 0 reads it as the
+    /// third record and the real third record as the avatar header — so the
+    /// blob alone cannot separate them. With `shadow_slot` below the
+    /// offender's 18 only one reading keeps the section in slot order; with it
+    /// above, both do and the ambiguity is genuine.
+    fn full_body_with_shadowed_unroutable(shadow_slot: u8) -> Vec<u8> {
+        let inventory = expendable_record_at(
+            expendable_record_at(
+                equipment_record(stats_block(Body::default()).u8(45).u8(3))
+                    // item 2: slot 18, no rent, unroutable ref
+                    .u8(18)
+                    .u32(0)
+                    .u32(UNROUTABLE),
+                shadow_slot,
+                9,
+            ),
+            20,
+            50,
         );
         body_after_inventory(inventory, 0, 0, 0, 0).0
     }
@@ -1845,6 +1927,57 @@ mod test {
         let spawn = info.spawn.expect("anchor spawn");
         assert_eq!(spawn.unique_id, UNIQUE_ID);
         assert_eq!(spawn.region, 0x60A8);
+    }
+
+    #[test]
+    fn resync_breaks_a_tie_on_the_slot_order() {
+        // Two widths explain the whole blob here (11 and 0 — see the fixture),
+        // and the blob-wide test cannot rank them: it is one equation, so it
+        // pins one unknown and no more. Measured on the user's captures, that
+        // is not academic — the live ref 46551 left *seven* widths standing
+        // (2, 29, 35, 41, 47, 53, 59) and the resync gave up on all nine
+        // bodies carrying it. The captured server writes its sections in
+        // ascending slot order (7117 records, 188 sections, none unsorted), so
+        // that order ranks the survivors: only width 11 keeps 6 < 18 < 20.
+        let raw = full_body_with_shadowed_unroutable(5);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert!(info.fully_parsed);
+        assert_eq!(
+            info.recovered_body,
+            Some(RecoveredItemBody {
+                ref_id: UNROUTABLE,
+                body_len: 11,
+            })
+        );
+        let slots: Vec<u8> = info
+            .inventory
+            .expect("inventory")
+            .iter()
+            .map(|item| item.slot)
+            .collect();
+        assert_eq!(slots, vec![6, 18, 20]);
+    }
+
+    #[test]
+    fn resync_declines_when_both_widths_keep_the_slot_order() {
+        // Same two explanations, but the shadow record sits in slot 19 —
+        // between the offender's 18 and the real 20 — so *both* readings are
+        // ascending and the tie-break has nothing to rank. The resync must
+        // then decline exactly as it does today rather than take the first
+        // width that fits: the slot order ranks candidates, it does not
+        // license a guess.
+        let raw = full_body_with_shadowed_unroutable(19);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.recovered_body, None);
+        assert_eq!(info.failed_stage, Some("inventory"));
+        let stop = info.item_stop.expect("stop recorded");
+        assert_eq!(stop.ref_id, UNROUTABLE);
+        assert_eq!(stop.index, 1);
+        let items = info.inventory.expect("inventory");
+        assert_eq!(items.len(), 1, "the record before the offender survives");
+        assert_eq!(items[0].ref_id, SWORD);
     }
 
     #[test]
