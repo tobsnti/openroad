@@ -120,11 +120,20 @@ const SIGN_UNIQUE: &str = "media://interface/minimap/mm_sign_unique.ddj";
 /// like `mm_sign_character`.
 const SIGN_PARTY: &str = "media://interface/minimap/mm_sign_party.ddj";
 const SIGN_PARTY_ARROW: &str = "media://interface/minimap/mm_sign_partyarrow.ddj";
+/// The quest-mark pair, from the same undrawn set, and drawn at *their* own
+/// DDS header sizes rather than the party pair's: the user's PK2 has
+/// `mm_sign_questnpc.ddj` at 16x16 and `mm_sign_questarrow.ddj` at 32x32,
+/// twice the party dot and arrow. Fed by `0x30D6` (`net::quest`).
+const SIGN_QUEST: &str = "media://interface/minimap/mm_sign_questnpc.ddj";
+const SIGN_QUEST_ARROW: &str = "media://interface/minimap/mm_sign_questarrow.ddj";
 
 /// Sign art sizes (window-space px): 8x8 dots, 12x12 unique, 16x16 arrow.
 const DOT_SIZE: f32 = 8.0;
 const UNIQUE_DOT_SIZE: f32 = 12.0;
 const ARROW_SIZE: f32 = 16.0;
+/// The quest signs' own DDS header sizes (see [`SIGN_QUEST`]).
+const QUEST_SIGN_SIZE: f32 = 16.0;
+const QUEST_ARROW_SIZE: f32 = 32.0;
 
 /// AREA_NAME FontColor from the resinfo (ARGB 255,239,218,164).
 const AREA_NAME_COLOR: Color = Color::srgb_u8(239, 218, 164);
@@ -150,6 +159,45 @@ const DOT_POOL_SIZE: usize = 64;
 /// share the entity-dot pool: a member out of view still draws, as a rim
 /// arrow, whereas an entity out of view is simply culled.
 const PARTY_POOL_SIZE: usize = 8;
+/// Sized to the eight distinct quest marks the capture shows one server
+/// placing (`packet_dump/0x30d6.log`, 294 bodies / 8 targets).
+const QUEST_POOL_SIZE: usize = 8;
+
+/// One rim-clamped sign pool: which [`MapMarkers`] kind it draws, how many
+/// slots it keeps, and the art with its own draw size.
+///
+/// Idea: party signs and quest pins are the same job — a marker that stays
+/// visible as a rim arrow when it leaves the viewport — differing only in art
+/// and slot count, so they share one pool mechanism and this table is the
+/// single place that says what is pooled. The sizes are each texture's own
+/// DDS header size in the user's PK2, not one shared number.
+struct SignPool {
+    kind: MarkerKind,
+    slots: usize,
+    dot: &'static str,
+    dot_size: f32,
+    arrow: &'static str,
+    arrow_size: f32,
+}
+
+const SIGN_POOLS: [SignPool; 2] = [
+    SignPool {
+        kind: MarkerKind::Party,
+        slots: PARTY_POOL_SIZE,
+        dot: SIGN_PARTY,
+        dot_size: DOT_SIZE,
+        arrow: SIGN_PARTY_ARROW,
+        arrow_size: ARROW_SIZE,
+    },
+    SignPool {
+        kind: MarkerKind::Quest,
+        slots: QUEST_POOL_SIZE,
+        dot: SIGN_QUEST,
+        dot_size: QUEST_SIGN_SIZE,
+        arrow: SIGN_QUEST_ARROW,
+        arrow_size: QUEST_ARROW_SIZE,
+    },
+];
 
 /// Displayed-coordinate origin: game coords are world units / 10, offset so
 /// that 0 sits at region x 135 / z 92 (the vanilla sector formula).
@@ -185,8 +233,8 @@ pub struct MinimapAssets {
     npc: Handle<Image>,
     other_player: Handle<Image>,
     unique: Handle<Image>,
-    party: Handle<Image>,
-    party_arrow: Handle<Image>,
+    /// Per `SIGN_POOLS` entry, its `(dot, arrow)` pair — same order.
+    signs: [(Handle<Image>, Handle<Image>); SIGN_POOLS.len()],
 }
 
 // --- Markers ----------------------------------------------------------------
@@ -219,11 +267,14 @@ pub struct MinimapTile {
 /// One slot of the entity-dot pool.
 #[derive(Component)]
 pub struct MinimapDot;
-/// One slot of the party-sign pool. Separate from [`MinimapDot`] because a
-/// party member outside the viewport still draws (clamped to the rim as an
-/// arrow) instead of being culled.
+/// One slot of a sign pool, for the kind it was spawned for. Separate from
+/// [`MinimapDot`] because a party member or quest target outside the viewport
+/// still draws (clamped to the rim as an arrow) instead of being culled.
 #[derive(Component)]
-pub struct MinimapPartySign;
+pub struct MinimapMarkerSign(
+    /// Index into `SIGN_POOLS` — the pool this slot was spawned for.
+    pub usize,
+);
 #[derive(Component)]
 pub struct MinimapArrow;
 #[derive(Component, Default, Clone)]
@@ -428,8 +479,7 @@ pub fn spawn_minimap(
         npc: asset_server.load(SIGN_NPC),
         other_player: asset_server.load(SIGN_OTHER_PLAYER),
         unique: asset_server.load(SIGN_UNIQUE),
-        party: asset_server.load(SIGN_PARTY),
-        party_arrow: asset_server.load(SIGN_PARTY_ARROW),
+        signs: SIGN_POOLS.map(|pool| (asset_server.load(pool.dot), asset_server.load(pool.arrow))),
     });
 
     commands
@@ -675,23 +725,26 @@ pub fn populate_minimap_viewport(
                         Pickable::IGNORE,
                     ));
                 }
-                for _ in 0..PARTY_POOL_SIZE {
-                    parent.spawn((
-                        MinimapPartySign,
-                        ImageNode {
-                            image_mode: NodeImageMode::Stretch,
-                            ..default()
-                        },
-                        Node {
-                            position_type: PositionType::Absolute,
-                            ..default()
-                        },
-                        // above the entity dots: a party member must not be
-                        // hidden under a monster dot on the same pixel
-                        ZIndex(2),
-                        Visibility::Hidden,
-                        Pickable::IGNORE,
-                    ));
+                for (pool_index, pool) in SIGN_POOLS.iter().enumerate() {
+                    for _ in 0..pool.slots {
+                        parent.spawn((
+                            MinimapMarkerSign(pool_index),
+                            ImageNode {
+                                image_mode: NodeImageMode::Stretch,
+                                ..default()
+                            },
+                            Node {
+                                position_type: PositionType::Absolute,
+                                ..default()
+                            },
+                            // above the entity dots: a party member or quest
+                            // target must not be hidden under a monster dot
+                            // on the same pixel
+                            ZIndex(2),
+                            Visibility::Hidden,
+                            Pickable::IGNORE,
+                        ));
+                    }
                 }
                 parent.spawn((
                     MinimapArrow,
@@ -1018,48 +1071,49 @@ pub fn update_minimap_dots(
     }
 }
 
-/// Where one party marker draws inside the round viewport.
+/// Where one pooled marker sign draws inside the round viewport.
 ///
-/// Idea: a party member is not an entity dot. An entity outside the hole is
-/// simply culled, but a party member out of view is the case the player most
-/// wants to see — which is what `mm_sign_partyarrow.ddj` exists for. The RE
-/// doc reads the four `*arrow` sign textures as "rim-clamped direction
-/// indicators for off-map targets" (`docs/re/ui/hud-minimap.md` §4, `[S]`),
-/// and that is what this implements: inside the hole the 8x8 dot at the true
-/// position, outside it the 16x16 arrow pushed back onto the rim along the
-/// same bearing, rotated to point at the member.
+/// Idea: a pooled sign is not an entity dot. An entity outside the hole is
+/// simply culled, but a party member or quest target out of view is the case
+/// the player most wants to see — which is what `mm_sign_partyarrow.ddj` and
+/// `mm_sign_questarrow.ddj` exist for. The RE doc reads the four `*arrow`
+/// sign textures as "rim-clamped direction indicators for off-map targets"
+/// (`docs/re/ui/hud-minimap.md` §4, `[S]`), and that is what this implements:
+/// inside the hole the dot at the true position, outside it the arrow pushed
+/// back onto the rim along the same bearing, rotated to point at the target.
 ///
-/// `radius` is the hole's radius; both returned coordinates are viewport-space
-/// centres, like [`update_minimap_dots`] produces.
-fn party_sign_placement(dx: f32, dy: f32, radius: f32) -> PartySignPlacement {
+/// `radius` is the hole's radius; `pool` supplies the two art sizes, which
+/// differ per kind. Both returned coordinates are viewport-space centres, like
+/// [`update_minimap_dots`] produces.
+fn marker_sign_placement(dx: f32, dy: f32, radius: f32, pool: &SignPool) -> MarkerSignPlacement {
     let distance = (dx * dx + dy * dy).sqrt();
     // Half the arrow, so a rim-clamped arrow sits fully inside the hole
     // instead of half-way under the frame ring.
-    let rim = (radius - ARROW_SIZE / 2.0).max(0.0);
+    let rim = (radius - pool.arrow_size / 2.0).max(0.0);
     if distance <= rim {
-        return PartySignPlacement {
+        return MarkerSignPlacement {
             dx,
             dy,
-            size: DOT_SIZE,
+            size: pool.dot_size,
             arrow: false,
             rotation: 0.0,
         };
     }
     // distance > rim >= 0 here, so it is never zero and the scale is finite.
     let scale = rim / distance;
-    PartySignPlacement {
+    MarkerSignPlacement {
         dx: dx * scale,
         dy: dy * scale,
-        size: ARROW_SIZE,
+        size: pool.arrow_size,
         arrow: true,
         // Screen y grows downward, so the bearing is measured against -dy.
         rotation: dx.atan2(-dy),
     }
 }
 
-/// Result of [`party_sign_placement`], in viewport-space offsets from centre.
+/// Result of [`marker_sign_placement`], in viewport-space offsets from centre.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct PartySignPlacement {
+struct MarkerSignPlacement {
     dx: f32,
     dy: f32,
     size: f32,
@@ -1067,12 +1121,15 @@ struct PartySignPlacement {
     rotation: f32,
 }
 
-/// Draw the party roster on the minimap (EP-14.4).
+/// Draw the pooled [`MapMarkers`] kinds on the minimap — the party roster
+/// (EP-14.4) and the server's quest marks (`0x30D6`).
 ///
-/// Positions come from `world_map::model::party_markers`, which folds
-/// `PartyRoster` into `MapMarkers` in the minimap's own mirrored-X global
-/// convention (`(-sro.x, sro.z)`), including the rule that a member inside a
-/// dungeon has no overworld position and is skipped.
+/// Positions come from `world_map::model`, which folds `PartyRoster` and
+/// `QuestMarks` into `MapMarkers` in the minimap's own mirrored-X global
+/// convention (`(-sro.x, sro.z)`), including the rule that a member or target
+/// inside a dungeon has no overworld position and is skipped. Which kinds draw
+/// here, and with what art, is `SIGN_POOLS`; a kind without a pool (the
+/// teleporter pins) stays a world-map-only layer.
 ///
 /// **With one deliberate exception**: a member who is spawned near us is drawn
 /// from their live `Transform` instead. The roster's position is only as fresh
@@ -1087,17 +1144,20 @@ struct PartySignPlacement {
 /// would be a duplicate. That filtering now happens once at the producer
 /// (`world_map::model::party_markers`) rather than here — the world map needed
 /// it too, and two copies of the same rule is one to forget.
-pub fn update_minimap_party_signs(
+pub fn update_minimap_marker_signs(
     state: Res<MinimapState>,
     origin: Res<WorldOrigin>,
     assets: Option<Res<MinimapAssets>>,
     markers: Option<Res<MapMarkers>>,
     player: Query<&Transform, With<Player>>,
     nearby: Query<(&DisplayName, &Transform), (With<RemoteEntity>, Without<Player>)>,
-    mut signs: Query<
-        (&mut Node, &mut ImageNode, &mut UiTransform, &mut Visibility),
-        With<MinimapPartySign>,
-    >,
+    mut signs: Query<(
+        &MinimapMarkerSign,
+        &mut Node,
+        &mut ImageNode,
+        &mut UiTransform,
+        &mut Visibility,
+    )>,
 ) {
     let (Some(assets), Some(markers)) = (assets, markers) else {
         return;
@@ -1111,32 +1171,43 @@ pub fn update_minimap_party_signs(
     let h = VIEWPORT_RECT.2 / 2.0;
     let k = ZOOM_LEVELS[state.zoom_idx] / REGION_SIZE;
 
-    let mut placements: Vec<PartySignPlacement> = Vec::new();
-    for marker in markers.0.iter() {
-        if marker.kind != MarkerKind::Party {
-            continue;
-        }
-        // Prefer a LIVE position when the member is spawned near us. The
-        // roster's position only moves when the server pushes a 0x3864
-        // type-6 kind-0x20 delta, every few seconds — which is why the dot
-        // visibly trailed a member standing right beside you while your own
-        // arrow moved smoothly. The join is the name, the same one the
-        // producer uses to leave the local player out.
-        let (mx, mz) = nearby
-            .iter()
-            .find(|(name, _)| name.0 == marker.name)
-            .map(|(_, transform)| player_global_xz(&origin, transform))
-            .unwrap_or((marker.gx, marker.gz));
-        let placement = party_sign_placement((mx - gx) * k, -(mz - gz) * k, h);
-        placements.push(placement);
-        if placements.len() >= PARTY_POOL_SIZE {
-            break;
+    // One queue per pool, in SIGN_POOLS order; a slot takes from its own.
+    let mut queues: [Vec<MarkerSignPlacement>; SIGN_POOLS.len()] =
+        std::array::from_fn(|_| Vec::new());
+    for (pool_index, pool) in SIGN_POOLS.iter().enumerate() {
+        for marker in markers.0.iter().filter(|m| m.kind == pool.kind) {
+            if queues[pool_index].len() >= pool.slots {
+                break;
+            }
+            // Party only: prefer a LIVE position when the member is spawned
+            // near us. The roster's position only moves when the server
+            // pushes a 0x3864 type-6 kind-0x20 delta, every few seconds —
+            // which is why the dot visibly trailed a member standing right
+            // beside you while your own arrow moved smoothly. The join is the
+            // name, the same one the producer uses to leave the local player
+            // out. A quest mark is a fixed target and has nothing live to
+            // prefer.
+            let (mx, mz) = if pool.kind == MarkerKind::Party {
+                nearby
+                    .iter()
+                    .find(|(name, _)| name.0 == marker.name)
+                    .map(|(_, transform)| player_global_xz(&origin, transform))
+                    .unwrap_or((marker.gx, marker.gz))
+            } else {
+                (marker.gx, marker.gz)
+            };
+            queues[pool_index].push(marker_sign_placement(
+                (mx - gx) * k,
+                -(mz - gz) * k,
+                h,
+                pool,
+            ));
         }
     }
 
-    let mut pending = placements.into_iter();
-    for (mut node, mut image_node, mut ui_transform, mut visibility) in signs.iter_mut() {
-        let Some(placement) = pending.next() else {
+    let mut pending = queues.map(|queue| queue.into_iter());
+    for (slot, mut node, mut image_node, mut ui_transform, mut visibility) in signs.iter_mut() {
+        let Some(placement) = pending[slot.0].next() else {
             if *visibility != Visibility::Hidden {
                 *visibility = Visibility::Hidden;
             }
@@ -1155,10 +1226,11 @@ pub fn update_minimap_party_signs(
             node.width = px_size;
             node.height = px_size;
         }
+        let (dot, arrow) = &assets.signs[slot.0];
         let image = if placement.arrow {
-            assets.party_arrow.clone()
+            arrow.clone()
         } else {
-            assets.party.clone()
+            dot.clone()
         };
         if image_node.image != image {
             image_node.image = image;
@@ -1184,22 +1256,23 @@ mod tests {
 
     /// EP-14.4: a member inside the hole is a dot at their true offset; one
     /// outside is the arrow, clamped to the rim on the same bearing. The
-    /// clamp uses `radius - ARROW_SIZE/2` so the arrow sits fully inside the
-    /// hole rather than half under the frame ring.
+    /// clamp uses `radius - arrow_size/2` so the arrow sits fully inside the
+    /// hole rather than half under the frame ring. Measured on the party pool
+    /// (`SIGN_POOLS[0]`), whose arrow is 16x16.
     #[test]
     fn a_party_member_out_of_view_becomes_a_rim_arrow_on_the_same_bearing() {
         let h = VIEWPORT_RECT.2 / 2.0;
         let rim = h - ARROW_SIZE / 2.0;
 
         // well inside: the plain dot, untouched position, no rotation
-        let inside = party_sign_placement(10.0, -4.0, h);
+        let inside = marker_sign_placement(10.0, -4.0, h, &SIGN_POOLS[0]);
         assert!(!inside.arrow);
         assert_eq!((inside.dx, inside.dy), (10.0, -4.0));
         assert_eq!(inside.size, DOT_SIZE);
         assert_eq!(inside.rotation, 0.0);
 
         // far away due north: clamped to the rim, still due north
-        let north = party_sign_placement(0.0, -10_000.0, h);
+        let north = marker_sign_placement(0.0, -10_000.0, h, &SIGN_POOLS[0]);
         assert!(north.arrow);
         assert_eq!(north.size, ARROW_SIZE);
         assert!((north.dx.abs()) < 1e-3);
@@ -1214,7 +1287,7 @@ mod tests {
 
         // the bearing survives the clamp: direction is preserved exactly
         let (dx, dy) = (300.0, 400.0);
-        let far = party_sign_placement(dx, dy, h);
+        let far = marker_sign_placement(dx, dy, h, &SIGN_POOLS[0]);
         assert!(far.arrow);
         assert!((far.dx / far.dy - dx / dy).abs() < 1e-4);
         assert!(((far.dx.powi(2) + far.dy.powi(2)).sqrt() - rim).abs() < 1e-3);
@@ -1226,15 +1299,15 @@ mod tests {
     #[test]
     fn the_arrow_rotation_follows_screen_space_not_world_space() {
         let h = VIEWPORT_RECT.2 / 2.0;
-        let north = party_sign_placement(0.0, -1000.0, h);
+        let north = marker_sign_placement(0.0, -1000.0, h, &SIGN_POOLS[0]);
         assert!(north.rotation.abs() < 1e-4, "north {}", north.rotation);
-        let east = party_sign_placement(1000.0, 0.0, h);
+        let east = marker_sign_placement(1000.0, 0.0, h, &SIGN_POOLS[0]);
         assert!(
             (east.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
             "east {}",
             east.rotation
         );
-        let south = party_sign_placement(0.0, 1000.0, h);
+        let south = marker_sign_placement(0.0, 1000.0, h, &SIGN_POOLS[0]);
         assert!((south.rotation.abs() - std::f32::consts::PI).abs() < 1e-4);
     }
 
@@ -1253,6 +1326,25 @@ mod tests {
         // like mm_sign_character.
         assert_eq!(DOT_SIZE, 8.0);
         assert_eq!(ARROW_SIZE, 16.0);
+    }
+
+    /// The quest signs are drawn at their own DDS header sizes, not the party
+    /// pair's: `mm_sign_questnpc.ddj` is 16x16 and `mm_sign_questarrow.ddj`
+    /// 32x32 in the user's PK2, twice the party dot and arrow. Reusing the
+    /// party numbers would halve both and no compile error would say so.
+    #[test]
+    fn the_quest_pool_draws_its_art_at_its_own_size() {
+        let quest = &SIGN_POOLS[1];
+        assert_eq!(quest.kind, MarkerKind::Quest);
+        assert_eq!((quest.dot_size, quest.arrow_size), (16.0, 32.0));
+        assert_eq!((DOT_SIZE, ARROW_SIZE), (8.0, 16.0), "the party pair");
+
+        // the bigger arrow clamps to a smaller rim, so it still fits the hole
+        let h = VIEWPORT_RECT.2 / 2.0;
+        let far = marker_sign_placement(0.0, -10_000.0, h, quest);
+        assert!(far.arrow);
+        assert_eq!(far.size, 32.0);
+        assert!((far.dy.abs() - (h - 16.0)).abs() < 1e-3, "dy {}", far.dy);
     }
 
     /// The window placement is a transcription of the v1.188 resinfo, so pin it
@@ -1456,7 +1548,7 @@ impl Plugin for MinimapPlugin {
                     update_minimap_area_name,
                     update_minimap_arrow,
                     update_minimap_dots,
-                    update_minimap_party_signs,
+                    update_minimap_marker_signs,
                     update_minimap_floor_badge,
                 )
                     .run_if(super::map_scenes),
