@@ -561,12 +561,15 @@ packets! {
     // `0xB150`/`0xB151` are wired, but ONLY their refusal arm has wire
     // evidence — the success and breakdown arms are read off the client that
     // answers them, which is why the presenter diffs the item instead of
-    // trusting a delta field. 0x7155/0xB155, socket 0x716A/0xB16A, the abort
-    // 0x3156 and the six unnamed neighbours stay unwired here (#757).
+    // trusting a delta field. `0x7155` is the four-tab window's half of the
+    // same grammar and is typed here (request only); its answer `0xB155`,
+    // socket 0x716A/0xB16A, the abort 0x3156 and the six unnamed neighbours
+    // stay unwired (#757).
     0x7150 => AlchemyReinforceRequest,
     0xB150 => AlchemyReinforceResponse,
     0x7151 => AlchemyStoneRequest,
     0xB151 => AlchemyStoneResponse,
+    0x7155 => Alchemy7155Request,
     0x7157 => AlchemyDismantleRequest,
     0xB157 => AlchemyDismantleResponse,
 
