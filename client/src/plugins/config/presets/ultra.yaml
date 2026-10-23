@@ -42,8 +42,10 @@ graphics:
     resource_spawns_per_frame: 24
   # measured a net win even on an iGPU (docs/perf-remote.md, vegetation overdraw)
   depth_prepass: true
-  # on, but withheld while depth_prepass is on (see graphics.rs)
-  foliage_alpha_to_coverage: true
+  # Off for the same measured reason as in high.yaml (thinner leaves, a fine
+  # checkerboard in the crowns), and here it was inert anyway: the coupling in
+  # graphics.rs withholds it while depth_prepass is on.
+  foliage_alpha_to_coverage: false
   shadows:
     enabled: true
     cascades: 4

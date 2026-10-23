@@ -41,8 +41,16 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
-  # leaf and grate edges dither across the MSAA samples
-  foliage_alpha_to_coverage: true
+  # Alpha-to-coverage is built and switchable, but it ships OFF: measured
+  # 2026-10-23 with grass in frame (foliage both, Foliage 12275), it makes the
+  # image worse — 40.31 % of the pixels in the tree crowns change, the leaves
+  # thin out into a fine checkerboard and the edge measure rises 3 %
+  # (21.454 vs 20.808). Mechanism: A2C turns partial alpha into MSAA coverage,
+  # and a mip-filtered leaf edge at distance has partial alpha everywhere the
+  # hard test at 0.5 still calls "fully there". The original tests hard, so
+  # this is also the closer behaviour. Turn it on to look at a leaf card close
+  # up — that case is unmeasured.
+  foliage_alpha_to_coverage: false
   shadows:
     enabled: true
     cascades: 2
