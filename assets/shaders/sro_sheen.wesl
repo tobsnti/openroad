@@ -30,6 +30,9 @@ import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
 import bevy_pbr::render::pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing};
 import bevy_pbr::render::mesh_view_bindings::{globals, view};
 
+@if(VISIBILITY_RANGE_DITHER)
+import bevy_pbr::render::pbr_functions::visibility_range_dither;
+
 struct SheenSettings {
     strength: f32,
     shiny_roughness: f32,
@@ -76,6 +79,12 @@ var env_sampler: sampler;
 @fragment
 fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var in = vertex_output;
+    // LOD crossfade, the same call bevy's own fragment entry makes first
+    // (`bevy_pbr-0.20.0/src/render/pbr.wesl:53`): without it a mesh part whose
+    // `VisibilityRange` is in its fade band (`commands::mesh_visibility_range`
+    // gives every part one) hard-cuts at the far edge instead of dithering out.
+    @if(VISIBILITY_RANGE_DITHER)
+    visibility_range_dither(in.position, in.visibility_range_dither);
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
     // the sampled diffuse alpha is the sheen mask
