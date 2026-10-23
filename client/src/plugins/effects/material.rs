@@ -160,7 +160,7 @@ fn texture_op_scale(op: u32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SroEffectMaterialKey {
     src_blend: u32,
     dst_blend: u32,
