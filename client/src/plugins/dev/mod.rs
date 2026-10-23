@@ -82,7 +82,7 @@ pub fn dev_windows_visible(visible: Res<DevWindowsVisible>) -> bool {
 /// ships today and `dev/lighting.rs` reads the same key in `Update`. `Z`, `N`
 /// and `L` are on the list because `SROptionSet.dat` gives ids 3012/3014/3033
 /// a default (`settings/keymap.rs`).
-pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 8] = [
+pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 9] = [
     KeyCode::KeyQ,
     KeyCode::KeyE,
     KeyCode::KeyT,
@@ -91,18 +91,30 @@ pub const DEV_HOTKEY_COLLISIONS: [KeyCode; 8] = [
     KeyCode::KeyZ,
     KeyCode::KeyN,
     KeyCode::KeyL,
+    // `Tab` joined this list when `switch_mode` moved into the gated block
+    // below: `SROptionSet.dat` id 3009 `KeyBerserkerMode` defaults to `Tab`
+    // and `hud::player_mini_info::berserk_hotkey` reads it, so in a play
+    // session the key belongs to the game, not to the mode switch.
+    KeyCode::Tab,
 ];
 
 /// The collisions the `dev_tools` gate does **not** cover: keys a dev system
 /// reads in every session, gated or not.
 ///
-/// `Tab` is the only one today. `switch_mode` (below) is registered
-/// unconditionally, and `SROptionSet.dat` id 3009 `KeyBerserkerMode` now
-/// defaults to `Tab` (`settings/keymap.rs`). 3009 has no consumer yet
-/// (`keymap.rs`'s `NOT_YET_WIRED`), so the clash is latent — the first system
-/// that reads the berserk binding inherits a silent `AppMode` flip, which is
-/// why it is named here rather than discovered then.
-pub const DEV_UNGATED_HOTKEY_COLLISIONS: [KeyCode; 1] = [KeyCode::Tab];
+/// **Empty today, and that is the point of the list.** Its one entry was
+/// `Tab`: `switch_mode` was registered unconditionally while
+/// `SROptionSet.dat` id 3009 `KeyBerserkerMode` defaults to `Tab`. That was
+/// recorded as *latent* because 3009 had no consumer — and it stopped being
+/// latent the moment `hud::player_mini_info::berserk_hotkey` started reading
+/// the binding and sending 0x70A7: one press then flipped `AppMode` **and**
+/// triggered berserk. The fix is the one the lists already provide for —
+/// `switch_mode` moved behind the `dev_tools` gate, so `Tab` is now an
+/// ordinary entry of [`DEV_HOTKEY_COLLISIONS`].
+///
+/// The list stays because the distinction is what keeps the gate honest: a dev
+/// system that *cannot* be gated (a startup hook, an unconditional observer)
+/// belongs here, and an empty list is the claim that there is no such system.
+pub const DEV_UNGATED_HOTKEY_COLLISIONS: [KeyCode; 0] = [];
 
 /// Whether the dev tooling may be registered at all — the key-driven systems
 /// **and** the egui windows and the corner button that toggles them.
@@ -158,12 +170,7 @@ impl Plugin for DevPlugin {
             // was unreachable at every build of this tree. It is inert without
             // `OPENROAD_SCREENSHOT`: `build` returns before adding a system
             // or a resource when the variable is unset.
-            .add_plugins(auto_screenshot::AutoScreenshotPlugin)
-            // Always on: the mode switch (Tab — the way *into* debug mode),
-            // which claims no letter a vanilla HUD toggle wants. The dev-window
-            // button moved into the gated block: it is chrome for tooling that
-            // no longer exists when `dev_tools` is off.
-            .add_systems(Update, switch_mode);
+            .add_plugins(auto_screenshot::AutoScreenshotPlugin);
         if app
             .world()
             .get_resource::<ClientConfig>()
@@ -185,6 +192,19 @@ impl Plugin for DevPlugin {
                 FpsGraphPlugin,
             ));
             app.add_systems(Update, (spawn_dev_windows_button, on_dev_windows_button));
+            // The mode switch (Tab — the way *into* fly/debug mode). It used to
+            // be registered unconditionally, on the premise that it "claims no
+            // letter a vanilla HUD toggle wants". That premise is gone: `Tab`
+            // is `KeyBerserkerMode`'s own default and the mini-info panel reads
+            // it, so an ungated switch meant one press both flipped `AppMode`
+            // and sent 0x70A7. Behind the gate the key belongs to the game in a
+            // play session, and to the tooling in a session that asked for it.
+            //
+            // Nothing is lost on the way in: the world scene already forces
+            // `AppMode::PlayMode` on entry (`scenes/world_scene.rs`,
+            // `enter_play_mode`, #199), so `Tab` was only ever the way *out* of
+            // play mode — which is a dev move.
+            app.add_systems(Update, switch_mode);
             // Both of these are bare-letter hotkey plugins: lighting adjusts
             // on E/T/U/I/P, the glass ball spawns on its own key.
             app.add_plugins((LightingPlugin, GlassballPlugin));
@@ -347,15 +367,18 @@ mod test {
         ] {
             assert!(DEV_HOTKEY_COLLISIONS.contains(&key), "{key:?}");
         }
-        // Tab (the mode switch) stays ungated and must not be in the list
-        assert!(!DEV_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
-        assert!(DEV_UNGATED_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+        // `Tab` is in the gated list since the mode switch moved behind the
+        // gate: `KeyBerserkerMode` reads it in a play session.
+        assert!(DEV_HOTKEY_COLLISIONS.contains(&KeyCode::Tab));
+        // and nothing is ungated any more — a dev system that cannot be gated
+        // would have to be listed, so an empty list is a claim, not an omission
+        assert!(DEV_UNGATED_HOTKEY_COLLISIONS.is_empty());
     }
 
     /// Every key a dev system reads must be listed once a keymap default
     /// claims it — otherwise the clash is only visible to whoever
     /// happens to press it. `Z`/`N`/`L` are read by `dev/lighting.rs` and
-    /// `environment/mod.rs`, `Tab` by the ungated `switch_mode`.
+    /// `environment/mod.rs`, `Tab` by `switch_mode` inside the gated block.
     #[test]
     fn the_keys_the_keymap_defaults_claim_are_all_listed() {
         use crate::plugins::settings::keymap::KEY_ACTIONS;
@@ -364,7 +387,7 @@ mod test {
             (KeyCode::KeyZ, &DEV_HOTKEY_COLLISIONS[..]),
             (KeyCode::KeyN, &DEV_HOTKEY_COLLISIONS[..]),
             (KeyCode::KeyL, &DEV_HOTKEY_COLLISIONS[..]),
-            (KeyCode::Tab, &DEV_UNGATED_HOTKEY_COLLISIONS[..]),
+            (KeyCode::Tab, &DEV_HOTKEY_COLLISIONS[..]),
         ] {
             // The premise: the key really is a keymap default now.
             assert!(

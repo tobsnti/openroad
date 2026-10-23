@@ -118,8 +118,11 @@ impl Plugin for WorldScenePlugin {
 /// nothing on screen naming the `Tab` that switches (`plugins/dev/mod.rs`
 /// `switch_mode`). Selecting `PlayMode` on entry is the smaller of the issue's
 /// two options and mirrors what the Skills test scene already does
-/// (`scenes/testing/skills.rs`); `Tab` still opts back into fly mode, and
-/// nothing else changes — `GameWorld` forces the follow camera on its own path.
+/// (`scenes/testing/skills.rs`); `Tab` still opts back into fly mode **when
+/// `dev_tools` is on** — the mode switch moved behind that gate once
+/// `KeyBerserkerMode` started reading the same key (`plugins/dev/mod.rs`,
+/// `DEV_HOTKEY_COLLISIONS`) — and nothing else changes: `GameWorld` forces the
+/// follow camera on its own path.
 fn enter_play_mode(mut next_mode: ResMut<NextState<crate::AppMode>>) {
     next_mode.set(crate::AppMode::PlayMode);
 }

@@ -541,10 +541,9 @@ mod tests {
     fn every_bound_key_is_either_consumed_or_declared_unwired() {
         /// Ids whose consumer does not exist yet. Every entry is a row the
         /// pane draws without effect; removing one means wiring it.
-        const NOT_YET_WIRED: [(u16, &str); 11] = [
+        const NOT_YET_WIRED: [(u16, &str); 10] = [
             (3006, "KeyQuest — no quest journal yet"),
             (3007, "KeyCommunity — no community window yet"),
-            (3009, "KeyBerserkerMode — no berserk trigger yet"),
             (3011, "KeyHelp — no help window yet"),
             (3013, "KeyMouseQuickSlot — no mouse quick-slot mode yet"),
             (3014, "KeySitStand — no sit/stand chain yet"),
@@ -621,12 +620,13 @@ mod tests {
     /// A missing entry is not cosmetic: `consumed()` falls back to searching for
     /// `key_for(<id>`, which a site calling `pressed(KEY_COS_RIDE)` never
     /// matches.
-    const KEY_CONSTS: [(u16, &str); 15] = [
+    const KEY_CONSTS: [(u16, &str); 16] = [
         (3001, "KEY_CHARACTER"),
         (3002, "KEY_INVENTORY"),
         (3004, "KEY_ACTION_PANEL"),
         (3003, "KEY_SKILL"),
         (3005, "KEY_PARTY"),
+        (3009, "KEY_BERSERKER_MODE"),
         (3008, "KEY_WORLD_MAP"),
         (3012, "KEY_VIEW_DROP_ITEM"),
         (3016, "KEY_COS_INFO"),
