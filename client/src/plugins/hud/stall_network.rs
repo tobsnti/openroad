@@ -40,6 +40,7 @@
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::hud_scale;
@@ -177,7 +178,14 @@ const BAR01: &str = "media://interface/ifcommon/com_bar01_left.ddj";
 const BUTTON: &str = "media://interface/ifcommon/com_button.ddj";
 const INNER_BOX_ART: &str = "media://interface/option/opt_inner_box_mid_up.ddj";
 
-const LABEL_FONT: f32 = 9.0;
+/// All 44 blocks of `ifstallnetwork.txt` and all 7 of
+/// `ifstallnetworkslot.txt` carry `FontIndex=0` = 9 pt = 12 px
+/// ([`font_index_px`]) — the scan button `UIIT_CTL_WARENETWORK_SCAN`
+/// (index on `:31`), the result caption `..._SCAN_RESULT` (`:126`) and the
+/// column heads with them. The 9 px here was the legend's *point* value used
+/// as pixels. Note the tree's own tightness: several of these statics are
+/// `...x11`, a pixel under their line, and `..._SCAN_WAREHOUSE` is `120x12`.
+const LABEL_FONT: f32 = font_index_px(0);
 
 /// A sortable column. `Item` is absent on purpose: its header is a `CIFStatic`,
 /// so the original ships **five** sort keys, not six.

@@ -52,7 +52,15 @@ use super::{ArenaRankRow, ArenaState};
 /// The two descriptors, as the exe spells them (`res_ui\<file>.2dt`).
 const RANK_DESCRIPTOR: &str = "media://res_ui/arena_game_rank.2dt";
 const SCORE_DESCRIPTOR: &str = "media://res_ui/arena_game_score.2dt";
-/// Where the descriptors' `Background` paths are rooted.
+/// Both sizes are **ours, and they have to be**: these are 4th-gen descriptors
+/// and the 2DT record carries no font field at all
+/// (`docs/formats/newinterface-2dt.md`, "No font field"), so there is no
+/// `FontIndex` to resolve the way the classic trees do
+/// (`assets::resinfo::interface_text::font_index_px`). The rank rows' four
+/// statics carry no `Text` key and no art either (`hud-arena-windows.md` §3.4),
+/// so the data is silent about this text twice over. 9 px for a rank row and
+/// 12 px for the strip's score is a choice against the authored `252x23` strip
+/// and the board's 5 rows; the original's sizes are UNKNOWN.
 const ROW_FONT: f32 = 9.0;
 const SCORE_FONT: f32 = 12.0;
 

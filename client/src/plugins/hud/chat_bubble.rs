@@ -19,6 +19,7 @@ use bevy::ui::{UiTargetCamera, UiTransform, Val2};
 
 use packets::agent::chat::ChatUpdate;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::camera::PlayerCamera;
 use crate::plugins::hud::world_anchor::project_world_anchor;
@@ -46,12 +47,18 @@ const MAX_LINES: usize = 2;
 /// dimension and are editor placeholders — so this is a choice anchored on
 /// the least arbitrary number available, not a recovered value.
 const MAX_TEXT_W: f32 = 310.0;
-/// Matches the chat log (`super::chat::ui::MESSAGE_FONT_SIZE`). **Ours**: the
-/// tree's `FontIndex=7` is unique to this widget in the whole resinfo corpus
-/// and no `FontSize` is bound anywhere, so the original's size is unknown.
-/// `docs/re/ui/hud-chat.md` records that `Media/fonts/` does ship real TTFs —
-/// revisit this size when the real face is wired.
-const FONT_SIZE: f32 = 12.0;
+/// The widget's own index, resolved. All three blocks of
+/// `ifchatbubblewindow.txt` carry `FontIndex=7` (`:12,31,50`) — the only
+/// out-of-range index in the whole 3740-attribute corpus, and unique to this
+/// widget — and [`font_index_px`] answers it with slot 0, 12 px: the size the
+/// 104 other `FontIndex` attributes in the nine chat trees carry. Same number
+/// as before and still the chat log's (`super::chat::ui::MESSAGE_FONT_SIZE`),
+/// now with an origin instead of a coincidence.
+///
+/// The out-of-range rule is **ours**, so what the original drew for index 7 is
+/// still unknown — as is the **face**: `docs/re/ui/hud-chat.md` records that
+/// `Media/fonts/` ships real TTFs; revisit when one is wired.
+const FONT_SIZE: f32 = font_index_px(7);
 /// Anchor height above the entity origin, above the nameplate's 23 so the two
 /// do not overlap. **Ours** — the original's offset is not in the data.
 const HEAD_OFFSET: f32 = 34.0;

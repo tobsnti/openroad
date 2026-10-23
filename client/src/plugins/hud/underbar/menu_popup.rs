@@ -90,8 +90,16 @@ const SEP_H: f32 = 4.0;
 /// Separators at authored y 186 / 345 / 404.
 const SEPARATOR_YS: [f32; 3] = [142.0, 301.0, 360.0];
 
-/// Label colour and size are not in the 2dt's usable fields; the row labels
-/// follow the bar's own text convention (`underbar/ui.rs`).
+/// Label colour and size are not in the 2dt's fields — and that is now a
+/// measurement, not an impression: the record carries **no font field at all**
+/// (`docs/formats/newinterface-2dt.md`, "No font field"), so this widget has no
+/// `FontIndex` to resolve the way the classic trees do
+/// (`assets::resinfo::interface_text::font_index_px`). 9 px inside the
+/// authored `82x10` label box is a choice; the original's size is UNKNOWN.
+///
+/// Note the box is **10** tall, so the classic 12 px line would not have fitted
+/// it anyway — this is the one of the three 4th-gen sites where the geometry
+/// argues against borrowing the classic size.
 const LABEL_COLOR: Color = Color::WHITE;
 const LABEL_FONT_SIZE: f32 = 9.0;
 

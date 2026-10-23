@@ -31,6 +31,7 @@
 use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::config::ClientConfig;
 
@@ -42,11 +43,14 @@ use crate::plugins::config::ClientConfig;
 const BODY_MAX_WIDTH: f32 = 600.0;
 const BODY_MIN_HEIGHT: f32 = 60.0;
 
-/// `FontIndex=0` on every block. The only font-index legend in the data
-/// (`server_dep/silkroad/event/event_interface.txt:2`) reads index 0 as "9",
-/// taken as a point size — [S], the resinfo `FontIndex` → face mapping is a
-/// lane-wide UNKNOWN.
-const FONT_SIZE: f32 = 9.0;
+/// `FontIndex=0` on every block of the family, body included
+/// (`GDR_NOTIFY_TXT`, `ifnotify.txt:6`, index on `:12`). The legend in
+/// `server_dep/silkroad/event/event_interface.txt:2` reads that slot as **9
+/// points**, which is 12 px at 96 dpi — the conversion
+/// [`font_index_px`] does and this constant used to skip, leaving the toast
+/// 25% under its authored size. The `600x60` body box swallows the extra
+/// pixels whole. The `FontIndex` → *face* mapping stays a lane-wide UNKNOWN.
+const FONT_SIZE: f32 = font_index_px(0);
 
 /// `GDR_NOTICE`'s `ClientRect="0,6,0,6"` — the family's only authored geometry.
 const NOTICE_PADDING: f32 = 6.0;
@@ -283,6 +287,16 @@ mod test {
         assert_eq!(ToastKind::QuestUpdate.vertical_padding(), 0.0);
         assert_eq!(ToastKind::Warning.vertical_padding(), 0.0);
         assert_eq!((BODY_MAX_WIDTH, BODY_MIN_HEIGHT), (600.0, 60.0));
+    }
+
+    /// The legend reads slot 0 as "9" **in points**, and the toast drew nine
+    /// pixels — a 25% shortfall with no cause but the missing conversion. Pinned
+    /// against the point value so the regression cannot come back looking
+    /// plausible.
+    #[test]
+    fn the_body_size_is_the_converted_slot_not_the_legends_point_value() {
+        assert_eq!(FONT_SIZE, 12.0);
+        assert_ne!(FONT_SIZE, 9.0, "9 is the point value of slot 0, not px");
     }
 
     /// The stack is an openroad choice, so pin only its invariants: the first

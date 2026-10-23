@@ -23,6 +23,7 @@ use bevy::ui::{Overflow, UiTargetCamera, UiTransform};
 use bevy::ui_widgets::Activate;
 
 use crate::assets::dof::JMXVDOF;
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::textdata::worldmap::DUNGEON_CENTER_REGION;
 use crate::assets::FontAssets;
 use crate::plugins::assets::sro::MediaArchive;
@@ -137,10 +138,20 @@ const QUEST_ARROW_SIZE: f32 = 32.0;
 
 /// AREA_NAME FontColor from the resinfo (ARGB 255,239,218,164).
 const AREA_NAME_COLOR: Color = Color::srgb_u8(239, 218, 164);
-// UNKNOWN (docs/re/ui/hud-minimap.md §9-U9): the resinfo carries only
-// `FontIndex=0` and never a size or a face, so both sizes below are invented.
-const AREA_FONT_SIZE: f32 = 10.0;
-const POS_FONT_SIZE: f32 = 9.0;
+/// One size for all four readouts, and it is the tree's. Every text block here
+/// carries `FontIndex=0` — `GDR_MINIMAP_TEXT_AREANAME` (`ifminimap.txt:82`,
+/// index on `:88`), `_TEXT_POS_X`/`_Y` (`:63,44`, indices on `:69,50`) and
+/// `_DUNGEON_FLOOR_INFO` (`:6`, index on `:12`) — and slot 0 of the ladder is
+/// 12 px ([`font_index_px`]). `hud-minimap.md` §9-U9 called both sizes invented
+/// because "the resinfo carries only `FontIndex=0`"; that index *is* the size
+/// once the ladder is read, and the area name's own `104x12` rect is exactly one
+/// 12 px line. What stays UNKNOWN is the **face**: no font file is bound
+/// anywhere in this tree.
+///
+/// The one thing the data does not corroborate: `_TEXT_POS_X`/`_Y` are `56x11`,
+/// the only text rects in the tree shorter than their own line. Nothing clips
+/// them, so a coordinate sits a window-space pixel lower than its box.
+const TEXT_FONT_SIZE: f32 = font_index_px(0);
 
 /// Map scale steps in window-space px per 1920-unit region (256 = the tiles'
 /// native resolution). The minimum must stay above half the viewport width
@@ -583,17 +594,17 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             }
             Pickable::IGNORE
         --
-            @label("", area_font, AREA_FONT_SIZE * s)
+            @label("", area_font, TEXT_FONT_SIZE * s)
             MinimapAreaText
             TextColor({AREA_NAME_COLOR})
             Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
         --
-            @label("", x_font, POS_FONT_SIZE * s)
+            @label("", x_font, TEXT_FONT_SIZE * s)
             MinimapPosXText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
         --
-            @label("", z_font, POS_FONT_SIZE * s)
+            @label("", z_font, TEXT_FONT_SIZE * s)
             MinimapPosZText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
@@ -623,7 +634,7 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             Visibility::Hidden
             Pickable::IGNORE
         --
-            @label("", floor_font, POS_FONT_SIZE * s)
+            @label("", floor_font, TEXT_FONT_SIZE * s)
             MinimapFloorText
             TextColor(Color::WHITE)
             Node {
@@ -1371,6 +1382,19 @@ mod tests {
         assert_eq!(ZOOM_IN_RECT, (107.0, 136.0, 20.0, 20.0)); // :120 _ZOOMIN
         assert_eq!(ZOOM_OUT_RECT, (90.0, 152.0, 20.0, 20.0)); // :101 _ZOOMOUT
         assert_eq!(MAP_BUTTON_RECT, (99.0, 47.0, 24.0, 24.0)); // :25 _BTN_TOG_MAP
+    }
+
+    /// The readouts' size comes out of the same blocks as their rects, and the
+    /// tree corroborates it: the area name's rect is `104x12`, exactly one 12 px
+    /// line. §9-U9 called both sizes invented because the blocks "carry only
+    /// `FontIndex=0`" — which *is* a size as soon as the ladder is read.
+    #[test]
+    fn the_readout_size_is_the_trees_font_index() {
+        assert_eq!(TEXT_FONT_SIZE, 12.0);
+        assert_eq!(TEXT_FONT_SIZE, AREA_NAME_RECT.3);
+        // the coordinate boxes are the one pair shorter than their own line
+        assert!(POS_X_RECT.3 < TEXT_FONT_SIZE);
+        assert_eq!(POS_X_RECT.3, POS_Z_RECT.3);
     }
 
     /// The second readout is `GDR_MINIMAP_TEXT_POS_Y` (ifminimap.txt:44), so it

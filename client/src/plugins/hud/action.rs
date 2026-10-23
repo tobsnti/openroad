@@ -38,6 +38,7 @@
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
@@ -74,7 +75,12 @@ const SIDE_TILES: [(f32, f32, f32, f32); 4] = [
 /// where the caption sits inside it is **ours** — the `CIFSubFrame` blocks carry
 /// a `Text=` key but no text rect.
 const CAPTION_INSET: (f32, f32, f32) = (10.0, 10.0, 16.0);
-const CAPTION_FONT: f32 = 9.0;
+/// The four captions are the sub-frames' own text, and the blocks that carry
+/// the keys carry the size with them: `GDR_ACTION_BG_{CTRL,SUM,BRU,ACT}`
+/// (`ifaction.txt:1330,1349,1368,1387`, indices on `:1336,1355,1374,1393`) are
+/// `FontIndex=0` = 9 pt = 12 px ([`font_index_px`]), as are all 68 blocks in
+/// the tree. The 9 px here was that legend's *point* value used as pixels.
+const CAPTION_FONT: f32 = font_index_px(0);
 
 /// Which of the four sub-frames a slot belongs to. The pair
 /// `(ActionPanel, index)` is the slot's identity — `CommandID` is not unique.

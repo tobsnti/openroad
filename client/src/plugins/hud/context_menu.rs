@@ -56,6 +56,12 @@ pub const MENU_W: f32 = 102.0;
 /// file; frame, fill and header are default white. Contrast on the fill tile is
 /// 11.0:1 (AAA), measured over the tile's 400 opaque pixels.
 const ROW_TEXT: Color = Color::srgb_u8(229, 184, 97);
+/// **Ours, and it has to be**: both instances are 4th-gen descriptors
+/// (`res_ui/targetmenu.2dt`, `res_ui/nifundermenubar.2dt`) and the 2DT record
+/// carries no font field at all (`docs/formats/newinterface-2dt.md`, "No font
+/// field"), so there is no `FontIndex` to resolve the way the classic trees do
+/// (`assets::resinfo::interface_text::font_index_px`). 9 px against the
+/// authored 20 px row is a choice; the original's size is UNKNOWN.
 const ROW_FONT: f32 = 9.0;
 
 const FRAME_DIR: &str = "media://interface/frame/ub_new_wnd_";
