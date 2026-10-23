@@ -524,12 +524,12 @@ fn rebuild_enchant_window(
 /// reference, so nothing is sent. A press while carrying belongs to
 /// [`place_drop_on_enchant`], so a drop is not double-handled.
 fn on_slot_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     cells: Query<&EnchantSlotCell>,
     inv_state: Res<InventoryState>,
     mut state: ResMut<EnchantState>,
 ) {
-    if press.event.button != PointerButton::Primary || inv_state.drag.is_some() {
+    if press.button != PointerButton::Primary || inv_state.drag.is_some() {
         return;
     }
     let Ok(cell) = cells.get(press.entity) else {

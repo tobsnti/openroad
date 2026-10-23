@@ -646,7 +646,7 @@ fn slot_rect(index: usize) -> (f32, f32, f32, f32) {
 ///   (`packets::agent::alchemy::ALCHEMY_MIN_FUSE_SLOTS`).
 /// - no agent connection — `UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY`.
 fn on_fuse_button(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     inventories: Query<&Inventory, With<Player>>,
     item_data: Res<ClientItemData>,
@@ -654,7 +654,7 @@ fn on_fuse_button(
     mut state: ResMut<AlchemyState>,
     mut history: ResMut<ChatHistory>,
 ) {
-    if press.event.button != PointerButton::Primary || state.pending {
+    if press.button != PointerButton::Primary || state.pending {
         return;
     }
     let Some(slots) = state.fuse_slots() else {
@@ -723,11 +723,11 @@ fn stone_type_of<'a>(rows: impl Iterator<Item = &'a ItemDataRow>) -> u8 {
 /// not something the server is told about — the whole placement path is
 /// client-only for the same reason (model.rs).
 fn on_page_tab_press(
-    press: On<Pointer<Press>>,
+    press: On<PointerPress>,
     tabs: Query<&AlchemyPageTab>,
     mut state: ResMut<AlchemyState>,
 ) {
-    if press.event.button != PointerButton::Primary {
+    if press.button != PointerButton::Primary {
         return;
     }
     let Ok(tab) = tabs.get(press.entity) else {
