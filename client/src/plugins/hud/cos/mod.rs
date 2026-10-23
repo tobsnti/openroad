@@ -1,3 +1,4 @@
+pub mod follow_ban;
 pub mod info;
 pub mod inventory;
 pub mod model;
@@ -54,6 +55,9 @@ impl Plugin for CosPlugin {
                     // stale-drop keeps Yes from naming a COS that is gone.
                     unsummon_confirm::drop_stale_unsummon_confirm,
                     unsummon_confirm::sync_cos_unsummon_confirm,
+                    // 0xB074's named refusal codes -> the original's own
+                    // sentences (additive to combat's log-only reader).
+                    follow_ban::report_action_refusals,
                 )
                     .run_if(
                         in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
