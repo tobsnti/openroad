@@ -82,6 +82,24 @@ pub struct GraphicsSettings {
     /// Particle effect quality — see [`EffectQuality`].
     #[serde(default)]
     pub effect_quality: EffectQuality,
+    /// Soft particles: how many world units before an opaque surface an
+    /// effect plate starts fading out, so smoke, fire and auras stop ending
+    /// in a straight line on the ground (`effects::EffectSoftFade`). 0 = off.
+    ///
+    /// Needs `depth_prepass`; without it the shader path is compiled out and
+    /// this value does nothing. Forced to 0 on `EffectQuality::Low` — effects
+    /// carry the frame's heaviest overdraw, and the cost here is one depth
+    /// read per effect fragment.
+    ///
+    /// Not transcribed from the original, which had no such parameter: a
+    /// deliberate addition under ADR-0009, so the number is a free choice and
+    /// is anchored rather than measured — the presets use 10, about half the
+    /// height of an unscaled ~19-unit character
+    /// (`scenes/intro_v2/character_select.rs:110`), which is the scale effect
+    /// plates are authored at. Whether that is the *best* band needs a
+    /// playtest. 0 (the default) is off. Live.
+    #[serde(default)]
+    pub effect_soft_fade: f32,
     /// The sun's lens flare (the original's Lens Flare option), composited
     /// from your own `Map.pk2` `sun/lens*` sprites
     /// (`environment/lens_flare.rs`). Six small additive quads plus a
