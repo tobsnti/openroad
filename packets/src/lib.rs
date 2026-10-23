@@ -141,17 +141,22 @@ macro_rules! packets_impl {
 /// built by us, so binding it for decoding too is what would make the client
 /// read an incoming frame with the wrong body. The same opcode may appear in
 /// both sections, once per direction.
+///
+/// The two sections are **one** optional group behind a single `;`, and they
+/// come in this order. A direction with nothing in it is written as an empty
+/// `inbound { }` rather than left out — macro_rules matches the rule as a
+/// whole, and two separately-optional sections would each have needed their
+/// own `;`, which is not how the registry below reads.
 macro_rules! packets {
     (
         $($opcode:literal => $name:ident),* $(,)?
-        $(; inbound { $($in_opcode:literal => $in_name:ident),* $(,)? })?
-        $(; outbound { $($out_opcode:literal => $out_name:ident),* $(,)? })?
+        $(; inbound { $($in_opcode:literal => $in_name:ident),* $(,)? }
+           outbound { $($out_opcode:literal => $out_name:ident),* $(,)? })?
     ) => {
         packets_impl! {
             all: [
                 $($name,)*
-                $($($in_name,)*)?
-                $($($out_name,)*)?
+                $($($in_name,)* $($out_name,)*)?
             ],
             decode: [
                 $($opcode => $name,)*
@@ -159,8 +164,7 @@ macro_rules! packets {
             ],
             encode: [
                 $($opcode => $name,)*
-                $($($in_opcode => $in_name,)*)?
-                $($($out_opcode => $out_name,)*)?
+                $($($in_opcode => $in_name,)* $($out_opcode => $out_name,)*)?
             ]
         }
     }
