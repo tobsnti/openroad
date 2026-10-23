@@ -21,14 +21,18 @@ use crate::scenes::testing::chat_ui::ChatUiPreviewPlugin;
 use crate::scenes::testing::choice_confirm_ui::ChoiceConfirmUiPreviewPlugin;
 use crate::scenes::testing::dungeons::DungeonsScenePlugin;
 use crate::scenes::testing::equipments::EquipmentsScenePlugin;
+use crate::scenes::testing::guild_storage_ui::GuildStorageUiPreviewPlugin;
 use crate::scenes::testing::inventory_ui::InventoryUiPreviewPlugin;
+use crate::scenes::testing::item_mall_ui::ItemMallUiPreviewPlugin;
 use crate::scenes::testing::mini_info_ui::MiniInfoUiPreviewPlugin;
 use crate::scenes::testing::minimap_ui::MinimapUiPreviewPlugin;
 use crate::scenes::testing::new_asset_loading::NewAssetLoadingScenePlugin;
 use crate::scenes::testing::npc_dialog_ui::NpcDialogUiPreviewPlugin;
 use crate::scenes::testing::particles::ParticleTestingScenePlugin;
+use crate::scenes::testing::party_matching_ui::PartyMatchingUiPreviewPlugin;
 use crate::scenes::testing::party_ui::PartyUiPreviewPlugin;
 use crate::scenes::testing::quest_reward_ui::QuestRewardUiPreviewPlugin;
+use crate::scenes::testing::skill_window_ui::SkillWindowUiPreviewPlugin;
 use crate::scenes::testing::skills::SkillsScenePlugin;
 use crate::scenes::testing::stall_ui::StallUiPreviewPlugin;
 use crate::scenes::testing::underbar_ui::UnderbarUiPreviewPlugin;
@@ -221,11 +225,23 @@ fn add_ui_previews(app: &mut App) {
     if wanted("stall") {
         app.add_plugins(StallUiPreviewPlugin);
     }
+    if wanted("guild_storage") {
+        app.add_plugins(GuildStorageUiPreviewPlugin);
+    }
+    if wanted("item_mall") {
+        app.add_plugins(ItemMallUiPreviewPlugin);
+    }
+    if wanted("skill_window") {
+        app.add_plugins(SkillWindowUiPreviewPlugin);
+    }
+    if wanted("party_matching") {
+        app.add_plugins(PartyMatchingUiPreviewPlugin);
+    }
 }
 
 /// Every name [`add_ui_previews`] knows, for the gallery runner and for the
 /// test that keeps the two in step.
-pub const UI_PREVIEW_NAMES: [&str; 15] = [
+pub const UI_PREVIEW_NAMES: [&str; 19] = [
     "char_select",
     "mini_info",
     "minimap",
@@ -241,6 +257,10 @@ pub const UI_PREVIEW_NAMES: [&str; 15] = [
     "world_map",
     "auto_potion",
     "stall",
+    "guild_storage",
+    "item_mall",
+    "skill_window",
+    "party_matching",
 ];
 
 #[allow(dead_code)]
