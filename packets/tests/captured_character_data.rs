@@ -11,7 +11,8 @@
 //! in the dump, so no ref resolves in a test run and every captured body takes
 //! the unroutable path (measured on 122 bodies: 17–107 items each, none empty).
 //! That is the half worth guarding — #425, a record whose width we cannot
-//! derive must not cost us the sections behind it. The anchor needs the unique
+//! derive must not cost us the sections behind it, up to and including the job
+//! and extras blocks at the very end of the record. The anchor needs the unique
 //! id, which a hintless scan cannot infer from these bodies (28–51 plausible
 //! positions each), so it comes from the `CelestialPosition` (0x3020) bodies
 //! captured alongside — a different opcode, never the body under test.
@@ -121,6 +122,15 @@ fn captured_character_bodies_keep_the_tail_behind_an_unroutable_record() {
                 info.name.as_deref().is_some_and(|name| !name.is_empty()),
                 "{at}: name lost"
             );
+            // Behind the name sit the job block and the account/session extras
+            // — the wire source for the hotkey bar, the auto-potion settings,
+            // the GM flag and the ridden transport. They need no item width,
+            // only the anchor, and are accepted solely when they land on the
+            // blob's last byte: measured 243/243 on this tree, carrying the
+            // same values the forward pass reads once the widths are known
+            // (local mirror `fixes/messbank_cdtail.py`, 2026-10-23).
+            assert!(info.job.is_some(), "{at}: job block lost");
+            assert!(info.extras.is_some(), "{at}: extras block lost");
 
             replayed += 1;
         }
