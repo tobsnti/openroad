@@ -59,6 +59,37 @@ key-driven, and ask a block for `entries.get("Rect")`.
 Malformed lines are skipped with a warning rather than being fatal: this is
 user-supplied PK2 data, and the corpus is known to contain malformed blocks.
 
+## `FontIndex` is a slot number, not a size
+
+A block's `FontIndex=INTEGER,"n"` picks one of five authored text slots. The
+ladder is itself data, in **points**:
+`Media/server_dep/silkroad/event/event_interface.txt:2` reads
+`//titlefont : 0 = "9", 1 = "8", 2 = "12", 3 = "11", 4 = "15"`. At 96 dpi
+points become pixels at x 4/3, so the slots are 12 / 10.67 / 16 / 14.67 / 20 px;
+openroad rounds the two fractional ones up to whole pixels.
+
+| `FontIndex` | data (pt) | openroad (px) | blocks in the corpus |
+|---:|---:|---:|---:|
+| 0 | 9 | 12 | 3547 |
+| 1 | 8 | 11 | 30 |
+| 2 | 12 | 16 | 156 |
+| 3 | 11 | 15 | 2 |
+| 4 | 15 | 20 | 2 |
+| 7 | — | 12 (slot 0) | 3 |
+
+Two consequences:
+
+* **The ladder is not ordered** (9, 8, 12, 11, 15). A higher index is not a
+  bigger font, so an out-of-range index cannot be clamped to the largest entry
+  without reading the index as a magnitude. openroad answers it with slot 0 —
+  the size the only real occurrences sit among: all three are `FontIndex=7` in
+  `ifchatbubblewindow.txt:12,31,50`, and the nine chat trees carry 107
+  `FontIndex` attributes in total, these three sevens and 104 zeros.
+* **A pixel size written by hand is a magic number with an extra step.** The
+  resolution lives in one place,
+  `client/src/assets/resinfo/interface_text::font_index_px`, and a pane that
+  transcribes its rects from a tree transcribes the index alongside them.
+
 ## Status in openroad
 
 `InterfaceTextLoader` is **not registered** (`client/src/assets/mod.rs:135-136`).
