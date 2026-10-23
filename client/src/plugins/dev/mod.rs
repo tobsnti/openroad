@@ -250,6 +250,9 @@ fn spawn_dev_windows_button(
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            // The 12 px label below is **ours**: this button only exists in the
+            // dev build, so no resinfo block names its size. It matches the
+            // ladder's slot 0 by coincidence, not by citation.
             // above the HUD (50), below the loading overlay (200)
             GlobalZIndex(150),
             UiTargetCamera(camera),

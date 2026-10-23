@@ -385,7 +385,17 @@ impl From<&Value> for Option<PathBuf> {
 /// points: `Media/server_dep/silkroad/event/event_interface.txt:2` reads
 /// `//titlefont : 0 = "9", 1 = "8", 2 = "12", 3 = "11", 4 = "15"`. Points to
 /// pixels at 96 dpi is x 4/3, so the five slots are 12 / 10.67 / 16 / 14.67 / 20
-/// px; the two fractional ones are rounded up to whole pixels, which is ours.
+/// px.
+///
+/// **The rounding of the two fractional slots is the original's, not ours.**
+/// Its font-slot constructor hands the point sizes to `CreateFontIndirectA` as
+/// `lfHeight = -MulDiv(pt, 96, 72)`, and `MulDiv` rounds to nearest — so 8 pt
+/// becomes 11 and 11 pt becomes 15 in the client itself. A negative `lfHeight`
+/// asks GDI for a character height, which for a TrueType face is the em size,
+/// which is what `FontSize::Px` means: the numbers transfer 1:1. (Decompile
+/// evidence recorded on the `port/07-hud-frame` lane, `1a19b65dc`; an earlier
+/// version of this comment called the rounding ours, which understated the
+/// source.)
 const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
 
 /// Pixel font size of a control whose resinfo block carries

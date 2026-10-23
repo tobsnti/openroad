@@ -4,6 +4,8 @@ use bevy::prelude::*;
 use bevy::text::{EditableText, FontSourceTemplate, TextCursorStyle};
 use bevy::ui_widgets::{Button, TextInput};
 
+use crate::assets::resinfo::interface_text::font_index_px;
+
 use super::focus_ring::FocusRing;
 use super::style::{ImageButtonStyle, PasswordEcho, TargetColor};
 
@@ -60,6 +62,15 @@ pub fn label(text: &str, font: Handle<Font>, font_size: f32) -> impl Scene {
 /// in the 20px input fields; `EditableText` has no vertical alignment API.
 const INPUT_PAD_TOP: f32 = 3.0;
 
+/// The two controls these widgets are built for are the login edits, and both
+/// name their size: `GDR_EDIT_ID` and `GDR_EDIT_PASS` carry `FontIndex=0`
+/// (`resinfo/pstitle.txt:161,142`, indices on `:167,148`; the europe tree says
+/// the same at `:63,44` -> `:69,50`), which is 12 px on the ladder
+/// ([`font_index_px`]). Same number as the literal it replaces — the point is
+/// that [`INPUT_PAD_TOP`] above now centres a size the data states instead of
+/// one this file picked.
+const EDIT_FONT_INDEX: usize = 0;
+
 /// Single-line text input. Click to focus, typing/caret/selection handled by
 /// bevy's `TextInputPlugin`.
 ///
@@ -76,7 +87,7 @@ pub fn text_input(font: Handle<Font>, tab: i32) -> impl Scene {
             height: percent(100),
             padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
         }
-        TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(12.0)} }
+        TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(font_index_px(EDIT_FONT_INDEX))} }
         TextColor(Color::WHITE)
         TargetColor(Srgba::WHITE)
         TextCursorStyle { color: Color::WHITE }
@@ -107,7 +118,7 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
                 height: percent(100),
                 padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
             }
-            TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(12.0)} }
+            TextFont { font: FontSourceTemplate::Handle({font}), font_size: {FontSize::Px(font_index_px(EDIT_FONT_INDEX))} }
             TextColor(Color::NONE)
             TextCursorStyle { color: Color::WHITE }
             TabIndex({tab})
@@ -122,7 +133,7 @@ pub fn password_input<M: Component + Default + Clone + Unpin>(
                 height: percent(100),
                 padding: {UiRect::top(Val::Px(INPUT_PAD_TOP))},
             }
-            TextFont { font: FontSourceTemplate::Handle({echo_font}), font_size: {FontSize::Px(12.0)} }
+            TextFont { font: FontSourceTemplate::Handle({echo_font}), font_size: {FontSize::Px(font_index_px(EDIT_FONT_INDEX))} }
             TextColor(Color::WHITE)
             // fade with the rest of the screen; the inner EditableText
             // must NOT get a TargetColor (its glyphs stay transparent so

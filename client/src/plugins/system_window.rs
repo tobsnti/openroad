@@ -28,6 +28,7 @@ use packets::agent::prelude::{
 };
 use packets::Packet;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::net::agent::AgentConnection;
@@ -48,6 +49,11 @@ use crate::scenes::SceneState;
 const BTN_X: f32 = 31.0;
 const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 24.0;
+/// All eight blocks of `ifsystemwnd.txt` carry `FontIndex=0` = 12 px
+/// ([`font_index_px`]), the five buttons included (indices on
+/// `:12,31,50,69,88`). Same number the literal had — the label now reads its
+/// size out of the same file as its rect and its colour.
+const BTN_FONT_INDEX: usize = 0;
 const BTN_Y_OPTION: f32 = 58.0;
 const BTN_Y_HELP: f32 = 92.0;
 const BTN_Y_RESTART: f32 = 159.0;
@@ -306,7 +312,7 @@ fn spawn_button<M: Send + Sync + 'static>(
                 Text::new(label),
                 TextFont {
                     font: font.into(),
-                    font_size: FontSize::Px(12.0),
+                    font_size: FontSize::Px(font_index_px(BTN_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(BTN_LABEL_COLOR),
@@ -519,7 +525,14 @@ fn spawn_countdown_overlay(
                 CountdownText,
                 Text::new(text.to_string()),
                 TextFont {
-                    font: font.into(),
+                    // 22 px is **ours**. The original ships the sentence
+                    // (`UIIT_MSG_LOGOUT_REMAIN_TIME`, "It will take %d seconds
+                    // to close the game.") but no control for it: there is no
+                    // countdown block in `ifsystemwnd.txt` — all eight are the
+                    // window, its five buttons and the close box — so there is
+                    // no `FontIndex` to read. This is a centred full-screen
+                    // overlay of our own, sized to be read across the screen
+                    // rather than inside a 24 px button.
                     font_size: FontSize::Px(22.0),
                     ..default()
                 },

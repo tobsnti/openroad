@@ -500,6 +500,11 @@ fn setup(
             // panel ties at 0 with the underbar buttons, flipping in front of
             // them depending on spawn order.
             GlobalZIndex(i32::MIN),
+            // The three text sizes in this panel are **ours** — it is a
+            // diagnostics readout on the `CameraLayers::Debug` layer, which the
+            // original has no counterpart for, so no resinfo block names a
+            // size. 18 px for the two headline rows, 13 for the dense stats
+            // block that has to fit a dozen lines.
             Name::from("Performance Panel"),
         ))
         .with_children(|children| {
