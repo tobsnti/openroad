@@ -46,6 +46,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::character_data::ItemTypeData;
@@ -236,13 +237,20 @@ pub fn sync_stock_modal(
         return;
     };
     let s = hud_scale();
-    let text_font = |size: f32| TextFont {
-        font: fonts.two.clone().into(),
-        font_size: bevy::text::FontSize::Px(text_px(size, s)),
-        // single-line data fields: the line box is the glyph box, or a 12-unit
-        // rect clips a 12 px line
-        line_height: bevy::text::LineHeight::Px(text_px(size, s)),
-        ..default()
+    // Every text in this box is a single line in a 12-to-14-unit rect, so the
+    // line box is the rounded size itself rather than bevy's 1.2 — the same
+    // pairing `minimap` and `underbar` use since the line-height slice, and
+    // `LineHeight` is its own component in 0.20, not a `TextFont` field.
+    let text_font = |size: f32| {
+        let px = text_px(size, s);
+        (
+            TextFont {
+                font: fonts.two.clone().into(),
+                font_size: bevy::text::FontSize::Px(px),
+                ..default()
+            },
+            LineHeight::Px(px),
+        )
     };
     let icon = item_data
         .get(&(prompt.ref_id as i32))
