@@ -71,6 +71,7 @@ impl Plugin for RenderControlsPlugin {
                     on_water_settings_changed,
                     on_unlit_materials_changed,
                     on_nature_view_distance_changed,
+                    on_cutout_alpha_mode_changed,
                 )
                     .run_if(resource_changed::<RenderDebugSettings>),
             )
@@ -134,6 +135,12 @@ fn seed_terrain_settings_from_config(
     settings.enable_shadows = config.graphics.shadows.enabled;
     settings.foliage_view_distance = config.graphics.foliage.view_distance;
     settings.render_scale = config.graphics.render_scale.factor();
+    // Start the switch where the game is, so flipping it once *is* the A/B
+    // pair. The production path withholds A2C while the depth prepass is on
+    // (`assets::apply_cutout_alpha_mode`); the seed deliberately copies the
+    // key, not that derivation — this panel is where that coupling has to be
+    // testable from both sides.
+    settings.foliage_alpha_to_coverage = config.graphics.foliage_alpha_to_coverage;
 }
 
 #[derive(Resource, Reflect, InspectorOptions)]
@@ -199,6 +206,17 @@ pub struct RenderDebugSettings {
     /// (smoke tails end where the original's did). Off = unbounded HDR
     /// accumulation (the previous behavior), for A/B.
     pub effect_ldr_additive: bool,
+    /// Alpha-to-coverage on cut-out materials (leaves, grass cards, grates),
+    /// live — the A/B instrument for `graphics.foliage_alpha_to_coverage`.
+    ///
+    /// The config key only reaches materials built after it changes, so
+    /// comparing it needs two processes, and two processes differ in pose,
+    /// particle state and tree sway by far more than the effect does (mean 37.4
+    /// against 4.1 on the crowns, PR #174). This switch rewrites the loaded
+    /// cut-outs instead, so the pair is one process one frame apart and the
+    /// noise floor is zero. Seeded from the config at startup; it writes the
+    /// same shared flag, so what streams in afterwards follows the switch.
+    pub foliage_alpha_to_coverage: bool,
     /// Terrain nav mesh debug lines + cursor hit marker (hotkey: T).
     pub render_navmesh: bool,
     /// Object (`.bms`) nav mesh debug lines: walkable triangles and
@@ -295,6 +313,7 @@ impl Default for RenderDebugSettings {
             effect_additive_intensity: 1.0,
             effect_time_scale: 1.0,
             effect_ldr_additive: true,
+            foliage_alpha_to_coverage: false,
             render_navmesh: false,
             render_object_navmesh: false,
             play_animations: true,
@@ -816,9 +835,14 @@ mod tests {
             .to_str()
             .expect("the example path is utf-8")
             .to_string();
-        let config = ClientConfig::from_file(&example).expect("config.example.yaml loads");
+        let mut config = ClientConfig::from_file(&example).expect("config.example.yaml loads");
+        // Flipped against the struct default on purpose: with both at `false`
+        // the assertion below would pass without the seeding running.
+        config.graphics.foliage_alpha_to_coverage =
+            !RenderDebugSettings::default().foliage_alpha_to_coverage;
         let expected_shadows = config.graphics.shadows.enabled;
         let expected_view_distance = config.graphics.foliage.view_distance;
+        let expected_a2c = config.graphics.foliage_alpha_to_coverage;
 
         // Precondition: the defaults really do differ from the shipped config,
         // or this test would pass without the seeding running at all.
@@ -836,7 +860,96 @@ mod tests {
         let settings = world.resource::<RenderDebugSettings>();
         assert_eq!(settings.enable_shadows, expected_shadows);
         assert_eq!(settings.foliage_view_distance, expected_view_distance);
+        // the A/B switch has to start where the game is, or flipping it once
+        // is not a pair
+        assert_eq!(settings.foliage_alpha_to_coverage, expected_a2c);
     }
+
+    /// The whole point of the switch: the materials that are **already
+    /// loaded** move, and the shared flag moves with them so what streams in
+    /// afterwards matches. Everything that is not a cut-out stays put — the
+    /// sheen exclusion is the one the build-time path makes too.
+    #[test]
+    fn the_dev_switch_rewrites_the_loaded_cutouts_and_the_shared_flag() {
+        use crate::assets::bmt::material::{CutoutAlphaToCoverage, CUTOUT_ALPHA_CUTOFF};
+        use crate::assets::bmt::sheen::SHEEN_ALPHA_CUTOUT;
+        use bevy::pbr::StandardMaterial;
+        use bevy::prelude::{AlphaMode, Assets};
+
+        let mut world = World::new();
+        world.insert_resource(RenderDebugSettings {
+            foliage_alpha_to_coverage: true,
+            ..RenderDebugSettings::default()
+        });
+        world.init_resource::<CutoutAlphaToCoverage>();
+        let mut materials = Assets::<StandardMaterial>::default();
+        let cutout = materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Mask(CUTOUT_ALPHA_CUTOFF),
+            ..Default::default()
+        });
+        let sheen = materials.add(StandardMaterial {
+            alpha_mode: AlphaMode::Mask(SHEEN_ALPHA_CUTOUT),
+            ..Default::default()
+        });
+        world.insert_resource(materials);
+
+        world
+            .run_system_once(on_cutout_alpha_mode_changed)
+            .expect("the system runs");
+
+        assert!(world.resource::<CutoutAlphaToCoverage>().enabled());
+        let materials = world.resource::<Assets<StandardMaterial>>();
+        assert_eq!(
+            materials.get(&cutout).unwrap().alpha_mode,
+            AlphaMode::AlphaToCoverage
+        );
+        assert_eq!(
+            materials.get(&sheen).unwrap().alpha_mode,
+            AlphaMode::Mask(SHEEN_ALPHA_CUTOUT),
+            "a sheen cut-out is a sheen mask, not transparency"
+        );
+    }
+}
+
+/// Applies `RenderDebugSettings::foliage_alpha_to_coverage` live: the shared
+/// flag for what loads next, and a rewrite of the cut-outs already loaded.
+///
+/// Separate system for the same parameter ceiling as the toggles above, and
+/// guarded on the value having actually moved — the panel's run condition
+/// fires on *any* field, and the rewrite walks every standard material.
+///
+/// The log line names the depth prepass because the production path withholds
+/// A2C while it is on (`assets::apply_cutout_alpha_mode`, measured: bevy's
+/// prepass does no coverage and discards A2C at 0.05, so a leaf fringe writes
+/// whole-pixel depth). This switch does not withhold it — forcing the pair
+/// that was never looked at is the point — so a measurement run has to be able
+/// to read which of the two states it is in.
+fn on_cutout_alpha_mode_changed(
+    settings: Res<RenderDebugSettings>,
+    cutouts: Res<crate::assets::bmt::material::CutoutAlphaToCoverage>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    // only for the log line, and optional so a world without the config (the
+    // tests below, a preview scene) still flips the switch
+    config: Option<Res<ClientConfig>>,
+    mut applied: Local<Option<bool>>,
+) {
+    let want = settings.foliage_alpha_to_coverage;
+    if *applied == Some(want) {
+        return;
+    }
+    *applied = Some(want);
+    cutouts.set(want);
+    let changed = crate::assets::bmt::material::retarget_cutout_materials(&mut materials, want);
+    info!(
+        "render debug: cut-out alpha-to-coverage {} ({changed} material(s) rewritten, \
+         depth prepass {})",
+        if want { "on" } else { "off" },
+        match config.map(|c| c.graphics.depth_prepass) {
+            Some(true) => "on — the production path would withhold this",
+            Some(false) => "off",
+            None => "unknown (no config)",
+        },
+    );
 }
 
 /// Applies `RenderDebugSettings::unlit_materials`, remembering which
