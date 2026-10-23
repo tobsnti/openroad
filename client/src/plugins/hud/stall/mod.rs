@@ -16,6 +16,8 @@ impl Plugin for StallPlugin {
         app.init_resource::<model::StallState>()
             .init_resource::<owner::RequestedStallTitle>()
             .init_resource::<stock::StockModal>()
+            .init_resource::<stock::StockAmount>()
+            .init_resource::<stock::StockPrice>()
             .add_message::<owner::OpenStallCommand>()
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_stall)
             .add_systems(PostUpdate, ui::despawn_closing_stall)
@@ -41,6 +43,9 @@ impl Plugin for StallPlugin {
                     stock::stock_drop_on_stall,
                     stock::clear_stock_with_stall,
                     stock::sync_stock_modal,
+                    // after the box exists, so the first frame already has
+                    // the prefilled amount in `StockAmount`
+                    stock::sync_stock_fields,
                 )
                     .chain()
                     .run_if(super::hud_scenes),
