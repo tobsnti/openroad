@@ -24,7 +24,8 @@ make ci   # check-target-dir + fmt-check + warnings + opcodes + re-tools
           # + reference-data + deny + test + build
 ```
 
-Run it before opening a PR, on the toolchain `rust-toolchain.toml` pins (currently **stable**).
+Run it before opening a PR, on the toolchain `rust-toolchain.toml` pins (currently **stable**,
+which has to be **1.97.1 or newer** — see `rust-version` in `Cargo.toml`).
 The PR template's Definition-of-Done checklist is the same gate spelled out step by step.
 
 The `.github/workflows/build-{linux,windows,macos}.yml` workflows cross-build the client

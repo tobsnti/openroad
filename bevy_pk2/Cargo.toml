@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Reader for SRO PK2 (JMXPACK) archives, exposed as a Bevy AssetReader."
 license.workspace = true
 

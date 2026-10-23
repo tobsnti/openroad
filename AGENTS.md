@@ -31,7 +31,8 @@
   legitimate; an unsourced, unexplained magic number is not. State either a value's origin or
   its rationale — and when a change departs from the original on purpose, say so and why in one
   line in the PR body.
-- This is a Rust workspace; the toolchain is pinned by `rust-toolchain.toml` (currently stable).
+- This is a Rust workspace; the toolchain is pinned by `rust-toolchain.toml` (currently stable),
+  and the measured floor is `rust-version = "1.97.1"` in `Cargo.toml`.
 - The primary client lives in `client/`.
 - PK2 reading is implemented in `bevy_pk2/`.
 - Tools and CLIs live in `tools/`.

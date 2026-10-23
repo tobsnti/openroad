@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Command-line tools for inspecting and converting SRO data formats."
 license.workspace = true
 

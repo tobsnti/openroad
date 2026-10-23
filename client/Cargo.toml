@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "The OpenRoad client: a Rust/Bevy clone of the Silkroad Online v1.188 client."
 license.workspace = true
 

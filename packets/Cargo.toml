@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Silkroad Online network packet types and opcode wiring."
 license.workspace = true
 
