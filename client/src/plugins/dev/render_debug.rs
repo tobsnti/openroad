@@ -526,15 +526,15 @@ fn on_settings_changed(
     // set_if_neq keeps unrelated settings changes from rewriting the buffer.
     if let Some(terrain_params) = terrain_params.as_mut() {
         use crate::assets::m::block_splat_material::{TerrainLightingMode, TerrainRenderParams};
-        // lightmap_enabled + shadow_strength are owned by
-        // environment::apply_render_mode (the vanilla/PBR hotkey-N switch),
-        // not this panel — carry the current values through the rebuild.
+        // lightmap_enabled is owned by environment::apply_render_mode (the
+        // vanilla/PBR hotkey-N switch) and slope_sampling by the config, not
+        // this panel — carry the current values through the rebuild.
         let lightmap_enabled = terrain_params.lightmap_enabled;
-        let shadow_strength = terrain_params.shadow_strength;
+        let slope_sampling = terrain_params.slope_sampling;
         terrain_params.set_if_neq(TerrainRenderParams {
             lightmap_flip_v: settings.terrain_lightmap_flip_v,
             lightmap_enabled,
-            shadow_strength,
+            slope_sampling,
             lighting_mode: match settings.terrain_lighting_mode {
                 0 => TerrainLightingMode::Dynamic,
                 _ => TerrainLightingMode::Baked,

@@ -62,3 +62,8 @@ graphics:
   lens_flare: false
   dungeon:
     max_lights: 8
+  # Slope-aware ground sampling off: on a GL-baseline GPU (what `auto` picks
+  # this tier for) the two extra texture samples per steep fragment are the
+  # last thing wanted. Cliffs keep the original's stretched top-down tile.
+  terrain:
+    slope_sampling: "off"

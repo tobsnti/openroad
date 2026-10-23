@@ -50,3 +50,6 @@ graphics:
   lens_flare: true
   dungeon:
     max_lights: 32
+  # Both side projections on steep ground, cross-faded by the normal.
+  terrain:
+    slope_sampling: full
