@@ -42,6 +42,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::plugins::camera::CameraLayers;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::hud::character_info::model::{balance_text, CharacterInfoState, PlayerStats};
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
 use crate::plugins::hud::flipbook::Flipbook;
 use crate::plugins::hud::game_window::scaled;
 use crate::plugins::hud::gauge::{gauge, gauge_fill_width};
@@ -50,6 +51,8 @@ use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::net::entities::NetworkId;
 use crate::plugins::player::Player;
+use crate::plugins::settings::keymap::KEY_BERSERKER_MODE;
+use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 use crate::plugins::ui_v2::widgets::label;
@@ -1161,7 +1164,7 @@ pub fn refresh_mini_info(
 
     // the activation button appears once the gauge is full
     for mut visibility in jahwan_button.iter_mut() {
-        *visibility = if vitals.berserk_pips >= 5 {
+        *visibility = if vitals.berserk_pips >= BERSERK_FULL_GAUGE {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1209,6 +1212,54 @@ pub fn update_jahwan_button(
     }
 }
 
+/// A full hwan gauge — five pips, and the point at which the original both
+/// shows the activation button and lets its key through.
+///
+/// The number is the original's own: `sro_client.exe@0x778ac0` reads the hwan
+/// counter at `character+0x886` and leaves immediately on `cmp byte [..], 5` /
+/// `jb`. One constant for the button and the key so the two cannot drift.
+pub const BERSERK_FULL_GAUGE: u8 = 5;
+
+/// Whether a berserk key press becomes a `0x70A7`.
+///
+/// Pure so the gate can be tested without a window, a connection or a world:
+/// the original's rule is "full gauge, otherwise nothing happens at all", and
+/// `typing` is openroad's own addition (every other shortcut refuses to fire
+/// while the chat line is open).
+pub fn berserk_hotkey_fires(pips: u8, pressed: bool, typing: bool) -> bool {
+    pressed && !typing && pips >= BERSERK_FULL_GAUGE
+}
+
+/// The original's berserk key (`KEY_BERSERKER_MODE`, TAB) — the same request
+/// the ring button sends, behind the same gate the original applies.
+///
+/// Why this exists: the gauge, the pips and the button were all here, but the
+/// key the original uses did nothing, so a player who plays like the original
+/// plays sees berserk simply not work. Measured on the original client
+/// (2026-10-02, capture through a proxy): gauge 5 -> three TAB presses, three
+/// `c2s 0x70A7` frames with body `01`; gauge 0 -> three presses, zero frames.
+/// Both halves are reproduced here — including the silence, which is also what
+/// the original shows when the *server* refuses (`0xB0A7` error codes 1..4 map
+/// to an empty string in `sro_client.exe@0x7baf3e`, so there is deliberately no
+/// message here either).
+pub fn berserk_hotkey(
+    keys: Res<ButtonInput<KeyCode>>,
+    options: Res<GameOptions>,
+    chat: Option<Res<ChatState>>,
+    vitals: Res<PlayerVitals>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    let pressed = options
+        .key_for(KEY_BERSERKER_MODE)
+        .is_some_and(|key| keys.just_pressed(key));
+    let typing = chat.is_some_and(|chat| chat.input_open);
+    if !berserk_hotkey_fires(vitals.berserk_pips, pressed, typing) {
+        return;
+    }
+    debug!("mini-info: berserk key pressed, sending 0x70A7");
+    send_hwan_activation(&conn);
+}
+
 fn send_hwan_activation(conn: &Query<&SilkroadConnection, With<AgentConnection>>) {
     let Ok(conn) = conn.single() else {
         warn!("mini-info: not sending berserk activation, no agent connection");
@@ -1222,18 +1273,60 @@ fn send_hwan_activation(conn: &Query<&SilkroadConnection, With<AgentConnection>>
     }
 }
 
-/// Apply 0xB0A7: the server's verdict on our 0x70A7. Only a failure is worth
-/// surfacing — the state change itself arrives as 0x304E (gauge) / 0x30DF
-/// (hwan level).
-pub fn on_hwan_action_response(mut reader: MessageReader<HwanActionResponse>) {
+/// Shown when the server refuses a berserk activation (0xB0A7 `result != 1`).
+///
+/// The refusal's `u16` is appended **verbatim**, never translated: no source
+/// names that value space, so a sentence like "your gauge is not full" would
+/// be invented. Same rule as the exchange invite refusal and the stall buyer
+/// flow, whose codes are equally unsourced.
+pub const BERSERK_REFUSED_NOTICE: &str = "Berserk was refused by the server.";
+
+/// Apply 0xB0A7: the server's verdict on our 0x70A7.
+///
+/// A refusal has to reach the **player**, not just the log. The button is only
+/// offered at a full gauge (`berserk_pips >= 5`, seeded from the server's own
+/// `CHARACTER_DATA`), so from where the player sits a refused press is a
+/// button that does nothing at all — which is exactly how it was reported
+/// ("berserk still doesn't work").
+///
+/// Live capture 2026-10-02 against a vSRO 1.188 server (character `gs4s3at4`):
+/// the server sent `berserk_points = 5` of 5 in `0x3013`, changed it for the
+/// next 95 s with neither `0x304E` type 4 nor `0x30DF`, and then answered two
+/// presses of `0x70A7 01` with `0xB0A7 02 03 00` — refusal, code 3. Both were
+/// invisible to the player; the only trace was a `warn!` in the log.
+///
+/// **What code 3 means is [U]** — nothing in the corpus names it — and this
+/// change does not pretend otherwise: it shows the number. The original does
+/// the same thing, one step further: `sro_client.exe@008a7a20` reads the
+/// `u16` and hands it straight to the message box
+/// (`FUN_00778190(0x1a, code, …)`). Swallowing it was a deviation from the
+/// reference client, not a design choice.
+///
+/// Success stays silent on purpose — the state change itself arrives as
+/// 0x304E (gauge) / 0x30DF (hwan level).
+pub fn on_hwan_action_response(
+    mut reader: MessageReader<HwanActionResponse>,
+    mut history: Option<ResMut<ChatHistory>>,
+) {
     for msg in reader.read() {
         if msg.is_success() {
             debug!("mini-info: berserk activation accepted");
-        } else {
-            warn!(
-                "mini-info: berserk activation refused (result {}, error {:?})",
-                msg.result, msg.error_code
-            );
+            continue;
+        }
+        warn!(
+            "mini-info: berserk activation refused (result {}, error {:?})",
+            msg.result, msg.error_code
+        );
+        let text = match msg.error_code {
+            Some(code) => format!("{BERSERK_REFUSED_NOTICE} (code {code:#06x})"),
+            None => BERSERK_REFUSED_NOTICE.to_string(),
+        };
+        // `ChatHistory` is optional for the reason the party-matching acks
+        // give: the headless netcheck harness builds no HUD, and Bevy panics a
+        // schedule whose `ResMut` is missing rather than skipping the system.
+        match &mut history {
+            Some(history) => history.push(ChatLine::system(text)),
+            None => info!("mini-info (headless): {text}"),
         }
     }
 }
@@ -1577,6 +1670,8 @@ pub fn update_caution_overlays(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use packets::NetworkExt;
 
     /// The panel is the one place in the HUD where the tree names **two**
     /// slots: the HP/MP overlays are its only `FontIndex=1` blocks and the
@@ -1590,6 +1685,45 @@ mod tests {
         assert!(BAR_FONT_SIZE < DRAWER_FONT_SIZE);
         assert_eq!(HP_TEXT_RECT.3, 12.0);
         assert_eq!(CINFO_ROW_H, 12.0);
+    }
+
+    /// The berserk key reproduces the original's gate exactly: a full gauge,
+    /// or nothing happens at all — not a message, not a packet.
+    ///
+    /// Measured on the original client (2026-10-02, capture through a proxy):
+    /// gauge 5 -> three TAB presses -> three `c2s 0x70A7` with body `01`;
+    /// gauge 0 -> the same three presses -> zero frames. The binary is the
+    /// same rule: `sro_client.exe@0x778ac9` is `cmp byte [character+0x886], 5`
+    /// followed by `jb`.
+    #[test]
+    fn the_berserk_key_fires_only_on_a_full_gauge() {
+        assert!(berserk_hotkey_fires(BERSERK_FULL_GAUGE, true, false));
+        // a gauge above full is still full
+        assert!(berserk_hotkey_fires(BERSERK_FULL_GAUGE + 4, true, false));
+        for pips in 0..BERSERK_FULL_GAUGE {
+            assert!(
+                !berserk_hotkey_fires(pips, true, false),
+                "a gauge of {pips} must send nothing"
+            );
+        }
+    }
+
+    /// Red controls for the two inputs that are not the gauge: no press means
+    /// no packet, and the key never fires while the chat line is open — the
+    /// same rule every other shortcut follows (`cos_command.rs`).
+    #[test]
+    fn the_berserk_key_stays_silent_without_a_press_or_while_typing() {
+        assert!(!berserk_hotkey_fires(BERSERK_FULL_GAUGE, false, false));
+        assert!(!berserk_hotkey_fires(BERSERK_FULL_GAUGE, true, true));
+        assert!(!berserk_hotkey_fires(BERSERK_FULL_GAUGE, false, true));
+    }
+
+    /// The button and the key must agree on what "full" means, and the ring
+    /// must have exactly that many pips to fill — one constant, three readers.
+    #[test]
+    fn the_button_the_key_and_the_pip_row_share_one_full_gauge() {
+        assert_eq!(BERSERK_FULL_GAUGE, 5);
+        assert_eq!(PIP_POSITIONS.len(), BERSERK_FULL_GAUGE as usize);
     }
 
     /// The hwan aura is the one thing `PlayerVitals::hwan_level` (0x30DF) can
@@ -1886,6 +2020,95 @@ mod tests {
         .add_systems(Update, (wire_statup_button, refresh_statup_button));
         app.update();
     }
+
+    /// The captured refusal body, verbatim from
+    /// `packet_dump/0xb0a7.log` (2026-10-02T13:09:36.136Z, against a live
+    /// vSRO 1.188 server): `result = 2`, `error_code = 3`. The same three bytes
+    /// arrived again 2.3 s later for the player's second press.
+    const CAPTURED_REFUSAL: [u8; 3] = [0x02, 0x03, 0x00];
+
+    /// A success body is a single byte — the error code is conditional
+    /// (`sro_client.exe@008a7a20` reads the `u16` only when the first byte is
+    /// not 1).
+    const CAPTURED_SUCCESS_SHAPE: [u8; 1] = [0x01];
+
+    fn chat_lines(app: &App) -> Vec<String> {
+        app.world()
+            .resource::<ChatHistory>()
+            .iter()
+            .map(|line| line.display())
+            .collect()
+    }
+
+    fn app_with(body: &[u8]) -> App {
+        let packet = Packet::deserialize(0xB0A7, Bytes::copy_from_slice(body))
+            .expect("0xB0A7 is registered");
+        let mut app = App::new();
+        app.init_resource::<ChatHistory>()
+            .add_network_events()
+            .add_systems(Update, on_hwan_action_response);
+        app.world_mut().write_message(packet);
+        app.update();
+        app
+    }
+
+    #[test]
+    fn a_refused_berserk_activation_reaches_the_player() {
+        // RED before this change: the handler wrote a `warn!` and nothing
+        // else, so the chat log stayed empty and the player saw a button that
+        // did nothing. Reported as "berserk still doesn't work".
+        let app = app_with(&CAPTURED_REFUSAL);
+        let lines = chat_lines(&app);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "the refusal must reach the player: {lines:?}"
+        );
+        assert!(
+            lines[0].contains(BERSERK_REFUSED_NOTICE),
+            "the line must say what failed: {lines:?}"
+        );
+        assert!(
+            lines[0].contains("0x0003"),
+            "the server's code is shown verbatim, not translated: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_accepted_berserk_activation_stays_silent() {
+        // Positive control. Without it the test above would also pass on a
+        // handler that announces every response, which would put a line in the
+        // chat log on every successful berserk.
+        let app = app_with(&CAPTURED_SUCCESS_SHAPE);
+        assert!(
+            chat_lines(&app).is_empty(),
+            "success is carried by 0x304E/0x30DF, not by a notice"
+        );
+    }
+
+    #[test]
+    fn a_refusal_without_a_code_still_says_something() {
+        // `error_code` is conditional on the wire, so a refusal can arrive
+        // without one. The player still has to learn that the press failed.
+        let mut app = App::new();
+        app.init_resource::<ChatHistory>()
+            .add_message::<HwanActionResponse>()
+            .add_systems(Update, on_hwan_action_response);
+        app.world_mut().write_message(HwanActionResponse {
+            result: 2,
+            error_code: None,
+        });
+        app.update();
+
+        let lines = chat_lines(&app);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(BERSERK_REFUSED_NOTICE));
+        assert!(
+            !lines[0].contains("code"),
+            "no code arrived, so none is invented: {lines:?}"
+        );
+    }
 }
 
 /// Self-registration for the player mini-info panel (#558). The HUD registry holds one line per
@@ -1929,6 +2152,16 @@ impl Plugin for PlayerMiniInfoPlugin {
                     .run_if(
                         in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
                     ),
+            )
+            // The berserk key only in the real world — the offline UI preview
+            // has no agent connection to send to — and never while a text
+            // field has focus, like every other shortcut.
+            .add_systems(
+                Update,
+                berserk_hotkey.run_if(
+                    in_state(SceneState::GameWorld)
+                        .and_then(not(crate::plugins::settings::keymap::text_field_focused)),
+                ),
             );
     }
 }

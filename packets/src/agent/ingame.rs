@@ -2980,15 +2980,27 @@ impl EmoteRequest {
 /// One byte. The original's builder writes exactly one
 /// (`sro_client.exe@0081e690`: `FUN_00841780(0x70a7,…)` opens the packet at
 /// `:21` and `FUN_00508fe0(&stack0x00000004,1)` at `:30` writes the byte it was
-/// handed by its caller). **What that byte enumerates is `[U]`** — the corpus
-/// has no caller of `FUN_0081e690`, so the value space is unbounded; skrillax
-/// is the only source for `1 = berserk`, which is the sole value we send.
+/// handed by its caller).
+///
+/// **The value is now measured, not inferred.** Eleven captured frames across
+/// four dump trees, every one of them the single byte `01` — including two
+/// from the **original** 1.188 client through the proxy chain
+/// (`capture-orig/dump/S2-progress`, 2026-09-29) and three from a dedicated
+/// berserk capture session (`proxy-berserk`, 2026-10-02). Earlier notes marked
+/// this `[U]` with skrillax as the only source for `1 = berserk`; that is
+/// superseded — the original sends it.
+///
+/// What stays `[U]` is the *value space*: the corpus has no caller of
+/// `FUN_0081e690`, so nothing bounds the byte from above, and every captured
+/// frame is an activation. A second hwan verb, if one exists, has never been
+/// seen.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct HwanActionRequest {
     pub action: u8,
 }
 
-/// The only 0x70A7 action value with a source ([S], skrillax): activate.
+/// Activate berserk. `[V]`: the only value in all eleven captured 0x70A7
+/// frames, two of them from the original client itself.
 pub const HWAN_ACTION_BERSERK: u8 = 1;
 
 impl HwanActionRequest {
@@ -3005,6 +3017,18 @@ impl HwanActionRequest {
 /// is not `1`** reads a `u16` and hands it to the message box
 /// (`FUN_00778190(0x1a, code, …)`). So the error code is conditional, not a
 /// fixed trailer: a success body is a single byte.
+///
+/// The conditional shape is confirmed by traffic: six captured frames across
+/// three dump trees, every one of them the three bytes `02 03 00` — `result =
+/// 2`, so the `u16` follows, and it is `3`.
+///
+/// Two things that measurement does **not** settle. The answers all come from
+/// **skrillax**, our test server, not from a vSRO one, so `3` is its refusal
+/// code and the vanilla table is `[U]`. And no captured `0xB0A7` carries
+/// `result = 1`, so the success arm — a one-byte body — is still only the
+/// handler's reading. Unlike the action codes in [`ObjectActionUpdate`]'s note
+/// (`0x3006`, `0x4004`: string ids), `3` is a small ordinal, which is one more
+/// reason not to assume it is what vSRO sends.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct HwanActionResponse {
     pub result: u8,
@@ -3695,6 +3719,33 @@ mod test {
     /// 0x3091 travels both ways with two different bodies. One type for both
     /// would have read the first byte of the entity id as the emote code and
     /// dropped the rest — which is why `EmoteRequest` is encode-only.
+    /// The captured refusal, byte for byte: `02 03 00` in all six frames
+    /// across three dump trees. Pins the conditional trailer — a `result` of 1
+    /// must NOT eat two more bytes — and the activation byte the original
+    /// itself sends.
+    #[test]
+    fn hwan_request_and_refusal_match_the_captured_frames() {
+        let wire: Bytes = HwanActionRequest::berserk().into();
+        assert_eq!(&wire[..], &[0x01]);
+
+        let refusal =
+            HwanActionResponse::try_from(Bytes::from_static(&[0x02, 0x03, 0x00])).unwrap();
+        assert_eq!(
+            refusal,
+            HwanActionResponse {
+                result: 2,
+                error_code: Some(3),
+            }
+        );
+        let back: Bytes = refusal.into();
+        assert_eq!(&back[..], &[0x02, 0x03, 0x00]);
+
+        // The success arm has no capture; what is pinned is that it reads as
+        // one byte and leaves no trailer behind.
+        let ok = HwanActionResponse::try_from(Bytes::from_static(&[0x01])).unwrap();
+        assert_eq!(ok.error_code, None);
+    }
+
     #[test]
     fn the_emote_opcode_decodes_inbound_and_encodes_outbound() {
         let inbound =
