@@ -49,6 +49,7 @@ pub mod gauge;
 pub mod guild_storage;
 pub mod hitcount;
 pub mod inventory;
+pub mod item_mall;
 pub mod magic_state_board;
 pub mod main_popup;
 pub mod minimap;
@@ -139,6 +140,7 @@ impl Plugin for HudPlugin {
                 guild_storage::GuildStoragePlugin,
                 hitcount::HitcountPlugin,
                 inventory::InventoryPlugin,
+                item_mall::ItemMallPlugin,
                 magic_state_board::MagicStateBoardPlugin,
                 minimap::MinimapPlugin,
                 nameplates::NameplatesPlugin,
