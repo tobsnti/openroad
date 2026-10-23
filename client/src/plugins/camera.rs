@@ -1,6 +1,7 @@
 use crate::plugins::player::Player;
 use crate::AppMode;
 use crate::GameState;
+use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{Layer, RenderLayers};
@@ -1016,7 +1017,8 @@ fn main_view_render_settings(
 
 /// Keep every window-targeting camera on the configured sample count
 /// (`graphics.msaa`), and apply the other per-camera render switches that
-/// follow from config at spawn: `depth_prepass`, `sky_reflections`, `fxaa`.
+/// follow from config at spawn: `depth_prepass`, `sky_reflections`, `fxaa`,
+/// `sharpening`.
 ///
 /// This is a system rather than an insert at each spawn site on purpose. Bevy
 /// keys the shared main texture on `(target, usage, format, msaa)`, so the
@@ -1030,6 +1032,31 @@ fn main_view_render_settings(
 ///
 /// The offscreen portrait / paper-doll rigs render to their own images, which
 /// are keyed separately, so they are deliberately left alone.
+///
+/// **The sharpening pass.** The original client has no post-processing at all,
+/// so this is a deliberate deviation (ADR 0009): FXAA and a render scale below
+/// 1.0 both work by blurring, and contrast-adaptive sharpening is the pass
+/// built to give that blur its drawing back — bevy's own words,
+/// `bevy_anti_alias-0.20.0/src/contrast_adaptive_sharpening/mod.rs:29-30`
+/// ("usually used in combination with shader based anti-aliasing methods such
+/// as FXAA or TAA to regain some of the lost detail"). It needs no ordering
+/// work here because it orders itself behind FXAA and SMAA in the post-process
+/// set (`mod.rs:120-131`), and it is a fullscreen *fragment* pass
+/// (`mod.rs:170-174`: a `RenderPipelineDescriptor` with a `FragmentState`, no
+/// compute, no storage buffers), so it also runs under
+/// `OPENROAD_GPU_BASELINE=gl33` and `--features gles`.
+///
+/// One limit worth naming, because it decides where the pass would have to
+/// move to be perfect: it sharpens the camera's *own* output, which with
+/// `graphics.render_scale < 1.0` is the image before the blit sprite stretches
+/// it to the window (`apply_render_scale`), so the stretch softens part of the
+/// gain again. The preset ladder answers that by sharpening hardest exactly
+/// there (`low: 0.8`). Sharpening after the stretch would mean hanging the pass
+/// on the compositing `Camera2d` instead — which is possible without touching
+/// the HUD, since `bevy_ui_render-0.20.0/src/lib.rs:298` orders the UI pass
+/// after `Core2dSystems::PostProcess` — but it would make the world's
+/// sharpness depend on the shared-main-texture coupling this very function
+/// exists to keep, so it stays a separate, measurable change.
 fn apply_window_camera_msaa(
     mut commands: Commands,
     config: Res<ClientConfig>,
@@ -1056,6 +1083,14 @@ fn apply_window_camera_msaa(
             // `graphics.fxaa`: the spawn sites always attach the pass.
             if is_3d && !config.graphics.fxaa.0 {
                 commands.entity(entity).remove::<Fxaa>();
+            }
+            // The sharpening pass (see the note above). Inserted rather than
+            // removed, unlike `fxaa`, because it carries a strength and the
+            // spawn sites have no config to carry it from.
+            if is_3d {
+                commands
+                    .entity(entity)
+                    .insert(ContrastAdaptiveSharpening::default());
             }
         }
     }
@@ -1552,6 +1587,19 @@ mod render_scale_tests {
     use super::*;
     use crate::plugins::config::graphics::RenderScale;
 
+    /// The shipped example, as everywhere else in the tree: `ClientConfig` has
+    /// no `Default`, and the example is the only config whose values are
+    /// reviewed.
+    fn test_config() -> ClientConfig {
+        ClientConfig::from_file(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../config.example")
+                .to_str()
+                .expect("the example path is utf-8"),
+        )
+        .expect("config.example.yaml matches ClientConfig")
+    }
+
     /// The invariant the whole design rests on: scaling the image *and* the
     /// target's scale factor by the same amount leaves the camera's logical
     /// viewport equal to the window's. That is why `world_to_viewport` and
@@ -1714,13 +1762,7 @@ mod render_scale_tests {
     fn a_camera_spawned_after_scaling_is_taken_too() {
         use bevy::ecs::system::RunSystemOnce;
 
-        let mut config = ClientConfig::from_file(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../config.example")
-                .to_str()
-                .unwrap(),
-        )
-        .expect("config.example.yaml matches ClientConfig");
+        let mut config = test_config();
         config.graphics.render_scale = RenderScale(0.5);
 
         let mut world = World::new();
@@ -1773,5 +1815,59 @@ mod render_scale_tests {
             // The blit sprite samples it.
             assert!(usage.contains(TextureUsages::TEXTURE_BINDING));
         }
+    }
+
+    /// The pass belongs to the camera that renders the world, and to no other:
+    /// on the UI `Camera2d` the world's sharpness would hang on the
+    /// shared-main-texture coupling (and the loading backdrop and debug
+    /// sprites would be sharpened with it), and on the offscreen portrait /
+    /// paper-doll rigs it would cost a fullscreen pass per rig for an image
+    /// nobody blurs. `enabled` and a non-zero strength are both asserted
+    /// because bevy's extract drops the component at strength 0
+    /// (`contrast_adaptive_sharpening/mod.rs:87-90`), i.e. a zero would be a
+    /// pass that silently does nothing.
+    #[test]
+    fn only_the_3d_window_camera_gets_the_sharpening_pass() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(test_config());
+        let world_camera = world
+            .spawn((
+                Camera3d::default(),
+                RenderTarget::Window(bevy::window::WindowRef::Primary),
+            ))
+            .id();
+        let ui_camera = world
+            .spawn((
+                Camera2d,
+                RenderTarget::Window(bevy::window::WindowRef::Primary),
+            ))
+            .id();
+        let portrait = world
+            .spawn((
+                Camera3d::default(),
+                RenderTarget::Image(ImageRenderTarget {
+                    handle: Handle::default(),
+                    scale_factor: 1.0,
+                }),
+            ))
+            .id();
+
+        world.run_system_once(apply_window_camera_msaa).unwrap();
+
+        let cas = world
+            .get::<ContrastAdaptiveSharpening>(world_camera)
+            .expect("the 3D main view carries the sharpening pass");
+        assert!(cas.enabled);
+        assert!(cas.sharpening_strength > 0.0);
+        assert!(
+            world.get::<ContrastAdaptiveSharpening>(ui_camera).is_none(),
+            "sharpening the UI camera would sharpen the HUD"
+        );
+        assert!(
+            world.get::<ContrastAdaptiveSharpening>(portrait).is_none(),
+            "an offscreen rig is not a main view"
+        );
     }
 }
