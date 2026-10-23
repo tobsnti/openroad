@@ -6,6 +6,7 @@
 pub mod drop_item;
 pub mod model;
 pub mod paperdoll;
+pub mod split;
 pub mod tooltip;
 pub mod ui;
 pub mod use_on_item;
@@ -25,6 +26,8 @@ impl Plugin for InventoryPlugin {
             .init_resource::<use_on_item::PendingItemUse>()
             .init_resource::<use_on_item::UseOnItemConfirm>()
             .init_resource::<drop_item::DropConfirm>()
+            .init_resource::<split::SplitPrompt>()
+            .init_resource::<split::SplitAmount>()
             .add_message::<drop_item::DroppedOnNothing>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_inventory_window)
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_inventory_window)
