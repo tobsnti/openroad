@@ -499,13 +499,19 @@ pub fn cleanup_inventory_window(
             With<tooltip::InventoryTooltipRoot>,
             With<DragGhost>,
             With<crate::plugins::hud::inventory::paperdoll::PaperDollClone>,
+            // The split box is its own root (it targets the UI camera, not the
+            // window), so leaving the scene has to take it along or the scrim
+            // outlives the window it was opened on.
+            With<super::split::SplitModalRoot>,
         )>,
     >,
+    mut split: ResMut<super::split::SplitPrompt>,
     mut commands: Commands,
 ) {
     for entity in roots.iter() {
         commands.entity(entity).despawn();
     }
+    split.prompt = None;
     commands.remove_resource::<PaperDollTarget>();
 }
 

@@ -19,22 +19,45 @@
 //!   the whole operation; otherwise it builds a move `0x46 -> 0x46` with the
 //!   entered amount and forgets the source slot again.
 //!
-//! This module is the rule half: the state the prompt carries and the three
-//! questions the original asks before it opens. The box that asks them lives
-//! next to it (`sync_split_modal`).
+//! Every rect is the `MsgBoxDivideCount` section of the player's own
+//! `Media/resinfo/ifmessagebox.txt`, laid out on the family's shared tile
+//! background, exactly as the storage window's gold box does for its own
+//! section.
+//!
+//! Deliberate deviations (ADR-0009), both stated because the data does not
+//! decide them: the box keeps a `-`/`+` stepper (vanilla has only the edit
+//! box), and the outer size is the family's shared `GDR_MSGBOX_BG` rect — the
+//! section's own children reach x=285/y=167, so the original resizes the box
+//! in code and the true size is UNKNOWN.
 //!
 //! What it deliberately does **not** do is mirror the split locally: the bag
 //! is applied from the `0xB034` ack only, where `Inventory::apply_move`
 //! honours the echoed amount for a partial move into an empty slot
 //! (`net/inventory.rs`).
 
+use bevy::input_focus::tab_navigation::TabIndex;
+use bevy::input_focus::{FocusCause, InputFocus};
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::{EditableText, EditableTextFilter, LineHeight, TextCursorStyle, TextEdit};
+use bevy::ui::UiTargetCamera;
+use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::character_data::ItemTypeData;
+use packets::agent::prelude::InventoryOperationRequest;
+use packets::Packet;
 
+use crate::assets::resinfo::interface_text::font_index_px;
+use crate::assets::FontAssets;
+use crate::net::connection::SilkroadConnection;
+use crate::plugins::hud::game_window::abs_node;
+use crate::plugins::hud::inventory::model::InventoryState;
+use crate::plugins::hud::scale::{hud_scale, text_px};
+use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::{Inventory, BAG_FIRST_SLOT};
 use crate::plugins::player::Player;
-use crate::plugins::textdata::{ClientItemData, ClientTextNames};
+use crate::plugins::textdata::{ClientItemData, ClientTextNames, ClientUiStrings};
+use crate::plugins::ui_v2::style::ImageButtonStyle;
 
 /// The open split prompt, or `None`. One at a time, like every other msgbox.
 #[derive(Resource, Default)]
@@ -142,6 +165,517 @@ pub fn open_split_prompt(world: &mut World, slot: u8) -> bool {
 /// would be a plain move, and never 0.
 pub fn clamp_amount(entered: u16, stack: u16) -> u16 {
     entered.clamp(1, stack.saturating_sub(1).max(1))
+}
+
+// --- the box -----------------------------------------------------------------
+//
+// Every rect below is the `Section = MsgBoxDivideCount` block of the player's
+// own `Media/resinfo/ifmessagebox.txt`, control by control, with its line. The
+// panel is the family's shared background `GDR_MSGBOX_BG:CIFNormalTile`
+// (`:6-10`, `Rect="16,40,284,122"`, art `com_bg_tile_b.ddj`), and the scrim is
+// the one the storage window's gold box already uses — the nearest sibling of
+// this box, same family, same z.
+
+/// `GDR_MSGBOX_BG:CIFNormalTile` — `ifmessagebox.txt` `Section = Create` :6,
+/// `Rect="16,40,284,122"`, art at `:10`.
+const MSGBOX_BG: (f32, f32, f32, f32) = (16.0, 40.0, 284.0, 122.0);
+const MSGBOX_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_b.ddj";
+const QUANTITY_DDJ: &str = "media://interface/messagebox/msgbox_quantity.ddj";
+const ITEMWINDOW_DDJ: &str = "media://interface/messagebox/msgbox_itemwindow.ddj";
+/// The name board of *this* section is the `_3` variant
+/// (`GDR_MBDC_STATIC_NAMEBOARD`, `ifmessagebox.txt:223-241`).
+const ITEMINFO_DDJ: &str = "media://interface/messagebox/msgbox_iteminfo_3.ddj";
+
+/// Vanilla rect -> panel-local rect (the panel *is* `GDR_MSGBOX_BG`).
+const fn msgbox_rect(rect: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    (rect.0 - MSGBOX_BG.0, rect.1 - MSGBOX_BG.1, rect.2, rect.3)
+}
+
+// All ten `MsgBoxDivideCount` controls, in the file's own order.
+/// `GDR_MBDC_STATIC_ICONWND` `ifmessagebox.txt:261`.
+const ICON_WND: (f32, f32, f32, f32) = msgbox_rect((18.0, 44.0, 48.0, 48.0));
+/// `GDR_MBDC_STATIC_ICON` `:242`.
+const ICON: (f32, f32, f32, f32) = msgbox_rect((25.0, 51.0, 32.0, 32.0));
+/// `GDR_MBDC_STATIC_NAMEBOARD` `:223`.
+const NAME_BOARD: (f32, f32, f32, f32) = msgbox_rect((73.0, 44.0, 212.0, 48.0));
+/// The board's own `ClientRect="4,3,6,26"` (`:226`), i.e. the name row is the
+/// top 19 px of its inner box — `73+4, 44+3, 212-4-6, 48-3-26`.
+const NAME_TEXT: (f32, f32, f32, f32) = msgbox_rect((77.0, 47.0, 202.0, 19.0));
+/// `GDR_MBDC_STATIC_BOXDESC` `:204`.
+const BOXDESC: (f32, f32, f32, f32) = msgbox_rect((77.0, 68.0, 202.0, 19.0));
+/// `GDR_MBDC_STATIC_CURRENT` `:185`.
+const CURRENT_LABEL: (f32, f32, f32, f32) = msgbox_rect((34.0, 106.0, 64.0, 19.0));
+/// `GDR_MBDC_STATIC_CURRENT_AMOUNT` `:166`.
+const CURRENT_VALUE: (f32, f32, f32, f32) = msgbox_rect((105.0, 106.0, 41.0, 19.0));
+/// `GDR_MBDC_STATIC_DIVIDE` `:147`.
+const DIVIDE_LABEL: (f32, f32, f32, f32) = msgbox_rect((153.0, 106.0, 64.0, 19.0));
+/// `GDR_MBDC_STATIC_DIVIDE_AMOUNT_EDIT` `:128`.
+const AMOUNT_EDIT: (f32, f32, f32, f32) = msgbox_rect((223.0, 102.0, 42.0, 24.0));
+/// Text inside the edit art, by its `ClientRect="7,5,7,5"` (`:131`).
+const AMOUNT_TEXT: (f32, f32, f32, f32) = msgbox_rect((230.0, 107.0, 28.0, 14.0));
+/// `GDR_MBDC_BTN_OK` `:109`.
+const OK_RECT: (f32, f32, f32, f32) = msgbox_rect((71.0, 143.0, 76.0, 24.0));
+/// `GDR_MBDC_BTN_CANCEL` `:90`.
+const CANCEL_RECT: (f32, f32, f32, f32) = msgbox_rect((151.0, 143.0, 76.0, 24.0));
+
+/// Stepper: the data leaves the strip left of the "Distributed number" label
+/// free (the retained value ends at vanilla x 146, the label starts at 153), so
+/// the two buttons sit under the edit box instead — a stated deviation, see the
+/// module doc.
+const STEPPER_Y: f32 = msgbox_rect((0.0, 128.0, 0.0, 0.0)).1;
+const STEPPER_X: (f32, f32) = (
+    msgbox_rect((223.0, 0.0, 0.0, 0.0)).0,
+    msgbox_rect((245.0, 0.0, 0.0, 0.0)).0,
+);
+const STEPPER_SIZE: (f32, f32) = (20.0, 18.0);
+
+/// One size for the whole box: **all ten** controls of the section carry
+/// `FontIndex=INTEGER,"0"` (`ifmessagebox.txt:96`, `:115`, `:134`, `:153`,
+/// `:172`, `:191`, `:210`, `:229`, `:248`, `:267`), and slot 0 of the ladder is
+/// 12 px ([`font_index_px`]). Every text rect of the section is one line tall
+/// (19 px statics, a 14 px edit row), so the line box is pinned to the same
+/// rounded value — see `font_index_px`'s "One-line boxes".
+const TEXT_FONT_INDEX: usize = 0;
+
+/// Label colour of `GDR_MBDC_STATIC_DIVIDE` (`FontColor="255,239,218,164"`,
+/// `ifmessagebox.txt:151`).
+const LABEL_COLOR: Color = Color::srgb(239.0 / 255.0, 218.0 / 255.0, 164.0 / 255.0);
+
+#[derive(Component)]
+pub struct SplitModalRoot;
+
+#[derive(Component)]
+pub(crate) struct SplitAmountInput;
+
+/// The "Retained number" value static — recomputed as the amount changes.
+#[derive(Component)]
+pub(crate) struct SplitRetainedText;
+
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SplitButton {
+    Minus,
+    Plus,
+    Ok,
+    Cancel,
+}
+
+/// Despawn marker, the same one-frame pattern the store and storage modals use.
+#[derive(Component)]
+pub struct SplitClosing;
+
+/// Rebuild the box when the prompt changes: spawn on open, despawn on close.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_split_modal(
+    split: Res<SplitPrompt>,
+    existing: Query<Entity, With<SplitModalRoot>>,
+    ui_strings: Res<ClientUiStrings>,
+    fonts: Res<FontAssets>,
+    item_data: Res<ClientItemData>,
+    asset_server: Res<AssetServer>,
+    cam_query: Query<Entity, With<Camera2d>>,
+    mut focus: ResMut<InputFocus>,
+    mut amount: ResMut<SplitAmount>,
+    mut commands: Commands,
+) {
+    if !split.is_changed() {
+        return;
+    }
+    for entity in existing.iter() {
+        commands.entity(entity).insert(SplitClosing);
+    }
+    let Some(prompt) = &split.prompt else {
+        if !existing.is_empty() {
+            focus.clear();
+        }
+        return;
+    };
+    let Ok(camera) = cam_query.single() else {
+        return;
+    };
+    let s = hud_scale();
+    let size = text_px(font_index_px(TEXT_FONT_INDEX), s);
+    let text_font = || TextFont {
+        font: fonts.two.clone().into(),
+        font_size: FontSize::Px(size),
+        line_height: LineHeight::Px(size),
+        ..default()
+    };
+    let button_style = ImageButtonStyle {
+        normal: asset_server.load("media://interface/ifcommon/com_button.ddj"),
+        hover: asset_server.load("media://interface/ifcommon/com_button_focus.ddj"),
+        press: asset_server.load("media://interface/ifcommon/com_button_press.ddj"),
+        ..Default::default()
+    };
+    // vanilla opens at one piece; the retained value is the rest
+    amount.0 = 1;
+    let icon = item_data
+        .get(&(prompt.ref_id as i32))
+        .and_then(|row| row.icon_path());
+    let retained = prompt.stack.saturating_sub(1);
+
+    let mut input_entity = None;
+    let mut confirm_button = None;
+    let mut cancel_button = None;
+    let root = commands
+        .spawn((
+            SplitModalRoot,
+            Name::from("Inventory Split Modal"),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            // the scrim swallows clicks, like the storage window's gold box
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            GlobalZIndex(65),
+            UiTargetCamera(camera),
+        ))
+        .with_children(|scrim| {
+            scrim
+                .spawn((
+                    Node {
+                        width: Val::Px(MSGBOX_BG.2 * s),
+                        height: Val::Px(MSGBOX_BG.3 * s),
+                        ..default()
+                    },
+                    ImageNode {
+                        image: asset_server.load(MSGBOX_TILE),
+                        image_mode: NodeImageMode::Stretch,
+                        ..default()
+                    },
+                    Outline {
+                        width: Val::Px(1.0),
+                        color: Color::srgb(0.55, 0.45, 0.25),
+                        ..default()
+                    },
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        abs_node(ICON_WND, s),
+                        ImageNode {
+                            image: asset_server.load(ITEMWINDOW_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    if let Some(icon) = &icon {
+                        panel.spawn((
+                            abs_node(ICON, s),
+                            ImageNode {
+                                image: asset_server.load(icon.clone()),
+                                image_mode: NodeImageMode::Stretch,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    }
+                    panel.spawn((
+                        abs_node(NAME_BOARD, s),
+                        ImageNode {
+                            image: asset_server.load(ITEMINFO_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(prompt.name.clone()),
+                        text_font(),
+                        TextColor(LABEL_COLOR),
+                        TextLayout::justify(Justify::Center),
+                        abs_node(NAME_TEXT, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(
+                            ui_strings
+                                .get_or(
+                                    "UIIT_MSG_MSGBOX_DIVIDE_CURRENT_ITEM",
+                                    "Seperating the current item.",
+                                )
+                                .to_string(),
+                        ),
+                        text_font(),
+                        TextColor(Color::WHITE),
+                        TextLayout::justify(Justify::Center),
+                        abs_node(BOXDESC, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(
+                            ui_strings
+                                .get_or("UIIT_MSG_MSGBOX_CURRENT_COUNT", "Retained number")
+                                .to_string(),
+                        ),
+                        text_font(),
+                        TextColor(Color::WHITE),
+                        abs_node(CURRENT_LABEL, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        SplitRetainedText,
+                        Text::new(retained.to_string()),
+                        text_font(),
+                        TextColor(Color::WHITE),
+                        TextLayout::justify(Justify::Center),
+                        abs_node(CURRENT_VALUE, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        Text::new(
+                            ui_strings
+                                .get_or("UIIT_MSG_MSGBOX_DIVIDE_COUNT", "Distributed number")
+                                .to_string(),
+                        ),
+                        text_font(),
+                        TextColor(LABEL_COLOR),
+                        abs_node(DIVIDE_LABEL, s),
+                        Pickable::IGNORE,
+                    ));
+                    panel.spawn((
+                        abs_node(AMOUNT_EDIT, s),
+                        ImageNode {
+                            image: asset_server.load(QUANTITY_DDJ),
+                            image_mode: NodeImageMode::Stretch,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    for (button, label, x) in [
+                        (SplitButton::Minus, "-", STEPPER_X.0),
+                        (SplitButton::Plus, "+", STEPPER_X.1),
+                    ] {
+                        panel
+                            .spawn((
+                                button,
+                                Button,
+                                Hovered::default(),
+                                Text::new(label),
+                                text_font(),
+                                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                                TextLayout::justify(Justify::Center),
+                                abs_node((x, STEPPER_Y, STEPPER_SIZE.0, STEPPER_SIZE.1), s),
+                            ))
+                            .observe(on_split_button);
+                    }
+                    let mut input_box = abs_node(AMOUNT_TEXT, s);
+                    input_box.padding = UiRect::top(Val::Px(2.0 * s));
+                    let editable = EditableText {
+                        visible_lines: Some(1.0),
+                        allow_newlines: false,
+                        max_characters: Some(5),
+                        ..default()
+                    };
+                    input_entity = Some(
+                        panel
+                            .spawn((
+                                SplitAmountInput,
+                                editable,
+                                EditableTextFilter::new(|c: char| c.is_ascii_digit()),
+                                // A press on any node without a `TabIndex`
+                                // ancestor bubbles `AcquireFocus` to the window
+                                // and CLEARS the focus (bevy_input_focus
+                                // `click_to_focus`), so clicking into the box
+                                // would make it deaf. The chat row carries the
+                                // same marker for the same reason.
+                                TabIndex(0),
+                                input_box,
+                                text_font(),
+                                TextColor(Color::WHITE),
+                                TextLayout::justify(Justify::Center),
+                                TextCursorStyle {
+                                    color: Color::WHITE,
+                                    ..default()
+                                },
+                            ))
+                            .id(),
+                    );
+                    for (button, key, fallback, rect) in [
+                        (SplitButton::Ok, "UIIT_CTL_CONFIRM", "Confirm", OK_RECT),
+                        (
+                            SplitButton::Cancel,
+                            "UIIT_CTL_CANCEL",
+                            "Cancel",
+                            CANCEL_RECT,
+                        ),
+                    ] {
+                        let mut entity = panel.spawn((
+                            button,
+                            Button,
+                            Hovered::default(),
+                            abs_node(rect, s),
+                            ImageNode {
+                                image: button_style.normal.clone(),
+                                image_mode: NodeImageMode::Stretch,
+                                ..default()
+                            },
+                            button_style.clone(),
+                        ));
+                        match button {
+                            SplitButton::Ok => confirm_button = Some(entity.id()),
+                            _ => cancel_button = Some(entity.id()),
+                        }
+                        entity.observe(on_split_button).with_children(|b| {
+                            b.spawn((
+                                Text::new(ui_strings.get_or(key, fallback).to_string()),
+                                text_font(),
+                                TextColor(Color::WHITE),
+                                TextLayout::justify(Justify::Center),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    // the buttons' own `ClientRect="0,6,0,0"`
+                                    // (`ifmessagebox.txt:92`, `:111`)
+                                    top: Val::Px(6.0 * s),
+                                    width: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            ));
+                        });
+                    }
+                });
+        })
+        .id();
+
+    // Enter = Confirm, Escape = Cancel, through the HUD's own key chain
+    // (`hud::focus`): the input disallows newlines, so Enter reaches the chain.
+    if let Some(confirm_button) = confirm_button {
+        commands
+            .entity(root)
+            .insert(crate::plugins::hud::focus::HudDialog { confirm_button });
+    }
+    if let Some(close_button) = cancel_button {
+        commands
+            .entity(root)
+            .insert(crate::plugins::hud::focus::HudWindow { close_button });
+    }
+    if let Some(input) = input_entity {
+        focus.set(input, FocusCause::Navigated);
+    }
+}
+
+/// Parse the edit box back into [`SplitAmount`], clamped by [`clamp_amount`],
+/// and keep the "Retained number" static in step.
+pub fn sync_split_amount(
+    split: Res<SplitPrompt>,
+    inputs: Query<&EditableText, With<SplitAmountInput>>,
+    mut amount: ResMut<SplitAmount>,
+    mut retained: Query<&mut Text, With<SplitRetainedText>>,
+) {
+    let Some(prompt) = &split.prompt else {
+        return;
+    };
+    let Ok(editable) = inputs.single() else {
+        return;
+    };
+    let parsed = clamp_amount(
+        editable
+            .value()
+            .to_string()
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(1),
+        prompt.stack,
+    );
+    if amount.0 != parsed {
+        amount.0 = parsed;
+    }
+    let line = prompt.stack.saturating_sub(parsed).to_string();
+    for mut text in retained.iter_mut() {
+        if text.0 != line {
+            line.clone_into(&mut text.0);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn on_split_button(
+    activate: On<Activate>,
+    buttons: Query<&SplitButton>,
+    inventories: Query<&Inventory, With<Player>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    amount: Res<SplitAmount>,
+    mut inputs: Query<(Entity, &mut EditableText), With<SplitAmountInput>>,
+    mut focus: ResMut<InputFocus>,
+    mut split: ResMut<SplitPrompt>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    let Some(prompt) = split.prompt.clone() else {
+        return;
+    };
+    // +/- steer the text input; `sync_split_amount` parses it back.
+    // SelectAll + Insert rather than clear(): clear() leaves parley's
+    // selection at a stale byte index. The press on the button already took
+    // the focus away (see the `TabIndex` note at the input), so typing stays
+    // possible after a stepper click.
+    let mut set_amount = |value: u16| {
+        let Ok((entity, mut editable)) = inputs.single_mut() else {
+            return;
+        };
+        editable.queue_edit(TextEdit::SelectAll);
+        editable.queue_edit(TextEdit::Insert(value.to_string().into()));
+        focus.set(entity, FocusCause::Navigated);
+    };
+    let max = prompt.stack.saturating_sub(1).max(1);
+    match button {
+        SplitButton::Minus => set_amount(amount.0.saturating_sub(1).max(1)),
+        SplitButton::Plus => set_amount((amount.0 + 1).min(max)),
+        SplitButton::Cancel => split.prompt = None,
+        SplitButton::Ok => {
+            let quantity = clamp_amount(amount.0, prompt.stack);
+            split.prompt = None;
+            let Ok(inventory) = inventories.single() else {
+                return;
+            };
+            // The original drops the whole operation when the bag is full, so
+            // no request goes out.
+            let Some(target) = first_free_bag_slot(inventory) else {
+                warn!("inventory: no free slot to split into");
+                return;
+            };
+            let request = InventoryOperationRequest::Move {
+                source: prompt.source,
+                target,
+                amount: quantity,
+            };
+            let Ok(conn) = conn.single() else {
+                warn!("inventory: not sending split, no agent connection");
+                return;
+            };
+            debug!(
+                "inventory: splitting {} off slot {} into {}",
+                quantity, prompt.source, target
+            );
+            if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+                error!("network: failed to send split move: {}", e.0);
+            }
+        }
+    }
+}
+
+/// The box belongs to the inventory window: closing the window (or leaving the
+/// world, which closes it) takes the prompt with it, so the scrim can never
+/// outlive what it was opened on.
+pub fn close_split_with_window(state: Res<InventoryState>, mut split: ResMut<SplitPrompt>) {
+    if !state.open && split.prompt.is_some() {
+        split.prompt = None;
+    }
+}
+
+/// Reap the box one frame after it was marked. Registered **ungated**: the
+/// modal root is its own entity, so a scene change that stops the gated
+/// systems must not be able to leave the scrim on screen — and
+/// `ui::cleanup_inventory_window` takes the root with it for the same reason.
+pub fn despawn_closing_split(closing: Query<Entity, With<SplitClosing>>, mut commands: Commands) {
+    for entity in closing.iter() {
+        commands.entity(entity).despawn();
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +786,152 @@ mod tests {
         assert_eq!(clamp_amount(9999, 20), 19);
         // a 2-stack can only ever give one piece away
         assert_eq!(clamp_amount(5, 2), 1);
+    }
+
+    /// The box as `sync_split_modal` builds it, opened on a 1000-stack.
+    fn modal_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+            bevy::input_focus::tab_navigation::TabNavigationPlugin,
+        ))
+        .init_asset::<Image>()
+        .init_resource::<InputFocus>()
+        .init_resource::<bevy::input_focus::InputFocusVisible>()
+        .init_resource::<ClientUiStrings>()
+        .init_resource::<ClientItemData>()
+        .init_resource::<SplitAmount>()
+        .insert_resource(FontAssets {
+            one: Handle::default(),
+            two: Handle::default(),
+            three: Handle::default(),
+            nine: Handle::default(),
+        })
+        .insert_resource(SplitPrompt {
+            prompt: Some(SplitRequest {
+                source: 0x17,
+                stack: 1000,
+                ref_id: 4,
+                name: "HP Recovery potion".into(),
+            }),
+        });
+        app.world_mut().spawn(Camera2d);
+        app.world_mut()
+            .run_system_cached(sync_split_modal)
+            .expect("sync_split_modal failed");
+        app
+    }
+
+    /// Typing digits goes nowhere without this: a press on a node with no
+    /// `TabIndex` ancestor bubbles `AcquireFocus` to the window and clears the
+    /// focus. The amount box therefore carries `TabIndex`, so the click into
+    /// it — the very thing a player does before typing — keeps the focus.
+    #[test]
+    fn the_amount_box_takes_focus_when_pressed() {
+        let mut app = modal_app();
+        let input = app
+            .world_mut()
+            .query_filtered::<Entity, With<SplitAmountInput>>()
+            .single(app.world())
+            .expect("one amount box");
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
+
+        // what `click_to_focus` raises for a press on the box itself
+        let window = app.world_mut().spawn(Window::default()).id();
+        app.world_mut().trigger(bevy::input_focus::AcquireFocus {
+            focused_entity: input,
+            window,
+        });
+        assert_eq!(
+            app.world().resource::<InputFocus>().get(),
+            Some(input),
+            "a press on the amount box must leave it focused"
+        );
+    }
+
+    /// Enter confirms and Escape cancels through the HUD key chain
+    /// (`hud::focus`), which only knows dialogs that name their buttons.
+    #[test]
+    fn enter_and_escape_are_bound_to_confirm_and_cancel() {
+        let mut app = modal_app();
+        let (dialog, window) = app
+            .world_mut()
+            .query_filtered::<(
+                &crate::plugins::hud::focus::HudDialog,
+                &crate::plugins::hud::focus::HudWindow,
+            ), With<SplitModalRoot>>()
+            .single(app.world())
+            .map(|(d, w)| (*d, *w))
+            .expect("the modal root names both buttons");
+        assert_eq!(
+            app.world().get::<SplitButton>(dialog.confirm_button),
+            Some(&SplitButton::Ok)
+        );
+        assert_eq!(
+            app.world().get::<SplitButton>(window.close_button),
+            Some(&SplitButton::Cancel)
+        );
+    }
+
+    /// Every text of the section is one authored line, so the line box is the
+    /// font size rather than Bevy's 1.2 — otherwise a 12 px glyph lays out
+    /// 14.4 px tall in a 19 px box and sits low with the descender over the
+    /// edge (`font_index_px`'s "One-line boxes").
+    #[test]
+    fn one_line_fields_pin_their_line_box_to_the_font_size() {
+        let mut app = modal_app();
+        let fonts: Vec<TextFont> = app
+            .world_mut()
+            .query_filtered::<&TextFont, With<Text>>()
+            .iter(app.world())
+            .cloned()
+            .collect();
+        assert!(!fonts.is_empty(), "the box draws no text at all");
+        for font in fonts {
+            assert_eq!(
+                font.line_height,
+                LineHeight::Px(match font.font_size {
+                    FontSize::Px(px) => px,
+                    other => panic!("the box sizes a text relatively: {other:?}"),
+                }),
+                "a one-line field keeps Bevy's 1.2 line box"
+            );
+        }
+    }
+
+    /// The start-trap guard (`hud/mod.rs` `hud_scenes`): every system this
+    /// module adds is registered inside the inventory plugin's scene-gated
+    /// tuple, and the window is cleaned up when the world ends. `cargo test`
+    /// cannot see a missing `run_if`, so it is asserted as text — the same
+    /// gate shape `hud/context_menu.rs` uses for its consumer.
+    #[test]
+    fn the_split_systems_are_registered_behind_the_scene_gate() {
+        let registration = include_str!("mod.rs");
+        for system in [
+            "split::sync_split_modal",
+            "split::sync_split_amount",
+            "split::close_split_with_window",
+        ] {
+            assert!(
+                registration.contains(system),
+                "{system} is not registered at all"
+            );
+        }
+        assert!(
+            registration.contains(".run_if(super::hud_scenes"),
+            "the inventory plugin registers Update systems without the scene gate"
+        );
+        assert!(
+            registration.contains("OnExit(SceneState::GameWorld)"),
+            "the inventory window is not cleaned up when the world scene ends"
+        );
+        // The reaper is the one system registered OUTSIDE the gated tuple,
+        // because the box is a root of its own — asserted so a move back
+        // inside the gate cannot leave the scrim on screen.
+        assert!(
+            registration.contains("PostUpdate, split::despawn_closing_split"),
+            "the split modal's despawn is gated or missing"
+        );
     }
 }
