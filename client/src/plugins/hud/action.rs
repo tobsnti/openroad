@@ -40,6 +40,7 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
+use crate::plugins::combat::{AttackOrder, PickupOrder};
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
@@ -324,24 +325,95 @@ pub fn spawn_action_window(
     });
 }
 
-/// `actionwnddata.txt` command id for the "Trace" slot — the one verb in this
-/// window whose whole wire envelope already exists (`0x7074` discriminant 3).
-/// The rest of the 52 slots still fall through to the log below, each needing
-/// its own opcode.
+// `actionwnddata.txt` command ids, verified against the player's own file
+// (`server_dep/silkroad/textdata/actionwnddata.txt`, 26 rows, UTF-16LE,
+// `id \t panel \t name \t text key \t icon \t group \t index`). Only the ids
+// whose wire path already exists are named here; the file's own text key is
+// quoted beside each so a reader can find the row.
+//
+// The four below need **no new opcode**: two are discriminants of the `0x7074`
+// envelope the combat plugin already sends, two go to senders the target menu
+// already owns. Everything else in the window needs its own opcode first —
+// `0x704F` (1000 sit/stand, 1001 walk/run) and `0x3091` (4000..=4006 emotes)
+// are the two next wire slices, each with its own ledger row.
+
+/// 1002 `UIIT_CTL_AUTOATTACK_TT` — `0x7074` discriminant 1, through
+/// [`AttackOrder`].
+pub const ACTION_COMMAND_AUTO_ATTACK: u32 = 1002;
+/// 1003 `UIIT_CTL_AUTOTRACE_TT` — `0x7074` discriminant 3. Same text key the
+/// target menu's Trace row uses (`target_menu.rs`), which is what ties the two
+/// entry points to one verb.
 pub const ACTION_COMMAND_TRACE: u32 = 1003;
+/// 1006 `UIIT_CTL_EXCHANGE_TT` — `0x7081`, through the target menu's sender.
+pub const ACTION_COMMAND_EXCHANGE: u32 = 1006;
+/// 1007 `UIIT_STT_PARTY` — `0x7060`/`0x7062`, resolved against the roster by
+/// `PartyAction`'s sender.
+pub const ACTION_COMMAND_PARTY: u32 = 1007;
+/// 1008 `UIIT_CTL_AUTOGET_TT` — `0x7074` discriminant 2, through
+/// [`PickupOrder`].
+pub const ACTION_COMMAND_AUTO_GET: u32 = 1008;
+
+/// What a slot does when it is clicked, as a function of its command id.
+///
+/// Total on purpose: an id with no wire path is [`SlotVerb::Unwired`] and
+/// therefore still *visible* in the log, which is what keeps the backlog
+/// honest instead of silent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotVerb {
+    /// Needs the current selection and goes to an existing order message.
+    OnTarget(TargetVerb),
+    /// Named by `actionwnddata.txt`, no wire path yet.
+    Unwired,
+}
+
+/// The four verbs this window can already express, each named by the sender
+/// that owns its packet. **No new packet is built in this file** — that is the
+/// whole point: every one of these verbs is also reachable from somewhere else
+/// in the HUD, so a second builder here would be a second source of truth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetVerb {
+    /// `combat::AttackOrder` -> `action_slot` -> `0x7074` discriminant 1.
+    Attack,
+    /// `combat::PickupOrder` -> `action_slot` -> `0x7074` discriminant 2.
+    Pickup,
+    /// `target_menu::send_target_menu_trace` -> `0x7074` discriminant 3.
+    Trace,
+    /// `target_menu::send_target_menu_exchange_invite` -> `0x7081`.
+    Exchange,
+    /// `target_menu::send_target_menu_party_invite` -> `PartyAction::Invite`.
+    Party,
+}
+
+/// The classification above as a total function of the command id.
+pub fn verb_for(command_id: u32) -> SlotVerb {
+    match command_id {
+        ACTION_COMMAND_AUTO_ATTACK => SlotVerb::OnTarget(TargetVerb::Attack),
+        ACTION_COMMAND_TRACE => SlotVerb::OnTarget(TargetVerb::Trace),
+        ACTION_COMMAND_EXCHANGE => SlotVerb::OnTarget(TargetVerb::Exchange),
+        ACTION_COMMAND_PARTY => SlotVerb::OnTarget(TargetVerb::Party),
+        ACTION_COMMAND_AUTO_GET => SlotVerb::OnTarget(TargetVerb::Pickup),
+        _ => SlotVerb::Unwired,
+    }
+}
 
 /// Run a slot's verb.
 ///
-/// Trace is routed through [`TargetMenuAction`] rather than built here, so the
-/// client keeps **one** Trace sender for the two places that offer it (this
-/// window and the target right-click menu) — see
-/// `target_menu::send_target_menu_trace`. The remaining slots are still inert
-/// and say so; that is a backlog entry per opcode, not one missing wire.
+/// Every verb is routed to a sender that already exists, so this window adds
+/// no packet builder at all: the two `0x7074` discriminants go through
+/// `combat`'s order messages (the same seam a click on a monster or a dropped
+/// item uses) and the three social verbs through [`TargetMenuAction`] (the
+/// same seam the target right-click menu uses). One sender per verb, two entry
+/// points each.
+///
+/// All five need the current selection, and a slot with none says so rather
+/// than sending a targetless packet the server would refuse.
 fn on_slot_activate(
     activate: On<Activate>,
     slots: Query<&ActionSlot>,
     selected: Res<SelectedEntity>,
     mut actions: MessageWriter<TargetMenuAction>,
+    mut attacks: MessageWriter<AttackOrder>,
+    mut pickups: MessageWriter<PickupOrder>,
 ) {
     let Ok(slot) = slots.get(activate.entity) else {
         return;
@@ -355,21 +427,43 @@ fn on_slot_activate(
         );
         return;
     };
-    if id == ACTION_COMMAND_TRACE {
-        let Some(target) = selected.0 else {
-            info!("action window: trace needs a selected target");
-            return;
-        };
-        actions.write(TargetMenuAction {
-            target,
-            action: TargetAction::Trace,
-        });
+    let SlotVerb::OnTarget(verb) = verb_for(id) else {
+        debug!(
+            "action window: {:?} slot {} (command {id}) not wired yet",
+            slot.panel, slot.index
+        );
         return;
+    };
+    let Some(target) = selected.0 else {
+        info!("action window: command {id} needs a selected target");
+        return;
+    };
+    match verb {
+        TargetVerb::Attack => {
+            attacks.write(AttackOrder(target));
+        }
+        TargetVerb::Pickup => {
+            pickups.write(PickupOrder(target));
+        }
+        TargetVerb::Trace => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::Trace,
+            });
+        }
+        TargetVerb::Exchange => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::Exchange,
+            });
+        }
+        TargetVerb::Party => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::InviteParty,
+            });
+        }
     }
-    debug!(
-        "action window: {:?} slot {} (command {id}) not wired yet",
-        slot.panel, slot.index
-    );
 }
 
 /// The `com_lattice_` cell chrome: 36x36 quarters picked by position, exactly
@@ -572,63 +666,137 @@ mod test {
         assert!(created.group.is_none() && summoned.group.is_none());
     }
 
-    /// The Trace slot routes through the shared seam instead of building its
-    /// own packet: one Trace sender for the window and the right-click menu.
-    /// Pinned because a second sender is the easy mistake here, and nothing in
-    /// the type system forbids it.
-    #[test]
-    fn the_trace_slot_goes_through_the_target_menu_seam() {
+    /// Every wired slot routes to a sender that already exists instead of
+    /// building its own packet. Pinned verb by verb because a second builder
+    /// is the easy mistake here and nothing in the type system forbids it.
+    fn app_with_slot(command_id: u32, select: bool) -> (App, Option<Entity>) {
         let mut app = App::new();
         app.init_resource::<SelectedEntity>()
-            .add_message::<TargetMenuAction>();
-        let target = app.world_mut().spawn_empty().id();
-        app.world_mut().resource_mut::<SelectedEntity>().0 = Some(target);
-
+            .add_message::<TargetMenuAction>()
+            .add_message::<AttackOrder>()
+            .add_message::<PickupOrder>();
+        let target = if select {
+            let e = app.world_mut().spawn_empty().id();
+            app.world_mut().resource_mut::<SelectedEntity>().0 = Some(e);
+            Some(e)
+        } else {
+            None
+        };
         let slot = app
             .world_mut()
             .spawn(ActionSlot {
                 panel: ActionPanel::CharacterControl,
                 index: 0,
-                command_id: Some(ACTION_COMMAND_TRACE),
+                command_id: Some(command_id),
             })
             .observe(on_slot_activate)
             .id();
         app.world_mut().trigger(Activate { entity: slot });
-
-        let written: Vec<_> = app
-            .world()
-            .resource::<Messages<TargetMenuAction>>()
-            .iter_current_update_messages()
-            .collect();
-        assert_eq!(written.len(), 1, "one action, not zero and not two");
-        assert_eq!(written[0].action, TargetAction::Trace);
-        assert_eq!(written[0].target, target);
+        (app, target)
     }
 
-    /// Without a selection the click must stay silent on the wire — a
-    /// targetless trace is a packet the server would refuse.
-    #[test]
-    fn the_trace_slot_sends_nothing_without_a_selection() {
-        let mut app = App::new();
-        app.init_resource::<SelectedEntity>()
-            .add_message::<TargetMenuAction>();
-        let slot = app
-            .world_mut()
-            .spawn(ActionSlot {
-                panel: ActionPanel::CharacterControl,
-                index: 0,
-                command_id: Some(ACTION_COMMAND_TRACE),
-            })
-            .observe(on_slot_activate)
-            .id();
-        app.world_mut().trigger(Activate { entity: slot });
-
-        assert!(app
-            .world()
+    fn menu_actions(app: &App) -> Vec<TargetMenuAction> {
+        app.world()
             .resource::<Messages<TargetMenuAction>>()
             .iter_current_update_messages()
-            .next()
-            .is_none());
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn the_three_social_slots_go_through_the_target_menu_seam() {
+        for (command_id, want) in [
+            (ACTION_COMMAND_TRACE, TargetAction::Trace),
+            (ACTION_COMMAND_EXCHANGE, TargetAction::Exchange),
+            (ACTION_COMMAND_PARTY, TargetAction::InviteParty),
+        ] {
+            let (app, target) = app_with_slot(command_id, true);
+            let written = menu_actions(&app);
+            assert_eq!(written.len(), 1, "command {command_id}: one action");
+            assert_eq!(written[0].action, want);
+            assert_eq!(written[0].target, target.unwrap());
+        }
+    }
+
+    /// The two `0x7074` discriminants go to combat's order messages — the same
+    /// seam a click on a monster or on a dropped item uses — so the packet is
+    /// still built in exactly one place (`combat::action_slot`).
+    #[test]
+    fn the_two_object_action_slots_go_through_combats_order_messages() {
+        let (app, target) = app_with_slot(ACTION_COMMAND_AUTO_ATTACK, true);
+        let orders: Vec<_> = app
+            .world()
+            .resource::<Messages<AttackOrder>>()
+            .iter_current_update_messages()
+            .map(|order| order.0)
+            .collect();
+        assert_eq!(orders, vec![target.unwrap()]);
+        assert!(
+            menu_actions(&app).is_empty(),
+            "no menu action for an attack"
+        );
+
+        let (app, target) = app_with_slot(ACTION_COMMAND_AUTO_GET, true);
+        let orders: Vec<_> = app
+            .world()
+            .resource::<Messages<PickupOrder>>()
+            .iter_current_update_messages()
+            .map(|order| order.0)
+            .collect();
+        assert_eq!(orders, vec![target.unwrap()]);
+    }
+
+    /// Without a selection every wired slot must stay silent on the wire — a
+    /// targetless order is a packet the server would refuse.
+    #[test]
+    fn a_wired_slot_sends_nothing_without_a_selection() {
+        for command_id in [
+            ACTION_COMMAND_AUTO_ATTACK,
+            ACTION_COMMAND_TRACE,
+            ACTION_COMMAND_EXCHANGE,
+            ACTION_COMMAND_PARTY,
+            ACTION_COMMAND_AUTO_GET,
+        ] {
+            let (app, _) = app_with_slot(command_id, false);
+            assert!(
+                menu_actions(&app).is_empty(),
+                "command {command_id} sent a menu action with no target"
+            );
+            assert!(app
+                .world()
+                .resource::<Messages<AttackOrder>>()
+                .iter_current_update_messages()
+                .next()
+                .is_none());
+            assert!(app
+                .world()
+                .resource::<Messages<PickupOrder>>()
+                .iter_current_update_messages()
+                .next()
+                .is_none());
+        }
+    }
+
+    /// The ids come from the player's own `actionwnddata.txt`, so a typo in one
+    /// of them would silently un-wire a slot. This pins the classification, and
+    /// that an id the file lists but we cannot send is reported as unwired
+    /// rather than mapped to a neighbour's verb.
+    #[test]
+    fn the_command_ids_match_the_authored_rows() {
+        for (id, want) in [
+            (1002, SlotVerb::OnTarget(TargetVerb::Attack)),
+            (1003, SlotVerb::OnTarget(TargetVerb::Trace)),
+            (1006, SlotVerb::OnTarget(TargetVerb::Exchange)),
+            (1007, SlotVerb::OnTarget(TargetVerb::Party)),
+            (1008, SlotVerb::OnTarget(TargetVerb::Pickup)),
+        ] {
+            assert_eq!(verb_for(id), want, "command {id}");
+        }
+        // Authored rows with no wire path yet: 1000/1001 need 0x704F, the
+        // emotes 0x3091, 1004/1014..=1017 nothing we have sourced.
+        for id in [1000, 1001, 1004, 1009, 1014, 1017, 4000, 5000] {
+            assert_eq!(verb_for(id), SlotVerb::Unwired, "command {id}");
+        }
     }
 }
 

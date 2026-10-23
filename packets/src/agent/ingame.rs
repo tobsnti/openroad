@@ -3555,6 +3555,42 @@ mod test {
         assert_eq!(decoded.monster_hp(), None);
     }
 
+    /// Real captured C->S frames, so the two discriminants this window now
+    /// reaches are pinned against the wire and not against our own encoder.
+    /// `packet_dump/c2s/0x7074.log`: 1075 frames across nine dump trees, of
+    /// which 561 are discriminant 1 and 281 discriminant 2, every one of them
+    /// `01 <discr> 01 <u32 uid>`.
+    ///
+    /// Discriminant 3 (Trace) appears in **none** of them — it is decompile-
+    /// sourced only (`sro_client.exe@00793bc3`), which is why it is pinned by
+    /// the hand-built frame above rather than by a capture.
+    #[test]
+    fn attack_and_pickup_roundtrip_captured_c2s_frames() {
+        // attack on uid 8195
+        let wire = Bytes::from_static(&[0x01, 0x01, 0x01, 0x03, 0x20, 0x00, 0x00]);
+        let packet = ObjectActionRequest::Execute(ActionCommand::Attack(ActionTarget::Entity {
+            unique_id: 8195,
+        }));
+        assert_eq!(&Bytes::from(packet.clone())[..], &wire[..]);
+        assert_eq!(ObjectActionRequest::try_from(wire).unwrap(), packet);
+
+        // pickup on uid 288155
+        let wire = Bytes::from_static(&[0x01, 0x02, 0x01, 0x9B, 0x65, 0x04, 0x00]);
+        let packet = ObjectActionRequest::Execute(ActionCommand::Pickup(ActionTarget::Entity {
+            unique_id: 288155,
+        }));
+        assert_eq!(&Bytes::from(packet.clone())[..], &wire[..]);
+        assert_eq!(ObjectActionRequest::try_from(wire).unwrap(), packet);
+
+        // the one-byte cancel, 12 captured frames
+        let wire = Bytes::from_static(&[0x02]);
+        assert_eq!(&Bytes::from(ObjectActionRequest::Cancel)[..], &wire[..]);
+        assert_eq!(
+            ObjectActionRequest::try_from(wire).unwrap(),
+            ObjectActionRequest::Cancel
+        );
+    }
+
     #[test]
     fn object_action_request_roundtrips() {
         // cast with an entity target: 01 (execute) 04 (cast) id LE 01 uid LE
