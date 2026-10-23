@@ -7,6 +7,7 @@ use bevy::camera::visibility::{Layer, RenderLayers};
 use bevy::camera::{ClearColorConfig, Hdr, ImageRenderTarget, RenderTarget};
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::pbr::ScreenSpaceTransmission;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -237,10 +238,35 @@ fn setup_ui_camera(mut commands: Commands, config: Res<ClientConfig>) {
     }
 }
 
+/// Attach `ScreenSpaceTransmission` to every `Camera3d` — what bevy itself did
+/// until 0.20.
+///
+/// Idea: a transmissive material (the high-quality water, the ice sheets) is
+/// only drawn into a view that owns a transmission texture, and bevy builds one
+/// only for a camera carrying this component. `bevy_pbr` registered it as a
+/// required component of `Camera3d` up to 0.19
+/// (`transmission/mod.rs:34-35`) and dropped that line in 0.20 (`:30`). Without
+/// it the `VIEW_TRANSMISSION_TEXTURE` shader def is never set, so the binding
+/// `water_hq.wesl` imports does not exist, its shader fails to process, and the
+/// water never draws — one ERROR line at startup and `transmissive_3d/draws`
+/// stuck at 0.
+///
+/// `try_` rather than the panicking form: a later bevy that registers this
+/// again should be a no-op here, not a startup crash. The other reachable
+/// error — a `Camera3d` archetype that already exists — would leave that camera
+/// without the component and the water invisible again, so it is logged rather
+/// than dropped; a silent failure is exactly what this function is about.
+fn require_screen_space_transmission(app: &mut App) {
+    if let Err(err) = app.try_register_required_components::<Camera3d, ScreenSpaceTransmission>() {
+        info!("Camera3d does not require ScreenSpaceTransmission here: {err}");
+    }
+}
+
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
+        require_screen_space_transmission(app);
         app
             // TODO: ThirdPersonCameraPlugin removed - no Bevy 0.16 compatible version
             .add_plugins(FreeCameraPlugin)
@@ -1339,6 +1365,26 @@ fn update_cam_position_text(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// bevy 0.20 stopped attaching `ScreenSpaceTransmission` to `Camera3d`
+    /// (`require_screen_space_transmission`), and the consequence is invisible
+    /// to `make ci`: no transmission texture means a shader def is missing,
+    /// which means `water_hq.wesl` fails to process, which means the water
+    /// silently does not draw. Only a GPU run shows that, so the gate here is
+    /// the registration itself.
+    #[test]
+    fn a_camera_3d_carries_screen_space_transmission() {
+        let mut app = App::new();
+        require_screen_space_transmission(&mut app);
+
+        let camera = app.world_mut().spawn(Camera3d::default()).id();
+
+        assert!(
+            app.world().get::<ScreenSpaceTransmission>(camera).is_some(),
+            "without it the view gets no transmission texture and every \
+             transmissive material (water, ice) stops drawing"
+        );
+    }
 
     /// The three sight modes are defined by which orbit axis they remove — see
     /// the `_DESC` strings quoted on [`SightMode`]. If this table ever drifts,
