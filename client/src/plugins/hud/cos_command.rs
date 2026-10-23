@@ -37,6 +37,7 @@ use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::hud::cos::model::{CosPage, CosWindowState};
 use crate::plugins::hud::cos::state::CosState;
+use crate::plugins::hud::cos::unsummon_confirm::{carries_cargo, CosUnsummonConfirm};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::entities::NetworkId;
 use crate::plugins::player::Player;
@@ -690,12 +691,21 @@ fn dispatch_ctx<'a>(
         .as_ref()
         .and_then(|status| state.and_then(|state| state.get(status.unique_id)))
         .is_some_and(|cos| AttackPetSettings(cos.settings()).is_offensive());
+    // The one condition that puts a confirm in front of the dismissal (see
+    // `cos::unsummon_confirm`). Read here because `CosState` is already in
+    // hand; `false` without it means "do not ask" — the old behaviour, not a
+    // dialog over nothing.
+    let cargo_aboard = subject
+        .as_ref()
+        .and_then(|status| state.and_then(|state| state.get(status.unique_id)))
+        .is_some_and(carries_cargo);
     DispatchCtx {
         mounted: subject
             .as_ref()
             .is_some_and(|status| rider.0 == Some(status.unique_id)),
         victim: attack_victim(selected, ids, players, list),
         offensive,
+        cargo_aboard,
         subject,
         window,
     }
@@ -716,6 +726,7 @@ fn on_bar_button(
     mut commands_out: MessageWriter<CosCommand>,
     mut pet_out: MessageWriter<PetCommand>,
     window: Option<ResMut<CosWindowState>>,
+    confirm: Option<ResMut<CosUnsummonConfirm>>,
 ) {
     let Ok(action) = buttons.get(activate.entity) else {
         return;
@@ -731,7 +742,13 @@ fn on_bar_button(
         &players,
         window.as_deref_mut(),
     );
-    dispatch(*action, &mut ctx, &mut commands_out, &mut pet_out);
+    dispatch(
+        *action,
+        &mut ctx,
+        &mut commands_out,
+        &mut pet_out,
+        confirm.map(ResMut::into_inner),
+    );
 }
 
 /// Everything a cell needs to act.
@@ -750,6 +767,10 @@ pub struct DispatchCtx<'a> {
     /// the *other* mode. Read from `CosState`'s settings word by the caller,
     /// which is where the authoritative 0xB420 value lands.
     pub offensive: bool,
+    /// Whether the subject carries goods. The Unsummon cell asks before
+    /// destroying a loaded transport instead of sending straight away — see
+    /// [`crate::plugins::hud::cos::unsummon_confirm`].
+    pub cargo_aboard: bool,
     pub mounted: bool,
     /// The COS *window* is another plugin's resource — the bar stands alone in
     /// tests and in the headless harness, and a missing window means only that
@@ -782,6 +803,7 @@ fn dispatch(
     ctx: &mut DispatchCtx,
     commands_out: &mut MessageWriter<CosCommand>,
     pet_out: &mut MessageWriter<PetCommand>,
+    confirm: Option<&mut CosUnsummonConfirm>,
 ) {
     let Some(status) = ctx.subject.clone() else {
         return;
@@ -800,7 +822,19 @@ fn dispatch(
             commands_out.write(CosCommand::Follow(uid));
         }
         CosBarButton::Unsummon => {
-            commands_out.write(CosCommand::Unsummon(uid));
+            // A loaded transport drops its cargo, so the original asks first
+            // (`UIIT_MSG_COS_CLEAN_CONFIRM1`/`2`); an empty one goes straight
+            // through, because vanilla asks nothing there. Without the confirm
+            // resource (tests, headless harness) the command goes as before.
+            match (ctx.cargo_aboard, confirm) {
+                (true, Some(confirm)) => confirm.pending = Some(uid),
+                // Nothing aboard, or nowhere to put a dialog: send as before.
+                // Both arms have to be `()`, hence the braces — a bare
+                // `write(..)` arm returns its message id.
+                (true, None) | (false, _) => {
+                    commands_out.write(CosCommand::Unsummon(uid));
+                }
+            }
         }
         CosBarButton::AiMode => {
             // One switch: send whichever mode the pet is not already in. The
@@ -903,7 +937,7 @@ pub fn cos_command_hotkeys(
         (KEY_COS_FOLLOW, CosBarButton::Follow),
     ] {
         if pressed(key) && offers(action) {
-            dispatch(action, &mut ctx, &mut commands_out, &mut pet_out);
+            dispatch(action, &mut ctx, &mut commands_out, &mut pet_out, None);
         }
     }
 }
@@ -1176,10 +1210,16 @@ mod tests {
                     subject: subject.clone(),
                     victim,
                     offensive: false,
+                    // The fixtures are a bare `CosStatus`, which carries no
+                    // bag at all, so nothing is aboard. That is also what
+                    // keeps `cells_act_on_the_bars_subject` honest: it counts
+                    // the commands a cell *sends*, and a loaded subject would
+                    // make the Unsummon line assert a dialog instead.
+                    cargo_aboard: false,
                     mounted: false,
                     window: Some(&mut window),
                 };
-                dispatch(action, &mut ctx, &mut out, &mut pet_out);
+                dispatch(action, &mut ctx, &mut out, &mut pet_out, None);
             },
         );
         system.initialize(app.world_mut());

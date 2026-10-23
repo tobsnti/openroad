@@ -1,9 +1,11 @@
+pub mod follow_ban;
 pub mod info;
 pub mod inventory;
 pub mod model;
 pub mod setup;
 pub mod state;
 pub mod ui;
+pub mod unsummon_confirm;
 
 use bevy::prelude::*;
 
@@ -19,8 +21,15 @@ impl Plugin for CosPlugin {
             .init_resource::<state::CosState>()
             .init_resource::<setup::CosSetupState>()
             .init_resource::<inventory::CosBagPage>()
+            .init_resource::<unsummon_confirm::CosUnsummonConfirm>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_cos_window)
-            .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_cos_window)
+            .add_systems(
+                OnExit(SceneState::GameWorld),
+                (
+                    ui::cleanup_cos_window,
+                    unsummon_confirm::cleanup_cos_unsummon_confirm,
+                ),
+            )
             .add_systems(
                 Update,
                 (
@@ -41,6 +50,14 @@ impl Plugin for CosPlugin {
                     // ifcossetup.txt page: 0x30C8/0xB420 -> the flag controls
                     setup::apply_cos_settings,
                     setup::refresh_cos_setup,
+                    // The confirm in front of a destructive unsummon: the bar
+                    // writes the pending uid, this draws the box, and the
+                    // stale-drop keeps Yes from naming a COS that is gone.
+                    unsummon_confirm::drop_stale_unsummon_confirm,
+                    unsummon_confirm::sync_cos_unsummon_confirm,
+                    // 0xB074's named refusal codes -> the original's own
+                    // sentences (additive to combat's log-only reader).
+                    follow_ban::report_action_refusals,
                 )
                     .run_if(
                         in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
