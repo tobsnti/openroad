@@ -23,7 +23,10 @@
 //! Self-buffs hold an [`AppliedBuff`] with the skill's `'dura'` duration
 //! and own their ACT_S burst / ACT_L loop emissions, despawned on expiry.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
+use packets::agent::prelude::BuffRemainTime;
 
 use crate::assets::textdata::skilldata::SkillDataRow;
 use crate::assets::textdata::skilleffect::{EffectPhase, SkillEntry};
@@ -297,15 +300,34 @@ pub(crate) fn push_buff_instance(
     }
 }
 
-/// Buffs with no wire duration and no skilldata `'dura'` are treated as
-/// permanent-until-removed: a day-long Timer keeps the gauge/expiry
+/// Buffs the server never timed and skilldata gives no `'dura'` for are
+/// treated as permanent-until-removed: a day-long Timer keeps the gauge/expiry
 /// machinery untouched (infinite `Duration`s panic, and an `Option<Timer>`
 /// would ripple through expire_buffs for no visible gain — the board gauge
 /// simply reads full).
+///
+/// A placeholder, not an estimate, and 0x3206 is why it is no longer the answer
+/// for the buffs that have one: of the 114 captured remaining times
+/// (`packet_dump/0x3206.log`, 20898000…256516000 ms = 5.80 h…71.25 h) exactly
+/// one sits within 1% of 24 h. It now only covers the gap until a refresh
+/// arrives.
 const PERMANENT_BUFF_SECS: f32 = 24.0 * 3600.0;
 
-/// 0xB0BD/0xB072 — server-driven buff add/remove (the join-time auto-buffs
-/// and every networked cast's authoritative buff state). Network adds also
+/// A 0x3206 remaining time as Timer seconds.
+///
+/// No conversion of the time base is needed and that is the point: the wire
+/// value counts down with time spent in the game, not with the clock
+/// (`BuffRemainTime::Own::remaining_play_ms`), and a [`Timer`] ticked from
+/// `Res<Time>` counts the same thing. Clamped away from zero the way
+/// [`apply_status_effects`] clamps a stun duration — a zero-length Timer makes
+/// `fraction_remaining()` divide by zero, and the board would paint a NaN gauge.
+fn buff_timer_secs(remaining_ms: u32) -> f32 {
+    (remaining_ms as f32 / 1000.0).max(0.1)
+}
+
+/// 0xB0BD/0xB072/0x3206 — server-driven buff add, remove and remaining time
+/// (the join-time auto-buffs and every networked cast's authoritative buff
+/// state). Network adds also
 /// spawn the ACT_S/ACT_L aura effects UNLESS the entity already shows the
 /// buff (our own cast's [`apply_self_buffs`] entry — the following 0xB0BD
 /// then merges by codename without re-spawning): without this, item/scroll
@@ -313,9 +335,20 @@ const PERMANENT_BUFF_SECS: f32 = 24.0 * 3600.0;
 /// The aura anchors on the owner's body wrapper (the child carrying the
 /// [`SkeletonBinding`]); if the body hasn't streamed in yet, the effects
 /// fall back to the entity root.
+///
+/// The remaining time is read here, in the same system as the adds, rather
+/// than in one of its own. 0xB0BD carries no duration and the server sends the
+/// 0x3206 refresh for it in the same millisecond (measured over all 114 frames
+/// of `packet_dump/0x3206.log`), so both land in one batch —
+/// but [`push_buff_instance`] creates `ActiveBuffs` through `Commands`, so a
+/// buff added in this run is invisible to every query until the next sync
+/// point. A separate system would therefore drop exactly the first refresh,
+/// the one that replaces [`PERMANENT_BUFF_SECS`]. Collected before the add
+/// loop, the wire time becomes the buff's first duration instead.
 pub fn apply_network_buffs(
     mut adds: MessageReader<packets::agent::prelude::BuffAdd>,
     mut removes: MessageReader<packets::agent::prelude::BuffRemove>,
+    mut refreshes: MessageReader<BuffRemainTime>,
     net: Res<crate::plugins::net::entities::NetworkEntities>,
     skill_data: Res<ClientSkillData>,
     skill_effects: Res<ClientSkillEffects>,
@@ -325,6 +358,34 @@ pub fn apply_network_buffs(
     asset_server: Res<AssetServer>,
     mut commands: Commands,
 ) {
+    // Both arms are keyed by instance id alone: 0xB072 removes buffs by
+    // instance id with no uid beside it, so those ids are unique across
+    // entities and the `Entity` arm's `unique_id` adds nothing a lookup needs.
+    let mut wire_remaining: HashMap<u32, u32> = HashMap::new();
+    for refresh in refreshes.read() {
+        match refresh {
+            BuffRemainTime::Own {
+                buff_instance_id,
+                remaining_play_ms,
+            } => {
+                wire_remaining.insert(*buff_instance_id, *remaining_play_ms);
+            }
+            BuffRemainTime::Entity {
+                buff_instance_id,
+                remaining_ms,
+                ..
+            } => {
+                wire_remaining.insert(*buff_instance_id, *remaining_ms);
+            }
+            BuffRemainTime::Unknown { raw } => {
+                debug!(
+                    "skills: 0x3206 kept whole, {} bytes (no modelled sub-type)",
+                    raw.len()
+                );
+            }
+        }
+    }
+
     for add in adds.read() {
         let Some(owner) = net.get(add.unique_id) else {
             // join-order race: the buff may beat the entity registration —
@@ -336,12 +397,14 @@ pub fn apply_network_buffs(
             debug!("skills: buff add for unknown skill {}", add.ref_skill_id);
             continue;
         };
-        // no duration on the wire: skilldata 'dura' when authored, else
-        // permanent-until-0xB072. NOT the 10s BUFF_FALLBACK — that would
+        // 0xB0BD carries no duration of its own, so: the server's remaining
+        // time when its 0x3206 arrived with the add, then skilldata's 'dura',
+        // else permanent-until-0xB072. NOT the 10s BUFF_FALLBACK — that would
         // silently expire real permanent buffs.
-        let duration = row
-            .param_after("dura")
-            .map(|ms| ms as f32 / 1000.0)
+        let duration = wire_remaining
+            .remove(&add.buff_instance_id)
+            .map(buff_timer_secs)
+            .or_else(|| row.param_after("dura").map(|ms| ms as f32 / 1000.0))
             .unwrap_or(PERMANENT_BUFF_SECS);
         let codename = row.basic_group().unwrap_or(row.code_name()).to_string();
         info!(
@@ -379,6 +442,34 @@ pub fn apply_network_buffs(
                 instance_id: Some(add.buff_instance_id),
             },
         );
+    }
+    // Whatever is left names a buff that was added in an earlier frame. No
+    // captured frame does that — across 129 frames in six dump trees every
+    // instance id appears exactly once, always beside its add — so this is
+    // the unproven branch, kept because the refresh carries an instance id
+    // and nothing in it says "only valid with an add". An id nothing holds
+    // has nothing to refresh, so it is logged, not guessed at.
+    for (instance_id, remaining_ms) in wire_remaining {
+        let secs = buff_timer_secs(remaining_ms);
+        let mut refreshed = false;
+        for mut active in buffs.iter_mut() {
+            let Some(buff) = active
+                .0
+                .iter_mut()
+                .find(|buff| buff.instance_id == Some(instance_id))
+            else {
+                continue;
+            };
+            buff.timer = Timer::from_seconds(secs, TimerMode::Once);
+            info!(
+                "skills: buff {} has {secs:.0}s of play time left (0x3206 instance {instance_id})",
+                buff.codename
+            );
+            refreshed = true;
+        }
+        if !refreshed {
+            debug!("skills: 0x3206 remaining time for unheld buff instance {instance_id}");
+        }
     }
     // 0xB072 is a LIST (count-prefixed) — see BuffRemove. Captures only ever
     // showed one id, but the original loops, so drop every id it names.
@@ -565,5 +656,124 @@ pub fn sync_ailment_effects(
             entry.effects.push((bit, effect));
         }
         entry.shown = mask;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::net::entities::NetworkEntities;
+    use packets::agent::prelude::{BuffAdd, BuffRemove};
+
+    /// One buff already held, started on [`PERMANENT_BUFF_SECS`] — the value
+    /// the board gauge used to read for every server-timed buff. The skill
+    /// tables stay empty on purpose: these tests drive the refresh path, which
+    /// never consults them.
+    ///
+    /// `TaskPoolPlugin` before `AssetPlugin` is the house fixture pairing
+    /// (#665, same shape as `player_mini_info`'s param smoke) — the system asks
+    /// for `Res<AssetServer>`.
+    fn app_holding(instance_id: Option<u32>) -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_resource::<NetworkEntities>()
+        .init_resource::<ClientSkillData>()
+        .init_resource::<ClientSkillEffects>()
+        .add_message::<BuffAdd>()
+        .add_message::<BuffRemove>()
+        .add_message::<BuffRemainTime>()
+        .add_systems(Update, apply_network_buffs);
+        app.world_mut().spawn(ActiveBuffs(vec![BuffInstance {
+            codename: "SKILL_SERVER_AUTO_BUFF".to_string(),
+            timer: Timer::from_seconds(PERMANENT_BUFF_SECS, TimerMode::Once),
+            loop_effects: Vec::new(),
+            icon: None,
+            instance_id,
+        }]));
+        app
+    }
+
+    fn held_timer(app: &mut App) -> Timer {
+        let mut timers: Vec<Timer> = app
+            .world_mut()
+            .query::<&ActiveBuffs>()
+            .iter(app.world())
+            .flat_map(|active| active.0.iter().map(|buff| buff.timer.clone()))
+            .collect();
+        assert_eq!(timers.len(), 1, "the fixture holds exactly one buff");
+        timers.remove(0)
+    }
+
+    /// Capture line `0x2557` from `packet_dump/0x3206.log` (the same body the
+    /// packets-crate decode test pins): 134372000 ms = 37.3 h of play time.
+    const CAPTURED_INSTANCE: u32 = 0x2557;
+    const CAPTURED_REMAINING_MS: u32 = 134_372_000;
+
+    #[test]
+    fn a_refresh_replaces_the_permanent_placeholder_on_the_named_instance() {
+        let mut app = app_holding(Some(CAPTURED_INSTANCE));
+        app.world_mut().write_message(BuffRemainTime::Own {
+            buff_instance_id: CAPTURED_INSTANCE,
+            remaining_play_ms: CAPTURED_REMAINING_MS,
+        });
+        app.update();
+
+        let timer = held_timer(&mut app);
+        assert_eq!(
+            timer.duration().as_secs(),
+            u64::from(CAPTURED_REMAINING_MS / 1000),
+            "the server's remaining time must land on the buff"
+        );
+        assert_ne!(timer.duration().as_secs(), PERMANENT_BUFF_SECS as u64);
+        // What the board reads (`update_state_gauges` -> `gauge_fill_width`).
+        assert_eq!(timer.fraction_remaining(), 1.0);
+    }
+
+    /// The instance id is the only key 0x3206 carries, so a refresh for an id
+    /// nobody holds must leave every buff alone rather than pick one. (This
+    /// drives the late-refresh branch, which no capture exercises.)
+    #[test]
+    fn a_refresh_for_an_unheld_instance_changes_nothing() {
+        let mut app = app_holding(Some(CAPTURED_INSTANCE));
+        app.world_mut().write_message(BuffRemainTime::Own {
+            buff_instance_id: CAPTURED_INSTANCE + 1,
+            remaining_play_ms: CAPTURED_REMAINING_MS,
+        });
+        app.update();
+        assert_eq!(
+            held_timer(&mut app).duration().as_secs(),
+            PERMANENT_BUFF_SECS as u64
+        );
+    }
+
+    /// A locally-applied buff (`instance_id: None`, our own cast before any
+    /// 0xB0BD) must not be adopted by a refresh that names an id.
+    #[test]
+    fn a_local_buff_without_an_instance_id_is_never_refreshed() {
+        let mut app = app_holding(None);
+        app.world_mut().write_message(BuffRemainTime::Own {
+            buff_instance_id: CAPTURED_INSTANCE,
+            remaining_play_ms: CAPTURED_REMAINING_MS,
+        });
+        app.update();
+        assert_eq!(
+            held_timer(&mut app).duration().as_secs(),
+            PERMANENT_BUFF_SECS as u64
+        );
+    }
+
+    /// Why [`buff_timer_secs`] clamps: a zero-length Timer divides by zero in
+    /// `fraction_remaining()`, and the board would multiply NaN into a gauge
+    /// width. Asserted through the value the board reads, not the clamp.
+    #[test]
+    fn a_zero_remaining_time_still_gives_the_gauge_a_number() {
+        let timer = Timer::from_seconds(buff_timer_secs(0), TimerMode::Once);
+        assert!(
+            timer.fraction_remaining().is_finite(),
+            "a NaN fraction paints a NaN gauge width"
+        );
     }
 }
