@@ -250,6 +250,25 @@ pub fn stock_drop_on_stall(
     });
 }
 
+/// The question for a row that is **already** on sale, from the row the server
+/// sent us: its own name, its own numbers, and the stall slot to change.
+///
+/// Pure, so the entry point stays a one-liner and this stays testable: the
+/// prompt is a value, and what raises it is a button (see
+/// `ui::spawn_stall_window`). `ref_id` is `0` because a listed row carries no
+/// ref id on the wire — the box then shows no icon rather than an invented
+/// one, which is also why the name comes from the row and not from itemdata.
+pub fn reprice_prompt(state: &StallState, stall_slot: u8) -> Option<StockPrompt> {
+    let row = state.slots.get(stall_slot as usize)?.as_ref()?;
+    Some(StockPrompt {
+        target: StockTarget::Stall(stall_slot),
+        ref_id: 0,
+        name: row.name.clone(),
+        amount: row.quantity.max(1),
+        price: row.price,
+    })
+}
+
 /// Close the box when the stall window goes — a question about a stall that is
 /// no longer on screen has no answer, and the modal would otherwise outlive it
 /// with the scrim swallowing every click.
@@ -637,6 +656,27 @@ mod tests {
             .run_system_once(clear_stock_with_stall)
             .expect("the system runs");
         assert!(world.resource::<StockModal>().prompt.is_none());
+    }
+
+    /// Re-pricing asks about the row the server sent: its name, its numbers,
+    /// its slot — not the bag item it once was, which is why nothing here
+    /// touches itemdata.
+    #[test]
+    fn a_reprice_prompt_is_the_rows_own_numbers() {
+        use crate::plugins::hud::stall::model::StallRow;
+        let mut state = StallState::default();
+        state.slots[2] = Some(StallRow {
+            name: "Elixir".into(),
+            quantity: 7,
+            price: 1234,
+        });
+        let prompt = reprice_prompt(&state, 2).expect("the row is listed");
+        assert_eq!(prompt.target, StockTarget::Stall(2));
+        assert_eq!((prompt.amount, prompt.price), (7, 1234));
+        assert_eq!(prompt.name, "Elixir");
+        assert_eq!(prompt.ref_id, 0, "a listed row carries no ref id");
+        // and an empty slot has nothing to ask about
+        assert!(reprice_prompt(&state, 3).is_none());
     }
 
     /// The two types part on the target, and that is the whole difference the

@@ -49,8 +49,10 @@
 //! `UIIT_STT_STALL_MODIFYING`. Both strings ship, so the state reaches a
 //! screen reader as text rather than only as an icon swap.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::FontSize;
+use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
@@ -58,6 +60,7 @@ use crate::plugins::hud::game_window::{self, abs_node, spawn_game_window_with};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::stall::model::{StallState, StallTradingState};
 use crate::plugins::textdata::ClientUiStrings;
+use crate::plugins::ui_v2::style::ImageButtonStyle;
 
 /// `ginterface.txt:830` `Rect="0,0,467,490"`.
 const OUTER: (f32, f32) = (467.0, 490.0);
@@ -132,6 +135,19 @@ const STATE_ICON_MODIFY_DDJ: &str = "media://interface/stall/stl_condition_icon_
 /// The two states of the row plate (§9-U1 leaves which is which open; the
 /// empty row is the neutral one, so `_02` is drawn for an empty slot).
 const ROW_PLATE_DDJ: &str = "media://interface/stall/stl_slot_02.ddj";
+/// `GDR_STALLSLOT_MODIFY` (`ifstallslot.txt:6`) — the row template's **only**
+/// control, and the original's answer to "how does an owner edit a listed
+/// row": a button on the row, not a gesture and not a context menu (the
+/// corpus authors no menu for this window; the one popup descriptor it has,
+/// `ifnewitemslotpopupwnd.txt`, is the new item mall's).
+///
+/// The block carries `Rect="183,0,0,0"` — the zero size is this corpus's "the
+/// art decides", as in the mall's own buttons — and the art measures 24x24
+/// (DDS header of all four `stl_edit_button*` states). 183 + 24 = 207 lands
+/// one pixel inside the 208-wide plate texture; the doc's "max extents 200"
+/// counts only the blocks that state a size.
+const MODIFY_BUTTON: (f32, f32, f32, f32) = (183.0, 0.0, 24.0, 24.0);
+const MODIFY_BUTTON_DDJ: &str = "media://interface/stall/stl_edit_button.ddj";
 
 /// Font sizes: the tree carries `FontIndex=0` everywhere, and this lane draws
 /// that index at 9 px (see the sibling windows).
@@ -161,6 +177,38 @@ pub struct StallBoard;
 /// One of the ten grid cells, in reading order (row-major).
 #[derive(Component, Clone, Copy)]
 pub struct StallSlot(pub usize);
+
+/// The edit button of row `index` (`GDR_STALLSLOT_MODIFY`), owner only.
+#[derive(Component)]
+pub struct StallModifyButton(pub usize);
+
+/// The row's edit button opens the stocking box on that row's own numbers —
+/// `0x70BA` type 1 once the player confirms (`stock::on_stock_button`).
+///
+/// This is the entry the stall was missing: `net::on_stall_slot_press`
+/// answered the owner's click with "belongs to the stocking path, not wired
+/// yet", and the path it meant is this one. The click on the row itself stays
+/// what it is (a buy, and nothing at all on your own stall), because the data
+/// puts the edit on a button and inventing a second meaning for the same
+/// click would be our gesture, not the original's.
+fn on_stall_modify_button(
+    activate: On<Activate>,
+    buttons: Query<&StallModifyButton>,
+    state: Res<StallState>,
+    mut modal: ResMut<super::stock::StockModal>,
+) {
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    let Ok(slot) = u8::try_from(button.0) else {
+        return;
+    };
+    let Some(prompt) = super::stock::reprice_prompt(&state, slot) else {
+        return;
+    };
+    info!("stall: re-pricing slot {slot} (0x70BA type 1)");
+    modal.prompt = Some(prompt);
+}
 
 /// Window-space rect of grid cell `index`, row-major: `(0,0)` is the top-left
 /// cell of the left column.
@@ -370,6 +418,40 @@ pub fn refresh_stall_window(
                         (x + CELL_W - 64.0, y + 6.0, 58.0, 16.0),
                         Color::WHITE,
                     ));
+                    // The row's own edit button, owner only: a visitor has
+                    // nothing to modify, and the data gives the control no
+                    // disabled state of its own on this window.
+                    if state.owner {
+                        window
+                            .spawn((
+                                StallModifyButton(index),
+                                Button,
+                                Hovered::default(),
+                                abs_node(
+                                    (
+                                        x + MODIFY_BUTTON.0,
+                                        y + MODIFY_BUTTON.1,
+                                        MODIFY_BUTTON.2,
+                                        MODIFY_BUTTON.3,
+                                    ),
+                                    s,
+                                ),
+                                ImageNode {
+                                    image: asset_server.load(MODIFY_BUTTON_DDJ),
+                                    image_mode: NodeImageMode::Stretch,
+                                    ..default()
+                                },
+                                ImageButtonStyle {
+                                    normal: asset_server.load(MODIFY_BUTTON_DDJ),
+                                    hover: asset_server
+                                        .load("media://interface/stall/stl_edit_button_focus.ddj"),
+                                    press: asset_server
+                                        .load("media://interface/stall/stl_edit_button_press.ddj"),
+                                    ..Default::default()
+                                },
+                            ))
+                            .observe(on_stall_modify_button);
+                    }
                 }
             }
 
@@ -441,6 +523,19 @@ pub fn cleanup_stall(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The edit button sits where the row template puts it, at the size its
+    /// art measures: `183 + 24 = 207`, one pixel inside the 208-wide plate
+    /// texture and three past the 204-wide cell the grid arithmetic uses. The
+    /// overhang is the data's, so a later tidy-up that "fixes" it to
+    /// `CELL_W - 24` would be moving a control the original placed.
+    #[test]
+    fn the_edit_button_is_where_the_row_template_puts_it() {
+        assert_eq!(MODIFY_BUTTON, (183.0, 0.0, 24.0, 24.0));
+        assert!(MODIFY_BUTTON.0 + MODIFY_BUTTON.2 > CELL_W);
+        assert!(MODIFY_BUTTON.0 + MODIFY_BUTTON.2 <= 208.0);
+        assert!(MODIFY_BUTTON.1 + MODIFY_BUTTON.3 <= ROW_PLATE_H);
+    }
 
     /// The grid arithmetic of §3f, re-derived from the transcribed numbers so
     /// a future edit cannot quietly break the three closures that identify it.

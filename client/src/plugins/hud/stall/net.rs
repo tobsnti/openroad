@@ -314,8 +314,10 @@ pub fn on_stall_slot_press(
     if state.slots.get(cell.0).and_then(Option::as_ref).is_none() {
         return;
     }
-    // You cannot buy from your own stall: for the owner the same click belongs
-    // to the stocking path (#781), which is not wired yet.
+    // You cannot buy from your own stall, and the owner's edit is not this
+    // click: the row template gives it its own control
+    // (`GDR_STALLSLOT_MODIFY`, `ui::on_stall_modify_button`), so the click on
+    // the row stays a buy and does nothing on a stall of ours.
     if state.owner {
         return;
     }
