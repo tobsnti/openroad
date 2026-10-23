@@ -69,7 +69,11 @@ fn seed_mock_guild_storage(mut state: ResMut<GuildStorageState>) {
         stack(11, HP_POTION, 7),
         equipment(26, CH_SPEAR, 0),
     ] {
-        slots[item.slot as usize] = Some(item);
+        // the index is bound first: in `slots[..] = Some(item)` the right side
+        // is evaluated before the place expression, so reading `item.slot`
+        // inside the brackets reads a moved value (E0382)
+        let slot = item.slot as usize;
+        slots[slot] = Some(item);
     }
 
     state.session = Some(GuildStorageSession {
