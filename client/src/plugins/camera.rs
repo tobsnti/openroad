@@ -1,7 +1,6 @@
 use crate::plugins::player::Player;
 use crate::AppMode;
 use crate::GameState;
-use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{Layer, RenderLayers};
@@ -1090,7 +1089,7 @@ fn apply_window_camera_msaa(
             if is_3d {
                 commands
                     .entity(entity)
-                    .insert(ContrastAdaptiveSharpening::default());
+                    .insert(config.graphics.sharpening.to_cas());
             }
         }
     }
@@ -1585,6 +1584,10 @@ mod test {
 #[cfg(test)]
 mod render_scale_tests {
     use super::*;
+    // Named only by the sharpening assertions below; `to_cas` is what the
+    // non-test code calls, so a top-level import would be unused.
+    use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
+
     use crate::plugins::config::graphics::RenderScale;
 
     /// The shipped example, as everywhere else in the tree: `ClientConfig` has
@@ -1863,7 +1866,7 @@ mod render_scale_tests {
         assert!(cas.sharpening_strength > 0.0);
         assert!(
             world.get::<ContrastAdaptiveSharpening>(ui_camera).is_none(),
-            "sharpening the UI camera would sharpen the HUD"
+            "the compositing camera is not where this pass is decided"
         );
         assert!(
             world.get::<ContrastAdaptiveSharpening>(portrait).is_none(),

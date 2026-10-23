@@ -12,6 +12,8 @@ graphics:
     character_distance: 0.0
   msaa: 4
   fxaa: true
+  # bevy's own default, and the FXAA above is what it compensates
+  sharpening: 0.6
   texture_detail: full
   anisotropy: 4
   bloom:

@@ -207,7 +207,7 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                was loaded with, and the ground-tile arrays are built once). \
                Next \
                camera spawn, i.e. the next scene: `msaa`, `fxaa`, \
-               `depth_prepass`, `sky_reflections` \
+               `sharpening`, `depth_prepass`, `sky_reflections` \
                (camera::apply_window_camera_msaa on Added<Camera>), \
                `tonemapping` and `shadows.filtering` (the spawn sites). \
                Every original quality row of the options window except \
