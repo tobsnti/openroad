@@ -57,3 +57,4 @@ ADRs live in [`adrs/`](adrs/) and are numbered:
 | 0010 | Revert rationale |
 | 0011 | GPU capability baseline |
 | 0012 | Graphics presets and the configurable view range |
+| 0013 | Where the server work lives (proposed) |
