@@ -130,13 +130,14 @@ same handler there.
 
 Small S→C pushes decoded from a live vSRO 1.188 world-join capture
 (`docs/net-captured-opcodes.md`, PR #179). Typed so the fan-out exists;
-client-side handling lands per-epic. `0x3153`/`0x3809` bodies are
+client-side handling lands per-epic — `0x3153` has it since the silk balance
+landed (`client/src/plugins/net/silk.rs`). `0x3153`/`0x3809` bodies are
 capture-verified; `0x3305`/`0x3077` were captured empty, so their list-entry
 shapes are unverified (see the struct docs in `agent/ingame.rs`).
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
-| `0x3153` | SilkUpdate | S→C | experimental | account silks `{own, gift, point}` (u32×3); capture-verified; feeds cash-shop epic |
+| `0x3153` | SilkUpdate | S→C | experimental | account silks `{own, gift, point}` (u32×3); capture-verified; kept in `net::silk::SilkBalance` and reported as a chat line when it changes. The original's surface is the mall's My-Info pane (`resinfo/ifitemmallmyinfo.txt:120,139,158`); that window waits on a purchase opcode, which is [U] |
 | `0x3809` | WeatherUpdate | S→C | experimental | `{weather_type, intensity}` (u8×2); EP-27 (environment/weather) |
 | `0x3305` | FriendListInfo | S→C | experimental | friend roster; captured empty; EP-32 / #154 (social) |
 | `0x3077` | CharacterFinished | S→C | experimental | join-time cooldown replay (item + skill lists); captured empty; EP-07 |
