@@ -2151,6 +2151,11 @@ pub fn update_skill_tooltip(
             };
             // NaN marks "no duration on the wire" — omit the line rather than
             // print a made-up 0s.
+            //
+            // For a server-timed buff this number is the 0x3206 remaining time
+            // (`skills::status::apply_network_buffs`), and it counts down with
+            // time spent in the game rather than with the clock — a buff with
+            // 37 h left does not end 37 h from now unless they are all played.
             let mut lines = Vec::new();
             if !remaining.is_nan() {
                 lines.push((format!("Remaining: {}s", remaining.ceil() as u32), true));
