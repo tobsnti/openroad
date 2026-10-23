@@ -40,9 +40,11 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
+use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
 use crate::plugins::textdata::{ClientActionCommands, ClientUiStrings};
 
 /// The page extent the four sub-frames tile: `0,240,364,117` is the last row,
@@ -322,22 +324,52 @@ pub fn spawn_action_window(
     });
 }
 
-/// Slots are inert until the command wire path exists; log which one was hit so
-/// the panel is testable and the backlog is visible (the under-bar menu does the
-/// same for its unbuilt rows).
-fn on_slot_activate(activate: On<Activate>, slots: Query<&ActionSlot>) {
-    if let Ok(slot) = slots.get(activate.entity) {
-        match slot.command_id {
-            Some(id) => debug!(
-                "action window: {:?} slot {} (command {id}) not wired yet",
-                slot.panel, slot.index
-            ),
-            None => debug!(
-                "action window: {:?} slot {} is unassigned",
-                slot.panel, slot.index
-            ),
-        }
+/// `actionwnddata.txt` command id for the "Trace" slot — the one verb in this
+/// window whose whole wire envelope already exists (`0x7074` discriminant 3).
+/// The rest of the 52 slots still fall through to the log below, each needing
+/// its own opcode.
+pub const ACTION_COMMAND_TRACE: u32 = 1003;
+
+/// Run a slot's verb.
+///
+/// Trace is routed through [`TargetMenuAction`] rather than built here, so the
+/// client keeps **one** Trace sender for the two places that offer it (this
+/// window and the target right-click menu) — see
+/// `target_menu::send_target_menu_trace`. The remaining slots are still inert
+/// and say so; that is a backlog entry per opcode, not one missing wire.
+fn on_slot_activate(
+    activate: On<Activate>,
+    slots: Query<&ActionSlot>,
+    selected: Res<SelectedEntity>,
+    mut actions: MessageWriter<TargetMenuAction>,
+) {
+    let Ok(slot) = slots.get(activate.entity) else {
+        return;
+    };
+    let Some(id) = slot.command_id else {
+        // The two pet grids and the empty tail are server-filled capacity, not
+        // a backlog item.
+        debug!(
+            "action window: {:?} slot {} is unassigned",
+            slot.panel, slot.index
+        );
+        return;
+    };
+    if id == ACTION_COMMAND_TRACE {
+        let Some(target) = selected.0 else {
+            info!("action window: trace needs a selected target");
+            return;
+        };
+        actions.write(TargetMenuAction {
+            target,
+            action: TargetAction::Trace,
+        });
+        return;
     }
+    debug!(
+        "action window: {:?} slot {} (command {id}) not wired yet",
+        slot.panel, slot.index
+    );
 }
 
 /// The `com_lattice_` cell chrome: 36x36 quarters picked by position, exactly
@@ -557,5 +589,64 @@ impl Plugin for ActionPlugin {
                 Update,
                 apply_action_window_visibility.run_if(in_state(SceneState::GameWorld)),
             );
+    }
+
+    /// The Trace slot routes through the shared seam instead of building its
+    /// own packet: one Trace sender for the window and the right-click menu.
+    /// Pinned because a second sender is the easy mistake here, and nothing in
+    /// the type system forbids it.
+    #[test]
+    fn the_trace_slot_goes_through_the_target_menu_seam() {
+        let mut app = App::new();
+        app.init_resource::<SelectedEntity>()
+            .add_message::<TargetMenuAction>();
+        let target = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<SelectedEntity>().0 = Some(target);
+
+        let slot = app
+            .world_mut()
+            .spawn(ActionSlot {
+                panel: ActionPanel::CharacterControl,
+                index: 0,
+                command_id: Some(ACTION_COMMAND_TRACE),
+            })
+            .observe(on_slot_activate)
+            .id();
+        app.world_mut().trigger(Activate { entity: slot });
+
+        let written: Vec<_> = app
+            .world()
+            .resource::<Messages<TargetMenuAction>>()
+            .iter_current_update_messages()
+            .collect();
+        assert_eq!(written.len(), 1, "one action, not zero and not two");
+        assert_eq!(written[0].action, TargetAction::Trace);
+        assert_eq!(written[0].target, target);
+    }
+
+    /// Without a selection the click must stay silent on the wire — a
+    /// targetless trace is a packet the server would refuse.
+    #[test]
+    fn the_trace_slot_sends_nothing_without_a_selection() {
+        let mut app = App::new();
+        app.init_resource::<SelectedEntity>()
+            .add_message::<TargetMenuAction>();
+        let slot = app
+            .world_mut()
+            .spawn(ActionSlot {
+                panel: ActionPanel::CharacterControl,
+                index: 0,
+                command_id: Some(ACTION_COMMAND_TRACE),
+            })
+            .observe(on_slot_activate)
+            .id();
+        app.world_mut().trigger(Activate { entity: slot });
+
+        assert!(app
+            .world()
+            .resource::<Messages<TargetMenuAction>>()
+            .iter_current_update_messages()
+            .next()
+            .is_none());
     }
 }

@@ -1035,6 +1035,14 @@ pub enum ActionCommand {
     Attack(ActionTarget),
     #[sro_packet(value = 2)]
     Pickup(ActionTarget),
+    /// "Trace" — follow the target until it is out of range or the player
+    /// moves. The same envelope as `Attack` and `Pickup` with discriminant 3:
+    /// the original's own frame is `0x7074 01 03 01 <u32 uid>`
+    /// (`sro_client.exe@00793bc3`, `push 0x7074` at `:00793bf5`). No separate
+    /// opcode and no separate ack — whatever `0xB074`/`0xB070` say about an
+    /// attack they say about this.
+    #[sro_packet(value = 3)]
+    Trace(ActionTarget),
     #[sro_packet(value = 4)]
     CastSkill {
         ref_skill_id: u32,
@@ -3561,6 +3569,17 @@ mod test {
             &bytes[..],
             &[1, 4, 0x02, 0x01, 0, 0, 1, 0x0D, 0x0C, 0x0B, 0x0A]
         );
+        let decoded: ObjectActionRequest = bytes.try_into().unwrap();
+        assert_eq!(decoded, packet);
+
+        // Trace on an entity, the frame the original builds verbatim:
+        // 01 (execute) 03 (trace) 01 (entity) uid LE
+        // (`sro_client.exe@00793bc3`, `push 0x7074` at `:00793bf5`).
+        let packet = ObjectActionRequest::Execute(ActionCommand::Trace(ActionTarget::Entity {
+            unique_id: 0x0A0B0C0D,
+        }));
+        let bytes: Bytes = packet.clone().into();
+        assert_eq!(&bytes[..], &[1, 3, 1, 0x0D, 0x0C, 0x0B, 0x0A]);
         let decoded: ObjectActionRequest = bytes.try_into().unwrap();
         assert_eq!(decoded, packet);
 
