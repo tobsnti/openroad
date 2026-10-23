@@ -44,6 +44,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::settings::options::{AudioOptions, GameOptions};
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -65,6 +66,15 @@ const TRACK_ART_XY: (f32, f32) = (15.0, 37.0);
 const SLIDER_XYWH: (f32, f32, f32, f32) = (38.0, 42.0, 207.0, 16.0);
 const MUTE_XYWH: (f32, f32, f32, f32) = (275.0, 41.0, 44.0, 12.0);
 const CHECK_XYWH: (f32, f32, f32, f32) = (325.0, 42.0, 16.0, 16.0);
+
+/// Both texts in the pane take their size from the tree. All 18 blocks of
+/// `ifoption_audio.txt` carry `FontIndex=0` — the group labels
+/// `GDR_OPTION_AUD_ST_*` (`:183,202,221`) and the mute buttons
+/// `GDR_OPTION_AUD_B_*` (`:69,88,107`) among them — and slot 0 of the ladder is
+/// 12 px ([`font_index_px`]). That is also what the rects expect: the label's
+/// `326x12` and the button's `44x12` are each exactly one 12 px line. The 11 px
+/// and 10 px literals this replaced appear nowhere in the data.
+const TEXT_FONT_INDEX: usize = 0;
 
 /// Our range, not the data's (see the module comment). Matches the `u32`
 /// percent scale `AudioOptions` already stores and `gain()` already divides by.
@@ -196,7 +206,7 @@ pub(crate) fn spawn_audio_pane(
             Text::new(ui_strings.get_or(key, english).to_string()),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(11.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(text_color),
@@ -329,7 +339,7 @@ fn spawn_mute(
             ),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(10.0),
+                font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
             TextColor(if live { LABEL_COLOR } else { INERT_COLOR }),
@@ -415,6 +425,19 @@ mod tests {
                 assert_eq!(base + GROUP_PITCH * index as f32, want);
             }
         }
+    }
+
+    /// The pane's text size is the tree's, not taste: the group labels and the
+    /// mute buttons all carry `FontIndex=0`, which the ladder answers with
+    /// 12 px — and the same file makes both of their rects exactly 12 px tall,
+    /// so the size and the box come out of one source. The 11 px and 10 px this
+    /// replaced were in neither.
+    #[test]
+    fn both_texts_take_their_size_from_the_trees_font_index() {
+        assert_eq!(TEXT_FONT_INDEX, 0);
+        assert_eq!(font_index_px(TEXT_FONT_INDEX), 12.0);
+        assert_eq!(LABEL_XYWH.3, 12.0);
+        assert_eq!(MUTE_XYWH.3, 12.0);
     }
 
     /// Three channels, and only three: there is no voice group in the tree and

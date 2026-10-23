@@ -37,6 +37,7 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::plugins::settings::options::{GameOptions, SightMode};
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -58,6 +59,16 @@ const ART_XY: [(f32, f32); 3] = [(12.0, 29.0), (12.0, 83.0), (12.0, 137.0)];
 const CAPTION_XY: [(f32, f32); 3] = [(57.0, 38.0), (57.0, 92.0), (57.0, 146.0)];
 const CAPTION_W: f32 = 282.0;
 const RADIO_SIZE: f32 = 16.0;
+
+/// The caption's size is the tree's: the three `CIFPML` blocks carry
+/// `FontIndex=0` (`ifoption_camera.txt:12,31,50`, and so does every other block
+/// in the file), which is 12 px on the ladder ([`font_index_px`]).
+const CAPTION_FONT_INDEX: usize = 0;
+/// The two description lines are **ours** (stated deviation 1): no block in the
+/// tree carries them, so there is no `FontIndex` to read. 10 px is picked below
+/// the caption's data size to keep them visibly secondary, and inside the
+/// [`CAPTION_LINE_H`] pitch they are stacked on.
+const DESC_PX: f32 = 10.0;
 
 /// The gold the vanilla captions are written in:
 /// `<font color="255,240,217,165">` inside `UIIT_STT_SIGHT_*_DESC` (AARRGGBB).
@@ -211,7 +222,7 @@ pub(crate) fn spawn_camera_pane(
                 ),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(12.0),
+                    font_size: FontSize::Px(font_index_px(CAPTION_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(TITLE_COLOR),
@@ -223,7 +234,7 @@ pub(crate) fn spawn_camera_pane(
                     Text::new(ui_strings.get_or(key, english).to_string()),
                     TextFont {
                         font: font.clone().into(),
-                        font_size: FontSize::Px(10.0),
+                        font_size: FontSize::Px(DESC_PX),
                         ..default()
                     },
                     TextColor(DESC_COLOR),
@@ -310,6 +321,22 @@ mod tests {
         assert_eq!(radio_over_art, vec![16.0, 15.0, 15.0]);
         assert_eq!(RADIO_XY[1].1 - RADIO_XY[0].1, 53.0);
         assert_eq!(RADIO_XY[2].1 - RADIO_XY[1].1, 54.0);
+    }
+
+    /// The caption's size is read out of the same file as its rect: all three
+    /// `CIFPML` blocks say `FontIndex=0`, and the ladder answers 12 px. The two
+    /// description lines are the half the tree does not define, so they stay a
+    /// number with a reason — smaller than the caption and inside its line
+    /// pitch — rather than a second transcription.
+    #[test]
+    fn the_caption_size_is_the_trees_and_the_extra_lines_are_ours() {
+        assert_eq!(CAPTION_FONT_INDEX, 0);
+        assert_eq!(font_index_px(CAPTION_FONT_INDEX), 12.0);
+        assert!(DESC_PX < font_index_px(CAPTION_FONT_INDEX));
+        assert!(
+            DESC_PX < CAPTION_LINE_H,
+            "a stacked line must hold its text"
+        );
     }
 
     /// The pane's three rows must be the three modes, in the tree's top-to-

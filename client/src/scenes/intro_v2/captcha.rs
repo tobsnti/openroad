@@ -15,6 +15,7 @@ use packets::login::{
 };
 use packets::Packet;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::modal_dialog::{modal_plate, modal_scrim};
@@ -26,7 +27,7 @@ use crate::plugins::ui_v2::widgets::{image_button, label, text_input};
 
 use super::assets::IntroV2Assets;
 use super::chrome::InfoTextV2Update;
-use super::{intro_font_px, IntroV2Ui};
+use super::IntroV2Ui;
 
 /// Upper bound on the inflated bitmap we are willing to expand, so a hostile or
 /// broken server cannot make us allocate arbitrarily. 64x the stock IBUV image,
@@ -211,9 +212,9 @@ fn captcha_modal(
     let confirm_font = fonts.nine.clone();
     // One size for the whole box: its single resinfo host `GDR_CMB_CONFIRMBOX`
     // (`pstitle.txt:6`, section `Validate`) is `FontIndex=0` -> 12 px on the
-    // ladder (`intro_font_px`), and the box has no other authored control to
+    // ladder (`font_index_px`), and the box has no other authored control to
     // read a second index from.
-    let text_px = intro_font_px(0);
+    let text_px = font_index_px(0);
     // Confirm is a button, so it clicks: `resinfo/effectsound.txt` maps
     // `SND_BUTTON_CLICK` -> `ui\uibutton_a.wav` (`:47`, twin `uibutton_b.wav`
     // `:48`) while `SND_ERROR` -> `ui\Error.wav` sits at `:51`. A successful

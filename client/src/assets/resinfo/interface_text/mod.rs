@@ -381,6 +381,45 @@ impl From<&Value> for Option<PathBuf> {
     }
 }
 
+/// The original's five text slots as pixel sizes. The ladder itself is data, in
+/// points: `Media/server_dep/silkroad/event/event_interface.txt:2` reads
+/// `//titlefont : 0 = "9", 1 = "8", 2 = "12", 3 = "11", 4 = "15"`. Points to
+/// pixels at 96 dpi is x 4/3, so the five slots are 12 / 10.67 / 16 / 14.67 / 20
+/// px; the two fractional ones are rounded up to whole pixels, which is ours.
+const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
+
+/// Pixel font size of a control whose resinfo block carries
+/// `FontIndex=font_index` — the one place that turns that attribute into a
+/// number, for the intro, the HUD and the options window alike.
+///
+/// The size is unscaled: a caller that places its rects at the data's own pixel
+/// values wants its text at the same 1:1 factor.
+///
+/// # Out of range: slot 0, not "the biggest slot"
+///
+/// An index above 4 names a slot the client never builds, so *some* rule is
+/// needed and the data decides which. Measured over the player's own corpus
+/// (`Media/resinfo/`, 247 files, 3740 `FontIndex=` attributes):
+///
+/// * The ladder is **not ordered**: 9, 8, 12, 11, 15 pt. A higher index is not
+///   a bigger font, so clamping an out-of-range index to the largest entry
+///   reads the index as a magnitude, which the ladder itself contradicts.
+/// * Out-of-range indices exist at exactly **three** sites in the whole corpus,
+///   all `FontIndex=7` in `resinfo/ifchatbubblewindow.txt:12,31,50`.
+/// * The text those three sit among is slot 0: the nine chat trees carry 107
+///   `FontIndex` attributes — these three sevens and 104 zeros.
+///
+/// So slot 0 is the neighbouring authored size at the only place the case can
+/// occur, and it is the one choice that does not invent a size ordering. What
+/// the original does with index 7 is unknown, so this is a reasoned openroad
+/// rule, not a transcribed one.
+pub const fn font_index_px(font_index: usize) -> f32 {
+    if font_index >= FONT_INDEX_PX.len() {
+        return FONT_INDEX_PX[0];
+    }
+    FONT_INDEX_PX[font_index]
+}
+
 pub struct Properties {
     pub id: i32,
     pub client_rect: Rect,
@@ -443,6 +482,57 @@ impl From<&HashMap<String, Value>> for Properties {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The ladder is the data's, and it is **not ordered** — 9, 8, 12, 11, 15 pt
+    /// become 12, 11, 16, 15, 20 px. An out-of-range index therefore cannot be
+    /// clamped to the largest entry without reading the index as a magnitude;
+    /// it resolves to slot 0, the size its only real occurrence sits among
+    /// (`font_index_px`).
+    #[test]
+    fn the_font_ladder_is_the_data_s_and_out_of_range_reads_slot_0() {
+        assert_eq!(
+            [
+                font_index_px(0),
+                font_index_px(1),
+                font_index_px(2),
+                font_index_px(3),
+                font_index_px(4)
+            ],
+            [12.0, 11.0, 16.0, 15.0, 20.0]
+        );
+        // not monotonic: slot 1 is smaller than slot 0
+        assert!(font_index_px(1) < font_index_px(0));
+        // the only out-of-range index the corpus actually contains
+        assert_eq!(font_index_px(7), font_index_px(0));
+        assert_ne!(font_index_px(7), font_index_px(4), "not the biggest slot");
+    }
+
+    /// The attribute arrives as text and is read by key, so the path a pane
+    /// really walks is `FontIndex=INTEGER,"n"` -> [`Value::Integer`] ->
+    /// [`Properties::font_index`] -> pixels. Both indices are verbatim from the
+    /// corpus, and the non-zero one is the half that matters: slot 0 is also the
+    /// type default, so only index 2 proves the attribute is read at all.
+    #[test]
+    fn a_font_index_attribute_resolves_to_its_pixel_size() {
+        let mut fields = complete_block();
+        // `GDR_OPTION_AUD_ST_BGM` (`resinfo/ifoption_audio.txt:221`)
+        fields.insert(
+            "FontIndex".into(),
+            Value::parse("INTEGER", "0", 221).unwrap(),
+        );
+        let props = Properties::from(&fields);
+        assert_eq!(props.font_index, 0);
+        assert_eq!(font_index_px(props.font_index as usize), 12.0);
+
+        // `GDR_BTN_SACCEPT` (`resinfo/pstitle_europe.txt:546`)
+        fields.insert(
+            "FontIndex".into(),
+            Value::parse("INTEGER", "2", 546).unwrap(),
+        );
+        let props = Properties::from(&fields);
+        assert_eq!(props.font_index, 2);
+        assert_eq!(font_index_px(props.font_index as usize), 16.0);
+    }
 
     /// The corpus' one out-of-range align value, verbatim from
     /// `resinfo/ifnewitemmallmessagebox.txt:868`. It is well-formed — the
