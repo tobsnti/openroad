@@ -33,6 +33,7 @@ use packets::agent::guild_storage::{
     GuildStorageDataChunk, GuildStorageDataEnd, GuildStorageListRequest, GuildStorageOpenRequest,
     GuildStorageResponse,
 };
+use packets::agent::prelude::{InventoryOperationResponse, InventoryOperationResult};
 use packets::{hexdump, Packet};
 
 use crate::net::connection::SilkroadConnection;
@@ -463,5 +464,74 @@ mod tests {
         let text = format_template(IN_USE_FALLBACK, &["Grunt"]);
         assert!(text.contains("Grunt"), "{text}");
         assert!(!text.contains("%s"), "{text}");
+    }
+}
+
+/// Apply the guild-warehouse acks (0xB034 ops 29/30/31) to the mirror.
+///
+/// The ack is authoritative, not the request: nothing moves on send. Ops 32/33
+/// (gold) are not applied here — the money button is a later slice, and the
+/// player's own total comes from 0x304E, which is the double-booking trap the
+/// personal warehouse already paid for once.
+pub fn on_guild_storage_operation(
+    mut reader: MessageReader<InventoryOperationResponse>,
+    mut state: ResMut<GuildStorageState>,
+    mut inventories: Query<&mut Inventory, With<Player>>,
+    item_data: Res<crate::plugins::textdata::ClientItemData>,
+) {
+    for msg in reader.read() {
+        let Some(operation) = &msg.operation else {
+            continue;
+        };
+        match *operation {
+            InventoryOperationResult::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount,
+            } => {
+                debug!("guild storage: moved {source} -> {target} (x{amount})");
+                state.items.apply_move(source, target, amount, &item_data);
+            }
+            InventoryOperationResult::InventoryToGuildStorage { source, target } => {
+                let Ok(mut inventory) = inventories.single_mut() else {
+                    continue;
+                };
+                let Some(mut item) = inventory
+                    .slots
+                    .get_mut(source as usize)
+                    .and_then(|slot| slot.take())
+                else {
+                    warn!("guild storage: deposit ack for an empty inventory slot {source}");
+                    continue;
+                };
+                debug!("guild storage: deposited slot {source} -> guild {target}");
+                item.slot = target;
+                state.items.gain_item(item);
+            }
+            InventoryOperationResult::GuildStorageToInventory { source, target } => {
+                let Some(mut item) = state
+                    .items
+                    .slots
+                    .get_mut(source as usize)
+                    .and_then(|slot| slot.take())
+                else {
+                    warn!("guild storage: withdraw ack for an empty guild slot {source}");
+                    continue;
+                };
+                debug!("guild storage: withdrew guild {source} -> slot {target}");
+                item.slot = target;
+                for mut inventory in inventories.iter_mut() {
+                    inventory.gain_item(item.clone());
+                }
+            }
+            // Gold (32/33) belongs to the money button's slice; naming them
+            // here rather than letting them fall through keeps the backlog
+            // visible instead of silent.
+            InventoryOperationResult::InventoryGoldToGuildStorage { .. }
+            | InventoryOperationResult::GuildStorageGoldToInventory { .. } => {
+                debug!("guild storage: gold ack, no money button in this lap");
+            }
+            _ => {}
+        }
     }
 }

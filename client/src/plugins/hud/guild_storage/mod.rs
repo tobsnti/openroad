@@ -11,14 +11,16 @@ use bevy::prelude::*;
 /// from `ifstorageroom.txt` (cited per constant in `ui.rs`) and none of it is
 /// a fresh design.
 ///
-/// Carry/drop and the money button are not in this lap: the grid draws and
-/// pages, and the wire ops it will send (0x7034 ops 29..=33) already exist.
+/// Carry and drop send ops 29/30/31 and apply their acks; the money button
+/// (ops 32/33) is still a later slice, so it is not spawned rather than
+/// spawned inert.
 pub struct GuildStoragePlugin;
 
 impl Plugin for GuildStoragePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<model::GuildStorageState>()
             .init_resource::<model::GuildStorageDataBuffer>()
+            .init_resource::<ui::GuildStorageCarry>()
             .add_systems(
                 Update,
                 (
@@ -26,6 +28,11 @@ impl Plugin for GuildStoragePlugin {
                     model::on_guild_storage_response,
                     model::close_guild_storage_with_dialog,
                     ui::sync_guild_storage_window,
+                    model::on_guild_storage_operation,
+                    ui::update_guild_storage_ghost,
+                    ui::finish_guild_storage_carry,
+                    ui::deposit_drop_on_guild_storage,
+                    ui::clear_carry_with_guild_storage,
                     // chained for the same reason the personal storage push
                     // is: begin/chunk/end usually land in ONE frame, and an
                     // unordered tuple lets `end` parse an empty buffer
