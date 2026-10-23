@@ -8,8 +8,8 @@
 //! ("xBot implements none of these — zero ALCHEMY hits in `Network/Agent.cs`",
 //! `alchemy.md:47`), and only call-site byte *counts* in the RE ledger. So this
 //! module models dismantle plus the two **fuse requests** the alchemy box sends
-//! (`0x7150` elixir, `0x7151` stone), and `docs/net-alchemy.md` carries the rest
-//! as a written list with the reason each stays unwired. Inventing a missing
+//! (`0x7150` elixir, `0x7151` stone); the rest is listed with the reason it
+//! stays unwired in the `packets!` block's own comment (`lib.rs`). Inventing a missing
 //! body is the one defect this whole effort exists to avoid, so the
 //! two fuse requests below carry their byte layout in a test and their
 //! **answers are not modelled here at all** — nothing has been seen to answer
@@ -81,25 +81,39 @@ impl AlchemyDismantleResponse {
     }
 }
 
-/// First byte of **both** fuse request bodies: the server compares it against
-/// the literal `2` and sends everything else down the *cancel* arm, so the tag
-/// is what separates a fuse from an abort. It is not a count and not a free
-/// action id — sharing the value with [`ALCHEMY_ACTION_CANCEL`]'s neighbour is a
-/// coincidence of the two directions, so it is spelled out separately.
+/// First byte of **both** fuse request bodies: `AlchemyAction::Fuse`. It is not
+/// a count and not a free action id — every builder in the family gates its
+/// whole body on this byte being `2` and writes nothing after it otherwise.
+///
+/// `[V]`: written as a literal `2` by `sro_client.exe@00825c50` (0x7150) and
+/// `@00825dc0` (0x7151), and checked against `2` by the 0x7155 builders
+/// `@00821250`, `@008213b0` and `@00825830`. The action byte is shared across
+/// the whole family; the opcode is picked by the type byte below.
 pub const ALCHEMY_REQUEST_TAG: u8 = 2;
 
 /// The one-byte body that aborts a running fuse, on either opcode.
+///
+/// `[V]`: `sro_client.exe@008210f0` is one function serving both opcodes — it
+/// picks 0x7150 or 0x7151 from its kind argument and writes the bare literal
+/// `1` on either.
 pub const ALCHEMY_ACTION_CANCEL: u8 = 1;
 
-/// Second byte of `0x7150`: the worker selector. `3` is the elixir fuse, the
-/// only value whose arm is known to read the body this request builds.
+/// Second byte of `0x7150`: the `AlchemyType`. **`[S]`, not `[V]`** — unlike
+/// its siblings below, no builder we hold writes this value as a literal:
+/// `sro_client.exe@00825c50` takes it from its caller, and no caller of that
+/// function is in the corpus. `3` is `AlchemyType::Elixir` from the enum, which
+/// maps 1:1 onto the opcode split. Advanced elixir is type `8` on the same
+/// opcode, so this is the elixir arm, not the whole opcode.
 pub const ALCHEMY_REINFORCE_OP_FUSE: u8 = 3;
 
 /// Second byte of `0x7151`: a magic stone. Which of the two kinds the player is
 /// holding is a **client-side classification of the item in the slot**, read off
 /// its itemdata type ids — not a choice the window offers.
+///
+/// `[V]`: `sro_client.exe@00825dc0` maps its own kind argument onto these two
+/// literals (`1 -> 4`, `2 -> 5`) right before writing the byte.
 pub const ALCHEMY_TYPE_MAGIC_STONE: u8 = 4;
-/// Second byte of `0x7151`: an attribute stone.
+/// Second byte of `0x7151`: an attribute stone. Same builder, same `[V]`.
 pub const ALCHEMY_TYPE_ATTRIBUTE_STONE: u8 = 5;
 
 /// Smallest fuse the box can express: the equipment plus one material.
