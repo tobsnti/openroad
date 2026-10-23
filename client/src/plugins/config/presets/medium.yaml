@@ -42,3 +42,7 @@ graphics:
   lens_flare: false
   dungeon:
     max_lights: 16
+  # One extra ground projection on fragments past 60 degrees (9.4% of the
+  # map's footprint, measured) — the cheap half of the cliff fix.
+  terrain:
+    slope_sampling: blend

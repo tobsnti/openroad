@@ -11,6 +11,8 @@ use bevy::post_process::bloom::Bloom;
 use bevy::reflect::Reflect;
 use serde::Deserialize;
 
+use crate::assets::m::block_splat_material::TerrainSlopeSampling;
+
 /// The two lighting modes the client can run, mutually exclusive — see
 /// [`crate::plugins::environment::EnvironmentSettings`] (the live/hotkey
 /// half) and `plugins::environment::apply_render_mode` (what each mode
@@ -984,6 +986,20 @@ pub struct TerrainGraphicsSettings {
     /// Which draw path renders terrain ground — see [`TerrainPipeline`].
     /// Restart-only: it decides which render pipeline is registered.
     pub pipeline: TerrainPipeline,
+    /// Sample cliff albedo from the side as well as from above
+    /// (`terrain_splat.wesl`, `slope_projection`): `off` is the original's
+    /// top-down projection, which stretches a ground tile by `1 / cos(slope)`
+    /// — double at 60 degrees, unbounded on a wall. `blend` adds one
+    /// projection on fragments past 60 degrees, `full` adds both and
+    /// cross-fades them.
+    ///
+    /// Only the albedo UV changes; tile choice and splat weights stay the
+    /// original's XZ lookup. Costs up to two extra texture samples on the
+    /// 9.4% of the map's footprint that is that steep (measured over the
+    /// player's own `Map.pk2` — see `SLOPE_START` in the shader), and nothing
+    /// at all on flatter ground. `off` in `low`, which is also the setting a
+    /// GL-baseline GPU wants.
+    pub slope_sampling: TerrainSlopeSampling,
 }
 
 /// The two terrain ground draw paths. Both sample the same global ground-tile arrays
@@ -1020,6 +1036,7 @@ impl TerrainGraphicsSettings {
         use crate::assets::m::block_splat_material::{TerrainLightingMode, TerrainRenderParams};
         TerrainRenderParams {
             lightmap_flip_v: self.lightmap_flip_v,
+            slope_sampling: self.slope_sampling,
             lighting_mode: match render_mode {
                 RenderMode::Vanilla => TerrainLightingMode::Baked,
                 RenderMode::Pbr => TerrainLightingMode::Dynamic,
@@ -1224,6 +1241,38 @@ impl BloomSettings {
 #[cfg(test)]
 mod gpu_option_tests {
     use super::*;
+
+    /// The tiers have to stay ordered in work, and `low` has to stay off:
+    /// it is the preset `auto` picks for a GL-baseline GPU, where two extra
+    /// texture samples per steep fragment are the last thing wanted.
+    #[test]
+    fn slope_sampling_is_off_by_default_and_rises_with_the_tier() {
+        use crate::plugins::config::preset::QualityPreset;
+        let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(empty.terrain.slope_sampling, TerrainSlopeSampling::Off);
+
+        let tier = |preset: QualityPreset| -> TerrainSlopeSampling {
+            let yaml = preset.layer().expect("concrete tiers have a layer");
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let graphics: GraphicsSettings =
+                serde_yaml::from_value(value.as_mapping().unwrap()["graphics"].clone()).unwrap();
+            graphics.terrain.slope_sampling
+        };
+        assert_eq!(tier(QualityPreset::Low), TerrainSlopeSampling::Off);
+        assert_eq!(tier(QualityPreset::Medium), TerrainSlopeSampling::Blend);
+        assert_eq!(tier(QualityPreset::High), TerrainSlopeSampling::Full);
+        assert_eq!(tier(QualityPreset::Ultra), TerrainSlopeSampling::Full);
+    }
+
+    /// The key reaches the GPU: `to_render_params` is the only path from this
+    /// config to `terrain_params[2].w`.
+    #[test]
+    fn the_key_is_carried_into_the_render_params() {
+        let settings: TerrainGraphicsSettings =
+            serde_yaml::from_str("slope_sampling: full").unwrap();
+        let params = settings.to_render_params(RenderMode::Vanilla);
+        assert_eq!(params.slope_sampling, TerrainSlopeSampling::Full);
+    }
 
     #[test]
     fn bindless_and_sky_reflections_default_off() {
