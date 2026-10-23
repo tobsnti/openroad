@@ -25,7 +25,10 @@ use crate::plugins::net::quest::{QuestMarkTarget, QuestMarks};
 use crate::plugins::player::Player;
 use crate::plugins::settings::keymap::KEY_WORLD_MAP;
 use crate::plugins::settings::options::GameOptions;
-use crate::plugins::textdata::{ClientTeleport, ClientTextNames, ClientWorldMap};
+use crate::plugins::textdata::{
+    authored_npc_name, ClientCharacterData, ClientNpcPos, ClientTeleport, ClientTextNames,
+    ClientWorldMap,
+};
 use crate::plugins::world_origin::WorldOrigin;
 use crate::scenes::game_scene::server_position_to_sro;
 use crate::util::region::RegionIdExt;
@@ -171,12 +174,23 @@ pub fn sync_party_markers(
 ///
 /// Idea: the wire gives the mark's *target spawn record*, not a quest (see
 /// [`QuestMarks`]), so the position is exact and the label is whatever the
-/// client already knows about that entity — its [`DisplayName`], joined
-/// through the unique-id index. A target the player has never been near has no
-/// spawned entity and so no label; the pin still draws, because the position
-/// is what a map is for and the label is only a hover tooltip. There is no
-/// second source to try: the body carries no quest id, so no quest name exists
-/// to fall back on.
+/// client can find out about that target. Two sources, in this order:
+///
+/// 1. the **spawned** entity's [`DisplayName`], joined through the unique-id
+///    index — that is the name the server itself used, so it wins;
+/// 2. otherwise the player's **own tables**, keyed by the mark's position
+///    (`textdata::authored_npc_name`). This is the one that matters in
+///    practice: a quest mark points at an NPC the player has usually never
+///    been near, so there is no spawned entity to ask.
+///
+/// There is no third source. The body carries no quest id (measured —
+/// `packets::agent::quest::QuestMarkAdd`), so no quest name exists, and the
+/// four mark states have **no string in the player's data** either: nothing in
+/// `textuisystem.txt` names New / Open / Complete / Hard. Writing those four
+/// words here would be our prose and a copy out of a no-license source at the
+/// same time, so a target neither route resolves keeps an empty label — the
+/// pin still draws, because the position is what a map is for and the label is
+/// only a hover tooltip.
 ///
 /// Dungeon marks are skipped for the same reason a party member in a dungeon
 /// is: their coordinates live in the dungeon's own frame (`region & 0x8000`),
@@ -186,7 +200,7 @@ pub fn sync_party_markers(
 /// order, and `QuestMarks` is a map whose iteration order is not stable.
 pub fn quest_markers(
     marks: &QuestMarks,
-    name_of: impl Fn(u32) -> Option<String>,
+    name_of: impl Fn(&QuestMarkTarget) -> Option<String>,
 ) -> Vec<MapMarker> {
     let mut handles: Vec<(&u32, &QuestMarkTarget)> = marks.0.iter().collect();
     handles.sort_by_key(|(handle, _)| **handle);
@@ -204,7 +218,7 @@ pub fn quest_markers(
             );
             MapMarker {
                 kind: MarkerKind::Quest,
-                name: name_of(target.target_unique_id).unwrap_or_default(),
+                name: name_of(target).unwrap_or_default(),
                 gx: -sro.x,
                 gz: sro.z,
             }
@@ -221,6 +235,9 @@ pub fn sync_quest_markers(
     marks: Option<Res<QuestMarks>>,
     index: Option<Res<NetworkEntities>>,
     named: Query<&DisplayName>,
+    positions: Res<ClientNpcPos>,
+    characters: Res<ClientCharacterData>,
+    text_names: Res<ClientTextNames>,
     mut markers: ResMut<MapMarkers>,
 ) {
     let Some(marks) = marks else {
@@ -229,12 +246,22 @@ pub fn sync_quest_markers(
     if !marks.is_changed() {
         return;
     }
-    let name_of = |unique_id: u32| {
+    let name_of = |target: &QuestMarkTarget| {
         index
             .as_ref()
-            .and_then(|index| index.get(unique_id))
+            .and_then(|index| index.get(target.target_unique_id))
             .and_then(|entity| named.get(entity).ok())
             .map(|name| name.0.clone())
+            .or_else(|| {
+                authored_npc_name(
+                    &positions,
+                    &characters,
+                    &text_names,
+                    target.region,
+                    target.x as f32,
+                    target.z as f32,
+                )
+            })
     };
     markers.0.retain(|marker| marker.kind != MarkerKind::Quest);
     markers.0.extend(quest_markers(&marks, name_of));
@@ -400,6 +427,9 @@ pub fn open_for_player_region(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::assets::textdata::characterdata::{CharacterData, CharacterDataRow};
+    use crate::assets::textdata::names::TextdataNames;
+    use crate::assets::textdata::npcpos::NpcPositions;
     use crate::plugins::net::entities::NetworkId;
     use crate::plugins::net::party::tests::{core, party_data};
     use crate::plugins::net::quest::{on_quest_mark_add, on_quest_mark_remove};
@@ -531,8 +561,8 @@ mod test {
             },
         );
 
-        let markers = quest_markers(&marks, |unique_id| {
-            (unique_id == 243).then(|| "Smith".to_string())
+        let markers = quest_markers(&marks, |target| {
+            (target.target_unique_id == 243).then(|| "Smith".to_string())
         });
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].kind, MarkerKind::Quest);
@@ -557,6 +587,9 @@ mod test {
             .init_resource::<QuestMarks>()
             .init_resource::<MapMarkers>()
             .init_resource::<NetworkEntities>()
+            .init_resource::<ClientNpcPos>()
+            .init_resource::<ClientCharacterData>()
+            .init_resource::<ClientTextNames>()
             .add_systems(
                 Update,
                 (on_quest_mark_add, on_quest_mark_remove, sync_quest_markers).chain(),
@@ -604,6 +637,105 @@ mod test {
         let markers = &app.world().resource::<MapMarkers>().0;
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].kind, MarkerKind::Party);
+    }
+
+    /// The order of the two name sources, which is the one rule that could
+    /// invert without a compile error: the server's own name wins for a
+    /// *spawned* target, and the player's own tables answer for a target that
+    /// was never spawned — the normal case for a quest mark, which points at
+    /// an NPC far from the player.
+    ///
+    /// Both halves run through the real system, with literal rows of the three
+    /// tables the chain joins (`npcpos.txt`, `characterdata_5000.txt`,
+    /// `textdata_object.txt`) for refs 2003 and 2005.
+    #[test]
+    fn a_spawned_target_keeps_the_servers_name_and_the_tables_answer_for_the_rest() {
+        let mut app = App::new();
+        app.init_resource::<QuestMarks>()
+            .init_resource::<MapMarkers>()
+            .init_resource::<NetworkEntities>()
+            .insert_resource(ClientNpcPos::from_table(NpcPositions::parse(concat!(
+                "2003\t25000\t332.73001\t0.0\t1406.7\r\n",
+                "2005\t25000\t1584.08\t0.0\t1407.29\r\n",
+            ))))
+            .insert_resource(char_data_for_chain())
+            .insert_resource(ClientTextNames::from_table(TextdataNames(
+                [
+                    (
+                        "SN_NPC_CH_SMITH".to_string(),
+                        "Blacksmith Chulsan".to_string(),
+                    ),
+                    (
+                        "SN_NPC_CH_POTION".to_string(),
+                        "Herbalist Yangyun".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )))
+            .add_systems(Update, sync_quest_markers);
+
+        // mark 1's target is spawned and the server called it something else
+        app.world_mut()
+            .spawn((NetworkId(55), DisplayName("Chulsan the Second".to_string())));
+        {
+            let mut marks = app.world_mut().resource_mut::<QuestMarks>();
+            marks.0.insert(
+                1,
+                QuestMarkTarget {
+                    region: 25000,
+                    x: 332,
+                    y: 0,
+                    z: 1406,
+                    target_unique_id: 55,
+                },
+            );
+            // mark 2's target was never spawned
+            marks.0.insert(
+                2,
+                QuestMarkTarget {
+                    region: 25000,
+                    x: 1584,
+                    y: 0,
+                    z: 1407,
+                    target_unique_id: 243,
+                },
+            );
+        }
+        app.update();
+
+        let names: Vec<String> = app
+            .world()
+            .resource::<MapMarkers>()
+            .0
+            .iter()
+            .filter(|marker| marker.kind == MarkerKind::Quest)
+            .map(|marker| marker.name.clone())
+            .collect();
+        // sorted by mark handle, so mark 1 then mark 2
+        assert_eq!(
+            names,
+            vec![
+                "Chulsan the Second".to_string(),
+                "Herbalist Yangyun".to_string()
+            ]
+        );
+    }
+
+    /// The two characterdata rows the chain test joins: codename at column 2,
+    /// `SN_*` name key at column 5 (`ChardataFields::NameStrId`).
+    fn char_data_for_chain() -> ClientCharacterData {
+        let row = |code: &str| {
+            let mut fields = vec![String::new(); 60];
+            fields[2] = code.to_string();
+            fields[5] = format!("SN_{code}");
+            CharacterDataRow(fields)
+        };
+        ClientCharacterData::from_table(CharacterData(
+            [(2003, row("NPC_CH_SMITH")), (2005, row("NPC_CH_POTION"))]
+                .into_iter()
+                .collect(),
+        ))
     }
 
     fn info(name_key: &str, region: u16, position: Vec3) -> TeleportInfo {
