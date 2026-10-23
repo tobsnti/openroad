@@ -124,6 +124,20 @@ impl Default for EffectQualityScale {
     }
 }
 
+/// Soft-particle fade distance in world units, 0 = off.
+///
+/// Default 0: this slice builds the path and leaves it inert, so it changes no
+/// pixel on its own. The option key that drives it (`graphics.effect_soft_fade`,
+/// forced to 0 on `EffectQuality::Low`) lands as its own commit.
+///
+/// Why the quality tier overrides the option rather than scaling it: the cost
+/// of this effect is one depth `textureLoad` per effect fragment, and effects
+/// carry the heaviest overdraw in the frame. A narrower fade distance would
+/// look cheaper without *being* cheaper — only skipping the read is cheaper,
+/// and `effect_params.w == 0` is what makes the shader skip it.
+#[derive(Resource, Default)]
+pub struct EffectSoftFade(pub f32);
+
 /// Follows `graphics.effect_quality` into [`EffectQualityScale`].
 fn apply_effect_quality(
     config: Res<crate::plugins::config::ClientConfig>,
@@ -164,6 +178,7 @@ impl Plugin for EffectsPlugin {
             .init_resource::<EffectLdrAdditive>()
             .init_resource::<EffectPlaybackSpeed>()
             .init_resource::<EffectQualityScale>()
+            .init_resource::<EffectSoftFade>()
             .add_systems(
                 PreUpdate,
                 apply_effect_quality.run_if(

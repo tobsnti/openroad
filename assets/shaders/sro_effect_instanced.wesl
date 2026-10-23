@@ -12,10 +12,15 @@
 // write and culling come from `material::apply_effect_render_state`.
 
 import bevy_pbr::render::view_transformations::position_world_to_clip;
+@if(DEPTH_PREPASS)
+import bevy_pbr::prepass::utils::prepass_depth;
+@if(DEPTH_PREPASS)
+import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;
 
 @group(2) @binding(0) var effect_texture: texture_2d<f32>;
 @group(2) @binding(1) var effect_sampler: sampler;
-// x = color multiplier, y = alpha multiplier, z = LDR mode — see sro_effect.wesl
+// x = color multiplier, y = alpha multiplier, z = LDR mode, w = soft-fade
+// distance in world units — see sro_effect.wesl
 @group(2) @binding(2) var<uniform> effect_params: vec4<f32>;
 
 struct Vertex {
@@ -78,6 +83,24 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
+// Soft-particle fade — see sro_effect.wesl for the reasoning. Reachable here
+// for the same reason the quantization is: this pipeline specializes bevy's
+// mesh pipeline (`instanced.rs` `specialize`) and keeps its view groups, so it
+// inherits both the `DEPTH_PREPASS` shader def and the group-0 prepass texture.
+@if(DEPTH_PREPASS)
+fn soft_particle_fade(frag_coord: vec4<f32>, fade_distance: f32) -> f32 {
+    if fade_distance <= 0.0 {
+        return 1.0;
+    }
+    let scene_z = depth_ndc_to_view_z(prepass_depth(frag_coord, 0u));
+    let own_z = depth_ndc_to_view_z(frag_coord.z);
+    return saturate((own_z - scene_z) / fade_distance);
+}
+@if(!DEPTH_PREPASS)
+fn soft_particle_fade(frag_coord: vec4<f32>, fade_distance: f32) -> f32 {
+    return 1.0;
+}
+
 // Inverse of srgb_to_linear, quantized to 1/255 steps — see sro_effect.wesl.
 fn quantize_srgb_255(linear: vec3<f32>) -> vec3<f32> {
     let lower = linear * 12.92;
@@ -92,10 +115,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // D3D9 texture stages saturate their outputs before blending (see
     // sro_effect.wesl).
     var rgb = min(color.rgb * effect_params.x, vec3(1.0));
-    let a = min(color.a * effect_params.y, 1.0);
+    // Fade before the quantization, and into the color on mode 2 — the same
+    // two rules as sro_effect.wesl, which this file must stay in step with.
+    let fade = soft_particle_fade(in.clip_position, effect_params.w);
+    let a = min(color.a * effect_params.y, 1.0) * fade;
     if effect_params.z >= 0.5 {
         if effect_params.z < 1.5 {
             rgb *= a;
+        } else {
+            rgb *= fade;
         }
         rgb = quantize_srgb_255(rgb);
     }
