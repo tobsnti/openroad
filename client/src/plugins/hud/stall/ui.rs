@@ -147,6 +147,21 @@ const ROW_PLATE_DDJ: &str = "media://interface/stall/stl_slot_02.ddj";
 /// one pixel inside the 208-wide plate texture; the doc's "max extents 200"
 /// counts only the blocks that state a size.
 const MODIFY_BUTTON: (f32, f32, f32, f32) = (183.0, 0.0, 24.0, 24.0);
+
+/// The rest of `ifstallslot.txt`, row-local. The template is exactly the
+/// `204x40` row plate ([`CELL_W`]/[`CELL_H`]), so these drop in as offsets.
+///
+/// The name was placed at `x + 6` with a width derived from the cell, which
+/// put it **on top of the icon** — the icon's authored box is `3,3,32,32` and
+/// the name's starts at **46**, clear of it
+/// (`evidence/gallery-2026-10-23/stall.png`). The price moves with it: the
+/// data puts it on the row's **second** line (`y = 26`), right-aligned
+/// (`HAlign=2`), not beside the name.
+/// `GDR_STALLSLOT_ICON` `3,3,32,32` — not spawned (the socket is baked into
+/// the row plate art), but it is the box the name has to clear.
+const SLOT_ICON_RIGHT: f32 = 3.0 + 32.0;
+const SLOT_NAME: (f32, f32, f32, f32) = (46.0, 6.0, 132.0, 14.0);
+const SLOT_PRICE: (f32, f32, f32, f32) = (86.0, 26.0, 114.0, 12.0);
 const MODIFY_BUTTON_DDJ: &str = "media://interface/stall/stl_edit_button.ddj";
 
 /// Font sizes: the tree carries `FontIndex=0` everywhere, and this lane draws
@@ -410,12 +425,17 @@ pub fn refresh_stall_window(
                 if let Some(row) = state.slots.get(index).and_then(Option::as_ref) {
                     window.spawn(label(
                         row.name.clone(),
-                        (x + 6.0, y + 6.0, CELL_W - 70.0, 16.0),
+                        (x + SLOT_NAME.0, y + SLOT_NAME.1, SLOT_NAME.2, SLOT_NAME.3),
                         Color::WHITE,
                     ));
                     window.spawn(label(
                         row.price.to_string(),
-                        (x + CELL_W - 64.0, y + 6.0, 58.0, 16.0),
+                        (
+                            x + SLOT_PRICE.0,
+                            y + SLOT_PRICE.1,
+                            SLOT_PRICE.2,
+                            SLOT_PRICE.3,
+                        ),
                         Color::WHITE,
                     ));
                     // The row's own edit button, owner only: a visitor has
@@ -623,5 +643,24 @@ mod test {
         // interactive control, the trading toggle at x=369.
         assert!(hit.0 + hit.2 < TRADING_BUTTON.0);
         assert!(hit.0 < TITLE_PLATE.0);
+    }
+
+    /// The reported overlap: the name was drawn at `x + 6`, i.e. straight over
+    /// the icon socket the row plate bakes in at `3,3,32,32`. The authored
+    /// name box starts at 46 and clears it with room to spare.
+    #[test]
+    fn the_row_name_clears_the_icon_socket() {
+        assert!(
+            SLOT_NAME.0 >= SLOT_ICON_RIGHT,
+            "the name starts at {} but the icon ends at {SLOT_ICON_RIGHT}",
+            SLOT_NAME.0
+        );
+        // and both authored boxes stay inside the row template
+        for (x, y, w, h) in [SLOT_NAME, SLOT_PRICE] {
+            assert!(x + w <= CELL_W, "{x}+{w} wider than the row");
+            assert!(y + h <= CELL_H, "{y}+{h} taller than the row");
+        }
+        // the price is the row's second line, not the name's neighbour
+        assert!(SLOT_PRICE.1 >= SLOT_NAME.1 + SLOT_NAME.3);
     }
 }

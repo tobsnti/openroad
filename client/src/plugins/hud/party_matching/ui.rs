@@ -34,6 +34,7 @@
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineBreak;
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::party::{PartyMatchDeleteRequest, PartyMatchListRequest, PartySetup};
@@ -505,8 +506,23 @@ pub fn spawn_match_window(
                             Text::new(""),
                             font(8.5),
                             TextColor(TEXT_COLOR),
-                            TextLayout::justify(justify),
-                            abs_node(rect, s),
+                            // One line, clipped to the authored box. Every
+                            // cell of `ifpartymatchslot.txt` is a `CIFStatic`
+                            // with `Style=0` and a height of **11** — a single
+                            // line, with no multiline flag anywhere in the row
+                            // template. Wrapping instead is what cut "Trade
+                            // Union" and "Thief Union" in half across the
+                            // 11 px box (`evidence/gallery-2026-10-23/
+                            // party.png`): the second line had nowhere to go.
+                            TextLayout {
+                                justify,
+                                linebreak: LineBreak::NoWrap,
+                                ..default()
+                            },
+                            Node {
+                                overflow: Overflow::clip(),
+                                ..abs_node(rect, s)
+                            },
                             Pickable::IGNORE,
                         ));
                     }
@@ -1496,5 +1512,27 @@ mod tests {
             }
         }
         assert!(xs[5] + FOOTER_W <= INNER_FRAME_RECT.2);
+    }
+
+    /// The premise of the row cells' `LineBreak::NoWrap`: `ifpartymatchslot`
+    /// authors every cell as a single 11 px line, so a value too wide for its
+    /// box is clipped, never wrapped. Wrapping is what cut "Trade Union" and
+    /// "Thief Union" in half.
+    #[test]
+    fn every_row_cell_is_one_authored_line() {
+        for rect in [
+            CELL_ID,
+            CELL_RACE,
+            CELL_NAME,
+            CELL_TITLE,
+            CELL_PURPOSE,
+            CELL_MEMBERS,
+            CELL_LEVEL,
+        ] {
+            assert_eq!(rect.3, 11.0, "{rect:?} is not the authored line height");
+        }
+        // the widest shipped purpose string has no chance in 37 px, which is
+        // why the answer is a clip and not a layout change
+        assert_eq!(CELL_PURPOSE.2, 37.0);
     }
 }

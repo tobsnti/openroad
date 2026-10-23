@@ -94,12 +94,26 @@ pub fn modal_plate(art: Handle<Image>, width: f32, height: f32) -> impl Scene {
 /// The scrim as a plain bundle, for the dialogs built with `commands.spawn`
 /// rather than as a BSN scene. Same node, same colour as [`modal_scrim`] —
 /// which stays because the scene-built callers compose it with `bsn!`.
+/// The scrim also **centres** its plate, and that is the point rather than a
+/// detail: a plate was centred by giving it `position_type: Absolute` plus
+/// `margin: Auto`, which is not what auto margins do. CSS (and taffy with it)
+/// centres an absolutely positioned box through its margins only when the
+/// opposite insets are both definite; with `left`/`top` left at `Auto` the box
+/// falls back to its static position, i.e. the parent's start corner. That is
+/// what put `choice_confirm` in the top-left with its title bar off-screen
+/// (`evidence/gallery-2026-10-23/choice_confirm.png`).
+///
+/// Flex centring has no such precondition, so the scrim does it and the plate
+/// is an ordinary child ([`modal_plate_node`]). The plate's own children stay
+/// absolute against the plate, which is unaffected either way.
 pub fn modal_scrim_node() -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
             ..default()
         },
         BackgroundColor(MODAL_SCRIM),
@@ -119,10 +133,10 @@ pub fn modal_scrim_node() -> impl Bundle {
 pub fn modal_plate_node(width: f32, height: f32, s: f32) -> impl Bundle {
     (
         Node {
-            position_type: PositionType::Absolute,
+            // An ordinary flex child: [`modal_scrim_node`] centres it, which
+            // the `Absolute` + `margin: Auto` pair it replaces did not.
             width: Val::Px(width * s),
             height: Val::Px(height * s),
-            margin: UiRect::all(Val::Auto),
             ..default()
         },
         Pickable::IGNORE,
