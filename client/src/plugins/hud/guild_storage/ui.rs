@@ -203,11 +203,19 @@ pub fn sync_guild_storage_window(
     // authored, so the line box has to be the glyph box: without an explicit
     // `LineHeight`, bevy's default leading adds a few pixels and the text
     // drifts out of a 13..16-unit strip (PR #180).
-    let text_font = |size: f32| TextFont {
-        font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
-        line_height: LineHeight::Px(size * s),
-        ..default()
+    //
+    // `LineHeight` is its OWN component in bevy 0.20, not a `TextFont` field,
+    // so this returns the pair and every call site spawns both
+    // (`hud/chat_bubble.rs`, `hud/minimap.rs` are the landed examples).
+    let text_font = |size: f32| {
+        (
+            TextFont {
+                font: fonts.two.clone().into(),
+                font_size: FontSize::Px(size * s),
+                ..default()
+            },
+            LineHeight::Px(size * s),
+        )
     };
 
     commands.entity(window.content).with_children(|content| {
