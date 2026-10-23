@@ -370,6 +370,45 @@ pub struct QuestSection {
     pub active_count: u8,
 }
 
+/// A quest type whose record carries a remaining-time field. Not exercised by
+/// any captured body — [U], field layout from `silkroad-docs`
+/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:108`).
+pub const QUEST_TYPE_TIMED: u8 = 28;
+/// A quest type whose record has no objective list. Not exercised by any
+/// captured body — [U], same source as [`QUEST_TYPE_TIMED`].
+pub const QUEST_TYPE_NO_OBJECTIVES: u8 = 8;
+/// A quest type whose record is trailed by its target NPCs. Measured: 170 of
+/// the 765 captured records, and all 170 carry exactly one NPC id.
+pub const QUEST_TYPE_NPC_LIST: u8 = 88;
+
+/// One objective line of an active quest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestObjective {
+    pub id: u8,
+    pub enabled: bool,
+    /// Text key the client resolves through textdata, e.g.
+    /// `SN_CON_QNO_CH_SMITH_1`.
+    pub name: String,
+    pub tasks: Vec<u32>,
+}
+
+/// An active quest, as written between the completed-quest ids and the
+/// collection book.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveQuest {
+    pub ref_id: u32,
+    pub achievements: u8,
+    pub auto_share_required: u8,
+    /// Selects the two conditional blocks: [`QUEST_TYPE_TIMED`] prefixes
+    /// `time_remain`, [`QUEST_TYPE_NO_OBJECTIVES`] drops the objective list,
+    /// [`QUEST_TYPE_NPC_LIST`] appends `target_npcs`.
+    pub quest_type: u8,
+    pub time_remain: Option<u32>,
+    pub state: u8,
+    pub objectives: Vec<QuestObjective>,
+    pub target_npcs: Vec<u32>,
+}
+
 /// The collection-book head; entry shape unverified, so the parser only
 /// proceeds when no theme was started (go-sro sends none).
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
@@ -538,6 +577,7 @@ pub struct ParsedCharacterInfo {
     pub masteries: Option<Vec<Mastery>>,
     pub skills: Option<Vec<KnownSkill>>,
     pub completed_quests: Option<Vec<u32>>,
+    pub active_quests: Option<Vec<ActiveQuest>>,
     pub spawn: Option<ParsedCharacterData>,
     pub movement: Option<EntityMovement>,
     pub state: Option<EntityState>,
@@ -969,8 +1009,10 @@ fn forward_parse(
 
     let quests = stage!("quests", QuestSection::read_from(cursor));
     info.completed_quests = Some(quests.completed);
-    // Active quest records have an unverified shape; go-sro sends none.
-    stage!("active quests", nonzero_guard(quests.active_count as u32));
+    info.active_quests = Some(stage!(
+        "active quests",
+        read_active_quests(cursor, quests.active_count)
+    ));
     let collection = stage!("collection book", CollectionBook::read_from(cursor));
     stage!(
         "collection book",
@@ -988,6 +1030,80 @@ fn forward_parse(
     info.name = Some(stage!("name", read_string(cursor)));
     info.job = Some(stage!("job", JobInfo::read_from(cursor)));
     info.extras = Some(stage!("extras", PlayerExtras::read_from(cursor)));
+}
+
+/// Read the `count` active-quest records that follow the completed-quest ids.
+///
+/// Idea: the record is three conditional blocks hung off `quest_type`, which
+/// the derive cannot express, so it is read by hand like the movement block.
+/// The layout is the one `silkroad-docs`
+/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:94-133`) describes, verified
+/// against the user's captures before it was written: 85 bodies, 765 records,
+/// 935 objectives, and the block ends on the byte where the collection book
+/// and the expected tail unique id begin in all 85. Measured field values:
+/// `achievements` 16 and `auto_share_required` 0 in all 765 records,
+/// `quest_type` 24 (595) or 88 (170), `state` 1/7/8, 1 or 3 objectives each,
+/// `task_count` 1 throughout. The `quest_type` 8 and 28 branches are [U] — no
+/// captured body takes them; a wrong guess there costs the tail check, not a
+/// silent desync, because the forward pass is only trusted when it consumes
+/// the blob and the tail id matches.
+fn read_active_quests<T: Read + ReadBytesExt>(
+    reader: &mut T,
+    count: u8,
+) -> Result<Vec<ActiveQuest>, SerializationError> {
+    let mut quests = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let ref_id = u32::read_from(reader)?;
+        let achievements = u8::read_from(reader)?;
+        let auto_share_required = u8::read_from(reader)?;
+        let quest_type = u8::read_from(reader)?;
+        let time_remain = if quest_type == QUEST_TYPE_TIMED {
+            Some(u32::read_from(reader)?)
+        } else {
+            None
+        };
+        let state = u8::read_from(reader)?;
+        let mut objectives = Vec::new();
+        if quest_type != QUEST_TYPE_NO_OBJECTIVES {
+            let objective_count = u8::read_from(reader)?;
+            objectives.reserve(objective_count as usize);
+            for _ in 0..objective_count {
+                let id = u8::read_from(reader)?;
+                let enabled = bool::read_from(reader)?;
+                let name = read_string(reader)?;
+                let task_count = u8::read_from(reader)?;
+                let mut tasks = Vec::with_capacity(task_count as usize);
+                for _ in 0..task_count {
+                    tasks.push(u32::read_from(reader)?);
+                }
+                objectives.push(QuestObjective {
+                    id,
+                    enabled,
+                    name,
+                    tasks,
+                });
+            }
+        }
+        let mut target_npcs = Vec::new();
+        if quest_type == QUEST_TYPE_NPC_LIST {
+            let npc_count = u8::read_from(reader)?;
+            target_npcs.reserve(npc_count as usize);
+            for _ in 0..npc_count {
+                target_npcs.push(u32::read_from(reader)?);
+            }
+        }
+        quests.push(ActiveQuest {
+            ref_id,
+            achievements,
+            auto_share_required,
+            quest_type,
+            time_remain,
+            state,
+            objectives,
+            target_npcs,
+        });
+    }
+    Ok(quests)
 }
 
 /// A guard stage for counts whose record shape is unknown: fine while zero.
@@ -1439,9 +1555,22 @@ mod test {
     }
 
     /// Everything behind the inventory section, with the four auto-potion tail
-    /// fields as given.
+    /// fields as given and one completed, no active quest.
     fn body_after_inventory(b: Body, hp: u16, mp: u16, universal: u16, delay: u8) -> Body {
-        b
+        body_after_inventory_with_quests(b, hp, mp, universal, delay, |q| q.u16(1).u32(1).u8(0))
+    }
+
+    /// `body_after_inventory` with the quest block — completed count, completed
+    /// ids, active count, active records — written by `quests`.
+    fn body_after_inventory_with_quests(
+        b: Body,
+        hp: u16,
+        mp: u16,
+        universal: u16,
+        delay: u8,
+        quests: impl FnOnce(Body) -> Body,
+    ) -> Body {
+        let b = b
             // avatar inventory: size 5, empty
             .u8(5)
             .u8(0)
@@ -1459,11 +1588,8 @@ mod test {
             .u8(1)
             .u32(70)
             .u8(1)
-            .u8(2)
-            // quests: 1 completed, 0 active
-            .u16(1)
-            .u32(1)
-            .u8(0)
+            .u8(2);
+        quests(b)
             // collection book: unknown byte + 0 started themes
             .u8(0)
             .u32(0)
@@ -2128,5 +2254,99 @@ mod test {
         assert_eq!(extras.auto_mp, 45);
         assert_eq!(extras.auto_universal, 30);
         assert_eq!(extras.auto_potion_delay, 4);
+    }
+
+    /// Two active quests in the shape the captures carry: one plain
+    /// (`quest_type` 24, three objectives) and one trailed by its target NPC
+    /// (`quest_type` 88) — the two types all 765 captured records use.
+    fn full_body_with_active_quests() -> Vec<u8> {
+        let inventory =
+            expendable_record(equipment_record(stats_block(Body::default()).u8(45).u8(2)));
+        body_after_inventory_with_quests(inventory, 0, 0, 0, 0, |q| {
+            q.u16(1)
+                .u32(1) // one completed quest
+                .u8(2) // two active quests
+                // quest 1: plain, three objectives, second one disabled
+                .u32(57)
+                .u8(16) // achievements
+                .u8(0) // auto share required
+                .u8(24) // quest type
+                .u8(1) // state
+                .u8(3) // objective count
+                .u8(1)
+                .u8(1)
+                .string("SN_CON_QNO_CH_GENARAL_1_01")
+                .u8(1)
+                .u32(0)
+                .u8(2)
+                .u8(0)
+                .string("SN_CON_QNO_CH_GENARAL_1_02")
+                .u8(1)
+                .u32(1)
+                .u8(3)
+                .u8(1)
+                .string("SN_CON_QNO_CH_GENARAL_1_03")
+                .u8(1)
+                .u32(0)
+                // quest 2: one objective, then the target-NPC list
+                .u32(3)
+                .u8(16)
+                .u8(0)
+                .u8(88) // quest type with the NPC list
+                .u8(7) // state
+                .u8(1) // objective count
+                .u8(1)
+                .u8(1)
+                .string("SN_CON_QNO_CH_SMITH_1")
+                .u8(1)
+                .u32(0)
+                .u8(1) // one target NPC
+                .u32(2037)
+        })
+        .0
+    }
+
+    #[test]
+    fn active_quests_no_longer_end_the_forward_pass() {
+        // Before: `nonzero_guard` refused any active quest, so a body carrying
+        // one lost every section behind it — measured on the user's captures,
+        // 85 of 243 bodies (all with 9 active quests, a 452-byte block). The
+        // record is now read, which is what lifts those 85 bodies from "the
+        // tail arrives via the anchor" to "parses completely".
+        let raw = full_body_with_active_quests();
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+
+        assert_eq!(info.failed_stage, None);
+        assert!(info.fully_parsed, "reader must consume the whole blob");
+        assert_eq!(info.completed_quests, Some(vec![1]));
+
+        let quests = info.active_quests.expect("active quests");
+        assert_eq!(quests.len(), 2);
+        assert_eq!(quests[0].ref_id, 57);
+        assert_eq!(quests[0].quest_type, 24);
+        assert_eq!(quests[0].state, 1);
+        assert_eq!(quests[0].time_remain, None);
+        assert_eq!(quests[0].objectives.len(), 3);
+        assert_eq!(quests[0].objectives[1].id, 2);
+        assert!(!quests[0].objectives[1].enabled);
+        assert_eq!(quests[0].objectives[1].name, "SN_CON_QNO_CH_GENARAL_1_02");
+        assert_eq!(quests[0].objectives[1].tasks, vec![1]);
+        assert!(
+            quests[0].target_npcs.is_empty(),
+            "type 24 carries no NPC list"
+        );
+
+        assert_eq!(quests[1].ref_id, 3);
+        assert_eq!(quests[1].quest_type, QUEST_TYPE_NPC_LIST);
+        assert_eq!(quests[1].state, 7);
+        assert_eq!(quests[1].objectives.len(), 1);
+        assert_eq!(quests[1].target_npcs, vec![2037]);
+
+        // The sections behind the quest block are exactly the ones a body
+        // without active quests delivers.
+        let plain = parse_character_info(&full_body(), Some(UNIQUE_ID), &resolver());
+        assert_eq!(info.spawn, plain.spawn);
+        assert_eq!(info.name, plain.name);
+        assert_eq!(info.extras, plain.extras);
     }
 }
