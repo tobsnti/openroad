@@ -161,7 +161,6 @@ fn play_button_click_sound(
     commands.spawn((AudioPlayer::new(source), playback));
 }
 
-
 /// Mirrors the sibling password `EditableText` as asterisks (see
 /// [`PasswordEcho`]).
 fn update_password_echo(
@@ -314,25 +313,27 @@ mod tests {
     }
 
     fn press(app: &mut App, button: Entity) {
-        app.world_mut().trigger(bevy::picking::events::PointerPress {
-            entity: button,
-            pointer: pointer(),
-            button: PointerButton::Primary,
-            hit: hit(),
-            count: 1,
-        });
+        app.world_mut()
+            .trigger(bevy::picking::events::PointerPress {
+                entity: button,
+                pointer: pointer(),
+                button: PointerButton::Primary,
+                hit: hit(),
+                count: 1,
+            });
         app.update();
     }
 
     fn release(app: &mut App, button: Entity) {
-        app.world_mut().trigger(bevy::picking::events::PointerClick {
-            entity: button,
-            pointer: pointer(),
-            button: PointerButton::Primary,
-            hit: hit(),
-            duration: core::time::Duration::from_millis(50),
-            count: 1,
-        });
+        app.world_mut()
+            .trigger(bevy::picking::events::PointerClick {
+                entity: button,
+                pointer: pointer(),
+                button: PointerButton::Primary,
+                hit: hit(),
+                duration: core::time::Duration::from_millis(50),
+                count: 1,
+            });
         app.update();
     }
 
