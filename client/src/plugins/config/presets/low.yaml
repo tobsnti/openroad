@@ -26,6 +26,10 @@ graphics:
   tonemapping: none
   water:
     quality: low
+    # Off: this tier has no high-quality water at all, and the cues need the
+    # depth prepass this tier does not run.
+    shore_fade: 0.0
+    absorption: 0.0
   objects:
     factor: 100.0
     min_distance: 800.0

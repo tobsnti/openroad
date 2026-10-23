@@ -11,6 +11,8 @@ use bevy::post_process::bloom::Bloom;
 use bevy::reflect::Reflect;
 use serde::Deserialize;
 
+use crate::plugins::map::water_hq_material::DEFAULT_SHORE_FADE;
+
 /// The two lighting modes the client can run, mutually exclusive — see
 /// [`crate::plugins::environment::EnvironmentSettings`] (the live/hotkey
 /// half) and `plugins::environment::apply_render_mode` (what each mode
@@ -153,6 +155,32 @@ pub struct WaterSettings {
     /// (`map::water_options`). Live, high tier only. On by default: that is
     /// the look the client has always shipped.
     pub reflection: bool,
+    /// Water column, in world units, over which the high tier's surface fades
+    /// into whatever is behind it instead of meeting the terrain on a hard
+    /// line; `0.0` switches the fade off.
+    ///
+    /// A *column* width, not a screen width: the shore softens over the first
+    /// `shore_fade` units of water the view ray passes through, so a shallow
+    /// beach fades over more ground than a quay wall does. The default is the
+    /// material's (`DEFAULT_SHORE_FADE`) — the number belongs to the look, the
+    /// same split `reflection` uses.
+    ///
+    /// Like `absorption` it needs the camera's depth prepass to measure a
+    /// column at all, so it is visible where `depth_prepass` is on — `ultra`
+    /// only today. Without one the water keeps the image it had before these
+    /// cues existed instead of showing half of one, and moving that switch is
+    /// its own measurement (`GFX-MODERN-RANGLISTE.md` §3.2).
+    pub shore_fade: f32,
+    /// How strongly the high tier's water absorbs the light coming through it,
+    /// `0.0..=1.0`, where `0.0` is off and `1.0` means the transmitted light
+    /// has fallen to the water texture's own colour after
+    /// `ABSORPTION_FULL_DEPTH` world units.
+    ///
+    /// A strength here, a distance on the wire — `absorption_distance` inverts
+    /// it, because that distance is also bevy's on/off flag for the whole
+    /// Beer-Lambert branch. The *colour* absorbed toward is not configurable:
+    /// it is the player's own water texture (`water_hq.wesl`).
+    pub absorption: f32,
 }
 
 impl Default for WaterSettings {
@@ -160,6 +188,8 @@ impl Default for WaterSettings {
         Self {
             quality: WaterQuality::default(),
             reflection: true,
+            shore_fade: DEFAULT_SHORE_FADE,
+            absorption: 1.0,
         }
     }
 }

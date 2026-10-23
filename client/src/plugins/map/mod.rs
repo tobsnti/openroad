@@ -125,11 +125,15 @@ impl Plugin for MapPlugin {
             // material, the same shape `effects::apply_effect_quality` uses.
             .add_systems(
                 Update,
-                water_options::apply_water_reflection_option.run_if(
-                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
-                        crate::plugins::config::ClientConfig,
-                    >,
-                ),
+                (
+                    water_options::apply_water_reflection_option,
+                    water_options::apply_water_depth_options,
+                )
+                    .run_if(
+                        bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                            crate::plugins::config::ClientConfig,
+                        >,
+                    ),
             )
             .add_systems(
                 Update,

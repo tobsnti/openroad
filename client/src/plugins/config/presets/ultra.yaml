@@ -19,6 +19,10 @@ graphics:
   tonemapping: tony_mc_mapface
   water:
     quality: high
+    # Soft shore and depth absorption; this is the one preset whose
+    # `depth_prepass: true` lets the shader measure a water column.
+    shore_fade: 24.0
+    absorption: 1.0
   objects:
     factor: 200.0
     min_distance: 1600.0
