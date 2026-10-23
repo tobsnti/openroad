@@ -27,6 +27,7 @@ use bevy::camera::{Hdr, RenderTarget};
 use bevy::picking::hover::Hovered;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui_widgets::{Activate, Button};
 use bevy::window::Monitor;
 
@@ -1252,6 +1253,10 @@ fn spawn_static_label(
             font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
             ..default()
         },
+        // `156x12` (`LABEL_H`) is one line, so the line box is the font size —
+        // see `font_index_px`'s "One-line boxes". The value column next door
+        // keeps 1.2: its `VALUE_H` is 20, a line in a taller box.
+        LineHeight::Px(font_index_px(TEXT_FONT_INDEX)),
         TextColor(color),
         Node {
             position_type: PositionType::Absolute,

@@ -13,6 +13,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -500,14 +501,23 @@ fn spawn_text<'a>(
         Justify::Center => JustifyContent::Center,
         _ => JustifyContent::FlexStart,
     };
+    // Rounded once and used twice: the size and its line box are the same whole
+    // pixel (`scale::text_px`, and `font_index_px`'s "One-line boxes").
+    let size = text_px(TEXT_FONT_SIZE, hud_scale());
     bar.spawn((
         marker,
         Text::new(""),
         TextFont {
             font: fonts.nine.clone().into(),
-            font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, hud_scale())),
+            font_size: FontSize::Px(size),
             ..default()
         },
+        // Every rect this helper is called with is one line in the tree —
+        // `GDR_STATIC_EXP` `198x12`, `GDR_STATIC_SP` `48x12`, the page digit
+        // `17x11` — so the line box is the font size rather than Bevy's 1.2
+        // (see `font_index_px`'s "One-line boxes"). The digit's box stays a
+        // pixel under its line, which is the tree's own tightness.
+        LineHeight::Px(size),
         TextColor(color),
         TextLayout::justify(justify),
         Node {

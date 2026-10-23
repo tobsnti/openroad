@@ -423,6 +423,24 @@ const FONT_INDEX_PX: [f32; 5] = [12.0, 11.0, 16.0, 15.0, 20.0];
 /// occur, and it is the one choice that does not invent a size ordering. What
 /// the original does with index 7 is unknown, so this is a reasoned openroad
 /// rule, not a transcribed one.
+/// # One-line boxes: pin the line box to the font size
+///
+/// A resinfo text control is usually authored **exactly one line tall** — the
+/// corpus is full of `...x12` rects for a slot-0 (12 px) text, and the original
+/// filled them with a GDI font whose cell *is* that 12 px. Bevy's default line
+/// box is `LineHeight::RelativeToFont(1.2)`, so the same text lays out 14.4 px
+/// tall in a 12 px node and sits low in its box, with the descender over the
+/// edge.
+///
+/// The fix is a relation, not a number: where the authored rect is one line,
+/// the site pins `LineHeight::Px(…)` to the **same expression** it passes to
+/// `FontSize::Px(…)`, so the glyph box is the authored box. Measured one-line
+/// rects behind this: `326x12`, `44x12`, `156x12`, `198x12`, `48x12`,
+/// `124x12`, `47x12`, `104x12` (slot 0 or 1 = 12 or 11 px).
+///
+/// **Not** for multi-line text: `300x48` (the alchemy description, three lines)
+/// and the camera pane's stacked caption keep 1.2, where the extra fifth is the
+/// gap that stops the lines from touching.
 pub const fn font_index_px(font_index: usize) -> f32 {
     if font_index >= FONT_INDEX_PX.len() {
         return FONT_INDEX_PX[0];

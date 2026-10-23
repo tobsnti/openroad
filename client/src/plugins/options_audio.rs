@@ -42,6 +42,7 @@
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
@@ -232,6 +233,9 @@ pub(crate) fn spawn_audio_pane(
                 font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
+            // the label's authored box is one line (`326x12`), so the line box
+            // is the font size — see `font_index_px`'s "One-line boxes"
+            LineHeight::Px(font_index_px(TEXT_FONT_INDEX)),
             TextColor(text_color),
             offset(LABEL_XYWH, index),
             Pickable::IGNORE,
@@ -375,6 +379,8 @@ fn spawn_mute(
                 font_size: FontSize::Px(font_index_px(TEXT_FONT_INDEX)),
                 ..default()
             },
+            // `44x12` — one line, like the label above
+            LineHeight::Px(font_index_px(TEXT_FONT_INDEX)),
             TextColor(if live { LABEL_COLOR } else { INERT_COLOR }),
             Node {
                 position_type: PositionType::Absolute,
