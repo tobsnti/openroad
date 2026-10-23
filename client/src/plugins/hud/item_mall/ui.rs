@@ -36,6 +36,7 @@
 //! `FontIndex` through [`font_index_px`]; all nine text blocks carry index 0.
 
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui_widgets::Activate;
 
 use crate::assets::resinfo::interface_text::font_index_px;
@@ -270,12 +271,26 @@ pub fn spawn_my_info_window(
     });
 }
 
-fn text_font(fonts: &FontAssets, px: f32, s: f32) -> TextFont {
-    TextFont {
-        font: fonts.two.clone().into(),
-        font_size: FontSize::Px(text_px(px, s)),
-        ..default()
-    }
+/// The pane's text pair: a font size and the line box that goes with it.
+///
+/// Every one of this pane's statics is **one line in a 14-unit rect**
+/// (`ifitemmallmyinfo.txt`: name `:196`, level `:177`, the three labels `:44`,
+/// `:25`, `:6` and the three values `:158`, `:139`, `:120` are all `…,14`), so
+/// the line box is the rounded size itself rather than bevy's 1.2 — at
+/// `FontIndex=0` that is 12 px against 14.4, and the taller box pushes a
+/// bottom-aligned glyph row out of its own rect. Same pairing the line-height
+/// slice (#180) gave `minimap`, `underbar` and `player_mini_info`;
+/// `LineHeight` is its own component in bevy 0.20, not a `TextFont` field.
+fn text_font(fonts: &FontAssets, px: f32, s: f32) -> (TextFont, LineHeight) {
+    let size = text_px(px, s);
+    (
+        TextFont {
+            font: fonts.two.clone().into(),
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        LineHeight::Px(size),
+    )
 }
 
 pub fn cleanup_my_info_window(
@@ -485,5 +500,22 @@ mod test {
     #[test]
     fn the_font_size_is_the_descriptors_own_index() {
         assert_eq!(font_index_px(FONT_INDEX), 12.0);
+    }
+
+    /// Why this pane pins its line box to the font size: every static it draws
+    /// is a single line in a **14-unit** rect, and bevy's default 1.2 line box
+    /// asks for 14.4 at this font — a line that does not fit the rect the data
+    /// authored. The numbers are the descriptor's, so the day one of them
+    /// changes this test is the thing that notices.
+    #[test]
+    fn every_static_is_a_single_line_the_default_line_box_would_overflow() {
+        let mut heights = vec![NAME_RECT.3, LEVEL_RECT.3];
+        for row in &ROWS {
+            heights.push(row.label.3);
+            heights.push(row.value.3);
+        }
+        assert!(heights.iter().all(|h| *h == 14.0), "{heights:?}");
+        assert!(font_index_px(FONT_INDEX) * 1.2 > 14.0);
+        assert!(font_index_px(FONT_INDEX) <= 14.0);
     }
 }
