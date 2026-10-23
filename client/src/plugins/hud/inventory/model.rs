@@ -336,6 +336,21 @@ pub fn on_inventory_operation_response(
                 ),
                 _,
             ) => {}
+            // guild-warehouse ops are applied by `hud::guild_storage` against
+            // its own mirror, for the same reason the personal storage ops are
+            // not applied here: the inventory side of the move arrives as its
+            // own 0x3040, and booking it twice is the trap op 12 already paid
+            // for once
+            (
+                Some(
+                    InventoryOperationResult::GuildStorageToGuildStorage { .. }
+                    | InventoryOperationResult::InventoryToGuildStorage { .. }
+                    | InventoryOperationResult::GuildStorageToInventory { .. }
+                    | InventoryOperationResult::InventoryGoldToGuildStorage { .. }
+                    | InventoryOperationResult::GuildStorageGoldToInventory { .. },
+                ),
+                _,
+            ) => {}
             // the pick-pet bag ops are applied by
             // `hud::cos::state::apply_cos_bag_ops` — ops 26/27 carry only two
             // slot numbers, so the moved item record is known only to the

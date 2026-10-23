@@ -39,6 +39,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -198,9 +199,14 @@ pub fn sync_guild_storage_window(
         .entity(window.expect_close_button())
         .observe(on_close_button);
 
+    // Every field in this window is a single line inside a rect the data
+    // authored, so the line box has to be the glyph box: without an explicit
+    // `LineHeight`, bevy's default leading adds a few pixels and the text
+    // drifts out of a 13..16-unit strip (PR #180).
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
         font_size: FontSize::Px(size * s),
+        line_height: LineHeight::Px(size * s),
         ..default()
     };
 
@@ -276,7 +282,9 @@ pub fn sync_guild_storage_window(
                             ..default()
                         },
                     ));
-                    cell_cmd.observe(on_guild_slot_press);
+                    // No observer in this lap: picking an item up is 1c, and
+                    // a cell that answers a click by doing nothing is exactly
+                    // what this window set out not to ship.
                     let Some(item) = item else {
                         continue;
                     };
