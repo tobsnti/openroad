@@ -22,9 +22,15 @@ impl Plugin for ItemMallPlugin {
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_my_info_window)
             .add_systems(
                 Update,
-                (ui::apply_my_info_visibility, ui::update_my_info_values).run_if(
-                    in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
-                ),
+                (
+                    ui::apply_my_info_visibility,
+                    ui::update_my_info_values,
+                    ui::update_my_info_identity,
+                    ui::update_my_info_portrait,
+                )
+                    .run_if(
+                        in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
+                    ),
             );
     }
 }

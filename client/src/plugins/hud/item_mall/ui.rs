@@ -2,57 +2,84 @@
 //!
 //! Idea: `0x3153` pushes the account's three silk counters, and the one surface
 //! the original shows them on is this pane — three statics whose `Text` is
-//! empty in the descriptor and filled at runtime, one per counter. The pane
-//! rides on the shared `game_window` chrome: its own inner frame
-//! `GDR_ITEM_MALL_MYINFO_FRAME2` (`:367`, `Rect="6,31,244,149"`) is the shell
-//! rect, the title is the enclosing sub-frame's own key
+//! empty in the descriptor and filled at runtime, one per counter, above them
+//! the character's portrait, name and level. The pane rides on the shared
+//! `game_window` chrome: the title is the enclosing sub-frame's own key
 //! `UIIT_STT_SILKMALL_MY_INFO` (`GDR_ITEM_MALL_MYINFO_FRAME1`, `:405`), and the
 //! interior tile letter is the one the pane declares, `com_bg_tile_b.ddj`
 //! (`GDR_ITEM_MALL_MYINFO_BG`, `:386`) — not the shell's default `_d`.
 //!
-//! Element rects are **pane**-relative (every block is a sibling of `FRAME1`),
-//! so they are rebased twice: by the inner frame's own origin `(6,31)` and then
-//! by the chrome's content origin `(FRAME_VIS_SIDE + CHROME_PAD, CONTENT_TOP)`
-//! = `(12,36)`, the way `community` and `character_info` do it (#310: subtract
-//! the shell's own constants, never re-derive the origin from the art).
+//! **The content box is that background plate** (`:386`, `Rect="16,36,224,135"`),
+//! and every element is placed by subtracting its origin — one translation,
+//! straight from the data. It used to be the inner frame
+//! `GDR_ITEM_MALL_MYINFO_FRAME2` (`:367`, `6,31,244,149`) minus our chrome, and
+//! that stopped working the moment the identity row joined: the original's
+//! `frameg01_wnd_` eats 5 units above its plate, our `mframe_wnd_` eats 36, so
+//! the portrait would have landed under the title band. Sizing the *interior*
+//! from the data and letting the outer box fall out of it keeps every distance
+//! inside the pane exactly as authored; the window is 4 units wider and 38
+//! taller than the original's box, which is the thickness of our chrome and
+//! nothing else.
 //!
-//! **Deliberately left out, and why:**
-//! * `GDR_ITEM_MALL_MYINFO_BUY_SILK_BTN` (`:255`) and
-//!   `..._COUPON_EXCHANGE_BTN` (`:233`). Both would need a purchase/redeem
-//!   opcode, and there is none: no opcode catalog, wiki page or xBot handler
-//!   covers "buy from the mall", `packet_dump/` holds no frame of it, and
-//!   reference servers run the shop on the web (`SK_SilkChange_BY_Web`). A
-//!   button that cannot send is a dead wire, so the pane ships without them
-//!   rather than with two that lie.
-//! * name, level and the portrait (`..._NAME` `:177`, `..._LEVEL` `:196`,
-//!   `..._FACE` `:291`). They carry no label of their own and the portrait
-//!   needs the face art pipeline; the silk rows are what this slice is for.
-//!   Next slice, with the frame art around them.
+//! **Deliberately left out, and why:** `GDR_ITEM_MALL_MYINFO_BUY_SILK_BTN`
+//! (`:255`) and `..._COUPON_EXCHANGE_BTN` (`:233`). Both would need a
+//! purchase/redeem opcode, and there is none: no opcode catalog, wiki page or
+//! xBot handler covers "buy from the mall", `packet_dump/` holds no frame of
+//! it, and reference servers run the shop on the web (`SK_SilkChange_BY_Web`).
+//! A button that cannot send is a dead wire, so the pane ships without them
+//! rather than with two that lie — the empty strip under the silk rows is
+//! where they sit in the original.
 //!
-//! The labels are the pane's own keys through the player's `textuisystem.txt`,
-//! never our words, and the font size is the descriptor's own `FontIndex`
-//! through [`font_index_px`] — all nine blocks of this pane carry index 0.
+//! Every string is the pane's own key through the player's `textuisystem.txt`,
+//! never our words — including the level, whose `Lv %d` template the table
+//! carries as `UIIT_STT_LV_LEVEL` (L594). The font size is the descriptor's own
+//! `FontIndex` through [`font_index_px`]; all nine text blocks carry index 0.
 
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
+use crate::plugins::hud::art::art_path;
 use crate::plugins::hud::game_window::{self, abs_node, GameWindowStyle};
 use crate::plugins::hud::item_mall::ItemMallState;
+use crate::plugins::hud::player_mini_info::{PlayerVitals, PortraitTarget};
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::net::silk::SilkBalance;
 use crate::plugins::textdata::ClientUiStrings;
 
 // --- Layout (resinfo, pane units) -------------------------------------------
 
-/// `GDR_ITEM_MALL_MYINFO_FRAME2` (`ifitemmallmyinfo.txt:367`): the My-Info box
-/// inside the mall's left column. Its size is this window's shell rect.
-const FRAME_RECT: (f32, f32, f32, f32) = (6.0, 31.0, 244.0, 149.0);
+/// `GDR_ITEM_MALL_MYINFO_BG` (`ifitemmallmyinfo.txt:386`): the pane's own
+/// background plate inside its frame. Its **size** is this window's content
+/// box and its **origin** is what every element below is measured from.
+const PLATE_RECT: (f32, f32, f32, f32) = (16.0, 36.0, 224.0, 135.0);
 
-/// `GDR_ITEM_MALL_MYINFO_BG` (`:386`) declares `com_bg_tile_b.ddj` — the
-/// interior letter this pane asks for, where the shell defaults to `_d`.
+/// The same block declares `com_bg_tile_b.ddj` — the interior letter this pane
+/// asks for, where the shell defaults to `_d`.
 const BG_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_b.ddj";
+
+/// `GDR_ITEM_MALL_MYINFO_FACEFRAME` (`:348`): the ring the portrait sits in,
+/// and the one piece of art this pane names for itself.
+const FACE_FRAME_RECT: (f32, f32, f32, f32) = (16.0, 39.0, 64.0, 64.0);
+/// The descriptor writes its separators doubled — `DDJ=STRING,
+/// "interface\\mall\\mall_faceframe.ddj"` — which is resinfo's escaping, not
+/// part of the path: [`art_path`] turns every backslash into a slash, so the
+/// doubled form would resolve to `media://interface//mall//…` and miss.
+const FACE_FRAME_DDJ: &str = r"interface\mall\mall_faceframe.ddj";
+/// `GDR_ITEM_MALL_MYINFO_FACE` (`:329`, a `CIFStaticWithPictureClip`): the
+/// head picture inside that ring.
+const FACE_RECT: (f32, f32, f32, f32) = (23.0, 46.0, 48.0, 48.0);
+/// `GDR_ITEM_MALL_MYINFO_NAME` (`:196`), `HAlign=1` — centred in its slot.
+const NAME_RECT: (f32, f32, f32, f32) = (81.0, 47.0, 78.0, 14.0);
+/// `GDR_ITEM_MALL_MYINFO_LEVEL` (`:177`), `HAlign=2` — flush right.
+const LEVEL_RECT: (f32, f32, f32, f32) = (192.0, 47.0, 41.0, 14.0);
+/// The level's own wording lives in the string table as a printf template
+/// (`UIIT_STT_LV_LEVEL`, textuisystem L594 = `Lv %d`), so the pane prints what
+/// the player's table says rather than a sentence of ours. Filled the way
+/// `chat::model::format_restriction` fills `UIIT_STT_CANT_CHATTING`.
+const LEVEL_KEY: &str = "UIIT_STT_LV_LEVEL";
+const LEVEL_FALLBACK: &str = "Lv %d";
 
 /// One counter's row: the label's rect and text key, and the value's rect.
 /// Verbatim from `ifitemmallmyinfo.txt`, pane units, in the order the wire
@@ -98,22 +125,25 @@ const FONT_INDEX: usize = 0;
 const WINDOW_RIGHT: f32 = 300.0;
 const WINDOW_TOP: f32 = 120.0;
 
-const CONTENT_W: f32 = FRAME_RECT.2 - 2.0 * (game_window::FRAME_VIS_SIDE + game_window::CHROME_PAD);
-const CONTENT_H: f32 = FRAME_RECT.3
-    - game_window::CONTENT_TOP
-    - game_window::CHROME_PAD
-    - game_window::FRAME_VIS_BOTTOM;
+const CONTENT_W: f32 = PLATE_RECT.2;
+const CONTENT_H: f32 = PLATE_RECT.3;
 
-/// A pane rect rebased into the shell's content space: by the inner frame's own
-/// origin, then by the chrome's content origin.
+/// A pane rect rebased into the shell's content space: minus the plate's own
+/// origin, and nothing else.
 fn content_rect(rect: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
     let (x, y, w, h) = rect;
-    (
-        x - FRAME_RECT.0 - (game_window::FRAME_VIS_SIDE + game_window::CHROME_PAD),
-        y - FRAME_RECT.1 - game_window::CONTENT_TOP,
-        w,
-        h,
-    )
+    (x - PLATE_RECT.0, y - PLATE_RECT.1, w, h)
+}
+
+/// `UIIT_STT_LV_LEVEL`'s `%d` filled with the level. A table that dropped the
+/// placeholder still has to show the number, so it is appended rather than
+/// lost — same rule as the chat restriction readout.
+fn level_text(template: &str, level: u8) -> String {
+    if template.contains("%d") {
+        template.replacen("%d", &level.to_string(), 1)
+    } else {
+        format!("{template} {level}")
+    }
 }
 
 // --- Markers ----------------------------------------------------------------
@@ -124,6 +154,18 @@ pub struct MyInfoWindowRoot;
 /// One of the three value statics, in wire order.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MyInfoValue(pub usize);
+
+/// The character's name static (`..._NAME`).
+#[derive(Component)]
+pub struct MyInfoName;
+
+/// The character's level static (`..._LEVEL`).
+#[derive(Component)]
+pub struct MyInfoLevel;
+
+/// The picture inside the face ring (`..._FACE`).
+#[derive(Component)]
+pub struct MyInfoFace;
 
 // --- Spawning ---------------------------------------------------------------
 
@@ -166,6 +208,42 @@ pub fn spawn_my_info_window(
 
     let font_px = font_index_px(FONT_INDEX);
     commands.entity(window.content).with_children(|content| {
+        // identity row: the ring, the live head render inside it, then the
+        // name and the level. The ring is the only art this pane names, and
+        // it goes through the shared `art_path` conversion (#77) rather than a
+        // fourth hand-written `media://interface/` prefix.
+        content.spawn((
+            ImageNode::new(asset_server.load::<Image>(art_path(FACE_FRAME_DDJ))),
+            abs_node(content_rect(FACE_FRAME_RECT), s),
+            Pickable::IGNORE,
+        ));
+        content.spawn((
+            MyInfoFace,
+            // filled by `update_my_info_portrait` once the mini-info panel's
+            // offscreen head render exists; it is created in another plugin's
+            // enter system, so the handle cannot be read at spawn time
+            ImageNode::new(Handle::default()),
+            abs_node(content_rect(FACE_RECT), s),
+            Pickable::IGNORE,
+        ));
+        content.spawn((
+            MyInfoName,
+            Text::default(),
+            text_font(&fonts, font_px, s),
+            TextColor(Color::WHITE),
+            TextLayout::justify(Justify::Center),
+            abs_node(content_rect(NAME_RECT), s),
+            Pickable::IGNORE,
+        ));
+        content.spawn((
+            MyInfoLevel,
+            Text::default(),
+            text_font(&fonts, font_px, s),
+            TextColor(Color::WHITE),
+            TextLayout::justify(Justify::Right),
+            abs_node(content_rect(LEVEL_RECT), s),
+            Pickable::IGNORE,
+        ));
         for (index, row) in ROWS.iter().enumerate() {
             // both the label and the number carry `HAlign=2` in the
             // descriptor, i.e. flush right in their own box
@@ -258,39 +336,130 @@ pub fn update_my_info_values(
     }
 }
 
+/// Write the character's name and level into their statics.
+///
+/// `PlayerVitals` is the same aggregate the mini-info panel and the character
+/// window read (name from CHARACTER_DATA, level from it and `0x303D`), so the
+/// three surfaces cannot disagree. Optional for the same reason the balance is:
+/// a HUD-only scene may not own the resource, and a missing `Res` would fail
+/// parameter validation rather than skip the system.
+pub fn update_my_info_identity(
+    vitals: Option<Res<PlayerVitals>>,
+    strings: Option<Res<ClientUiStrings>>,
+    mut names: Query<&mut Text, (With<MyInfoName>, Without<MyInfoLevel>)>,
+    mut levels: Query<&mut Text, (With<MyInfoLevel>, Without<MyInfoName>)>,
+) {
+    let Some(vitals) = vitals else {
+        return;
+    };
+    if !vitals.is_changed() {
+        return;
+    }
+    for mut text in names.iter_mut() {
+        if text.0 != vitals.name {
+            text.0.clone_from(&vitals.name);
+        }
+    }
+    let template = strings
+        .as_deref()
+        .map(|s| s.get_or(LEVEL_KEY, LEVEL_FALLBACK))
+        .unwrap_or(LEVEL_FALLBACK);
+    // level 0 is "nothing pushed yet", and the descriptor's static starts empty
+    let next = if vitals.level == 0 {
+        String::new()
+    } else {
+        level_text(template, vitals.level)
+    };
+    for mut text in levels.iter_mut() {
+        if text.0 != next {
+            text.0.clone_from(&next);
+        }
+    }
+}
+
+/// Point the face picture at the mini-info panel's offscreen head render.
+///
+/// That image is the player's own head, framed by its own camera
+/// (`player_mini_info`, 96 px target) — the pane's `CIFStaticWithPictureClip`
+/// slot gets the picture the client already renders, not a second rig and not
+/// invented art. The resource is created in another plugin's enter system, so
+/// this runs until it appears instead of reading it at spawn time.
+pub fn update_my_info_portrait(
+    target: Option<Res<PortraitTarget>>,
+    mut faces: Query<&mut ImageNode, With<MyInfoFace>>,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    for mut face in faces.iter_mut() {
+        if face.image != target.0 {
+            face.image = target.0.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
-    /// The shell's outer box must come back out as the pane's own inner frame
-    /// (`ifitemmallmyinfo.txt:367`, `6,31,244,149`) — the window is that box,
-    /// not a size we picked.
+    /// The content box is the pane's own background plate
+    /// (`ifitemmallmyinfo.txt:386`, `16,36,224,135`) — the interior is the
+    /// data's, and the outer box is whatever our chrome adds to it.
     #[test]
-    fn the_shell_is_the_panes_own_inner_frame() {
+    fn the_content_box_is_the_panes_own_background_plate() {
+        assert_eq!((CONTENT_W, CONTENT_H), (PLATE_RECT.2, PLATE_RECT.3));
+        // and the chrome is the only reason the window is bigger than the
+        // original's frame (`:367`, 244x149)
         assert_eq!(
             game_window::outer_size((CONTENT_W, CONTENT_H)),
-            (FRAME_RECT.2, FRAME_RECT.3)
+            (248.0, 187.0)
         );
     }
 
-    /// Rebasing is a pure translation by `(6+12, 31+36)`, and every row has to
-    /// land inside the content box — the check that catches a mis-copied rect.
+    /// Rebasing is one translation by the plate's origin, and **every** element
+    /// — identity row included — has to land inside the content box. This is
+    /// the check that catches a mis-copied rect, and the one that failed for
+    /// the identity row while the box was still derived from the frame.
     #[test]
-    fn every_row_lands_inside_the_content_box() {
+    fn every_element_lands_inside_the_content_box() {
         assert_eq!(
             content_rect((136.0, 74.0, 79.0, 14.0)),
-            (118.0, 7.0, 79.0, 14.0)
+            (120.0, 38.0, 79.0, 14.0)
         );
+        let mut rects = vec![FACE_FRAME_RECT, FACE_RECT, NAME_RECT, LEVEL_RECT];
         for row in &ROWS {
-            for rect in [row.label, row.value] {
-                let (x, y, w, h) = content_rect(rect);
-                assert!(x >= 0.0 && y >= 0.0, "{rect:?} rebases above the content");
-                assert!(
-                    x + w <= CONTENT_W && y + h <= CONTENT_H,
-                    "{rect:?} leaves the content box ({CONTENT_W}x{CONTENT_H})"
-                );
-            }
+            rects.push(row.label);
+            rects.push(row.value);
         }
+        for rect in rects {
+            let (x, y, w, h) = content_rect(rect);
+            assert!(x >= 0.0 && y >= 0.0, "{rect:?} rebases above the content");
+            assert!(
+                x + w <= CONTENT_W && y + h <= CONTENT_H,
+                "{rect:?} leaves the content box ({CONTENT_W}x{CONTENT_H})"
+            );
+        }
+    }
+
+    /// The head picture sits inside its ring, which is what makes the ring a
+    /// frame and not a plate behind the whole row.
+    #[test]
+    fn the_face_sits_inside_its_ring() {
+        let (fx, fy, fw, fh) = FACE_RECT;
+        let (rx, ry, rw, rh) = FACE_FRAME_RECT;
+        assert!(fx > rx && fy > ry && fx + fw < rx + rw && fy + fh < ry + rh);
+    }
+
+    /// The level is the table's own `Lv %d`, filled — not a sentence of ours.
+    /// The fallback branch matters too: a translation that drops the
+    /// placeholder must still show the number.
+    #[test]
+    fn the_level_is_the_tables_own_template_filled() {
+        assert_eq!(level_text("Lv %d", 40), "Lv 40");
+        assert_eq!(level_text("Level", 40), "Level 40");
+        // the slot is 41 units wide at 12 px, which is what "Lv 40" needs and
+        // "Level 40" would not fit — the reason the data's own key is used
+        assert_eq!(LEVEL_RECT.2, 41.0);
     }
 
     /// The rows are in wire order, so the slot index of a value static is the
