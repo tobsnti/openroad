@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use bevy::asset::{io::Reader, Asset, AssetLoader, AssetServer, LoadContext};
 use bevy::color::LinearRgba;
@@ -193,14 +195,74 @@ impl Default for BmtMaterialDefaults {
     }
 }
 
+/// Whether cut-out materials spread their edge across the MSAA samples instead
+/// of deciding each texel yes/no, shared with the `.bmt` loader.
+///
+/// Same mechanism and the same reason as [`TextureDetailLevel`]: the loader
+/// runs on the async task pool and this module is part of the parser library,
+/// which cannot see config types. The client pushes
+/// `graphics.foliage_alpha_to_coverage` in here; materials keep the mode they
+/// were loaded with, so a change reaches what loads afterwards.
+///
+/// [`TextureDetailLevel`]: crate::assets::texture_detail::TextureDetailLevel
+#[derive(bevy::prelude::Resource, Clone, Default)]
+pub struct CutoutAlphaToCoverage(pub Arc<AtomicBool>);
+
+impl CutoutAlphaToCoverage {
+    pub fn enabled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, enabled: bool) {
+        self.0.store(enabled, Ordering::Relaxed);
+    }
+}
+
+/// The alpha mode of a cut-out: the original's hard test at `cutoff`, or the
+/// same edge dithered across the MSAA samples.
+///
+/// Idea: `Mask` turns every leaf edge into one yes/no decision per pixel, so
+/// the edge crawls as the camera turns and FXAA can only blur it afterwards.
+/// `AlphaToCoverage` hands the same alpha to the MSAA coverage mask, which
+/// `high`/`ultra` already pay for — a deliberate deviation from the original's
+/// alpha test (ref 0x80, `D3DCMP_GREATEREQUAL`, see
+/// [`SroMaterial::to_standard_material`]) and therefore a switch.
+///
+/// Measured in `bevy_pbr-0.20.0`, so the fallback costs nothing and the
+/// sorting does not change:
+/// * at `Msaa::Off` the pipeline key falls back to `MAY_DISCARD`
+///   (`src/material.rs:697-700`) and the shader then discards at
+///   `alpha_cutoff`, which stays 0.5 for this mode (`src/pbr_material.rs:1190`,
+///   `src/render/pbr_functions.wesl:110-118`) — identical to `Mask(0.5)`;
+/// * the phase is unchanged, A2C sorts with `Opaque`
+///   (`src/material.rs:1308,1754`).
+pub fn cutout_alpha_mode(cutoff: f32, alpha_to_coverage: bool) -> AlphaMode {
+    if alpha_to_coverage {
+        AlphaMode::AlphaToCoverage
+    } else {
+        AlphaMode::Mask(cutoff)
+    }
+}
+
 /// Loads a `.bmt` material set. Only the default (alpha-masked) variant of each
 /// material becomes a labeled sub-asset; the rim and sheen variants are built
 /// on demand by the spawn path (`SroMaterialVariants` in the client), because
 /// building all of them for every material of every set meant several extra
 /// material assets per material — each extracted and prepared by the renderer
 /// — when a given mesh only ever uses one.
-#[derive(bevy::reflect::TypePath, Default)]
-pub struct BmtLoader;
+#[derive(bevy::reflect::TypePath)]
+pub struct BmtLoader {
+    cutouts: CutoutAlphaToCoverage,
+}
+
+impl bevy::prelude::FromWorld for BmtLoader {
+    fn from_world(world: &mut bevy::prelude::World) -> Self {
+        world.init_resource::<CutoutAlphaToCoverage>();
+        Self {
+            cutouts: world.resource::<CutoutAlphaToCoverage>().clone(),
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum BmtLoaderError {
@@ -265,8 +327,7 @@ impl AssetLoader for BmtLoader {
             };
             // let image = load_context.load_direct(path).await?;
             // let image: Handle<Image> = load_context.load(path);
-            let standard_material =
-                mat.to_standard_material(Some(image.clone()), MaterialVariant::Masked);
+            let standard_material = mat.to_masked_material(image.clone(), self.cutouts.enabled());
             load_context.add_labeled_asset(material_label(&mat.name), standard_material);
             diffuse_textures.insert(material_label(&mat.name), image);
         }
@@ -427,6 +488,28 @@ pub enum MaterialVariant {
 }
 
 impl SroMaterial {
+    /// The loader's default variant, with the cut-out edge dithered across the
+    /// MSAA samples when [`CutoutAlphaToCoverage`] is on.
+    ///
+    /// Only a material that *is* a cut-out changes: the cutoff stays this
+    /// type's own ([`Self::to_standard_material`]), and an opaque material
+    /// stays opaque — alpha-to-coverage on a material whose alpha means
+    /// nothing would punch holes by whatever the texture happens to carry.
+    /// That is also why the sheen variants keep their `Mask`: there the alpha
+    /// channel is a *sheen mask*, not transparency (`SroResource::alpha_is_sheen`),
+    /// so coverage would read shine as see-through metal.
+    pub fn to_masked_material(
+        &self,
+        texture: Handle<Image>,
+        alpha_to_coverage: bool,
+    ) -> StandardMaterial {
+        let mut material = self.to_standard_material(Some(texture), MaterialVariant::Masked);
+        if let AlphaMode::Mask(cutoff) = material.alpha_mode {
+            material.alpha_mode = cutout_alpha_mode(cutoff, alpha_to_coverage);
+        }
+        material
+    }
+
     /// Builds one rendering variant of this material; the .bmt loader adds
     /// the Masked one as a labeled sub-asset, the rim/sheen variants wrap
     /// these on demand, and resources pick per their alpha semantics.
@@ -526,6 +609,66 @@ mod tests {
         let mut set = set_with("gyo");
         set.diffuse_textures.clear();
         assert!(set.material_with_texture("gyo").is_none());
+    }
+
+    /// A cut-out texture's alpha is its silhouette, so it may dither; an opaque
+    /// material's alpha means nothing, so it must not start punching holes.
+    /// The cutoff travels with the mode — proof the switch does not quietly
+    /// re-author the original's alpha test (ref 0x80 = 0.5).
+    #[test]
+    fn only_a_cutout_follows_the_alpha_to_coverage_switch() {
+        let cutout = SroMaterial {
+            flag: 0x200,
+            ..default()
+        };
+        let plain = SroMaterial::default();
+
+        assert_eq!(
+            cutout
+                .to_masked_material(Handle::default(), false)
+                .alpha_mode,
+            AlphaMode::Mask(0.5),
+            "off is the original's hard test"
+        );
+        assert_eq!(
+            cutout
+                .to_masked_material(Handle::default(), true)
+                .alpha_mode,
+            AlphaMode::AlphaToCoverage
+        );
+        for on in [false, true] {
+            assert_eq!(
+                plain.to_masked_material(Handle::default(), on).alpha_mode,
+                AlphaMode::Opaque,
+                "a material without an alpha channel stays opaque"
+            );
+        }
+        assert_eq!(cutout_alpha_mode(0.25, false), AlphaMode::Mask(0.25));
+    }
+
+    /// The switch must not reach the sheen variants: there the alpha channel is
+    /// a sheen mask (`SHEEN_ALPHA_CUTOUT` tests for exact zero), so coverage
+    /// would read a dull shine as see-through metal.
+    #[test]
+    fn the_sheen_cutout_keeps_its_hard_test_while_the_switch_is_on() {
+        let flag = CutoutAlphaToCoverage::default();
+        flag.set(true);
+        assert!(flag.enabled());
+
+        let material = SroMaterial::default();
+        let sheen = material.to_sheen_material(
+            Handle::default(),
+            SheenSettings::default(),
+            true,
+            (Handle::default(), Handle::default()),
+        );
+        assert_eq!(sheen.base.alpha_mode, AlphaMode::Mask(SHEEN_ALPHA_CUTOUT));
+        assert_eq!(
+            material
+                .to_unsheened_material(Handle::default(), true)
+                .alpha_mode,
+            AlphaMode::Mask(SHEEN_ALPHA_CUTOUT)
+        );
     }
 
     #[test]

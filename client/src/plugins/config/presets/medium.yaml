@@ -35,6 +35,8 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
+  # no MSAA in this tier, so this would be a no-op anyway
+  foliage_alpha_to_coverage: false
   shadows:
     enabled: true
     cascades: 1

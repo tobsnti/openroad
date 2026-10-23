@@ -36,6 +36,8 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
+  # leaf and grate edges dither across the MSAA samples
+  foliage_alpha_to_coverage: true
   shadows:
     enabled: true
     cascades: 2
