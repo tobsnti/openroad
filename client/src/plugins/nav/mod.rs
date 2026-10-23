@@ -420,8 +420,18 @@ impl NavMeshRaycast<'_, '_> {
                     // A frozen plane is walkable regardless of the terrain cell
                     // openness beneath it: you can cross a lake's ice even where its
                     // bed is deep, closed water.
-                    nav_mesh.is_ice_at(local.x, local.y)
-                        || nav_mesh.quad_cell_list.is_walkable_at(local)
+                    if nav_mesh.is_ice_at(local.x, local.y) {
+                        return true;
+                    }
+                    // Under open water the cell map says nothing useful: a lake
+                    // bed is open *ground*, it is just submerged (measured on
+                    // the user's `nv_64a8.nvm`: 5906 of 9216 tiles below the
+                    // 50.0 water plane, exactly one of them flagged blocked).
+                    // Without this the mover walked that bed and the camera
+                    // came up underneath the rendered water surface, which is
+                    // the "grey box" of the §7 sighting report.
+                    !nav_mesh.is_submerged_at(local.x, local.y)
+                        && nav_mesh.quad_cell_list.is_walkable_at(local)
                 });
         }
         true
@@ -1811,8 +1821,20 @@ mod tests {
     /// A region whose terrain is flat at `height`, spawned at the world origin.
     /// Its footprint is world x in [-1920, 0], z in [0, 1920] (see `to_local`).
     fn spawn_flat_terrain(app: &mut App, height: f32) -> Entity {
+        spawn_flat_terrain_with_plane(app, height, None)
+    }
+
+    /// Same region, optionally covered by one plane type at one plane height —
+    /// the two maps `is_submerged_at` and `is_ice_at` read.
+    fn spawn_flat_terrain_with_plane(
+        app: &mut App,
+        height: f32,
+        plane: Option<(crate::assets::nvm::plane_type::PlaneType, f32)>,
+    ) -> Entity {
         use crate::assets::nvm::height_map::HeightMap;
         use crate::assets::nvm::nav_cell_quad::{NavCellQuad, NavCellQuadList, ObjectIndices};
+        use crate::assets::nvm::plane_height_map::PlaneHeightMap;
+        use crate::assets::nvm::plane_type_map::PlaneTypeMap;
 
         let nav = JMXVNVM {
             object_list: Default::default(),
@@ -1849,13 +1871,86 @@ mod tests {
             internal_edge_list: Default::default(),
             tile_map: Default::default(),
             height_map: HeightMap::flat(height),
-            plane_type_map: Default::default(),
-            plane_height_map: Default::default(),
+            plane_type_map: PlaneTypeMap(
+                plane
+                    .iter()
+                    .map(|(kind, _)| kind.clone())
+                    .cycle()
+                    .take(36)
+                    .collect(),
+            ),
+            plane_height_map: PlaneHeightMap(
+                plane.iter().map(|(_, h)| *h).cycle().take(36).collect(),
+            ),
         };
         let handle = app.world_mut().resource_mut::<Assets<JMXVNVM>>().add(nav);
         app.world_mut()
             .spawn((TerrainNavMeshData(handle), GlobalTransform::IDENTITY))
             .id()
+    }
+
+    /// The §7 defect, at the layer that decides it: a lake bed under open
+    /// water is *open ground* in the cell map (measured on the user's
+    /// `nv_64a8.nvm`: 5906 of 9216 tiles below the 50.0 water plane, one
+    /// flagged blocked), so only the water plane can keep a mover out. Without
+    /// this the player walked the bed and the camera surfaced underneath the
+    /// rendered water.
+    #[test]
+    fn a_submerged_terrain_cell_stops_the_mover() {
+        use crate::assets::nvm::plane_type::PlaneType;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<JMXVNVM>()
+        .init_asset::<JMXVBMS>();
+        // Bed at 22.4, water plane at 50.0 — the two numbers of region 0x64A8.
+        spawn_flat_terrain_with_plane(&mut app, 22.41, Some((PlaneType::Water, 50.0)));
+
+        let from = Vec3::new(-500.0, 22.41, 500.0);
+        assert_eq!(
+            run_step(
+                &mut app,
+                from,
+                Vec2::new(-540.0, 500.0),
+                NavLocation::Terrain
+            ),
+            NavStep::Blocked,
+            "walking into water the bed of which lies below the surface must be refused"
+        );
+    }
+
+    /// The shore control on the same data: land standing above the water plane
+    /// stays walkable, so a beach inside a water plane cell is not walled off.
+    #[test]
+    fn a_shore_above_the_water_plane_still_walks() {
+        use crate::assets::nvm::plane_type::PlaneType;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<JMXVNVM>()
+        .init_asset::<JMXVBMS>();
+        // Same plane, terrain above it (0x64A8's height map reaches 159.57).
+        spawn_flat_terrain_with_plane(&mut app, 159.57, Some((PlaneType::Water, 50.0)));
+
+        let from = Vec3::new(-500.0, 159.57, 500.0);
+        assert!(
+            matches!(
+                run_step(
+                    &mut app,
+                    from,
+                    Vec2::new(-540.0, 500.0),
+                    NavLocation::Terrain
+                ),
+                NavStep::Moved { .. }
+            ),
+            "dry land inside a water plane cell must stay walkable"
+        );
     }
 
     /// Solid ground stops a mover even with no blocked edge fencing it off.
