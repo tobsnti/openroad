@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Derive macros for the sro_macro serialization traits."
 license.workspace = true
 

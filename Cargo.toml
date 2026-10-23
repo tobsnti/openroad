@@ -13,6 +13,11 @@ members = [
 [workspace.package]
 version = "0.1.7"
 edition = "2021"
+# The floor is measured, not chosen: `bevy 0.20.0` and the five `wesl`/`wgsl`
+# crates under `bevy_shader 0.20.0` are what refuse to build below it, and
+# `rust-toolchain.toml` only names the *channel*. Naming the number here turns
+# a confusing dependency error into cargo's own "requires rustc 1.97.1".
+rust-version = "1.97.1"
 authors = ["The OpenRoad Authors"]
 repository = "https://github.com/ferdoran/openroad"
 # Every crate is GPL-3.0-or-later, so a closed fork cannot take this work

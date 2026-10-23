@@ -67,7 +67,9 @@ tracker, not in a document.
 
 ## Getting Started
 Requirements:
-- Rust as pinned by `rust-toolchain.toml` (currently stable).
+- Rust as pinned by `rust-toolchain.toml` (currently stable). The workspace needs at least
+  **1.97.1** (`rust-version` in `Cargo.toml`): a `stable` channel older than that is below the
+  floor `bevy 0.20` sets, and cargo will say so instead of failing inside a dependency.
 - A local Silkroad client installation with PK2 files available.
 - Linux native build dependencies for Bevy and native crates.
 
