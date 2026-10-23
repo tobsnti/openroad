@@ -40,12 +40,19 @@ use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
+use packets::agent::prelude::CharacterActionRequest;
+use packets::Packet;
+
+use crate::net::connection::SilkroadConnection;
 use crate::plugins::combat::{AttackOrder, PickupOrder};
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
+use crate::plugins::net::agent::AgentConnection;
+use crate::plugins::net::entities::RemoteMovement;
+use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientActionCommands, ClientUiStrings};
 
 /// The page extent the four sub-frames tile: `0,240,364,117` is the last row,
@@ -337,6 +344,13 @@ pub fn spawn_action_window(
 // `0x704F` (1000 sit/stand, 1001 walk/run) and `0x3091` (4000..=4006 emotes)
 // are the two next wire slices, each with its own ledger row.
 
+/// 1000 `UIIT_CTL_TOG_SIT_STAND_TT` — `0x704F`, a true toggle: the same byte
+/// goes out for sitting down and for getting up, so it needs no local state.
+pub const ACTION_COMMAND_SIT_STAND: u32 = 1000;
+/// 1001 `UIIT_CTL_TOG_RUN_WALK_TT` — `0x704F`, but the wire carries the gait
+/// being *asked for* rather than a toggle, so the current one is read off
+/// `RemoteMovement::walking` (what the server last put us in) and inverted.
+pub const ACTION_COMMAND_GAIT: u32 = 1001;
 /// 1002 `UIIT_CTL_AUTOATTACK_TT` — `0x7074` discriminant 1, through
 /// [`AttackOrder`].
 pub const ACTION_COMMAND_AUTO_ATTACK: u32 = 1002;
@@ -362,8 +376,19 @@ pub const ACTION_COMMAND_AUTO_GET: u32 = 1008;
 pub enum SlotVerb {
     /// Needs the current selection and goes to an existing order message.
     OnTarget(TargetVerb),
+    /// Acts on the player's own character, so it needs no selection.
+    OnSelf(SelfVerb),
     /// Named by `actionwnddata.txt`, no wire path yet.
     Unwired,
+}
+
+/// The verbs that act on the player's own character — both `0x704F`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfVerb {
+    /// Toggle sitting/standing: one byte, no state to read.
+    SitStand,
+    /// Ask for the gait we are *not* in.
+    Gait,
 }
 
 /// The four verbs this window can already express, each named by the sender
@@ -387,6 +412,8 @@ pub enum TargetVerb {
 /// The classification above as a total function of the command id.
 pub fn verb_for(command_id: u32) -> SlotVerb {
     match command_id {
+        ACTION_COMMAND_SIT_STAND => SlotVerb::OnSelf(SelfVerb::SitStand),
+        ACTION_COMMAND_GAIT => SlotVerb::OnSelf(SelfVerb::Gait),
         ACTION_COMMAND_AUTO_ATTACK => SlotVerb::OnTarget(TargetVerb::Attack),
         ACTION_COMMAND_TRACE => SlotVerb::OnTarget(TargetVerb::Trace),
         ACTION_COMMAND_EXCHANGE => SlotVerb::OnTarget(TargetVerb::Exchange),
@@ -414,6 +441,8 @@ fn on_slot_activate(
     mut actions: MessageWriter<TargetMenuAction>,
     mut attacks: MessageWriter<AttackOrder>,
     mut pickups: MessageWriter<PickupOrder>,
+    player: Query<&RemoteMovement, With<Player>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     let Ok(slot) = slots.get(activate.entity) else {
         return;
@@ -427,12 +456,39 @@ fn on_slot_activate(
         );
         return;
     };
-    let SlotVerb::OnTarget(verb) = verb_for(id) else {
-        debug!(
-            "action window: {:?} slot {} (command {id}) not wired yet",
-            slot.panel, slot.index
-        );
-        return;
+    let verb = match verb_for(id) {
+        SlotVerb::OnSelf(verb) => {
+            // Both are 0x704F on the player's own character, so there is no
+            // selection to resolve and no order message to go through — this
+            // is the only verb family the window owns outright.
+            let request = match verb {
+                SelfVerb::SitStand => CharacterActionRequest::sit_stand(),
+                // `walking` is the gait the server last put us in; the button
+                // asks for the other one.
+                SelfVerb::Gait => CharacterActionRequest::gait(
+                    !player.single().is_ok_and(|movement| movement.walking),
+                ),
+            };
+            // Sent here rather than through an order message because nothing
+            // else in the client sends 0x704F — the same shape the mini-info's
+            // berserk button uses for its own one-byte request.
+            let Ok(conn) = conn.single() else {
+                warn!("action window: no agent connection for command {id}");
+                return;
+            };
+            if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+                error!("network: failed to send 0x704F: {}", e.0);
+            }
+            return;
+        }
+        SlotVerb::OnTarget(verb) => verb,
+        SlotVerb::Unwired => {
+            debug!(
+                "action window: {:?} slot {} (command {id}) not wired yet",
+                slot.panel, slot.index
+            );
+            return;
+        }
     };
     let Some(target) = selected.0 else {
         info!("action window: command {id} needs a selected target");
@@ -794,7 +850,16 @@ mod test {
         }
         // Authored rows with no wire path yet: 1000/1001 need 0x704F, the
         // emotes 0x3091, 1004/1014..=1017 nothing we have sourced.
-        for id in [1000, 1001, 1004, 1009, 1014, 1017, 4000, 5000] {
+        for (id, want) in [
+            (1000, SlotVerb::OnSelf(SelfVerb::SitStand)),
+            (1001, SlotVerb::OnSelf(SelfVerb::Gait)),
+        ] {
+            assert_eq!(verb_for(id), want, "command {id}");
+        }
+        // Authored rows with no wire path yet: the emotes need 0x3091, which
+        // is a two-direction opcode this registry cannot express yet (see the
+        // report); 1004/1009/1014..=1017 have no sourced send path at all.
+        for id in [1004, 1009, 1014, 1017, 4000, 5000] {
             assert_eq!(verb_for(id), SlotVerb::Unwired, "command {id}");
         }
     }

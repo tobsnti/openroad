@@ -216,6 +216,13 @@ packets! {
     // agent/ingame.rs and docs/re/notes/death-resurrect.md.
     0x3053 => GetUpRequest,
 
+    // Character posture/gait, the action window's two toggle slots (1000
+    // sit/stand, 1001 walk/run). One byte: 4 toggles sitting [V, 7 original-
+    // client frames], 2/3 ask for walk/run and reuse the movement-state
+    // encoding — see CharacterActionRequest for which value is measured and
+    // which is not.
+    0x704F => CharacterActionRequest,
+
     // Hwan / berserk (mini-info jahwan button). The 0x70A7 action byte's enum
     // is [U] — see HwanActionRequest.
     0x70A7 => HwanActionRequest,
