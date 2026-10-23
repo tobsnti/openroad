@@ -625,6 +625,8 @@ mod tests {
             monitor: MonitorSelection::Primary,
             present_mode: PresentModeConfig::default(),
             max_frame_latency: None,
+            fps_limit: 0.0,
+            unfocused_fps_limit: 0.0,
         };
 
         assert_eq!(
