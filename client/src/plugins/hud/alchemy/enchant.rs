@@ -58,6 +58,14 @@ const DESCRIPTOR: &str = "media://res_ui/nifenchantwnd.2dt";
 /// The whole window frame is this one 376x376 DXT1 bitmap; the other seven
 /// `mframe_alc_` pieces are 4x4 stubs (doc §3).
 const PLATE_ART: &str = "media://interface/frame/mframe_alc_right_up.ddj";
+/// Tab captions. **Ours, and it has to be**: the 2DT record carries no font
+/// field at all (`docs/formats/newinterface-2dt.md`, "No font field"), so a
+/// 4th-gen window has no `FontIndex` to resolve the way the classic trees do
+/// (`assets::resinfo::interface_text::font_index_px`). 9 px against the
+/// descriptor's authored `80x24` tab is a choice, not a transcription. It is
+/// also the ladder's *point* value for slot 0 (9 pt = 12 px), which is the
+/// likeliest origin of the number — but nothing in this window's data says 12,
+/// so it is not changed on a hunch.
 const CAPTION_FONT: f32 = 9.0;
 
 /// `CNIFAlchemySubWndType1`'s `Id` — the pane Manufacture and Strengthen raise.

@@ -88,6 +88,15 @@ const BAR02: &str = "media://interface/ifcommon/com_bar02_left.ddj";
 const DECO: &str = "media://interface/ifcommon/com_collection_deco_window.ddj";
 const OUTLINE_DIR: &str = "media://interface/ifcommon/lattice_window/com_lattice_outline_";
 
+/// **Ours, and they have to be**: the 2DT record carries no font field at all
+/// (`docs/formats/newinterface-2dt.md`, "No font field"), so this window has no
+/// `FontIndex` to resolve the way the classic trees do
+/// (`assets::resinfo::interface_text::font_index_px`). The three sizes are
+/// choices against the descriptor's own boxes — the header bars are 24 tall, a
+/// theme row's label `226x16`, the story box `250x75` for several lines. They
+/// are also the ladder's *point* values rather than its pixel ones (9 pt = 12
+/// px, 8 pt = 11 px), which is the likeliest origin of the numbers; nothing in
+/// this window's data says otherwise, so they stay.
 const HEADER_FONT: f32 = 9.0;
 const ROW_FONT: f32 = 9.0;
 const STORY_FONT: f32 = 8.0;
