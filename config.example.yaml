@@ -379,8 +379,15 @@ graphics:
   # transmission too, since one transmissive mesh in view is enough to trigger
   # the copy. Closer to the original client's fixed-function scrolling water
   # than high is.
+  #
+  # reflection switches only the reflection *contribution* of the high tier
+  # (the Video pane's Water Reflection row writes it): sky_tint.a in
+  # water_hq.wesl multiplies the Fresnel term, so false removes the look but
+  # not its cost - the shader still marches. The low tier has no reflection to
+  # switch.
   # water:
     # quality: high
+    # reflection: true
   # Fraction of the window the 3D view renders at. The HUD is always composited
   # at the window's native size, so text and icons stay sharp; only the world
   # softens, and an FXAA post pass already runs over it.

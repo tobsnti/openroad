@@ -62,6 +62,7 @@ use packets::agent::alchemy::{
 use packets::agent::character_data::ItemTypeData;
 use packets::Packet;
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::textdata::itemdata::ItemDataRow;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
@@ -339,6 +340,31 @@ const CAPTION_ACTIVE_COLOR: Color = Color::srgb_u8(239, 218, 164);
 /// on parchment. Drawing it off-white on a fill tile was the reason it looked
 /// wrong.
 const PML_TEXT_COLOR: Color = Color::srgb_u8(24, 20, 14);
+/// Three of the window's four texts take their size from a block of the two
+/// descriptions the shell loads, and all fourteen of those blocks carry
+/// `FontIndex=0` = 9 pt = 12 px ([`font_index_px`]):
+/// `GDR_ALCHEMYBOX_PML_TEXT` (`ifnewalchemybox.txt:63`, index on `:69`) for the
+/// description, `GDR_AB_REINFORCE_BUTTON_PROCESS`
+/// (`ifnewalchemyreinforce.txt:130`, `:136`) for the Fuse caption, and — for the
+/// selector row, whose *position* is ours — the title block
+/// `GDR_ALCHEMYBOX_TITLE` (`:120`, `:126`), the same block the captions already
+/// take their colour from ([`CAPTION_ACTIVE_COLOR`]).
+///
+/// Three boxes agree with the result: the title is `355x12`, the description
+/// `300x48` (three 12 px lines at Bevy's 1.2 line height) and our own caption
+/// box is 12 tall. The 9 px and 8 px this replaced were the ladder's **point**
+/// column written as pixels.
+const TEXT_FONT_SIZE: f32 = font_index_px(0);
+
+/// The chance row is **ours** — the number is the itemdata's, showing it is not
+/// (see [`CHANCE_RECT`]) — so no block names its size, and 8.5 px is on no
+/// ladder in either unit. It is left alone rather than changed on a hunch: our
+/// own `200x14` box takes slot 1's 11 px comfortably and slot 0's 12 px only
+/// just (14.4 with the line height), so choosing between them is a look at the
+/// screen, not arithmetic. UNKNOWN until then, and the one size in this file
+/// that no data supports.
+const CHANCE_FONT_SIZE: f32 = 8.5;
+
 /// The chance line does **not** sit on the parchment — it sits on the page art,
 /// which is dark. So it keeps the HUD's off-white and must not follow
 /// [`PML_TEXT_COLOR`]: the two differ because their backgrounds differ.
@@ -492,7 +518,7 @@ pub fn sync_alchemy_window(
                 Text::new(ui_strings.get_or(key, fallback).to_string()),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(9.0 * s),
+                    font_size: FontSize::Px(TEXT_FONT_SIZE * s),
                     ..default()
                 },
                 TextColor(if active {
@@ -515,7 +541,7 @@ pub fn sync_alchemy_window(
             }),
             TextFont {
                 font: fonts.two.clone().into(),
-                font_size: FontSize::Px(8.0 * s),
+                font_size: FontSize::Px(TEXT_FONT_SIZE * s),
                 ..default()
             },
             TextColor(PML_TEXT_COLOR),
@@ -573,7 +599,7 @@ pub fn sync_alchemy_window(
                 Text::new(chance_line(&ui_strings, chance)),
                 TextFont {
                     font: fonts.two.clone().into(),
-                    font_size: FontSize::Px(8.5 * s),
+                    font_size: FontSize::Px(CHANCE_FONT_SIZE * s),
                     ..default()
                 },
                 TextColor(PAGE_TEXT_COLOR),
@@ -607,7 +633,7 @@ pub fn sync_alchemy_window(
                     ),
                     TextFont {
                         font: fonts.two.clone().into(),
-                        font_size: FontSize::Px(8.5 * s),
+                        font_size: FontSize::Px(TEXT_FONT_SIZE * s),
                         ..default()
                     },
                     TextColor(BUTTON_TEXT_COLOR),
@@ -836,6 +862,24 @@ mod test {
             assert!(PAGE_RECT.1 + page.host_height() <= CONTENT_H);
         }
         assert_eq!(TALLEST_HOST_H, PAGE_RECT.3);
+    }
+
+    /// Three of the four texts are their blocks' size, and the authored boxes
+    /// agree: the title is one 12 px line, the description holds three, and the
+    /// button is 28 tall. The chance row is the exception and must stay one —
+    /// it is our row, its size is on no ladder, and pinning that apart keeps it
+    /// from reading as a sourced number.
+    #[test]
+    fn three_texts_are_their_blocks_size_and_the_chance_row_is_ours() {
+        assert_eq!(TEXT_FONT_SIZE, 12.0);
+        assert!(PML_RECT.3 >= TEXT_FONT_SIZE * 1.2 * 3.0);
+        assert!(BUTTON_RECT.3 > TEXT_FONT_SIZE * 1.2);
+        // our own caption box is authored to hold exactly that line
+        assert_eq!(SELECTOR_LABEL.2, TEXT_FONT_SIZE);
+        assert_ne!(
+            CHANCE_FONT_SIZE, TEXT_FONT_SIZE,
+            "the chance row is ours and off the ladder"
+        );
     }
 
     /// The numbers that separate the loaded description from the one this file

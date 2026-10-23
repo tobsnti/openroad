@@ -52,6 +52,7 @@ use crate::GameState;
 pub mod celestial;
 pub mod lens_flare;
 pub mod light_visibility;
+pub mod options;
 pub mod reflections;
 pub mod weather;
 
@@ -569,6 +570,18 @@ impl Plugin for EnvironmentPlugin {
                     // the render mode `setup_lighting` already spawned the Sun
                     // with, not a live-toggleable one.
                     .run_if(not(in_state(SceneState::WorldDebug))),
+            )
+            // Outside both gates on purpose: the Video pane's Shadow Detail
+            // row writes `graphics.shadows.enabled`, not `EnvironmentSettings`
+            // — same shape as `effects::apply_effect_quality` following
+            // `graphics.effect_quality`.
+            .add_systems(
+                Update,
+                options::apply_shadow_detail_option.run_if(
+                    bevy::ecs::schedule::common_conditions::resource_exists_and_changed::<
+                        ClientConfig,
+                    >,
+                ),
             );
 
         // Dev-tools gate (config.yaml `dev_tools`, inserted in main() before
