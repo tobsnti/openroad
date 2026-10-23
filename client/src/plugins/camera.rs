@@ -358,18 +358,16 @@ pub fn spawn_player_camera(
 
     // spawn camera
     // TODO: ThirdPersonCamera removed - no Bevy 0.16 compatible version; re-add when available
-    // DepthPrepass feeds the high-quality water's screen-space reflection raymarch (see
-    // water_hq.wesl). MSAA stays at the Bevy default (Sample4): forcing it off breaks
-    // this project's main view render entirely (terrain/objects vanish, only the skybox
-    // draws — verified by bisecting DepthPrepass vs Msaa::Off independently), and a
-    // Sample2 experiment (2026-07-15, to remove the redundancy with the Fxaa post pass)
-    // coincided with broken rendering + egui artifacts — reverted pending isolation.
-    // The raymarcher's depth read compiles fine against a multisampled prepass texture
-    // in this material-shader context (see the comment on `DEPTH_PREPASS` in
-    // water_hq.wesl).
-    // Bloom (and the `Hdr` marker it requires) is layered on top of that Sample4 +
-    // DepthPrepass combination; it changes the main texture's *format*, not its
-    // sample count, so the caveat above is unaffected. See `attach_bloom`.
+    // Neither `Msaa` nor `DepthPrepass` is set here: `apply_window_camera_msaa` inserts
+    // both from config on every window camera, which is what keeps the cameras sharing
+    // one main texture (see there). `graphics.msaa: 1` is shipped by the low and medium
+    // presets, so sample count 1 is a supported path, not the broken one an older
+    // comment here warned about.
+    // DepthPrepass feeds the high-quality water's screen-space reflection raymarch; its
+    // depth read compiles fine against a multisampled prepass texture in this
+    // material-shader context (see the comment on `DEPTH_PREPASS` in water_hq.wesl).
+    // Bloom (and the `Hdr` marker it requires) changes that texture's *format*, not its
+    // sample count. See `attach_bloom`.
     let player_camera = commands
         .spawn((
             RenderLayers::layer(CameraLayers::Main.into()),
