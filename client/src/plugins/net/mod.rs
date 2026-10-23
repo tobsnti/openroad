@@ -8,4 +8,5 @@ pub mod packet_dump;
 pub mod packet_send;
 pub mod party;
 pub mod plugin;
+pub mod quest;
 pub mod stall;
