@@ -23,9 +23,9 @@ mod nav_edge_global;
 mod nav_edge_internal;
 pub(crate) mod nav_mesh_edge_flag;
 mod nav_mesh_obj_inst;
-mod plane_height_map;
-mod plane_type;
-mod plane_type_map;
+pub(crate) mod plane_height_map;
+pub(crate) mod plane_type;
+pub(crate) mod plane_type_map;
 mod tile_map;
 
 #[derive(TypePath, Clone, Asset)]
@@ -178,6 +178,36 @@ impl JMXVNVM {
             .get(Self::plane_index(x, z))
             .is_some_and(PlaneType::is_ice)
     }
+
+    /// Whether region-local (x, z) lies **under** a plain-water plane: the cell
+    /// carries `Water` and the terrain there is below the water height.
+    ///
+    /// The mirror image of the ice lift above, out of the same two maps.
+    /// [`Self::walkable_height_at`] already states that plain water "is
+    /// unwalkable, not a surface" — but nothing enforced it, so a mover walked
+    /// the lake bed *under* the rendered water instead of being kept out.
+    /// Measured on the user's own `nv_64a8.nvm` (the lake region of the §7
+    /// report): 32 of its 36 plane cells are `Water` at height 50.0, while
+    /// 5906 of its 9216 nav tiles sit below that plane and exactly **one** is
+    /// flagged blocked — so the bed is open ground in the data, and "open" is
+    /// all the cell map can say. The water plane is the part that says you
+    /// cannot stand there.
+    ///
+    /// Height, not the whole cell: a plane cell is 320 units across and a
+    /// shore cell is half beach. Where the land pokes above the plane it stays
+    /// walkable, exactly as the ice branch leaves a shore as terrain.
+    pub fn is_submerged_at(&self, x: f32, z: f32) -> bool {
+        let i = Self::plane_index(x, z);
+        if !matches!(self.plane_type_map.0.get(i), Some(PlaneType::Water)) {
+            return false;
+        }
+        // No plane height (a truncated stream, a test fixture) means nothing
+        // can be said about the column, so nothing is blocked.
+        self.plane_height_map
+            .0
+            .get(i)
+            .is_some_and(|plane| self.height_map.height_at(x, z) < *plane)
+    }
 }
 
 #[allow(dead_code)]
@@ -229,6 +259,46 @@ mod tests {
         let nvm = nvm_with_plane(516.0, PlaneType::Water, 800.0);
         assert_eq!(nvm.walkable_height_at(960.0, 960.0), 516.0);
         assert!(!nvm.is_ice_at(960.0, 960.0));
+    }
+
+    /// The defect this pair of maps was never asked about: a plain-water cell
+    /// whose bed lies below the water plane is submerged, and a mover must not
+    /// be placed there. `walkable_height_at` keeps reporting the bed — it is
+    /// the right answer to "how high is the ground" — so the keeping-out has to
+    /// happen at the walkability test (`plugins::nav`).
+    #[test]
+    fn a_lake_bed_under_plain_water_reads_as_submerged() {
+        let nvm = nvm_with_plane(516.0, PlaneType::Water, 800.0);
+        assert!(nvm.is_submerged_at(960.0, 960.0));
+        // and the height answer is unchanged: still the bed
+        assert_eq!(nvm.walkable_height_at(960.0, 960.0), 516.0);
+    }
+
+    /// The shore rule, the same one the ice branch applies: land above the
+    /// water plane is dry ground and stays walkable. Blocking the whole 320-unit
+    /// plane cell instead would wall off every beach.
+    #[test]
+    fn land_above_the_water_plane_is_not_submerged() {
+        let nvm = nvm_with_plane(910.0, PlaneType::Water, 800.0);
+        assert!(!nvm.is_submerged_at(960.0, 960.0));
+    }
+
+    /// Ice is not submergence: a frozen plane is a surface you walk on, which
+    /// is why `is_ice_at` lifts the mover instead. `WaterIce` carries both
+    /// words and must read as ice, or a frozen lake would become impassable.
+    #[test]
+    fn a_frozen_plane_is_never_submerged() {
+        for plane in [PlaneType::Ice, PlaneType::WaterIce] {
+            let nvm = nvm_with_plane(516.0, plane, 800.0);
+            assert!(
+                !nvm.is_submerged_at(960.0, 960.0),
+                "a frozen plane is walked on, not waded into"
+            );
+            assert!(nvm.is_ice_at(960.0, 960.0));
+        }
+        // and a cell with no plane at all
+        let nvm = nvm_with_plane(516.0, PlaneType::None, 800.0);
+        assert!(!nvm.is_submerged_at(960.0, 960.0));
     }
 
     #[test]
