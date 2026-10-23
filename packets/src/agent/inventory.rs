@@ -1154,6 +1154,36 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u8(12);
                 buf.put_u64_le(amount);
             }
+            // The guild warehouse mirrors the four NPC-storage shapes above;
+            // only the op byte and the container differ.
+            Some(InventoryOperationResult::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount,
+            }) => {
+                buf.put_u8(29);
+                buf.put_u8(source);
+                buf.put_u8(target);
+                buf.put_u16_le(amount);
+            }
+            Some(InventoryOperationResult::InventoryToGuildStorage { source, target }) => {
+                buf.put_u8(30);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::GuildStorageToInventory { source, target }) => {
+                buf.put_u8(31);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::InventoryGoldToGuildStorage { amount }) => {
+                buf.put_u8(32);
+                buf.put_u64_le(amount);
+            }
+            Some(InventoryOperationResult::GuildStorageGoldToInventory { amount }) => {
+                buf.put_u8(33);
+                buf.put_u64_le(amount);
+            }
             Some(InventoryOperationResult::GroundToPet {
                 cos_unique_id,
                 slot,
@@ -1863,16 +1893,13 @@ mod tests {
             withdraw
         );
 
-        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw
-        let gold = InventoryOperationRequest::InventoryGoldToStorage {
-            amount: 1000,
-            npc_unique_id: 0x539,
-        };
+        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw.
+        // Nine bytes, not thirteen: the gold arm carries no NPC id — two
+        // captured frames say so (`0c 0b00000000000000`), and the session the
+        // server books against is the one 0x703C opened.
+        let gold = InventoryOperationRequest::InventoryGoldToStorage { amount: 1000 };
         let bytes: Bytes = gold.clone().into();
-        assert_eq!(
-            bytes.as_ref(),
-            &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0, 0x39, 0x05, 0, 0]
-        );
+        assert_eq!(bytes.as_ref(), &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
         assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
     }
 
