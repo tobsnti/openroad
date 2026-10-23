@@ -38,6 +38,9 @@ use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use packets::agent::prelude::{ActionCommand, ActionTarget, ObjectActionRequest};
+use packets::Packet;
+
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
@@ -312,16 +315,60 @@ pub fn send_target_menu_exchange_invite(
     }
 }
 
+/// "Trace" — follow the target.
+///
+/// Same funnel shape as the two above, and deliberately the **only** Trace
+/// sender in the client: the action window's own Trace slot writes a
+/// [`TargetMenuAction`] instead of building its own packet, so there is one
+/// wire path and not two.
+///
+/// Unlike the other two verbs this needs no new opcode — Trace is discriminant
+/// 3 of the `0x7074` envelope Attack and Pickup already use
+/// ([`ActionCommand::Trace`]). Nothing is awaited: the server answers a refusal
+/// on `0xB074` and a start on `0xB070`, both already read by the combat plugin,
+/// and a server that answers neither leaves the client exactly as it was.
+pub fn send_target_menu_trace(
+    mut actions: MessageReader<TargetMenuAction>,
+    ids: Query<&NetworkId>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    for action in actions.read() {
+        if action.action != TargetAction::Trace {
+            continue;
+        }
+        let Ok(id) = ids.get(action.target) else {
+            // Selected entities always carry a NetworkId; if one does not, say
+            // so rather than trace a zero uid.
+            warn!(
+                "target menu: trace on {:?}, which has no NetworkId",
+                action.target
+            );
+            continue;
+        };
+        let Ok(conn) = conn.single() else {
+            warn!("target menu: no agent connection to send trace on");
+            continue;
+        };
+        let request = ObjectActionRequest::Execute(ActionCommand::Trace(ActionTarget::Entity {
+            unique_id: id.0,
+        }));
+        info!("target menu: tracing uid {} (0x7074)", id.0);
+        if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+            error!("network: failed to send trace: {}", e.0);
+        }
+    }
+}
+
 /// Until each verb has a wire path, name the picked action so the menu is
 /// observable and the backlog is visible (the under-bar menu does the same for
-/// its unbuilt rows). "Invite party" and "Exchange" are wired (see
-/// [`send_target_menu_party_invite`] and [`send_target_menu_exchange_invite`])
-/// and are therefore not reported here.
+/// its unbuilt rows). "Invite party", "Exchange" and "Trace" are wired (see
+/// [`send_target_menu_party_invite`], [`send_target_menu_exchange_invite`] and
+/// [`send_target_menu_trace`]) and are therefore not reported here.
 pub fn log_target_menu_actions(mut actions: MessageReader<TargetMenuAction>) {
     for action in actions.read() {
         if matches!(
             action.action,
-            TargetAction::InviteParty | TargetAction::Exchange
+            TargetAction::InviteParty | TargetAction::Exchange | TargetAction::Trace
         ) {
             continue;
         }
@@ -417,6 +464,7 @@ impl Plugin for TargetMenuPlugin {
                     close_target_menu_on_deselect,
                     send_target_menu_party_invite,
                     send_target_menu_exchange_invite,
+                    send_target_menu_trace,
                     log_target_menu_actions,
                 )
                     .chain()
