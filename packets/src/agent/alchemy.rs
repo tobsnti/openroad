@@ -58,16 +58,19 @@ impl AlchemyDismantleRequest {
 /// the window, or drop one that is open.
 ///
 /// **Named after the opcode, not after a verb, because it carries two.** The
-/// frames measured on 2026-10-01 come from the four-tab window, whose buttons
-/// are *Disjoint*, *Dismantle*, *Manufacture* and *Strengthen*:
+/// four-tab window's buttons are *Disjoint*, *Dismantle*, *Manufacture* and
+/// *Strengthen*; two of them reach this opcode, which is `[V]` from the
+/// builders writing their type byte as a literal — `1` in
+/// `sro_client.exe@00821250`, `2` in `@008213b0`. A verb in the name would
+/// have to be wrong for one of those two, so the opcode is the name. *Fuse* is
+/// not in that window at all — it is the alchemy box's button, and that one
+/// sends `0x7150`/`0x7151` with its own type byte.
 ///
-/// * *Disjoint* sends 4 bytes, `02 01 01 1b` (one slot, bag slot 27).
-/// * *Manufacture* sends the **same opcode** with 8 bytes.
-///
-/// *Fuse* does not appear in that window at all — it is the alchemy box's
-/// button, and that one sends `0x7150`/`0x7151` with its own type byte. A verb
-/// in the name would have to be wrong for one of the two operations, so the
-/// opcode is the name.
+/// `[U]` on the wire: no frame of this opcode has been captured. A one-slot
+/// *Disjoint* is 4 bytes by the grammar (`02 01 01 <slot>`), but neither
+/// button could be triggered on the original client (the manufacture page
+/// takes neither armour nor recipe for the test character), and `packet_dump/`
+/// holds no `0x7155.log`. The clarifying measurement is one real frame.
 ///
 /// The body is the family's one grammar (`lib.rs`): a leading action byte —
 /// [`ALCHEMY_REQUEST_TAG`] runs the operation, [`ALCHEMY_ACTION_CANCEL`] drops
@@ -734,9 +737,10 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// The three bodies the original client sends on 0x7155: *Disjoint* with
-    /// one slot, *Manufacture* with five, and the close. The second byte is
-    /// the `AlchemyType` that tells the first two apart.
+    /// The three bodies the grammar admits on 0x7155: *Disjoint* with one
+    /// slot, *Manufacture* with five, and the close. The second byte is the
+    /// `AlchemyType` that tells the first two apart. Built from the builders'
+    /// grammar, not from a capture — there is none of this opcode.
     #[test]
     fn the_7155_request_reads_the_slot_and_close_bodies() {
         let wire = Bytes::from_static(&[0x02, 0x01, 0x01, 0x1B]);
