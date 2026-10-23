@@ -213,6 +213,12 @@ impl ClientSkillGroups {
 pub struct ClientMasteryData(Option<MasteryData>);
 
 impl ClientMasteryData {
+    /// Seed the resource directly, bypassing the asset pipeline (tests only).
+    #[cfg(test)]
+    pub(crate) fn from_data(data: MasteryData) -> Self {
+        Self(Some(data))
+    }
+
     pub fn get(&self, id: u32) -> Option<&MasteryInfo> {
         self.0.as_ref().and_then(|data| data.get(&id))
     }

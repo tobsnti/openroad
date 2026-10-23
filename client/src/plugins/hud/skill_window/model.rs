@@ -22,8 +22,9 @@ pub enum SkillTreeRace {
 }
 
 impl SkillTreeRace {
-    /// Top-level tab labels (mastery table col 6 groups the masteries under
-    /// these): CH Weapon/Force, EU Physical/Magical/Assist.
+    /// Fallback top-level tab labels, for when masterydata or textuisystem
+    /// has not loaded — see [`top_tab_labels`], which is what the window
+    /// shows. Kept because the offline preview scenes have neither table.
     pub fn top_tabs(self) -> &'static [&'static str] {
         match self {
             SkillTreeRace::Chinese => &["Weapon", "Force"],
@@ -39,6 +40,51 @@ impl SkillTreeRace {
             SkillTreeRace::European => id >= 512,
         }
     }
+}
+
+/// Top-tab captions, from the player's own data.
+///
+/// Idea: `skillmasterydata.txt` col 5 names the caption of the tab its mastery
+/// sits under (`UIIT_CTL_WEAPON_SKILL`, `UIIT_CTL_EU_SKILLWND_PHYSICAL`, …),
+/// and the parser has carried that column as `category_key` without a consumer
+/// ever since — the field LUECKEN lists as S1. The window wrote its own five
+/// English words instead, and **three of the five disagree with the shipped
+/// strings**: the player's `textuisystem.txt` says `Melee` (L3088), `Caster`
+/// (L3089) and `Buff` (L3090) where the literals said Physical, Magical and
+/// Assist. (CH's two happen to agree: L706 `Weapon`, L707 `Force`.)
+///
+/// All or nothing on purpose: the tab **count** drives the clamp in
+/// [`SkillWindowState::top_tab`] and the art's own 60 px pitch, so a half
+/// derived bar would be worse than the literals. A table that does not yield
+/// exactly one caption per tab of this race falls back whole.
+///
+/// The placeholder masteries (`skillmasterydata` ids 1-4: `tab = 255`,
+/// `name_key = xxx`, no category) drop out of both tests, which is also why
+/// the window never shows them.
+pub fn top_tab_labels(
+    race: SkillTreeRace,
+    masteries: &crate::plugins::textdata::ClientMasteryData,
+    strings: &crate::plugins::textdata::ClientUiStrings,
+) -> Vec<String> {
+    let fallback = race.top_tabs();
+    let mut by_tab: std::collections::BTreeMap<u8, &str> = std::collections::BTreeMap::new();
+    for info in masteries.iter().filter(|m| race.owns_mastery(m.id)) {
+        if info.category_key.is_empty() || info.category_key == "xxx" {
+            continue;
+        }
+        if usize::from(info.tab) >= fallback.len() {
+            continue;
+        }
+        by_tab.entry(info.tab).or_insert(&info.category_key);
+    }
+    if by_tab.len() != fallback.len() {
+        return fallback.iter().map(|label| label.to_string()).collect();
+    }
+    by_tab
+        .values()
+        .enumerate()
+        .map(|(index, key)| strings.get(key).unwrap_or(fallback[index]).to_string())
+        .collect()
 }
 
 /// A pending level-up awaiting confirmation in the practice box.
@@ -207,5 +253,86 @@ pub fn mastery_display_name(id: u32) -> &'static str {
         517 => "Bard",
         518 => "Cleric",
         _ => "Mastery",
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
+    use crate::plugins::textdata::{ClientMasteryData, ClientUiStrings};
+    use std::collections::HashMap;
+
+    /// S1: `skillmasterydata` col 5 names the tab captions and the parser has
+    /// carried it as `category_key` with no consumer. Three of the five words
+    /// the window wrote itself disagree with the shipped strings — the
+    /// player's data says Melee/Caster/Buff where the literals said
+    /// Physical/Magical/Assist.
+    #[test]
+    fn the_top_tab_captions_come_from_the_mastery_table() {
+        let masteries = ClientMasteryData::from_data(MasteryData(HashMap::from([
+            (513, mastery(513, "UIIT_CTL_EU_SKILLWND_PHYSICAL", 0)),
+            (514, mastery(514, "UIIT_CTL_EU_SKILLWND_MASICAL", 1)),
+            (517, mastery(517, "UIIT_CTL_EU_SKILLWND_ASSIST", 2)),
+            // the placeholder rows: tab 255, no category — must drop out
+            (1, mastery(1, "", 255)),
+        ])));
+        let strings = ClientUiStrings::from_rows(&[
+            ("UIIT_CTL_EU_SKILLWND_PHYSICAL", "Melee"),
+            ("UIIT_CTL_EU_SKILLWND_MASICAL", "Caster"),
+            ("UIIT_CTL_EU_SKILLWND_ASSIST", "Buff"),
+        ]);
+
+        assert_eq!(
+            top_tab_labels(SkillTreeRace::European, &masteries, &strings),
+            vec!["Melee", "Caster", "Buff"],
+        );
+        assert_ne!(
+            top_tab_labels(SkillTreeRace::European, &masteries, &strings),
+            SkillTreeRace::European
+                .top_tabs()
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>(),
+            "the shipped strings differ from the literals this replaces"
+        );
+    }
+
+    /// All or nothing: the tab count drives the clamp and the art's pitch, so
+    /// a table that does not cover every tab of this race falls back whole
+    /// rather than showing a short bar.
+    #[test]
+    fn an_incomplete_mastery_table_keeps_the_fallback_labels() {
+        let masteries = ClientMasteryData::from_data(MasteryData(HashMap::from([(
+            513,
+            mastery(513, "UIIT_CTL_EU_SKILLWND_PHYSICAL", 0),
+        )])));
+        let strings = ClientUiStrings::from_rows(&[("UIIT_CTL_EU_SKILLWND_PHYSICAL", "Melee")]);
+        assert_eq!(
+            top_tab_labels(SkillTreeRace::European, &masteries, &strings),
+            vec!["Physical", "Magical", "Assist"],
+        );
+        // and an empty table too
+        assert_eq!(
+            top_tab_labels(
+                SkillTreeRace::Chinese,
+                &ClientMasteryData::default(),
+                &strings
+            ),
+            vec!["Weapon", "Force"],
+        );
+    }
+
+    fn mastery(id: u32, category_key: &str, tab: u8) -> MasteryInfo {
+        MasteryInfo {
+            id,
+            name_key: String::new(),
+            tooltip_key: String::new(),
+            category_key: category_key.to_string(),
+            tab,
+            group: 0,
+            icon: None,
+            focus_icon: None,
+        }
     }
 }
