@@ -25,6 +25,7 @@ use bevy::math::Vec3A;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
+use bevy::text::LineHeight;
 use bevy::ui::{InteractionDisabled, Overflow, Pressed, UiTargetCamera};
 use bevy::ui_widgets::{Activate, Button};
 
@@ -602,11 +603,17 @@ fn mini_info(
         --
             // "cur / max" overlays (vanilla HAlign 1: centered)
             @label("", hp_font, bar_size)
+            // `GDR_PMI_TXT_HP` is `124x12` and slot 1 is 11 px, so the line box
+            // is the font size and the authored box has a pixel to spare — at
+            // Bevy's 1.2 it was 13.2 in 12 (see `font_index_px`'s "One-line
+            // boxes").
+            LineHeight::Px(bar_size)
             MiniInfoHpText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(hpt_l), top: px(hpt_t), width: px(hpt_w), height: px(hpt_h) }
         --
             @label("", mp_font, bar_size)
+            LineHeight::Px(bar_size)
             MiniInfoMpText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(mpt_l), top: px(mpt_t), width: px(mpt_w), height: px(mpt_h) }
@@ -706,6 +713,8 @@ fn stat_label(
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label(text, font, size)
+        // the drawer's rows are `47x12` / `65x12`: one line each
+        LineHeight::Px(size)
         TextColor(CINFO_LABEL_COLOR)
         TextLayout::justify(justify)
         Node {
@@ -727,6 +736,7 @@ fn stat_value(font: Handle<Font>, stat: CinfoStat, rect: (f32, f32, f32, f32)) -
     let (l, t, w, h) = drawer_local(rect, s);
     bsn! {
         @label("", font, size)
+        LineHeight::Px(size)
         MiniInfoStatValue({stat})
         TextColor(Color::WHITE)
         TextLayout::justify(Justify::Right)

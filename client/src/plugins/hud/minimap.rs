@@ -19,6 +19,7 @@
 use bevy::asset::LoadState;
 use bevy::log::warn_once;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui::{Overflow, UiTargetCamera, UiTransform};
 use bevy::ui_widgets::Activate;
 
@@ -529,6 +530,10 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
     let (zo_l, zo_t, zo_w, zo_h) = scaled(ZOOM_OUT_RECT, s);
     let (mb_l, mb_t, mb_w, mb_h) = scaled(MAP_BUTTON_RECT, s);
     let (fb_l, fb_t, fb_w, fb_h) = scaled(FLOOR_BADGE_RECT, s);
+    // One value for all four readouts: rounded to a whole pixel (`scale::text_px`)
+    // and used as *both* the font size and the line box, so the glyphs sit on the
+    // pixel grid and the line is the authored one.
+    let text_size = text_px(TEXT_FONT_SIZE, s);
 
     bsn! {
         MinimapRoot
@@ -594,17 +599,25 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             }
             Pickable::IGNORE
         --
-            @label("", area_font, text_px(TEXT_FONT_SIZE, s))
+            @label("", area_font, text_size)
+            // `GDR_MINIMAP_TEXT_AREANAME` is `104x12` — one line, so the line
+            // box is the *same* rounded value as the size (see `font_index_px`'s
+            // "One-line boxes" and `scale::text_px`).
+            LineHeight::Px(text_size)
             MinimapAreaText
             TextColor({AREA_NAME_COLOR})
             Node { position_type: PositionType::Absolute, left: px(an_l), top: px(an_t), width: px(an_w), height: px(an_h) }
         --
-            @label("", x_font, text_px(TEXT_FONT_SIZE, s))
+            @label("", x_font, text_size)
+            // `56x11`: a pixel under its own line even pinned, which is the
+            // tree's tightness, not ours — but 1.2 put it 3.4 px over.
+            LineHeight::Px(text_size)
             MinimapPosXText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(px_l), top: px(px_t), width: px(px_w), height: px(px_h) }
         --
-            @label("", z_font, text_px(TEXT_FONT_SIZE, s))
+            @label("", z_font, text_size)
+            LineHeight::Px(text_size)
             MinimapPosZText
             TextColor(Color::WHITE)
             Node { position_type: PositionType::Absolute, left: px(pz_l), top: px(pz_t), width: px(pz_w), height: px(pz_h) }
@@ -634,7 +647,9 @@ fn minimap(asset_server: &AssetServer, fonts: &FontAssets) -> impl Scene {
             Visibility::Hidden
             Pickable::IGNORE
         --
-            @label("", floor_font, text_px(TEXT_FONT_SIZE, s))
+            // the badge is `32x32`, not a one-line box, so this one keeps bevy's
+            // 1.2 line box — only the rounded size is shared
+            @label("", floor_font, text_size)
             MinimapFloorText
             TextColor(Color::WHITE)
             Node {
@@ -1395,6 +1410,35 @@ mod tests {
         // the coordinate boxes are the one pair shorter than their own line
         assert!(POS_X_RECT.3 < TEXT_FONT_SIZE);
         assert_eq!(POS_X_RECT.3, POS_Z_RECT.3);
+    }
+
+    /// The line box, not just the size — and both carry the **rounded** value
+    /// since the one rounding rule landed (`scale::text_px`).
+    ///
+    /// Asserted as a *relation* at the two scales the client ships (1.0 and
+    /// [`DEFAULT_HUD_SCALE`](crate::plugins::hud::scale::DEFAULT_HUD_SCALE)):
+    /// the rounded size and the scaled one-line box are the same number, so the
+    /// glyph box is the authored box and sits on the pixel grid. Bevy's default
+    /// `RelativeToFont(1.2)` of that size is not — it asks for a fifth more
+    /// than the rect has. The two coordinate rects stay a pixel under their
+    /// line either way, which is the tree's own tightness.
+    ///
+    /// `[U]` at other scales: a rect keeps its fraction while the font size is
+    /// rounded, so `12 * 1.1 = 13.2` against `round(13.2) = 13`. The two shipped
+    /// scales both land on whole numbers, which is why they are the ones pinned.
+    #[test]
+    fn the_readout_line_box_is_the_authored_box() {
+        for s in [1.0, crate::plugins::hud::scale::DEFAULT_HUD_SCALE] {
+            let size = text_px(TEXT_FONT_SIZE, s);
+            let one_line = scaled(AREA_NAME_RECT, s).3;
+            assert_eq!(size, one_line, "the line box is the authored box at {s}");
+            assert!(
+                size * 1.2 > one_line,
+                "bevy's default line box overflows the authored one"
+            );
+            // the coordinate boxes stay a pixel under their line, pinned or not
+            assert!(size > scaled(POS_X_RECT, s).3);
+        }
     }
 
     /// The second readout is `GDR_MINIMAP_TEXT_POS_Y` (ifminimap.txt:44), so it
