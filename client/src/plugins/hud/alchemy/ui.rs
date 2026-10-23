@@ -53,6 +53,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::LineHeight;
 use bevy::ui_widgets::Activate;
 
 use packets::agent::alchemy::{
@@ -158,6 +159,55 @@ const SELECTOR_ORIGIN: (f32, f32) = (39.0, 10.0);
 const SELECTOR_PITCH: f32 = (CONTENT_W - 2.0 * SELECTOR_ORIGIN.0) / AlchemyPage::ALL.len() as f32;
 /// Gap between a lamp and its caption, and the caption box.
 const SELECTOR_LABEL: (f32, f32, f32) = (4.0, SELECTOR_PITCH - LAMP.0 - 4.0 - 6.0, 12.0);
+// --- Elementation page (`resinfo/ifalchemyprocess.txt`) ------------------------
+//
+// The third page of the loaded shell had art, a caption and a description and
+// nothing else; its own body declares sixteen controls, and these are them. The
+// page cannot act — no opcode carries a material-processing request
+// (`AlchemyPage::can_act`) — so it is drawn and then **says so**, with the
+// archive's own refusal line, instead of offering controls that would promise a
+// request this client cannot send.
+//
+// Every rect is page-local, as the two neighbour pages are: `PAGE_RECT.1` is the
+// shell's page origin minus the title strip the chrome replaces.
+
+/// `GDR_AB_MANUFACTURING_DECO` `13,27,128,128` (`ifalchemyprocess.txt:6`), the
+/// 128x128 field the equipment slot sits inside.
+const ELEM_DECO: (f32, f32, f32, f32) = (13.0, PAGE_RECT.1 + 27.0, 128.0, 128.0);
+/// `_SLOT_EQUIP` `58,74,32,32` (`:193`) — the same page-local rect the reinforce
+/// page's equipment slot has, which is why [`EQUIP_RECT`] is reused.
+const ELEM_EQUIP: (f32, f32, f32, f32) = EQUIP_RECT;
+/// `_SLOT_01..08` (`:172,:151,:130,:109` and `:88,:67,:46,:25`): two rows of
+/// four, `x = 164/212/260/308` (pitch 48) at `y = 51` and `y = 98`.
+const ELEM_MATERIAL_XS: [f32; 4] = [164.0, 212.0, 260.0, 308.0];
+const ELEM_MATERIAL_YS: [f32; 2] = [PAGE_RECT.1 + 51.0, PAGE_RECT.1 + 98.0];
+/// `_EDIT_COUNT` `156,183,65,20` (`:214`).
+const ELEM_COUNT: (f32, f32, f32, f32) = (156.0, PAGE_RECT.1 + 183.0, 65.0, 20.0);
+/// `_BUTTON_LEFT` `140,182,0,0` (`:252`) and `_BUTTON_RIGHT` `215,182,0,0`
+/// (`:233`). Both carry a `0,0` extent, so the size is the art's own: both
+/// `interface/ifcommon/com_{left,right}_bigarrow.ddj` measure **24x24** in
+/// their DDS headers (read off the files, as `alcm_button_01.ddj`'s 104x28 was).
+const ELEM_ARROW: f32 = 24.0;
+const ELEM_ARROW_Y: f32 = PAGE_RECT.1 + 182.0;
+const ELEM_ARROW_XS: (f32, f32) = (140.0, 215.0);
+const ELEM_ARROW_DDJ: (&str, &str) = (
+    "media://interface/ifcommon/com_left_bigarrow.ddj",
+    "media://interface/ifcommon/com_right_bigarrow.ddj",
+);
+/// `_BUTTON_ALL_PROCESS` `20,179,0,0` (`:271`) and `_BUTTON_PROCESS`
+/// `253,179,0,0` (`:290`), both on `alcm_button_01.ddj` — the same 104x28 face
+/// [`BUTTON_RECT`] already measured. `_BUTTON_CANCEL` (`:309`) shares the
+/// process button's rect exactly, i.e. the original swaps the two on the same
+/// spot; with no request to run, only the process caption is drawn.
+const ELEM_BUTTON_XS: (f32, f32) = (20.0, 253.0);
+const ELEM_BUTTON_Y: f32 = PAGE_RECT.1 + 179.0;
+/// The refusal the page shows in place of a working action, in the band the
+/// body leaves free between the lower material row (`98 + 32 = 130`) and the
+/// button row (`y = 179`). The line is the archive's own — the same key the
+/// fuse button uses when alchemy cannot be used at all — not a sentence of
+/// ours, and it is why none of the controls above takes a press.
+const ELEM_NOTE: (f32, f32, f32, f32) = (20.0, PAGE_RECT.1 + 140.0, 336.0, 28.0);
+
 /// 32x32 in its DDS header — the exact slot extent.
 const SLOT_DDJ: &str = "media://interface/alchemy/alcm_slot_closed.ddj";
 /// The face of `_BUTTON_PROCESS`, named by that control's own `DDJ` field, and
@@ -550,10 +600,11 @@ pub fn sync_alchemy_window(
             Pickable::IGNORE,
         ));
 
-        // The element page has no slots and no button of its own here: its
-        // action has no opcode, so it shows its art and its description and
-        // nothing that pretends to work.
+        // The element page draws its own body (`ifalchemyprocess.txt`) and then
+        // names the reason it cannot act, rather than offering controls that
+        // would promise a request this client has no opcode for.
         if !state.page.can_act() {
+            spawn_elementation_page(content, &asset_server, &ui_strings, &fonts, s);
             return;
         }
 
@@ -652,6 +703,143 @@ pub fn sync_alchemy_window(
 
 /// Page-slot rect in content space: index 0 is the equipment slot, 1..=4 the
 /// stones.
+/// The Elementation page's own body: one equipment field, eight material
+/// slots, the count stepper and the two action buttons, all from
+/// `resinfo/ifalchemyprocess.txt` (rect citations on the constants above).
+///
+/// **Display only, and said so on screen.** The page cannot form a request —
+/// no registered opcode carries a material-processing action
+/// (`AlchemyPage::can_act`) — so no slot takes a press, no slot accepts a
+/// carried item, and the note in the middle carries the archive's own
+/// "cannot use alchemy" line. A slot that swallowed an item here would be the
+/// worse lie: the player would place materials for a fuse that never goes out.
+fn spawn_elementation_page(
+    content: &mut ChildSpawnerCommands,
+    asset_server: &AssetServer,
+    ui_strings: &ClientUiStrings,
+    fonts: &FontAssets,
+    s: f32,
+) {
+    let slot_art = asset_server.load(SLOT_DDJ);
+    let text_font = || {
+        (
+            TextFont {
+                font: fonts.two.clone().into(),
+                font_size: FontSize::Px(text_px(TEXT_FONT_SIZE, s)),
+                ..default()
+            },
+            LineHeight::Px(text_px(TEXT_FONT_SIZE, s)),
+        )
+    };
+
+    // `_DECO`: a plate, not a slot — the equipment field sits on it.
+    content.spawn((
+        abs_node(ELEM_DECO, s),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25)),
+        Pickable::IGNORE,
+    ));
+
+    // The equipment slot and the eight material slots, in the file's order.
+    for rect in std::iter::once(ELEM_EQUIP).chain(
+        ELEM_MATERIAL_YS
+            .into_iter()
+            .flat_map(|y| ELEM_MATERIAL_XS.map(move |x| (x, y, SLOT, SLOT))),
+    ) {
+        content.spawn((
+            abs_node(rect, s),
+            ImageNode {
+                image: slot_art.clone(),
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+    }
+
+    // The count stepper: the two arrows and the edit plate between them. The
+    // plate is drawn, not editable — the count it would carry belongs to the
+    // request that does not exist.
+    for (x, art) in [
+        (ELEM_ARROW_XS.0, ELEM_ARROW_DDJ.0),
+        (ELEM_ARROW_XS.1, ELEM_ARROW_DDJ.1),
+    ] {
+        content.spawn((
+            abs_node((x, ELEM_ARROW_Y, ELEM_ARROW, ELEM_ARROW), s),
+            ImageNode {
+                image: asset_server.load(art),
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ));
+    }
+    content.spawn((
+        abs_node(ELEM_COUNT, s),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+        Pickable::IGNORE,
+    ));
+
+    // `_BUTTON_ALL_PROCESS` and `_BUTTON_PROCESS`, with the captions their own
+    // `Text` fields name. Both keys are absent from this player's
+    // `textuisystem.txt` (the table carries no `ALCHEMY*` row at all), so the
+    // fallbacks are the archive's English wording, exactly as `page_caption`
+    // and `page_description` already do for this page.
+    for (x, key, fallback) in [
+        (
+            ELEM_BUTTON_XS.0,
+            "UIIT_STT_ALCHEMYBOX_ALL_COMPOUND",
+            "Process All",
+        ),
+        (ELEM_BUTTON_XS.1, "UIIT_STT_ALCHEMYBOX_COMPOUND", "Process"),
+    ] {
+        content
+            .spawn((
+                abs_node((x, ELEM_BUTTON_Y, BUTTON_RECT.2, BUTTON_RECT.3), s),
+                ImageNode {
+                    image: asset_server.load(BUTTON_DDJ),
+                    image_mode: NodeImageMode::Stretch,
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new(ui_strings.get_or(key, fallback).to_string()),
+                    text_font(),
+                    // Dimmed like every other control of this page: the caption
+                    // is the original's, the greyed face is our statement that
+                    // nothing happens on a press.
+                    TextColor(CAPTION_IDLE_COLOR),
+                    TextLayout::justify(Justify::Center),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(8.0 * s),
+                        width: Val::Percent(100.0),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            });
+    }
+
+    // Why all of the above is inert, in the archive's own words.
+    content.spawn((
+        Text::new(
+            ui_strings
+                .get_or(
+                    "UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY",
+                    "You cannot use alchemy.",
+                )
+                .to_string(),
+        ),
+        text_font(),
+        TextColor(CAPTION_IDLE_COLOR),
+        TextLayout::new(Justify::Center, LineBreak::WordBoundary),
+        abs_node(ELEM_NOTE, s),
+        Pickable::IGNORE,
+    ));
+}
+
 fn slot_rect(index: usize) -> (f32, f32, f32, f32) {
     if index == EQUIP_SLOT {
         EQUIP_RECT
@@ -846,6 +1034,94 @@ mod test {
     /// The shared shell's content origin — the layout constants are rebased on
     /// it (the #310 lesson: derive it from `game_window`, never hand-tune).
     const ORIGIN_Y: f32 = game_window::CONTENT_TOP;
+
+    /// Every rect of the Elementation body is the data's, page-local like the
+    /// two neighbour pages: `ifalchemyprocess.txt` places the deco at `13,27`,
+    /// the equipment field at `58,74`, the eight material slots in two rows of
+    /// four (`x = 164/212/260/308`, pitch 48; `y = 51` and `98`), the count
+    /// plate at `156,183,65,20` and the two action buttons at `x = 20` and
+    /// `253`, `y = 179`.
+    #[test]
+    fn the_elementation_body_is_the_files_own_geometry() {
+        let local = |rect: (f32, f32, f32, f32)| (rect.0, rect.1 - PAGE_RECT.1, rect.2, rect.3);
+        assert_eq!(local(ELEM_DECO), (13.0, 27.0, 128.0, 128.0));
+        assert_eq!(local(ELEM_EQUIP), (58.0, 74.0, 32.0, 32.0));
+        assert_eq!(ELEM_MATERIAL_XS, [164.0, 212.0, 260.0, 308.0]);
+        for pair in ELEM_MATERIAL_XS.windows(2) {
+            assert_eq!(pair[1] - pair[0], 48.0, "the file's own pitch");
+        }
+        assert_eq!(
+            ELEM_MATERIAL_YS.map(|y| y - PAGE_RECT.1),
+            [51.0, 98.0],
+            "two rows, 47 apart"
+        );
+        assert_eq!(local(ELEM_COUNT), (156.0, 183.0, 65.0, 20.0));
+        assert_eq!(ELEM_ARROW_XS, (140.0, 215.0));
+        assert_eq!(ELEM_ARROW_Y - PAGE_RECT.1, 182.0);
+        assert_eq!(ELEM_BUTTON_XS, (20.0, 253.0));
+        assert_eq!(ELEM_BUTTON_Y - PAGE_RECT.1, 179.0);
+        // the equipment field lies inside its own deco plate
+        assert!(ELEM_EQUIP.0 >= ELEM_DECO.0 && ELEM_EQUIP.1 >= ELEM_DECO.1);
+        assert!(ELEM_EQUIP.0 + ELEM_EQUIP.2 <= ELEM_DECO.0 + ELEM_DECO.2);
+        assert!(ELEM_EQUIP.1 + ELEM_EQUIP.3 <= ELEM_DECO.1 + ELEM_DECO.3);
+    }
+
+    /// Nine slots, not five: this page's body declares `_SLOT_EQUIP` plus
+    /// `_SLOT_01..08`, where the two acting pages declare four material slots.
+    /// The count is the data's, so it is asserted rather than remembered.
+    #[test]
+    fn the_elementation_page_has_nine_slots() {
+        let materials = ELEM_MATERIAL_XS.len() * ELEM_MATERIAL_YS.len();
+        assert_eq!(materials, 8);
+        assert_eq!(1 + materials, 9);
+        assert_eq!(STONE_SLOTS, 4, "the acting pages keep their own four");
+    }
+
+    /// The note band sits between the lower material row and the buttons, so
+    /// the refusal cannot overlap either. Both edges come from the file.
+    #[test]
+    fn the_refusal_note_sits_in_the_bodys_own_free_band() {
+        let lower_row_bottom = ELEM_MATERIAL_YS[1] + SLOT;
+        assert!(
+            ELEM_NOTE.1 >= lower_row_bottom,
+            "the note starts below the material rows"
+        );
+        assert!(
+            ELEM_NOTE.1 + ELEM_NOTE.3 <= ELEM_BUTTON_Y,
+            "and ends above the button row"
+        );
+    }
+
+    /// The page is drawn and inert, and `cargo test` cannot see an observer —
+    /// so the gate is the source text, as `hud/context_menu.rs` gates its own
+    /// consumer. A slot that gained a press or a drop target here would
+    /// promise a request no opcode carries (`AlchemyPage::can_act`).
+    #[test]
+    fn the_elementation_body_takes_no_press_and_no_drop() {
+        let source = include_str!("ui.rs");
+        let body = source
+            .split("fn spawn_elementation_page")
+            .nth(1)
+            .expect("the builder exists")
+            .split("\nfn ")
+            .next()
+            .expect("its body ends at the next item");
+        for promise in [
+            "observe(",
+            "AlchemySlotCell",
+            "Hovered::default()",
+            "Button,",
+        ] {
+            assert!(
+                !body.contains(promise),
+                "the inert page grew a {promise} — it would promise a fuse it cannot send"
+            );
+        }
+        assert!(
+            body.contains("UIIT_MSG_REINFORCERR_CANNOT_USE_ALCHEMY"),
+            "the page has to name why it is inert, in the archive's own words"
+        );
+    }
 
     /// The composed window is the page host's `y=150` plus the tallest page:
     /// `150 + 228 = 378`. Our content is that minus the 42-unit title strip the
