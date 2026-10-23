@@ -45,6 +45,7 @@ use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::DisplayName;
 use crate::plugins::player::Player;
+use crate::plugins::textdata::ClientUiStrings;
 
 /// The party the local player is in. Empty when there is no party.
 #[derive(Resource, Default, Debug)]
@@ -363,46 +364,72 @@ pub fn party_action_packet(action: PartyAction, in_party: bool, setup: PartySetu
     }
 }
 
-/// The error codes this family answers with, as values from the wiki's
-/// create/join pages quoted in `docs/net-party.md` §5. Wording is ours: the
-/// original's own strings are `textuisystem` keys we cannot bind to a code
-/// without a capture (the client resolves them through its category-2 error box,
-/// `FUN_00778190(2, code, …)`, `docs/re/net/inbound/party.md:538,578`).
-/// What the captures say, and what they do not. Across every ack log in
-/// `packet_dump/` there are 19 failure frames and seven distinct
-/// (verb, code) pairs:
+/// The code → text-key table the original client itself uses.
 ///
-/// | verb | code | frames | in the table below |
-/// |---|---|---|---|
-/// | invite | 4 | 8 | no |
-/// | invite | 11295 | 3 | no |
-/// | invite | 11282 | 1 | no |
-/// | join | 11280 | 3 | yes |
-/// | create | 11280 | 2 | yes |
-/// | create | 11288 | 1 | yes |
-/// | create | 4 | 1 | no |
+/// IDEA. The original does not hold these sentences; it holds **keys** and
+/// looks them up in the player's own `textuisystem.txt` at display time. So do
+/// we: the player then reads the game's own wording in the game's own
+/// language, and we ship no copy of their data.
 ///
-/// So the most frequent captured party error — code 4, nine frames — has no
-/// text, and the table's five entries cover six of the nineteen frames.
+/// The table is transcribed from the two jump tables in the party arm of the
+/// client's message dispatcher — a **short** space (2..5) handled by one table
+/// and a **long** space (11271..11305) by another, with 11270 compared
+/// separately. That split is why the most frequent captured error, code 4, is
+/// not a party error at all but the generic `UIIT_STT_ERR_COMMON_TOO_FAR`
+/// ("The object is too far."): it lives in the short space.
 ///
-/// Inventing wording for the three unmapped codes is what this deliberately
-/// does **not** do. The original resolves them through its category-2 error box
-/// (`FUN_00778190(2, code, …)`), and its vocabulary is in the user's own data:
-/// `textuisystem.txt` holds 27 `UIIT_MSG_PARTYERR_*` keys, among them
-/// "The party request was denied.", "The time for party request is over.",
-/// "Cannot find target." and "The player is in another party." The key names do
-/// **not** appear as strings in `sro_client.exe` (searched, 0 of 27), so the
-/// code → key mapping is not readable from the binary's string table and needs
-/// the resolving experiment instead: trigger each error against the original
-/// client and read which box it shows.
-pub fn party_error_text(code: u16) -> Option<&'static str> {
-    match code {
-        11276 => Some("The party request was declined."),
-        11280 => Some("The invitation expired without an answer."),
-        11288 => Some("That player is already in another party."),
-        11292 => Some("That party no longer exists."),
-        11301 => Some("That player has a party registered in party matching."),
-        _ => None,
+/// Codes the original routes to its empty branch return `None` here and must
+/// print **nothing** — showing a line where the original is silent is as wrong
+/// as showing the wrong line. Codes 0 and 1 fall through the same way.
+pub fn party_error_key(code: u16) -> Option<&'static str> {
+    Some(match code {
+        // short space, one table
+        2 => "UIIT_MSG_PARTYERR_UNKNOWN_ERROR",
+        3 => "UIIT_MSG_PARTYERR_INVALID_TARGET",
+        4 => "UIIT_STT_ERR_COMMON_TOO_FAR",
+        5 => "UIIT_MSG_PARTYERR_UNKNOWN_OPERATION",
+        // compared on its own, ahead of the long table
+        11270 => "UIIT_MSG_PARTYMATCH_ERROR_BUSY",
+        // long space, second table
+        11271 => "UIIT_MSG_PARTYERR_OUT_OF_LEVEL",
+        11272 => "UIIT_MSG_PARTYERR_ALREADY_FULL",
+        11274 => "UIIT_MSG_PARTYERR_TOO_LOW_CREATOR_LEVEL",
+        11276 => "UIIT_MSG_PARTYERR_CREATE_PARTY_REFUSED",
+        11277 | 11292 => "UIIT_MSG_PARTYERR_CANT_FIND_PARTY",
+        11278 => "UIIT_MSG_PARTYERR_CANT_FIND_CREATER",
+        11279 => "UIIT_MSG_PARTYERR_INVALID_USER",
+        11280 => "UIIT_MSG_PARTYERR_TIMEOUT",
+        11281 => "UIIT_MSG_PARTYERR_CREATER_LEFT_PARTY",
+        11282 => "UIIT_MSG_PARTYERR_EXISTING_MEMBER",
+        11283 => "UIIT_MSG_PARTYERR_MEMBER_FULL_EXP_SHARED_PARTY",
+        11284 => "UIIT_MSG_PARTYERR_MEMBER_FULL_NONEEXP_SHARED_PARTY",
+        11287 => "UIIT_MSG_PARTYERR_JOIN_PARTY_REFUSED",
+        11288 => "UIIT_MSG_PARTYERR_MEMBER_OF_ANOTHER_PARTY",
+        11291 => "UIIT_MSG_PARTYMATCH_RECORD_ERROR_AGAIN",
+        11293 => "UIIT_MSG_PARTYMATCH_RECORD_ERROR_PARTYLEADER",
+        11294 => "UIIT_MSG_PARTYMATCH_JOIN_ERROR_LEVEL",
+        11295 | 11300 => "UIIT_MSG_PARTYMATCH_JOIN_ERROR_DUPLE",
+        11299 => "UIIT_MSG_PARTY_USER_MISSMATCH",
+        11301 => "UIIT_MSG_PARTYMATCH_RECORD_ERROR_INVITE",
+        11302 => "UIIT_MSG_JOBITEM_WEAR_ERR_PARTYMATCH",
+        // 0, 1, 11273, 11275, 11285, 11286, 11289, 11290, 11296..11298, 11303
+        // and anything outside both spaces: the original's empty branch.
+        _ => return None,
+    })
+}
+
+/// Our wording, used only where the player's own data has none. Four of the
+/// `PARTYERR` cells ship untranslated in the corpus (their text is `*`), and a
+/// star is not a message — so these four get a sentence of ours, which ADR-0009
+/// allows as long as the deviation is stated. Every other key resolves from the
+/// player's `textuisystem.txt`.
+fn party_error_fallback(key: &str) -> &'static str {
+    match key {
+        "UIIT_MSG_PARTYERR_EXISTING_MEMBER" => "That player is already in the party.",
+        "UIIT_MSG_PARTYERR_IM_BUSY" => "You are busy.",
+        "UIIT_MSG_PARTYERR_NOT_ENOUGH_MEMBER_NUM" => "The party does not have enough members.",
+        "UIIT_MSG_PARTYERR_IM_NOT_PARTY_MEMBER" => "You are not in that party.",
+        _ => "",
     }
 }
 
@@ -411,21 +438,42 @@ pub fn party_error_text(code: u16) -> Option<&'static str> {
 /// `0xB060` and `0xB062` share this shape: `result == 1` is success (0xB062
 /// carries nothing at all on success, so silence is correct — the party itself
 /// arrives as the separate 0x3065/0x3864 push), `result == 2` carries the code.
-fn ack_feedback(verb: &str, result: u8, error_code: Option<u16>) -> Option<String> {
+fn ack_feedback(
+    verb: &str,
+    result: u8,
+    error_code: Option<u16>,
+    strings: Option<&ClientUiStrings>,
+) -> Option<String> {
     if result == 1 {
         return None;
     }
-    Some(match error_code.and_then(party_error_text) {
-        Some(text) => text.to_string(),
-        // An unmapped code is reported verbatim rather than swallowed: the
-        // table above is wiki-derived, not captured, so it will have holes.
-        None => format!(
-            "Party {verb} failed (code {}).",
+    let Some(key) = error_code.and_then(party_error_key) else {
+        // The original routes these to its empty branch and says nothing. We
+        // stay as quiet *to the player* and keep the code in the log, so a
+        // silent server answer is still findable from our side.
+        warn!(
+            "party: {verb} failed with a code the original does not report (code {}, result {result})",
             error_code
                 .map(|c| c.to_string())
-                .unwrap_or_else(|| format!("result {result}"))
-        ),
-    })
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return None;
+    };
+    Some(resolve_error_text(key, strings))
+}
+
+/// A key against the player's own `textuisystem.txt`, with our sentence only
+/// where their corpus has none. `*` is what an untranslated cell holds, and a
+/// star is not a message.
+pub(crate) fn resolve_error_text(key: &str, strings: Option<&ClientUiStrings>) -> String {
+    let from_data = strings.map(|s| s.get_or(key, "")).unwrap_or("").trim();
+    if !from_data.is_empty() && from_data != "*" {
+        return from_data.to_string();
+    }
+    match party_error_fallback(key) {
+        "" => key.to_string(),
+        text => text.to_string(),
+    }
 }
 
 /// Push one ack line into the chat log, when there is a chat log.
@@ -448,13 +496,17 @@ fn report_ack(history: &mut Option<ResMut<ChatHistory>>, text: String) {
 pub fn on_party_create_response(
     mut reader: MessageReader<PartyCreateResponse>,
     mut history: Option<ResMut<ChatHistory>>,
+    // The wording lives in the player's own textdata, which is a HUD-side
+    // resource — optional here for the same reason the chat log is.
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for msg in reader.read() {
         info!(
             "party: 0xB060 create ack result={} value={:?} error={:?}",
             msg.result, msg.leader_join_id, msg.error_code
         );
-        if let Some(text) = ack_feedback("creation", msg.result, msg.error_code) {
+        if let Some(text) = ack_feedback("creation", msg.result, msg.error_code, strings.as_deref())
+        {
             report_ack(&mut history, text);
         }
     }
@@ -468,6 +520,7 @@ pub fn on_party_join_response(
     mut reader: MessageReader<PartyJoinResponse>,
     mut roster: ResMut<PartyRoster>,
     mut history: Option<ResMut<ChatHistory>>,
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for msg in reader.read() {
         info!(
@@ -477,7 +530,8 @@ pub fn on_party_join_response(
         if let Some(own) = msg.own_join_id {
             roster.own_join_id = Some(own);
         }
-        if let Some(text) = ack_feedback("joining", msg.result, msg.error_code) {
+        if let Some(text) = ack_feedback("joining", msg.result, msg.error_code, strings.as_deref())
+        {
             report_ack(&mut history, text);
         }
     }
@@ -487,13 +541,16 @@ pub fn on_party_join_response(
 pub fn on_party_invite_response(
     mut reader: MessageReader<PartyInviteResponse>,
     mut history: Option<ResMut<ChatHistory>>,
+    strings: Option<Res<ClientUiStrings>>,
 ) {
     for msg in reader.read() {
         info!(
             "party: 0xB062 invite ack result={} error={:?}",
             msg.result, msg.error_code
         );
-        if let Some(text) = ack_feedback("invitation", msg.result, msg.error_code) {
+        if let Some(text) =
+            ack_feedback("invitation", msg.result, msg.error_code, strings.as_deref())
+        {
             report_ack(&mut history, text);
         }
     }
@@ -921,22 +978,54 @@ pub(crate) mod tests {
         assert_eq!(&body[..], &[0x01, 0x02, 0x00, 0x00]);
     }
 
-    /// A successful ack says nothing (the party arrives as its own push); a
-    /// failure always says *something*, even for a code the table misses.
+    /// A successful ack says nothing (the party arrives as its own push). A
+    /// failure says what the player's own data says — and, where the original
+    /// routes a code to its empty branch, says nothing at all.
     #[test]
-    fn acks_are_silent_on_success_and_never_swallow_a_failure() {
-        assert_eq!(ack_feedback("invitation", 1, None), None);
+    fn acks_speak_the_players_own_wording_and_stay_quiet_where_the_original_does() {
+        let strings = ClientUiStrings::from_rows(&[
+            (
+                "UIIT_MSG_PARTYERR_MEMBER_OF_ANOTHER_PARTY",
+                "Er ist schon in einer Gruppe.",
+            ),
+            (
+                "UIIT_STT_ERR_COMMON_TOO_FAR",
+                "Das Ziel ist zu weit entfernt.",
+            ),
+            ("UIIT_MSG_PARTYERR_EXISTING_MEMBER", "*"),
+        ]);
+
+        assert_eq!(ack_feedback("invitation", 1, None, Some(&strings)), None);
+
+        // The table's key, resolved in the player's language — not ours.
         assert_eq!(
-            ack_feedback("invitation", 2, Some(11288)).as_deref(),
-            Some("That player is already in another party.")
+            ack_feedback("invitation", 2, Some(11288), Some(&strings)).as_deref(),
+            Some("Er ist schon in einer Gruppe.")
         );
-        // unmapped code -> reported verbatim rather than dropped
+        // The most frequent captured code is not a party string at all.
         assert_eq!(
-            ack_feedback("creation", 2, Some(9999)).as_deref(),
-            Some("Party creation failed (code 9999).")
+            ack_feedback("invitation", 2, Some(4), Some(&strings)).as_deref(),
+            Some("Das Ziel ist zu weit entfernt.")
         );
-        // a failure result with no code at all still surfaces
-        assert!(ack_feedback("creation", 2, None).is_some());
+        // An untranslated cell holds `*`; a star is not a message, so our
+        // stated fallback stands in.
+        assert_eq!(
+            ack_feedback("invitation", 2, Some(11282), Some(&strings)).as_deref(),
+            Some("That player is already in the party.")
+        );
+        // Codes the original's empty branch swallows: no line, by design.
+        assert_eq!(
+            ack_feedback("creation", 2, Some(9999), Some(&strings)),
+            None
+        );
+        assert_eq!(ack_feedback("creation", 2, Some(0), Some(&strings)), None);
+        assert_eq!(ack_feedback("creation", 2, None, Some(&strings)), None);
+        // Without the HUD table at all, the key itself is still better than
+        // silence for a code the original *does* report.
+        assert_eq!(
+            ack_feedback("invitation", 2, Some(11287), None).as_deref(),
+            Some("UIIT_MSG_PARTYERR_JOIN_PARTY_REFUSED")
+        );
     }
 
     /// The regression the headless netcheck harness caught: these two systems
@@ -1010,13 +1099,24 @@ pub(crate) mod tests {
         assert_eq!(app.world().resource::<ChatHistory>().iter().count(), 1);
     }
 
-    /// The codes are the wiki values quoted in `docs/net-party.md` §5 — pinned
-    /// so a later edit of the prose cannot silently re-map them.
+    /// The seven (verb, code) pairs the captures actually hold, pinned against
+    /// the keys the original's jump tables name for them. A later edit that
+    /// re-maps one of these is changing measured behaviour, not wording.
     #[test]
-    fn the_error_table_is_the_documented_five() {
-        for code in [11276, 11280, 11288, 11292, 11301] {
-            assert!(party_error_text(code).is_some(), "{code} lost its text");
+    fn every_captured_error_code_resolves_to_the_originals_key() {
+        for (code, key) in [
+            (4u16, "UIIT_STT_ERR_COMMON_TOO_FAR"),
+            (11280, "UIIT_MSG_PARTYERR_TIMEOUT"),
+            (11282, "UIIT_MSG_PARTYERR_EXISTING_MEMBER"),
+            (11288, "UIIT_MSG_PARTYERR_MEMBER_OF_ANOTHER_PARTY"),
+            (11295, "UIIT_MSG_PARTYMATCH_JOIN_ERROR_DUPLE"),
+        ] {
+            assert_eq!(party_error_key(code), Some(key), "code {code}");
         }
-        assert_eq!(party_error_text(0), None);
+        // The empty-branch codes, and the two that fall through below the
+        // short table's base.
+        for code in [0, 1, 11273, 11285, 11290, 11296, 11303, 9999] {
+            assert_eq!(party_error_key(code), None, "code {code} must stay silent");
+        }
     }
 }
