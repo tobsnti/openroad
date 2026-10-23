@@ -1,3 +1,4 @@
+pub mod friend;
 pub mod guild;
 pub mod letter;
 pub mod letter_sub;
@@ -15,6 +16,7 @@ impl Plugin for CommunityPlugin {
         use crate::scenes::SceneState;
 
         app.init_resource::<model::CommunityState>()
+            .init_resource::<friend::FriendSelection>()
             .init_resource::<guild::GuildNoticeOpen>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_community_window)
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_community_window)
@@ -27,6 +29,7 @@ impl Plugin for CommunityPlugin {
             .add_systems(
                 Update,
                 (
+                    friend::update_friend_list,
                     guild::update_guild_info,
                     guild::update_guild_roster,
                     guild::update_guild_notice,

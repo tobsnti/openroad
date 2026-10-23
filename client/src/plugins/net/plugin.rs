@@ -69,6 +69,7 @@ impl Plugin for NetworkCorePlugin {
         }
         app.add_network_events()
             .add_plugins(crate::plugins::net::entities::NetworkEntitiesPlugin)
+            .add_plugins(crate::plugins::net::friend::FriendPlugin)
             .add_plugins(crate::plugins::net::party::PartyPlugin)
             .add_plugins(crate::plugins::net::guild::GuildPlugin)
             .add_plugins(crate::plugins::net::quest::QuestMarkPlugin)
