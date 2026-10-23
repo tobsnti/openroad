@@ -141,10 +141,27 @@ pub struct GraphicsSettings {
 /// Neither is the faithful setting in the ADR 0009 sense: the original client's
 /// water is fixed-function D3D8 with a scrolling texture, which `low` is much
 /// closer to, while `high` is a deliberate modern enhancement.
-#[derive(Deserialize, Debug, Clone, Default)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct WaterSettings {
     pub quality: WaterQuality,
+    /// The high tier's reflection blend (the original's Water Reflection
+    /// option). `sky_tint.a` in `water_hq.wesl` is the single factor the
+    /// shader multiplies its Fresnel term by, so `false` zeroes the whole
+    /// reflection contribution — the raymarched one and the flat sky-tint
+    /// fallback alike — without rebuilding anything
+    /// (`map::water_options`). Live, high tier only. On by default: that is
+    /// the look the client has always shipped.
+    pub reflection: bool,
+}
+
+impl Default for WaterSettings {
+    fn default() -> Self {
+        Self {
+            quality: WaterQuality::default(),
+            reflection: true,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]

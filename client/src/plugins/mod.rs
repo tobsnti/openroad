@@ -2,6 +2,8 @@ pub mod animation_culling;
 pub mod animation_sounds;
 pub mod asset_residency;
 pub mod assets;
+/// Event sounds resolved through `effectsound.txt` handles.
+pub mod audio_events;
 pub mod camera;
 pub mod combat;
 pub mod diagnostics;

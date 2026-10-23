@@ -359,6 +359,9 @@ fn main() {
                 // animation-keyed SFX from the .bsr mod palette (Sound ModData);
                 // skips rigs the culling above has paused
                 plugins::animation_sounds::AnimationSoundsPlugin,
+                // the other half of event sound: handles addressed by
+                // `effectsound.txt` rather than by a model's palette
+                plugins::audio_events::AudioEventsPlugin,
             ),
             // zone BGM from effectenvsnd.txt, played out of Music.pk2 (#771)
             plugins::zone_ambience::ZoneAmbiencePlugin,

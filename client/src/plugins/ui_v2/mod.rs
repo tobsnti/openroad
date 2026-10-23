@@ -1,4 +1,3 @@
-use bevy::audio::Volume;
 use bevy::input_focus::tab_navigation::TabNavigationPlugin;
 use bevy::log::warn_once;
 use bevy::picking::hover::Hovered;
@@ -9,6 +8,7 @@ use bevy::ui_widgets::Activate;
 
 use crate::assets::textdata::effectsound::SoundAddress;
 use crate::assets::FontAssets;
+use crate::plugins::audio_events;
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::textdata::{ClientEffectSounds, ClientUiStrings};
 use style::{ButtonSound, ImageButtonStyle, PasswordEcho};
@@ -138,27 +138,29 @@ fn play_button_click_sound(
     let Some(playback) = options.audio.fx_playback() else {
         return;
     };
-    let row = effect_sounds
-        .as_ref()
-        .and_then(|s| s.first(&SoundAddress::new("UI", "SND_BUTTON_CLICK")));
-    let (source, playback) = match row {
-        // the row's volume scales the FX channel, it does not replace it
-        Some(row) => (
-            asset_server.load(row.asset_path()),
-            PlaybackSettings {
-                volume: Volume::Linear(playback.volume.to_linear() * row.gain()),
-                ..playback
-            },
-        ),
-        // Before the table is loaded there is no sourced path, so only a
-        // button that brought its own handle can sound; anything else stays
-        // silent rather than loading an invented filename.
-        None => match sounds.get(activate.entity) {
-            Ok(sound) => (sound.0.clone(), playback),
-            Err(_) => return,
-        },
-    };
-    commands.spawn((AudioPlayer::new(source), playback));
+    let click = SoundAddress::new("UI", "SND_BUTTON_CLICK");
+    // Through the shared helper, not a local lookup: the table ships two
+    // `SND_BUTTON_CLICK` rows and `audio_events::play` is what picks among
+    // them and folds the row volume into the FX channel. Reading only the
+    // first row could never reach `uibutton_b.wav`.
+    if let Some(table) = effect_sounds {
+        if !table.sounds(&click).is_empty() {
+            audio_events::play(
+                &mut commands,
+                &asset_server,
+                table.as_ref(),
+                &options.audio,
+                &click,
+            );
+            return;
+        }
+    }
+    // Before the table is loaded there is no sourced path, so only a button
+    // that brought its own handle can sound; anything else stays silent
+    // rather than loading an invented filename.
+    if let Ok(sound) = sounds.get(activate.entity) {
+        commands.spawn((AudioPlayer::new(sound.0.clone()), playback));
+    }
 }
 
 /// Mirrors the sibling password `EditableText` as asterisks (see
