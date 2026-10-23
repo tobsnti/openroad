@@ -44,14 +44,20 @@ use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::character_data::ItemTypeData;
+use packets::agent::prelude::InventoryOperationRequest;
+use packets::Packet;
 
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::guild_storage::model::GuildStorageState;
+use crate::plugins::hud::inventory::model::InventoryState;
+use crate::plugins::hud::inventory::ui::{DragGhost, InventoryRoot};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::storage::model::STORAGE_SLOTS_PER_PAGE;
 use crate::plugins::net::agent::AgentConnection;
+use crate::plugins::net::inventory::{Inventory, BAG_FIRST_SLOT};
+use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 
@@ -294,9 +300,7 @@ pub fn sync_guild_storage_window(
                             ..default()
                         },
                     ));
-                    // No observer in this lap: picking an item up is 1c, and
-                    // a cell that answers a click by doing nothing is exactly
-                    // what this window set out not to ship.
+                    cell_cmd.observe(on_guild_slot_press);
                     let Some(item) = item else {
                         continue;
                     };
@@ -495,4 +499,308 @@ pub fn despawn_closing_guild_storage(
     for entity in closing.iter() {
         commands.entity(entity).despawn();
     }
+}
+
+/// The active guild-warehouse carry (an item picked off the guild grid) and
+/// its ghost icon. A **separate** resource from
+/// [`crate::plugins::hud::storage::ui::StorageCarry`] on purpose: both windows
+/// can be open at the same NPC, and one shared carry would let a guild pickup
+/// finish as a personal-warehouse drop.
+#[derive(Resource, Default)]
+pub struct GuildStorageCarry(pub Option<GuildStorageCarryData>);
+
+pub struct GuildStorageCarryData {
+    /// The carried item's guild-warehouse wire slot.
+    pub slot: u8,
+    pub ghost: Entity,
+    /// True until the pickup press's own just_pressed frame has passed.
+    pub just_picked: bool,
+}
+
+/// The carry's cursor-following icon.
+#[derive(Component)]
+pub struct GuildStorageGhost;
+
+/// Press on a guild cell: begin the guild carry (a ghost sticks to the cursor;
+/// [`finish_guild_storage_carry`] routes the drop). Deposits of an active
+/// INVENTORY carry are handled by [`deposit_drop_on_guild_storage`] — this
+/// observer backs off so the drop is not handled twice.
+#[allow(clippy::too_many_arguments)]
+fn on_guild_slot_press(
+    press: On<PointerPress>,
+    cells: Query<&GuildStorageSlotCell>,
+    state: Res<GuildStorageState>,
+    inv_state: Res<InventoryState>,
+    item_data: Res<ClientItemData>,
+    cam_query: Query<Entity, With<Camera2d>>,
+    mut carry: ResMut<GuildStorageCarry>,
+    asset_server: Res<AssetServer>,
+    mut commands: Commands,
+) {
+    if press.button != PointerButton::Primary {
+        return;
+    }
+    if carry.0.is_some() || inv_state.drag.is_some() {
+        return;
+    }
+    let Ok(cell) = cells.get(press.entity) else {
+        return;
+    };
+    if !state.synced {
+        return;
+    }
+    let slot = wire_slot(&state, cell.cell);
+    let Some(item) = state.items.get(slot) else {
+        return;
+    };
+    let Some(icon) = item_data
+        .get(&(item.ref_id as i32))
+        .and_then(|row| row.icon_path())
+    else {
+        return;
+    };
+    let mut ghost = commands.spawn((
+        GuildStorageGhost,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(-1000.0),
+            top: Val::Px(-1000.0),
+            width: Val::Px(ICON_SIZE * hud_scale()),
+            height: Val::Px(ICON_SIZE * hud_scale()),
+            ..default()
+        },
+        ImageNode {
+            image: asset_server.load(icon),
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        },
+        GlobalZIndex(80),
+        Pickable::IGNORE,
+    ));
+    if let Ok(camera) = cam_query.single() {
+        ghost.insert(UiTargetCamera(camera));
+    }
+    carry.0 = Some(GuildStorageCarryData {
+        slot,
+        ghost: ghost.id(),
+        just_picked: true,
+    });
+}
+
+/// Cursor-follow for the guild-carry ghost.
+pub fn update_guild_storage_ghost(
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut ghosts: Query<&mut Node, With<GuildStorageGhost>>,
+) {
+    if ghosts.is_empty() {
+        return;
+    }
+    let Some(cursor) = windows.single().ok().and_then(|w| w.cursor_position()) else {
+        return;
+    };
+    let size = ICON_SIZE * hud_scale();
+    for mut node in ghosts.iter_mut() {
+        node.left = Val::Px(cursor.x - size / 2.0);
+        node.top = Val::Px(cursor.y - size / 2.0);
+    }
+}
+
+/// Route the guild carry's drop: another guild cell → op 29; a bag slot →
+/// op 31 there; the inventory window body → op 31 into the first empty bag
+/// slot; anywhere else cancels. Release over the picked cell keeps the carry
+/// alive as a click-carry, which is the vanilla feel the personal warehouse
+/// already reproduces.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_guild_storage_carry(
+    buttons: Res<ButtonInput<MouseButton>>,
+    state: Res<GuildStorageState>,
+    inv_state: Res<InventoryState>,
+    guild_cells: Query<(&GuildStorageSlotCell, &Hovered)>,
+    inv_roots: Query<&Hovered, With<InventoryRoot>>,
+    inventories: Query<&Inventory, With<Player>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut carry: ResMut<GuildStorageCarry>,
+    mut commands: Commands,
+) {
+    let Some(data) = &carry.0 else {
+        return;
+    };
+    if buttons.just_pressed(MouseButton::Right) || state.session.is_none() {
+        let data = carry.0.take().expect("checked above");
+        commands.entity(data.ghost).despawn();
+        return;
+    }
+    let clicked = buttons.just_pressed(MouseButton::Left);
+    let released = buttons.just_released(MouseButton::Left);
+    if !clicked && !released {
+        return;
+    }
+    if clicked && data.just_picked {
+        // the pickup press itself
+        if let Some(data) = carry.0.as_mut() {
+            data.just_picked = false;
+        }
+        return;
+    }
+
+    let hovered_cell = guild_cells
+        .iter()
+        .find(|(_, hovered)| hovered.get())
+        .map(|(cell, _)| wire_slot(&state, cell.cell));
+    let source = data.slot;
+    let npc_id = state.session.as_ref().map(|s| s.npc_id).unwrap_or(0);
+
+    let request = if let Some(target) = hovered_cell {
+        if target == source {
+            // release over the picked cell: stay a click-carry
+            if released {
+                return;
+            }
+            None
+        } else {
+            // Op 29 is the one guild op that carries a quantity. The amount is
+            // the source stack, the same value the personal warehouse feeds
+            // into op 1 — and the open question from the wire slice lives
+            // exactly here: op 1 is modelled without it, op 29 with it, and
+            // neither has a captured frame. A capture of this drop settles it.
+            Some(InventoryOperationRequest::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount: stack_at(&state.items, source),
+                npc_unique_id: npc_id,
+            })
+        }
+    } else if let Some(target) = inv_state
+        .hovered_slot
+        .filter(|&slot| slot >= BAG_FIRST_SLOT)
+    {
+        Some(InventoryOperationRequest::GuildStorageToInventory {
+            source,
+            target,
+            npc_unique_id: npc_id,
+        })
+    } else if inv_roots.iter().any(|hovered| hovered.get()) {
+        // over the inventory window but no slot: first empty bag slot
+        let target = inventories
+            .single()
+            .ok()
+            .and_then(|inv| (BAG_FIRST_SLOT..inv.size()).find(|&slot| inv.get(slot).is_none()));
+        match target {
+            Some(target) => Some(InventoryOperationRequest::GuildStorageToInventory {
+                source,
+                target,
+                npc_unique_id: npc_id,
+            }),
+            None => {
+                info!("guild storage: no free bag slot to withdraw into");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let data = carry.0.take().expect("checked above");
+    commands.entity(data.ghost).despawn();
+    let Some(request) = request else {
+        return;
+    };
+    let Ok(conn) = conn.single() else {
+        warn!("guild storage: no agent connection, dropping request");
+        return;
+    };
+    info!("guild storage: sending {:?}", request);
+    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+        error!("network: failed to send guild storage request: {}", e.0);
+    }
+}
+
+/// Dropping a carried inventory item onto the guild window deposits it (op 30)
+/// — slot-precise on a hovered cell, else into the first free guild slot. The
+/// inventory's carry state and ghost are taken over here, so no op-0 move goes
+/// out for this drop (the sell-drop precedent).
+#[allow(clippy::too_many_arguments)]
+pub fn deposit_drop_on_guild_storage(
+    buttons: Res<ButtonInput<MouseButton>>,
+    state: Res<GuildStorageState>,
+    guild_roots: Query<&Hovered, With<GuildStorageWindowRoot>>,
+    guild_cells: Query<(&GuildStorageSlotCell, &Hovered)>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    ghosts: Query<Entity, With<DragGhost>>,
+    mut inv_state: ResMut<InventoryState>,
+    mut commands: Commands,
+) {
+    if !buttons.just_released(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(session) = &state.session else {
+        return;
+    };
+    let Some(source) = inv_state.drag else {
+        return;
+    };
+    if !guild_roots.iter().any(|hovered| hovered.get()) {
+        return;
+    }
+    // Gate BEFORE consuming the carry: an unsynced drop (first-load latency)
+    // must leave the item on the cursor, not silently destroy it.
+    if !state.synced {
+        info!("guild storage: not synced yet, ignoring deposit drop");
+        return;
+    }
+    inv_state.drag = None;
+    for ghost in ghosts.iter() {
+        commands.entity(ghost).despawn();
+    }
+    let target = guild_cells
+        .iter()
+        .find(|(_, hovered)| hovered.get())
+        .map(|(cell, _)| wire_slot(&state, cell.cell))
+        .filter(|&slot| state.items.get(slot).is_none())
+        .or_else(|| first_free_slot(&state.items));
+    let Some(target) = target else {
+        info!("guild storage: no free guild slot to deposit into");
+        return;
+    };
+    let request = InventoryOperationRequest::InventoryToGuildStorage {
+        source,
+        target,
+        npc_unique_id: session.npc_id,
+    };
+    let Ok(conn) = conn.single() else {
+        warn!("guild storage: no agent connection, dropping deposit");
+        return;
+    };
+    info!("guild storage: sending {:?}", request);
+    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+        error!("network: failed to send guild storage deposit: {}", e.0);
+    }
+}
+
+/// The stack a whole-stack guild move reports. Equipment and pets are single
+/// records and report 1; only an expendable carries a count.
+fn stack_at(items: &Inventory, slot: u8) -> u16 {
+    match items.get(slot).map(|item| &item.data) {
+        Some(ItemTypeData::Expendable { stack_count, .. }) => *stack_count,
+        _ => 1,
+    }
+}
+
+/// First empty guild slot, for a drop that named no cell.
+fn first_free_slot(items: &Inventory) -> Option<u8> {
+    (0..items.size()).find(|&slot| items.get(slot).is_none())
+}
+
+/// A carry cannot outlive its window: closing the warehouse (or losing the
+/// session) drops the ghost with it.
+pub fn clear_carry_with_guild_storage(
+    state: Res<GuildStorageState>,
+    mut carry: ResMut<GuildStorageCarry>,
+    mut commands: Commands,
+) {
+    if state.session.is_some() || carry.0.is_none() {
+        return;
+    }
+    let data = carry.0.take().expect("checked above");
+    commands.entity(data.ghost).despawn();
 }
