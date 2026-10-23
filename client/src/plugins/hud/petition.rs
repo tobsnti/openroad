@@ -11,16 +11,27 @@
 //!
 //! What ships here are the **party arms** (`type` 2 `PartyCreation` and 3
 //! `PartyInvitation`, the two the assembly doc sequences first —
-//! `docs/re/systems/gameinvite-0x3080-assembly.md` §8.3) and the **exchange
-//! arm** (`type` 1), whose continuation now exists: accepting it makes the
-//! server send 0x3085 and `hud::exchange` takes over from there (#99/#36).
-//! Its accept/decline encoding is the family default `01 01` / `01 00`, both
-//! `[V]` (§2), and its body is one sourced line rather than the party arm's
-//! three. The remaining arms are decoded, logged and named to the player as a
-//! system line, but do not open a box: resurrection belongs to the death flow,
-//! and guild/union/academy have [U] response encodings that xBot never builds
-//! — sending an unverified decline would be the guess this file is built to
-//! avoid (§9.1/9.2).
+//! `docs/re/systems/gameinvite-0x3080-assembly.md` §8.3), the **exchange arm**
+//! (`type` 1), whose continuation now exists: accepting it makes the server
+//! send 0x3085 and `hud::exchange` takes over from there (#99/#36), and the
+//! **resurrection arm** (`type` 4). All three answer with the family default
+//! `01 01` / `01 00`, both `[V]` (§2); only the party arms need the
+//! arm-specific decline.
+//!
+//! The resurrection arm hosted itself as soon as its *text* was found, which
+//! is also the correction of an earlier reading here ("resurrection belongs to
+//! the death flow"): the player's `textuisystem.txt` carries two separate
+//! families, and only one of them is the death flow.
+//! `UIIT_MSG_MSGBOX_ASK_SELF_REBIRTH_1..4` (L2096-L2099, "Choose a method to
+//! resurrect yourself") is the dialog you get for your *own* death, while
+//! `UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_0..2` (L2100-L2102) is a message box
+//! asking whether to accept somebody's resurrection — three lines, no `%s`,
+//! named for the box this file builds (`MSGBOX_ASK`). That is this petition.
+//!
+//! Guild/union/academy stay decoded, logged and named to the player as a
+//! system line without a box: their response encodings are [U] and xBot never
+//! builds one, so sending an unverified decline would be the guess this file
+//! is built to avoid (§9.1/9.2).
 //!
 //! **Chrome and geometry** come from the user's own PK2, not from this file's
 //! judgement: `resinfo/ifmessagebox.txt` `Section = MsgBoxSimple` authors Yes
@@ -95,6 +106,30 @@ const DEAL_ASK: (&str, &str) = (
     "Applied for the exchange. Will you accept it?",
 );
 const PARTY_ASK: (&str, &str) = ("UIIT_STT_PARTY_PROPOSAL_ASK", "Accept party invitation?");
+/// The resurrection arm's body, L2100-L2102. The key family names the box this
+/// file builds (`MSGBOX_ASK`) and the numeric suffix is the line order, which
+/// is what makes this arm three lines; none of the three carries a `%s`, so it
+/// names nobody — the same reason the exchange arm does not.
+///
+/// The one other `MSGBOX_ASK` resurrection body in the data,
+/// `UIIT_MSG_MSGBOX_ASK_REBIRTH_MUTATION` (L2103, beast-form, one row with its
+/// own markup), is **not** used: nothing in the petition distinguishes the two
+/// offers (`setup` is party-only, §1), so picking between them would be
+/// invented.
+const RESURRECTION_LINES: [(&str, &str); 3] = [
+    (
+        "UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_0",
+        "A warm light is hovering around your body.",
+    ),
+    (
+        "UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_1",
+        "You feel the soul entering your body once again.",
+    ),
+    (
+        "UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_2",
+        "Will you resurrect yourself to continue the adventure?",
+    ),
+];
 /// The share-mode pairs the petition's `setup` byte selects, L502-L505.
 const EXP_SHARE: (&str, &str) = ("UIIT_STT_PARTY_EXP_SHARE", "Exp Auto Share");
 const EXP_SELF: (&str, &str) = ("UIIT_STT_PARTY_EXP_SELF", "Exp Free-For-All");
@@ -123,7 +158,10 @@ enum PetitionAnswer {
 fn opens_a_box(petition: u8) -> bool {
     matches!(
         petition,
-        PETITION_PARTY_CREATION | PETITION_PARTY_INVITATION | PETITION_EXCHANGE
+        PETITION_PARTY_CREATION
+            | PETITION_PARTY_INVITATION
+            | PETITION_EXCHANGE
+            | PETITION_RESURRECTION
     )
 }
 
@@ -132,7 +170,6 @@ fn opens_a_box(petition: u8) -> bool {
 /// line, because it hosts every arm.
 fn unhosted_arm_notice(petition: u8) -> &'static str {
     match petition {
-        PETITION_RESURRECTION => "A resurrection offer arrived, but it is not wired yet.",
         PETITION_GUILD => "A guild invitation arrived, but it is not wired yet.",
         PETITION_UNION => "An alliance invitation arrived, but it is not wired yet.",
         PETITION_ACADEMY => "An academy invitation arrived, but it is not wired yet.",
@@ -169,6 +206,15 @@ pub fn on_game_invite(
         }
         pending.0 = Some(petition.clone());
     }
+}
+
+/// The resurrection arm's body: the original's own three lines, in the order
+/// its keys number them (see [`RESURRECTION_LINES`]).
+fn resurrection_body(ui: &ClientUiStrings) -> Vec<String> {
+    RESURRECTION_LINES
+        .iter()
+        .map(|(key, fallback)| ui.get_or(key, fallback).to_string())
+        .collect()
 }
 
 /// The party arm's body, as the lines the box stacks.
@@ -250,10 +296,10 @@ pub fn sync_petition_dialog(
         .and_then(|entity| names.get(entity).ok())
         .map(|name| name.0.clone())
         .unwrap_or_else(|| UNKNOWN_INVITER.to_string());
-    let lines = if petition.petition == PETITION_EXCHANGE {
-        vec![ui_strings.get_or(DEAL_ASK.0, DEAL_ASK.1).to_string()]
-    } else {
-        party_body(petition, &inviter, &ui_strings)
+    let lines = match petition.petition {
+        PETITION_EXCHANGE => vec![ui_strings.get_or(DEAL_ASK.0, DEAL_ASK.1).to_string()],
+        PETITION_RESURRECTION => resurrection_body(&ui_strings),
+        _ => party_body(petition, &inviter, &ui_strings),
     };
 
     let text_font = TextFont {
@@ -551,6 +597,11 @@ mod test {
             bytes(petition_response(PETITION_EXCHANGE, false)),
             (0x3080, vec![0x01, 0x00])
         );
+        assert_eq!(
+            bytes(petition_response(PETITION_RESURRECTION, false)),
+            (0x3080, vec![0x01, 0x00]),
+            "the resurrection arm declines with the family default, not party's"
+        );
         for arm in [
             PETITION_PARTY_CREATION,
             PETITION_PARTY_INVITATION,
@@ -564,9 +615,9 @@ mod test {
         }
     }
 
-    /// The hosted arms are the two party ones plus exchange; every other arm
-    /// is named, not silently dropped and not answered with an unverified
-    /// encoding.
+    /// The hosted arms are the two party ones, exchange and resurrection;
+    /// every other arm is named, not silently dropped and not answered with an
+    /// unverified encoding.
     #[test]
     fn the_hosted_arms_open_a_box_and_the_rest_are_named() {
         assert!(opens_a_box(PETITION_PARTY_CREATION));
@@ -575,13 +626,11 @@ mod test {
             opens_a_box(PETITION_EXCHANGE),
             "exchange has a continuation now (0x3085 -> hud::exchange)"
         );
-        for arm in [
-            PETITION_RESURRECTION,
-            PETITION_GUILD,
-            PETITION_UNION,
-            PETITION_ACADEMY,
-            0x7F,
-        ] {
+        assert!(
+            opens_a_box(PETITION_RESURRECTION),
+            "resurrection has both its text (L2100-L2102) and a [V] encoding"
+        );
+        for arm in [PETITION_GUILD, PETITION_UNION, PETITION_ACADEMY, 0x7F] {
             assert!(!opens_a_box(arm), "arm {arm} must not open a box yet");
             assert!(!unhosted_arm_notice(arm).is_empty());
         }
@@ -597,6 +646,113 @@ mod test {
         assert_eq!(DEAL_ASK.0, "UIIT_MSG_DEAL_ASK");
         // and the arm carries no setup byte on the wire (0x3080 §1)
         assert!(petition(PETITION_EXCHANGE, None).setup.is_none());
+    }
+
+    /// The resurrection body is the player's own three rows, read by key.
+    /// Pinned through [`ClientUiStrings::from_rows`] so the assertion is about
+    /// the *keys* this file asks for, not about the fallback strings compiled
+    /// into it — a typo'd key would silently ship the fallback otherwise.
+    #[test]
+    fn the_resurrection_arm_is_the_originals_three_lines() {
+        let ui = ClientUiStrings::from_rows(&[
+            ("UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_0", "line zero"),
+            ("UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_1", "line one"),
+            ("UIIT_MSG_MSGBOX_ASK_SKL_RESURRECTION_2", "line two"),
+            ("UIIT_MSG_MSGBOX_ASK_SELF_REBIRTH_2", "the death flow's own"),
+        ]);
+        assert_eq!(
+            resurrection_body(&ui),
+            vec![
+                "line zero".to_string(),
+                "line one".to_string(),
+                "line two".to_string()
+            ]
+        );
+        // three lines is the geometry's maximum, and the arm names nobody:
+        // none of the three rows carries a %s (unlike the party arm's first).
+        assert_eq!(RESURRECTION_LINES.len(), 3);
+        for (_, fallback) in RESURRECTION_LINES {
+            assert!(!fallback.contains("%s"), "{fallback:?}");
+        }
+    }
+
+    /// Minimal app that can really spawn the box: the asset pair plus a camera,
+    /// which is all [`sync_petition_dialog`] needs beyond its resources.
+    /// `TaskPoolPlugin` before `AssetPlugin` is load-bearing (#665) — the
+    /// plate art is loaded by path.
+    fn petition_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .init_resource::<PendingPetition>()
+        .init_resource::<ChatHistory>()
+        .init_resource::<ClientUiStrings>()
+        .init_resource::<NetworkEntities>()
+        .insert_resource(FontAssets {
+            one: Handle::default(),
+            two: Handle::default(),
+            three: Handle::default(),
+            nine: Handle::default(),
+        })
+        .add_message::<GameInvite>()
+        .add_systems(Update, (on_game_invite, sync_petition_dialog).chain());
+        app.world_mut().spawn(Camera2d);
+        app
+    }
+
+    fn open_dialogs(app: &mut App) -> usize {
+        let world = app.world_mut();
+        let mut query = world.query::<&PetitionDialog>();
+        query.iter(world).count()
+    }
+
+    /// LUECKEN P1, the whole path: a resurrection petition used to reach the
+    /// player as a sentence this repo wrote and nothing else. Now it opens the
+    /// one shared box, carrying the original's rows, and clicking Yes answers
+    /// and closes it. The click is the real `Activate` the mouse sends, so the
+    /// observer that takes the pending petition is the one under test.
+    #[test]
+    fn a_resurrection_petition_opens_the_box_and_answering_closes_it() {
+        let mut app = petition_app();
+
+        app.world_mut()
+            .write_message(GameInvite::Petition(petition(PETITION_RESURRECTION, None)));
+        app.update();
+
+        assert_eq!(open_dialogs(&mut app), 1, "no box opened");
+        assert_eq!(
+            app.world().resource::<ChatHistory>().iter().count(),
+            0,
+            "a hosted arm must not also be narrated as a system line"
+        );
+        let world = app.world_mut();
+        let mut texts = world.query::<&Text>();
+        let lines: Vec<String> = texts.iter(world).map(|text| text.0.clone()).collect();
+        for (_, row) in RESURRECTION_LINES {
+            assert!(
+                lines.contains(&row.to_string()),
+                "missing {row:?} in {lines:?}"
+            );
+        }
+
+        // Yes, through the same event the button sends.
+        let mut answers = app.world_mut().query::<(Entity, &PetitionAnswer)>();
+        let yes = answers
+            .iter(app.world())
+            .find(|(_, answer)| **answer == PetitionAnswer::Accept)
+            .map(|(entity, _)| entity)
+            .expect("the box has no Yes button");
+        app.world_mut().trigger(Activate { entity: yes });
+        app.update();
+
+        assert!(
+            app.world().resource::<PendingPetition>().0.is_none(),
+            "the answer must clear the pending petition"
+        );
+        assert_eq!(open_dialogs(&mut app), 0, "the box stayed open after Yes");
     }
 
     /// The `setup` byte must reach the UI (§8 fidelity checklist): it is the
