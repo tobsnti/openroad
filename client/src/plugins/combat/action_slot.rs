@@ -127,6 +127,14 @@ const MAX_ATTEMPTS: u8 = 2;
 /// (`packet_dump/0xb074.log`) and the longest cast chain runs 5.1 s, so this
 /// cannot cut a real action short. It only stops a missing `Ended` from
 /// latching the slot shut for the rest of the session.
+///
+/// **What this covers is a server defect, not a gap in the protocol.** Vanilla
+/// really does send the end: a capture of a real server holds 391 `0xB074`
+/// frames split 181 `Started` / 142 `Ended` / 68 `Failed` — an `Ended` almost
+/// as often as a `Started`. So the correct reading of this timeout is "the
+/// peer owes us an `Ended` and did not send one", never "the protocol has no
+/// end". A peer that sends them clears the flag in the same frame and never
+/// reaches this bound.
 const SERVER_BUSY_TIMEOUT_SECS: f64 = 8.0;
 
 /// The client's model of the server's single action slot, plus the one thing
@@ -227,13 +235,17 @@ impl ActionSlot {
         // never sends one latches the slot shut for the rest of the session:
         // every later intent then waits out the buffer and is dropped as
         // stale, which is what "went stale" means in a log with no sends after
-        // it. Measured 2026-10-23: 375 `0xB074` frames in one session, every
-        // one of them `Started`, not a single `Ended`; `0xB071` never arrived
-        // either.
+        // it. Measured 2026-10-23 against our own stub: 375 `0xB074` frames in
+        // one session, every one of them `Started`, not a single `Ended`;
+        // `0xB071` never arrived either.
         //
-        // This is a bound, not a claim about the wire. If an `Ended` does
-        // arrive the flag clears the same frame as before; the timeout only
-        // decides how long the client believes an end it was never told about.
+        // The stub was the one at fault, and that is now settled rather than
+        // suspected: a capture of a real server holds 391 `0xB074` frames,
+        // 181 `Started` / 142 `Ended` / 68 `Failed`. The end is part of the
+        // protocol, so this timeout is a guard against a peer that owes one
+        // and withholds it — not a stand-in for a message that does not exist.
+        // A peer that sends `Ended` clears the flag in the same frame and
+        // never reaches this bound.
         if self
             .busy_since
             .is_some_and(|at| now - at > SERVER_BUSY_TIMEOUT_SECS)
