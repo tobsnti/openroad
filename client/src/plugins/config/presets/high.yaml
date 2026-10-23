@@ -41,15 +41,23 @@ graphics:
     object_spawns_per_frame: 64
     resource_spawns_per_frame: 16
   depth_prepass: false
-  # Alpha-to-coverage is built and switchable, but it ships OFF: measured
-  # 2026-10-23 with grass in frame (foliage both, Foliage 12275), it makes the
-  # image worse — 40.31 % of the pixels in the tree crowns change, the leaves
-  # thin out into a fine checkerboard and the edge measure rises 3 %
-  # (21.454 vs 20.808). Mechanism: A2C turns partial alpha into MSAA coverage,
-  # and a mip-filtered leaf edge at distance has partial alpha everywhere the
-  # hard test at 0.5 still calls "fully there". The original tests hard, so
-  # this is also the closer behaviour. Turn it on to look at a leaf card close
-  # up — that case is unmeasured.
+  # Alpha-to-coverage is built and switchable, but it ships OFF — and the
+  # reason is a trade, not a regression. Corrected 2026-10-23 after a paired
+  # in-process measurement (dev switch, noise floor exactly 0): A2C **smooths**
+  # the edges (edge measure falls in all three bands: crown 23.676 vs 24.326,
+  # bush 18.986 vs 20.593, near grass 20.622 vs 21.518). The earlier claim that
+  # it raises the edge measure came from comparing two separate *processes*,
+  # whose pose, particle and swing differences exceed the effect by an order of
+  # magnitude. What A2C really costs is foliage **density**: the sky share
+  # through a crown rises at every distance (+1.60 to +3.76 pp). So it is a
+  # calmer edge against systematically thinner leaves — and the original tests
+  # hard (ref 0x80), which makes "off" the closer behaviour too.
+  # If it is ever turned back on, the measured limit is ~400 units: the ratio
+  # of smoothing per point of thinning is best near (-0.32 at 196, -0.22 at
+  # 376) and falls off behind that (-0.08 at 576).
+  # The coupling in graphics.rs is NOT optional: with the depth prepass on as
+  # well, the crown's sky share jumps 40.65 % -> 69.85 % and the foliage
+  # disintegrates — measured, same tree, frozen time.
   foliage_alpha_to_coverage: false
   shadows:
     enabled: true
