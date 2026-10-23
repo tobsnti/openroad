@@ -524,10 +524,10 @@ mod test {
         assert_eq!(props.font_index, 0);
         assert_eq!(font_index_px(props.font_index as usize), 12.0);
 
-        // `GDR_BTN_SACCEPT` (`resinfo/pstitle_europe.txt:546`)
+        // `GDR_BTN_SACCEPT` (`resinfo/pstitle_europe.txt:545`)
         fields.insert(
             "FontIndex".into(),
-            Value::parse("INTEGER", "2", 546).unwrap(),
+            Value::parse("INTEGER", "2", 545).unwrap(),
         );
         let props = Properties::from(&fields);
         assert_eq!(props.font_index, 2);
