@@ -790,6 +790,16 @@ pub fn load_terrain_system(
                             Name::from(format!("Ground {}x{} ({})", block.x, block.z, terrain_name.as_str())),
                         )).with_children(|block_entity: &mut bevy::ecs::hierarchy::ChildSpawnerCommands| match &block.water_type {
                             WaterType::None => {}
+                            // A plane under its own block's terrain cannot be seen
+                            // (`TerrainBlock::terrain_is_above`): 16.1% of the
+                            // corpus' water blocks and 11.4% of its ice blocks are
+                            // in that state. Skipping it
+                            // is the cheapest frame there is: the HQ tier's plane is
+                            // transmissive, which is the renderer's most expensive
+                            // per-pixel path and copies the whole main texture
+                            // whenever any of it is in view.
+                            WaterType::Water(_, height) | WaterType::Ice(height)
+                                if block.terrain_is_above(*height) => {}
                             // `_wave_type` stays unread on purpose: the census in
                             // `docs/formats/mapm-jmxvmapm.md` shows the byte restates
                             // this block's own vertex grid (0 = plane below every

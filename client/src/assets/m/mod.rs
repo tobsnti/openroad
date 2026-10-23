@@ -84,6 +84,34 @@ pub struct MapTile {
     pub flag: u16,
 }
 
+impl TerrainBlock {
+    /// Whether every vertex of this block's own grid sits at or above `level`.
+    ///
+    /// Idea: a water or ice plane is a flat 320x320 quad at its `WaterHeight`
+    /// covering exactly this block's footprint
+    /// (`plugins::map::terrain::water_patch_mesh`), and the terrain over that
+    /// same footprint is a triangulated heightfield on this 17x17 grid. A
+    /// linear interpolant's minimum is at a vertex, so if no vertex is below
+    /// the plane, no point of the terrain is, and the quad is strictly beneath
+    /// an opaque surface — invisible from anywhere above the ground.
+    ///
+    /// Measured on the player's corpus (`scripts/re/census_water_wave_type.py`):
+    /// 5,937 of 36,976 water blocks (16.1%) and 109 of 955 ice blocks are in
+    /// that state. Decided here from the vertices and not from the
+    /// `WaterWaveType` byte, whose `0` means exactly this on every water block
+    /// but contradicts the grid on 103 of the 955 ice blocks.
+    ///
+    /// NaN is read as the mesh builder draws it (`Mesh::from(&JMXVMAPM)`
+    /// substitutes 0.0), so the two sides cannot disagree about a hole. The
+    /// corpus has no NaN in any water block.
+    pub fn terrain_is_above(&self, level: f32) -> bool {
+        self.vertices.iter().all(|v| {
+            let y = if v.height.is_nan() { 0.0 } else { v.height };
+            y >= level
+        })
+    }
+}
+
 #[derive(TypePath, Clone, Asset)]
 pub struct JMXVMAPM {
     pub format: String,
@@ -299,6 +327,62 @@ impl From<&JMXVMAPM> for Mesh {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A water plane under its own block's terrain is invisible, so the mesh
+    /// builder must not spawn one — 16.1% of the corpus' water blocks are in
+    /// that state (`scripts/re/census_water_wave_type.py`). The boundary case
+    /// is what matters: a single vertex *at* the plane still hides it (the
+    /// surfaces touch), one below it does not.
+    #[test]
+    fn a_block_whose_terrain_stays_above_the_plane_hides_it() {
+        let block = |heights: &[f32]| {
+            let mut vertices = Vec::with_capacity(17 * 17);
+            for i in 0..17 * 17 {
+                vertices.push(MapVertex {
+                    x: (i % 17) as i32,
+                    z: (i / 17) as i32,
+                    height: heights[i % heights.len()],
+                    texture_id: 0,
+                    splat_scale: 0,
+                    splat_offset: 0,
+                    brightness: 0,
+                });
+            }
+            TerrainBlock {
+                x: 0,
+                z: 0,
+                flag: 0,
+                environment_id: 0,
+                water_type: WaterType::Water(0, 10.0),
+                vertices,
+                tiles: Vec::new(),
+                aabb: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
+            }
+        };
+
+        assert!(
+            block(&[11.0]).terrain_is_above(10.0),
+            "a dry block hides it"
+        );
+        assert!(
+            block(&[10.0]).terrain_is_above(10.0),
+            "terrain exactly at the plane still hides it"
+        );
+        assert!(
+            !block(&[11.0, 9.99]).terrain_is_above(10.0),
+            "one vertex below the plane makes the water visible"
+        );
+        assert!(
+            !block(&[-100.0]).terrain_is_above(10.0),
+            "a fully submerged block is all water surface"
+        );
+        // The mesh builder substitutes 0.0 for a NaN vertex, so this has to
+        // read as a hole below the plane rather than as "above it".
+        assert!(
+            !block(&[11.0, f32::NAN]).terrain_is_above(10.0),
+            "a NaN vertex is drawn at 0.0, which is under the plane"
+        );
+    }
 
     /// Diagnostic (same pattern as `probe_bsr_mod_palette` in `bsr.rs`):
     /// histogram every vertex's 6-bit `splat_scale` code across all regions in
