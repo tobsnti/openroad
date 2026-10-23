@@ -236,5 +236,34 @@ mod tests {
         assert_eq!(high.render_scale.factor(), 1.0);
         assert_eq!(high.objects.nature_view_distance, 0.0);
         assert!(!high.depth_prepass);
+        assert_eq!(high.sharpening, defaults.sharpening);
+    }
+
+    /// The sharpening ladder runs the *opposite* way to every other tier key,
+    /// and that is the whole reasoning behind its numbers: the pass recovers
+    /// what blurring costs, so it is needed most where the image is upscaled
+    /// (`low`, `render_scale: 0.75`) and least where it is rendered at native
+    /// resolution with MSAA 4 on top (`ultra`). A preset that forgot the key
+    /// would silently fall back to the default and break that reading.
+    #[test]
+    fn the_sharpening_ladder_falls_as_the_tier_rises() {
+        let strengths = [
+            QualityPreset::Low,
+            QualityPreset::Medium,
+            QualityPreset::High,
+            QualityPreset::Ultra,
+        ]
+        .map(|preset| layer(preset).sharpening.0);
+        for pair in strengths.windows(2) {
+            assert!(
+                pair[0] >= pair[1],
+                "the sharpening ladder is not monotone: {strengths:?}"
+            );
+        }
+        assert!(
+            strengths.iter().all(|s| (0.0..=1.0).contains(s)),
+            "a preset asks for a strength bevy would clamp: {strengths:?}"
+        );
+        assert!(strengths[0] > strengths[3], "every tier shares one value");
     }
 }

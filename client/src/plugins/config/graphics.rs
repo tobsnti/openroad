@@ -7,6 +7,7 @@
 //! 1.0. Enabling bloom flips the main pass to a float target, which is what
 //! actually lets those emitters read as "glowing" instead of "white".
 
+use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::post_process::bloom::Bloom;
 use bevy::reflect::Reflect;
 use serde::Deserialize;
@@ -73,6 +74,9 @@ pub struct GraphicsSettings {
     /// FXAA post pass on the window cameras — see [`FxaaSetting`].
     #[serde(default)]
     pub fxaa: FxaaSetting,
+    /// Contrast-adaptive sharpening behind FXAA — see [`Sharpening`].
+    #[serde(default)]
+    pub sharpening: Sharpening,
     /// Mip levels dropped from world textures — see [`TextureDetail`].
     #[serde(default)]
     pub texture_detail: TextureDetail,
@@ -466,6 +470,61 @@ impl Anisotropy {
                 );
                 4
             }
+        }
+    }
+}
+
+/// Strength of the contrast-adaptive sharpening pass on the window cameras
+/// (`graphics.sharpening`), 0.0 (off) to 1.0.
+///
+/// The pass exists because the two cheapest quality levers this client has
+/// both pay in sharpness: [`FxaaSetting`] smooths edges by blurring them, and
+/// [`RenderScale`] below 1.0 renders fewer pixels than the window shows. CAS
+/// raises local contrast where there is detail and leaves flat areas alone,
+/// which is what the pairing was built for — see
+/// `camera::apply_window_camera_msaa` for the wiring and the one limit.
+///
+/// The original client has no post-processing, so any value above 0.0 is a
+/// deliberate deviation (ADR 0009) whose purpose is readability. 0.6 is bevy's
+/// own default (`contrast_adaptive_sharpening/mod.rs:60`) and is kept as ours;
+/// the preset ladder moves it the one way the measurement justifies: hardest
+/// where the image is upscaled (`low: 0.8`, `render_scale: 0.75`), softest
+/// where it is rendered at native resolution with every other quality lever on
+/// (`ultra: 0.5`). Read when a camera is spawned, so a change takes effect on
+/// the next scene.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(transparent)]
+pub struct Sharpening(pub f32);
+
+impl Default for Sharpening {
+    fn default() -> Self {
+        Self(0.6)
+    }
+}
+
+impl Sharpening {
+    /// The component to hang on a main-view camera.
+    ///
+    /// Out-of-range and non-finite values clamp into 0.0..=1.0 rather than
+    /// reaching the shader: above 1.0 bevy's own note is "extreme artifacts
+    /// and fireflies" (`contrast_adaptive_sharpening/mod.rs:94`), and it
+    /// clamps there too — doing it here as well is what lets the component say
+    /// what is actually in effect. At 0.0 bevy drops the pass entirely in
+    /// extract (`:87-90`), so "off" costs nothing.
+    pub fn to_cas(self) -> ContrastAdaptiveSharpening {
+        let strength = if self.0.is_finite() {
+            self.0.clamp(0.0, 1.0)
+        } else {
+            bevy::log::warn_once!(
+                "graphics.sharpening: {} is not a usable strength; using 0",
+                self.0
+            );
+            0.0
+        };
+        ContrastAdaptiveSharpening {
+            enabled: strength > 0.0,
+            sharpening_strength: strength,
+            ..Default::default()
         }
     }
 }
@@ -1236,5 +1295,55 @@ mod gpu_option_tests {
             serde_yaml::from_str("bindless_materials: true\nsky_reflections: true").unwrap();
         assert!(set.bindless_materials);
         assert!(set.sky_reflections);
+    }
+}
+
+#[cfg(test)]
+mod sharpening_tests {
+    use super::*;
+
+    /// The serde default and the derived `GraphicsSettings::default()` have to
+    /// agree, or a `config.yaml` without the key renders differently from one
+    /// with the documented value written out.
+    #[test]
+    fn an_absent_key_is_bevys_own_default_strength() {
+        let empty: GraphicsSettings = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(empty.sharpening, Sharpening(0.6));
+        assert_eq!(GraphicsSettings::default().sharpening, Sharpening(0.6));
+        let set: GraphicsSettings = serde_yaml::from_str("sharpening: 0.8").unwrap();
+        assert_eq!(set.sharpening, Sharpening(0.8));
+    }
+
+    /// 0.0 is the documented "off", and it has to reach the component as a
+    /// *disabled* pass: bevy skips extracting it then, so off costs nothing.
+    #[test]
+    fn zero_is_off_and_every_other_strength_is_enabled() {
+        let off = Sharpening(0.0).to_cas();
+        assert!(!off.enabled);
+        assert_eq!(off.sharpening_strength, 0.0);
+
+        let on = Sharpening(0.8).to_cas();
+        assert!(on.enabled);
+        assert_eq!(on.sharpening_strength, 0.8);
+    }
+
+    /// A hand-edited file must not reach the shader with a strength bevy calls
+    /// "extreme artifacts and fireflies", and a non-finite value must not
+    /// reach it at all.
+    #[test]
+    fn an_out_of_range_strength_clamps_instead_of_reaching_the_shader() {
+        assert_eq!(Sharpening(5.0).to_cas().sharpening_strength, 1.0);
+        assert_eq!(Sharpening(-1.0).to_cas().sharpening_strength, 0.0);
+        assert!(!Sharpening(-1.0).to_cas().enabled);
+        assert_eq!(Sharpening(f32::NAN).to_cas().sharpening_strength, 0.0);
+        assert!(!Sharpening(f32::INFINITY).to_cas().enabled);
+    }
+
+    /// The denoise flag stays off: bevy's own guidance is "you probably
+    /// shouldn't use this" (`contrast_adaptive_sharpening/mod.rs:50`), and
+    /// nothing in this client adds film grain for it to protect.
+    #[test]
+    fn denoising_stays_off() {
+        assert!(!Sharpening(0.6).to_cas().denoise);
     }
 }
