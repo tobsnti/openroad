@@ -24,6 +24,7 @@ impl Plugin for WorldMapPlugin {
                     model::toggle_world_map
                         .run_if(not(crate::plugins::settings::keymap::text_field_focused)),
                     model::sync_party_markers,
+                    model::sync_quest_markers,
                     model::publish_static_location_markers,
                     ui::sync_world_map_window,
                     ui::update_marker_labels,

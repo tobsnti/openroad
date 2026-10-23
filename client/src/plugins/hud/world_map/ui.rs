@@ -289,6 +289,9 @@ pub fn sync_world_map_window(
                                     let px = map.project(marker.gx / 10.0, marker.gz / 10.0) * s;
                                     let (sign, sign_rect) = match marker.kind {
                                         MarkerKind::Party => ("wmap_sign_party", None),
+                                        // 16x16 single frame in the user's
+                                        // PK2, unlike the location strip.
+                                        MarkerKind::Quest => ("wmap_sign_questnpc", None),
                                         MarkerKind::UnionParty => ("wmap_sign_unionparty", None),
                                         MarkerKind::Academy => ("wmap_sign_apprenticeship", None),
                                         MarkerKind::Generic => {

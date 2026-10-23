@@ -9,8 +9,9 @@
 //! buttons switch it while browsing. The extensible [`MapMarkers`] layer
 //! carries the member signs (`wmap_sign_party*.ddj`,
 //! `wmap_sign_apprenticeship.ddj`); [`sync_party_markers`] fills its party
-//! entries from the net-side [`PartyRoster`], and union/academy rosters have
-//! no client state yet.
+//! entries from the net-side [`PartyRoster`] and [`sync_quest_markers`] its
+//! quest pins from the net-side [`QuestMarks`], while union/academy rosters
+//! have no client state yet.
 
 use bevy::prelude::*;
 
@@ -18,8 +19,9 @@ use crate::assets::textdata::teleport::{TeleportInfo, TeleportTable};
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::hud::minimap::MinimapDungeonContext;
 use crate::plugins::map::terrain::REGION_SIZE;
-use crate::plugins::net::entities::DisplayName;
+use crate::plugins::net::entities::{DisplayName, NetworkEntities};
 use crate::plugins::net::party::PartyRoster;
+use crate::plugins::net::quest::{QuestMarkTarget, QuestMarks};
 use crate::plugins::player::Player;
 use crate::plugins::settings::keymap::KEY_WORLD_MAP;
 use crate::plugins::settings::options::GameOptions;
@@ -55,10 +57,12 @@ impl Default for WorldMapState {
 /// What kind of sign a map marker renders as (art exists for all of these).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkerKind {
-    /// The catch-all pin (`wmap_sign_location`). No producer yet — quest
-    /// targets and script-placed pins are the intended callers.
-    #[allow(dead_code)]
+    /// The catch-all pin (`wmap_sign_location`), filled from the teleporter
+    /// table by [`static_location_markers`].
     Generic,
+    /// A server-placed quest mark (`0x30D6`), fed from
+    /// [`QuestMarks`] by [`sync_quest_markers`].
+    Quest,
     /// Fed from [`PartyRoster`] by [`sync_party_markers`].
     Party,
     /// Union (an alliance of parties) — no union packet is parsed at all, so
@@ -161,6 +165,79 @@ pub fn sync_party_markers(
     let own_name = player.single().ok().map(|name| name.0.as_str());
     markers.0.retain(|marker| marker.kind != MarkerKind::Party);
     markers.0.extend(party_markers(&roster, own_name));
+}
+
+/// Server-placed quest marks as world-map markers.
+///
+/// Idea: the wire gives the mark's *target spawn record*, not a quest (see
+/// [`QuestMarks`]), so the position is exact and the label is whatever the
+/// client already knows about that entity — its [`DisplayName`], joined
+/// through the unique-id index. A target the player has never been near has no
+/// spawned entity and so no label; the pin still draws, because the position
+/// is what a map is for and the label is only a hover tooltip. There is no
+/// second source to try: the body carries no quest id, so no quest name exists
+/// to fall back on.
+///
+/// Dungeon marks are skipped for the same reason a party member in a dungeon
+/// is: their coordinates live in the dungeon's own frame (`region & 0x8000`),
+/// which no overworld map can place.
+///
+/// Sorted by mark handle — the handle is monotonic, so this is placement
+/// order, and `QuestMarks` is a map whose iteration order is not stable.
+pub fn quest_markers(
+    marks: &QuestMarks,
+    name_of: impl Fn(u32) -> Option<String>,
+) -> Vec<MapMarker> {
+    let mut handles: Vec<(&u32, &QuestMarkTarget)> = marks.0.iter().collect();
+    handles.sort_by_key(|(handle, _)| **handle);
+    handles
+        .into_iter()
+        .filter(|(_, target)| !target.region.is_dungeon())
+        .map(|(_, target)| {
+            let sro = server_position_to_sro(
+                target.region,
+                target.x as f32,
+                // Truncated toward zero by the server, so a target below zero
+                // arrives wrapped; the map discards height anyway.
+                target.y as i32 as f32,
+                target.z as f32,
+            );
+            MapMarker {
+                kind: MarkerKind::Quest,
+                name: name_of(target.target_unique_id).unwrap_or_default(),
+                gx: -sro.x,
+                gz: sro.z,
+            }
+        })
+        .collect()
+}
+
+/// Rebuild the quest entries whenever the server's mark set changes.
+///
+/// The marks and the unique-id index live in the networking plugin, which a
+/// HUD-only test app need not have — hence the optional lookups, the same way
+/// [`sync_party_markers`] takes its roster.
+pub fn sync_quest_markers(
+    marks: Option<Res<QuestMarks>>,
+    index: Option<Res<NetworkEntities>>,
+    named: Query<&DisplayName>,
+    mut markers: ResMut<MapMarkers>,
+) {
+    let Some(marks) = marks else {
+        return;
+    };
+    if !marks.is_changed() {
+        return;
+    }
+    let name_of = |unique_id: u32| {
+        index
+            .as_ref()
+            .and_then(|index| index.get(unique_id))
+            .and_then(|entity| named.get(entity).ok())
+            .map(|name| name.0.clone())
+    };
+    markers.0.retain(|marker| marker.kind != MarkerKind::Quest);
+    markers.0.extend(quest_markers(&marks, name_of));
 }
 
 /// Whether the map keeps itself centered on the moving player. Deliberately
@@ -323,8 +400,11 @@ pub fn open_for_player_region(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::plugins::net::entities::NetworkId;
     use crate::plugins::net::party::tests::{core, party_data};
+    use crate::plugins::net::quest::{on_quest_mark_add, on_quest_mark_remove};
     use bevy::math::Vec3;
+    use packets::agent::quest::{QuestMarkAdd, QuestMarkRemove, QUEST_MARK_NEW};
     use std::collections::HashMap;
 
     /// Drives a synthetic 0x3065 through the roster and asserts what the map
@@ -418,6 +498,112 @@ mod test {
         let markers = &app.world().resource::<MapMarkers>().0;
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].kind, MarkerKind::Generic);
+    }
+
+    /// The captured `0x30D6` of 2026-08-10T18:19:22.552Z: region 25000, the
+    /// target's position truncated to (1584, 0, 1407), target unique id 243.
+    /// The fold must put it at the same global point a party member at those
+    /// region-local coordinates gets, and label it with what the client knows
+    /// about entity 243 — nothing, when it has never been spawned.
+    #[test]
+    fn quest_marks_become_quest_markers() {
+        let mut marks = QuestMarks::default();
+        marks.0.insert(
+            0x52e647e8,
+            QuestMarkTarget {
+                region: 25000,
+                x: 1584,
+                y: 0,
+                z: 1407,
+                target_unique_id: 243,
+            },
+        );
+        // and one inside a dungeon (bit 15), whose coordinates no overworld
+        // map can place
+        marks.0.insert(
+            0x52e647e9,
+            QuestMarkTarget {
+                region: 0x8001,
+                x: 10,
+                y: 0,
+                z: 20,
+                target_unique_id: 7,
+            },
+        );
+
+        let markers = quest_markers(&marks, |unique_id| {
+            (unique_id == 243).then(|| "Smith".to_string())
+        });
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].kind, MarkerKind::Quest);
+        assert_eq!(markers[0].name, "Smith");
+        assert!((markers[0].gx - (168.0 * REGION_SIZE + 1584.0)).abs() < 1e-3);
+        assert!((markers[0].gz - (97.0 * REGION_SIZE + 1407.0)).abs() < 1e-3);
+
+        // an unknown target still draws; the label is only a hover tooltip
+        let unlabelled = quest_markers(&marks, |_| None);
+        assert_eq!(unlabelled.len(), 1);
+        assert_eq!(unlabelled[0].name, "");
+    }
+
+    /// The whole path the client was missing, driven by the two packets and
+    /// nothing else: `0x30D6` puts a pin on the map layer, `0x30D7` takes it
+    /// off again, and neither touches a marker of another kind.
+    #[test]
+    fn a_quest_mark_packet_adds_a_map_marker_and_its_removal_takes_it_away() {
+        let mut app = App::new();
+        app.add_message::<QuestMarkAdd>()
+            .add_message::<QuestMarkRemove>()
+            .init_resource::<QuestMarks>()
+            .init_resource::<MapMarkers>()
+            .init_resource::<NetworkEntities>()
+            .add_systems(
+                Update,
+                (on_quest_mark_add, on_quest_mark_remove, sync_quest_markers).chain(),
+            );
+        app.world_mut()
+            .resource_mut::<MapMarkers>()
+            .0
+            .push(MapMarker {
+                kind: MarkerKind::Party,
+                name: "Alice".into(),
+                gx: 0.0,
+                gz: 0.0,
+            });
+        // the target of mark 0x52e647e8 is spawned, so the pin gets its name
+        app.world_mut()
+            .spawn((NetworkId(243), DisplayName("Smith".to_string())));
+
+        app.world_mut().write_message(QuestMarkAdd {
+            mark_id: 0x52e647e8,
+            unknown0: 0x82,
+            mark: QUEST_MARK_NEW,
+            region: 25000,
+            x: 1584,
+            y: 0,
+            z: 1407,
+            target_unique_id: 243,
+        });
+        app.update();
+
+        let markers = &app.world().resource::<MapMarkers>().0;
+        assert_eq!(markers.len(), 2, "the party marker survives");
+        let quest: Vec<&MapMarker> = markers
+            .iter()
+            .filter(|m| m.kind == MarkerKind::Quest)
+            .collect();
+        assert_eq!(quest.len(), 1);
+        assert_eq!(quest[0].name, "Smith");
+        assert!((quest[0].gx - (168.0 * REGION_SIZE + 1584.0)).abs() < 1e-3);
+
+        app.world_mut().write_message(QuestMarkRemove {
+            mark_id: 0x52e647e8,
+        });
+        app.update();
+
+        let markers = &app.world().resource::<MapMarkers>().0;
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].kind, MarkerKind::Party);
     }
 
     fn info(name_key: &str, region: u16, position: Vec3) -> TeleportInfo {
