@@ -83,6 +83,23 @@ the windows *not* authored at `(0,0)` (#447).
 **`ContentId` on a Type-16 `CNIFTabButton` is the target pane's `Id`** — two
 tabs sharing a `ContentId` are two verbs over one pane layout (#476).
 
+**No font field.** No column in the record can be a text size, so a 4th-gen
+window's font size is *not* in its descriptor — unlike the classic trees, where
+`FontIndex` names a slot of the ladder (see `resinfo.md`). Measured over all
+2,312 entries:
+
+* Thirteen of the fifteen unidentified `u32`s are **zero in every row**
+  (`Unk09` carries 23 in a single one).
+* `Unk04` is nonzero only on tab buttons — 22 of the 29 Type-16 entries, and
+  **zero on all 2,283 non-tab entries**, including every static and text box
+  that actually draws text. Within a file its value is shared by all buttons of
+  one strip (`optionwnd.2dt` has three strips: 10, 11, 30), so it reads as a
+  tab-group discriminator rather than the command id the table above guesses.
+* `Style` carries only the alignment bits.
+
+So a module drawing a 4th-gen window picks its own text size and has to say so
+(`hud/alchemy/enchant.rs`, `hud/collection.rs`, `hud/free_pvp.rs`).
+
 **Generation boundary.** The classic `resinfo/*.txt` grammar (see `resinfo.md`)
 and these descriptors are disjoint *sets of windows*, not two encodings of one
 set — a byte-level scan of all 247 resinfo files for `arena` returns 0 files
