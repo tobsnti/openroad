@@ -429,7 +429,7 @@ family has is listed unwired, with its handler VA and its reason, in
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
-| `0x30D6` | QuestMarkAdd | S→C | wired | 24 bytes; `mark_id` is a server pool handle, the four trailing `u32`s are [U] |
+| `0x30D6` | QuestMarkAdd | S→C | wired | 24 bytes; `mark_id` is a server pool handle, and the four trailing `u32`s are the target's spawn record — `x`/`y`/`z` truncated plus its `unique_id`, joined against `0x3019` over 294 captured bodies (2026-10-23). A **quest id** is not in the body at all |
 | `0x30D7` | QuestMarkRemove | S→C | wired | whole body is a `mark_id` an earlier `0x30D6` introduced — the capture proves the pairing |
 
 ## Player stall / private shop (wire only — no consumer yet, see EP-16 / Trading #36)

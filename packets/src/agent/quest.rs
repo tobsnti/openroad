@@ -11,14 +11,17 @@
 //! wired, is `docs/net-quest.md`.
 //!
 //! **Capture-verified, not spec-derived** — the opposite of most of this crate.
-//! `packet_dump/0x30d6.log` (18 samples, 2026-08-10 … 2026-08-16) and
-//! `packet_dump/0x30d7.log` (4 samples) are real v1.188 server traffic, and the
-//! tests below decode literal lines from them.
+//! The 12 `packet_dump/` trees on this machine hold 294 distinct `0x30D6`
+//! bodies and 47 `0x30D7` bodies (2026-08-10 … 2026-09-01) of real v1.188
+//! server traffic, and the tests below decode literal lines from them. That
+//! corpus is also what resolved the add's trailing four `u32`s — see
+//! [`QuestMarkAdd`] — by joining them against the `0x3019` spawn records of
+//! the same sessions.
 //!
 //! The pairing is proven by the captures themselves, not assumed: every
 //! `0x30D7` body in the dump is byte-for-byte the leading `u32` of an *earlier*
 //! `0x30D6` (`f05ee652` @ 09:50:38 removes the mark added at 09:50:13, and so
-//! on for all four). That is what identifies the leading field as a **mark
+//! on for all 47). That is what identifies the leading field as a **mark
 //! handle** and `0x30D7` as "drop that mark".
 
 use bevy::prelude::Message;
@@ -31,7 +34,7 @@ use sro_macro_derive::*;
 
 /// `QuestMark` — the icon the minimap/world draws for a mark. Values from
 /// SilkroadDoc-wiki's `QuestMark` enum page, and corroborated by the capture:
-/// the dump carries 1, 3 and 4 and nothing else.
+/// the dump carries all four and nothing else.
 pub const QUEST_MARK_NEW: u8 = 1;
 pub const QUEST_MARK_OPEN: u8 = 2;
 pub const QUEST_MARK_COMPLETE: u8 = 3;
@@ -39,36 +42,72 @@ pub const QUEST_MARK_HARD: u8 = 4;
 
 /// 0x30D6 — add a quest mark.
 ///
-/// Field confidence, from the 18 captured samples:
+/// The trailing four `u32`s were `unknown1`..`unknown4` until 2026-10-23. They
+/// are the **target's spawn record**, and the capture proves it without a
+/// decompile: all 294 dumped `0x30D6` bodies carry one of only 8 distinct
+/// `(region, a, b, c, d)` combinations, and every one of those 8 is a
+/// `0x3019` group-spawn record in the same dump — `ref_obj_id`, `unique_id`,
+/// then `region` + three `f32` region-local coordinates, the layout
+/// `character_data.rs` already models. `(a, b, c)` is that record's position
+/// truncated to whole units and `d` is its `unique_id`.
 ///
-/// * `mark_id` **[V]** — the handle `0x30D7` later removes. Monotonic with a
-///   stride of 44 across every sample, i.e. a server-side pool index, not a
-///   quest id: the same quest's mark gets a new value each time it is
-///   re-added.
-/// * `unknown0` **[U]** — `0x82` in all 18 samples. Constant, so the capture
+/// The cleanest of the 8, both lines at the same millisecond:
+///
+/// ```text
+/// 0x3019 2026-08-10T18:19:22.552Z  d5070000 f3000000 a861 8f02c644 00000000 48e9af44
+///                                  ref 2005 uid  243  25000  1584.08      0.0  1407.29
+/// 0x30d6 2026-08-10T18:19:22.552Z  e847e652 82 01    a861 30060000 00000000 7f050000 f3000000
+///                                  mark_id      New  25000     1584        0     1407      243
+/// ```
+///
+/// Field confidence, from 294 distinct samples (12 `packet_dump/` trees,
+/// 2026-08-10 … 2026-09-01):
+///
+/// * `mark_id` **[V]** — the handle `0x30D7` later removes; 47 of 47 captured
+///   removes name an earlier add of the same session. Monotonic with a stride
+///   of 44 (278 of 293 gaps are exactly 44, the rest multiples of it), i.e. a
+///   server-side pool index, not a quest id: the same target's mark gets a new
+///   value each time it is re-added (114 distinct handles for one target).
+/// * `unknown0` **[U]** — `0x82` in all 294 samples. Constant, so the capture
 ///   cannot say what it means; it may equally be the high byte of a `u16`
 ///   with `mark`.
-/// * `mark` **[S]** — 1 / 3 / 4 in the capture, exactly the wiki's
-///   `QuestMark::New` / `Complete` / `Hard`. `Open` (2) never appeared.
-/// * `region` **[S]** — 25000 and 25255 in the capture, both valid region ids
-///   for where the character was standing (`docs/formats/` region encoding).
-/// * `unknown1`..`unknown4` **[U]** — four `u32`s, the second of which is `0`
-///   in every sample. They look like a position triple plus one value (e.g.
-///   `(1584, 0, 1407, 243)` recurring for one mark, `(332, 0, 1406, 55)` for
-///   another), but "looks like" is not a layout: naming them would be the
-///   unsourced-field defect (AGENTS.md, ADR-0009). **Resolve:** decompile the
-///   handler at `008811e0`, or capture a mark at a known world position.
+/// * `mark` **[S]** — 1 / 2 / 3 / 4 in the capture, exactly the wiki's
+///   `QuestMark` enum. (`Open` did appear after all — 88 samples from
+///   2026-08-19 on, which the 18-sample reading had called "never".)
+/// * `region` **[V]** — the *target's* region, not the player's: it is the
+///   region of the matching spawn record. 25000 and 25255 in the capture
+///   (`docs/formats/` region encoding: sectors 168/97 and 167/98, neighbours).
+/// * `x`, `y`, `z` **[V]** — the target's region-local position, truncated
+///   **toward zero** rather than floored: the NPC behind `unique_id` 343 sits
+///   at y = -0.407 and the wire carries 0, the one behind 311 at y = 9.066 and
+///   the wire carries 9. So a target below sea level arrives wrapped as a
+///   large `u32` — read `y` back through `as i32`. No sample has a negative
+///   height, so that half stays **[U]**.
+/// * `target_unique_id` **[V]** — the target entity's server unique id, the
+///   same key `NetworkEntities` indexes spawns by. All 8 captured targets are
+///   NPCs (`characterdata_5000.txt` ref ids 2003/2005/2008/2009/2010/2019/
+///   2021/2037 = `NPC_CH_SMITH`, `_POTION`, `_ACCESSORY`, `_HORSE`,
+///   `_SPECIAL`, `_GENARAL`, `_GENARAL_SP`, `_SOLDIER_SO1`), which is what a
+///   quest mark points at.
+///
+/// Not resolved, and not guessable from traffic this uniform: a **quest id**
+/// is nowhere in the body, so a mark cannot be labelled with a quest name.
+/// The ids this field carries (55, 186, 215, 243, 311, 343, 345, 346) looked
+/// like `questdata.txt` ids and are not — three of the eight have no row in
+/// that table at all, while all eight are spawn `unique_id`s exactly.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct QuestMarkAdd {
     pub mark_id: u32,
     pub unknown0: u8,
     /// See the `QUEST_MARK_*` constants.
     pub mark: u8,
+    /// The target's region — see the type's docs; dungeon ids carry bit 15.
     pub region: u16,
-    pub unknown1: u32,
-    pub unknown2: u32,
-    pub unknown3: u32,
-    pub unknown4: u32,
+    pub x: u32,
+    /// Height, truncated toward zero; reinterpret as `i32` before use.
+    pub y: u32,
+    pub z: u32,
+    pub target_unique_id: u32,
 }
 
 /// 0x30D7 — remove the quest mark with this handle. Whole body, 4 bytes
@@ -92,25 +131,20 @@ mod tests {
             0x82, // unknown0
             0x01, // mark = New
             0xa8, 0x61, // region 25000
-            0x4c, 0x01, 0x00, 0x00, // 332
-            0x00, 0x00, 0x00, 0x00, // 0 in every sample
-            0x7e, 0x05, 0x00, 0x00, // 1406
-            0x37, 0x00, 0x00, 0x00, // 55
+            0x4c, 0x01, 0x00, 0x00, // x 332
+            0x00, 0x00, 0x00, 0x00, // y 0
+            0x7e, 0x05, 0x00, 0x00, // z 1406
+            0x37, 0x00, 0x00, 0x00, // target unique id 55
         ]);
         let decoded = QuestMarkAdd::try_from(wire.clone()).unwrap();
         assert_eq!(decoded.mark_id, 0x52e65e6c);
         assert_eq!(decoded.unknown0, 0x82);
         assert_eq!(decoded.mark, QUEST_MARK_NEW);
         assert_eq!(decoded.region, 25000);
-        assert_eq!(
-            (
-                decoded.unknown1,
-                decoded.unknown2,
-                decoded.unknown3,
-                decoded.unknown4
-            ),
-            (332, 0, 1406, 55)
-        );
+        // `packet_dump/0x3019.log` 2026-09-01T14:50:11.763Z spawns unique id
+        // 55 (ref 2003, NPC_CH_SMITH) at region 25000, (332.73, 0.0, 1406.70).
+        assert_eq!((decoded.x, decoded.y, decoded.z), (332, 0, 1406));
+        assert_eq!(decoded.target_unique_id, 55);
         let back: Bytes = decoded.into();
         assert_eq!(back, wire, "24 bytes, nothing left over");
     }
@@ -136,11 +170,17 @@ mod tests {
 
     /// The mark byte is the wiki's enum, and the capture only ever carries
     /// values from it — the one cross-check available between the two sources.
+    /// All four now have samples (`Open` since 2026-08-19).
     #[test]
     fn the_captured_mark_values_are_all_wiki_enum_values() {
-        for mark in [QUEST_MARK_NEW, QUEST_MARK_COMPLETE, QUEST_MARK_HARD] {
-            assert!(matches!(mark, 1 | 3 | 4));
-        }
-        assert_eq!(QUEST_MARK_OPEN, 2, "declared but never seen in the capture");
+        assert_eq!(
+            [
+                QUEST_MARK_NEW,
+                QUEST_MARK_OPEN,
+                QUEST_MARK_COMPLETE,
+                QUEST_MARK_HARD
+            ],
+            [1, 2, 3, 4]
+        );
     }
 }
