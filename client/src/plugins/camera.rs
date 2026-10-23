@@ -433,6 +433,10 @@ pub fn spawn_player_camera(
                 ..default()
             },
             BackgroundColor(Color::srgba(0.02, 0.025, 0.03, 0.72)),
+            // Every number in this panel is **ours**: it is a free-camera
+            // readout on the `CameraLayers::Debug` layer, not a control the
+            // original has, so there is no resinfo block and no `FontIndex` to
+            // resolve. 18 px is sized to be read off a screenshot.
             Name::from("Camera Position Panel"),
         ))
         .with_children(|children| {

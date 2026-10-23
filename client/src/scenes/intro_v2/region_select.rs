@@ -20,6 +20,7 @@ use bevy::prelude::*;
 use bevy::ui::Overflow;
 use bevy::ui_widgets::{Activate, Button};
 
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 use crate::plugins::textdata::{ClientCharacterData, ClientUiStrings};
 use crate::plugins::ui_v2::style::ButtonSound;
@@ -73,6 +74,17 @@ const DESIGN: (f32, f32) = (1600.0, 1200.0);
 const PLATE_SIZE: (f32, f32) = (440.0, 152.0);
 /// `GDR_STATIC1` in sections `China`/`Europe`, plate-local; only x differs.
 const PLATE_LABEL_RECT: (f32, f32, f32, f32) = (0.0, 9.0, 92.0, 15.0);
+/// Both plate texts name their own size, and they do **not** agree with each
+/// other: `GDR_STATIC1` carries `FontIndex=2` = 16 px
+/// (`pscharacterselect.txt:25,67`, indices on `:31,73`) while the body box
+/// `GDR_TEXT_CHINA`/`GDR_TEXT_EUROPE` carries `FontIndex=0` = 12 px (`:6,48`
+/// -> `:12,54`). The 12 px and 10 px this file drew were both a step under
+/// what the tree states ([`font_index_px`]).
+///
+/// The label's own rect is 15 tall for that 16 px line — the same one-pixel
+/// tightness the minimap and the stall board have; nothing clips it.
+const PLATE_LABEL_FONT_INDEX: usize = 2;
+const PLATE_BODY_FONT_INDEX: usize = 0;
 const PLATE_LABEL_X_CHINA: f32 = 318.0;
 const PLATE_LABEL_X_EUROPE: f32 = 250.0;
 /// `GDR_TEXT_CHINA`/`GDR_TEXT_EUROPE` `CIFTextBox`, plate-local.
@@ -270,7 +282,7 @@ fn spawn_plate(
             Text::new(ui_strings.get_or(label_key, label_fallback).to_string()),
             TextFont {
                 font: fonts.nine.clone().into(),
-                font_size: FontSize::Px(12.0),
+                font_size: FontSize::Px(font_index_px(PLATE_LABEL_FONT_INDEX)),
                 ..default()
             },
             TextColor(if available {
@@ -301,7 +313,7 @@ fn spawn_plate(
             Text::new(body_text),
             TextFont {
                 font: fonts.nine.clone().into(),
-                font_size: FontSize::Px(10.0),
+                font_size: FontSize::Px(font_index_px(PLATE_BODY_FONT_INDEX)),
                 ..default()
             },
             TextColor(Color::srgba(0.9, 0.9, 0.9, 0.9)),
@@ -526,5 +538,23 @@ mod tests {
     #[test]
     fn a_blocked_plate_names_the_file_that_would_unblock_it() {
         assert!(PLATE_DISABLED_REASON.contains("characterdata"));
+    }
+
+    /// The plate's two texts come from two blocks that name **different**
+    /// slots: the short caption is `FontIndex=2` (16 px) and the long body
+    /// `FontIndex=0` (12 px), so the caption is the *bigger* text. That is the
+    /// opposite of what "label vs. body" suggests, which is exactly why the
+    /// size is read from the tree instead of styled — and the label's own box
+    /// is a pixel shorter than the line it holds, which the tree also states.
+    #[test]
+    fn the_plate_caption_is_the_bigger_of_the_two_data_sizes() {
+        assert_eq!(font_index_px(PLATE_LABEL_FONT_INDEX), 16.0);
+        assert_eq!(font_index_px(PLATE_BODY_FONT_INDEX), 12.0);
+        assert!(
+            font_index_px(PLATE_LABEL_FONT_INDEX) > font_index_px(PLATE_BODY_FONT_INDEX),
+            "FontIndex 2 is a larger size than FontIndex 0"
+        );
+        assert_eq!(PLATE_LABEL_RECT.3, 15.0);
+        assert!(PLATE_LABEL_RECT.3 < font_index_px(PLATE_LABEL_FONT_INDEX));
     }
 }

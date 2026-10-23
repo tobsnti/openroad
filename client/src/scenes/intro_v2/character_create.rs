@@ -40,6 +40,7 @@ use super::error_text::lobby_failure_line;
 use super::login_form::main_button_style;
 use super::scene_data::ActiveCharSelectSceneV2;
 use super::{IntroV2State, IntroV2Ui};
+use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::FontAssets;
 
 /// Marker resource set by the char-select Create button so the char-list exit
@@ -293,6 +294,11 @@ const EXPLAIN_EU_ART: (f32, f32) = (220.0, 236.0);
 /// `GDR_TEXT_EXPLAIN` (`:584-602`).
 const EXPLAIN_NAME_RECT: (f32, f32, f32, f32) = (15.0, 18.0, 183.0, 14.0);
 const EXPLAIN_BODY_RECT: (f32, f32, f32, f32) = (15.0, 42.0, 183.0, 122.0);
+/// Both blocks carry `FontIndex=0` = 12 px ([`font_index_px`]) — indices on
+/// `:609` (the title) and `:590` (the body), identical in the china and the
+/// europe tree. The title already drew 12; the body drew 11, which is slot 1
+/// and belongs to no control on this screen.
+const EXPLAIN_FONT_INDEX: usize = 0;
 /// `GDR_STA_EXPLAINNAME`'s authored `FontColor` — a warm parchment, distinct
 /// from the char-select gold this panel used to borrow.
 const EXPLAIN_NAME_COLOR: Color = Color::srgb(1.0, 239.0 / 255.0, 153.0 / 255.0);
@@ -1159,7 +1165,7 @@ pub fn enter_character_create(
                 Text::new(""),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(12.0),
+                    font_size: FontSize::Px(font_index_px(EXPLAIN_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(EXPLAIN_NAME_COLOR),
@@ -1171,7 +1177,7 @@ pub fn enter_character_create(
                 Text::new(""),
                 TextFont {
                     font: fonts.nine.clone().into(),
-                    font_size: FontSize::Px(11.0),
+                    font_size: FontSize::Px(font_index_px(EXPLAIN_FONT_INDEX)),
                     ..default()
                 },
                 TextColor(Color::WHITE),
