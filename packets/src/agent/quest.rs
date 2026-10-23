@@ -90,11 +90,44 @@ pub const QUEST_MARK_HARD: u8 = 4;
 ///   `_SPECIAL`, `_GENARAL`, `_GENARAL_SP`, `_SOLDIER_SO1`), which is what a
 ///   quest mark points at.
 ///
-/// Not resolved, and not guessable from traffic this uniform: a **quest id**
-/// is nowhere in the body, so a mark cannot be labelled with a quest name.
-/// The ids this field carries (55, 186, 215, 243, 311, 343, 345, 346) looked
-/// like `questdata.txt` ids and are not — three of the eight have no row in
-/// that table at all, while all eight are spawn `unique_id`s exactly.
+/// Not resolved, and **measured** not to be resolvable from what this machine
+/// holds: a quest id is nowhere in the body, so a mark cannot carry a quest
+/// name. Three routes were tried and all three fall short:
+///
+/// * **This field.** Its values (55, 186, 215, 243, 311, 343, 345, 346) looked
+///   like `questdata.txt` ids and are not — three of the eight have no row in
+///   that table at all, while all eight are spawn `unique_id`s exactly.
+/// * **The player's own tables.** No quest table names an NPC.
+///   `questdata.txt` (12 columns) and `questcontentsdata.txt` (17) have no NPC
+///   field, and across all 154 `textdata` files exactly one row carries both a
+///   `QNO_` and an `NPC_` token (`worldmapguidedata.txt`) — and spends its
+///   `NPC_` on a place-name key, `SN_NPC_SD_M_AREA_BERENICE`. That table's
+///   target column only ever names `MOB_*`.
+/// * **The wire's own quest records.** CHARACTER_DATA does carry a
+///   count-prefixed list of NPC **ref** ids at the end of an active-quest
+///   record, behind `quest_type` bit `0x40`, and the capture confirms that
+///   layout byte-for-byte (96 of the 98 `0x3013` bodies holding an `SN_CON_`
+///   key parse strictly, every one with the same nine quest ids). It still
+///   cannot name a mark: only 2 of those 9 quests carry the list, both name
+///   the same ref `2037`, so that ref maps to **two** quests (3
+///   `QNO_CH_SMITH_1` and 399 `QTUTORIAL2_CH_1`). One of the eight captured
+///   mark targets is covered, and ambiguously. `0x30D5`, the journal delta
+///   that would carry the rest, has **no captured frame at all** across 112
+///   dump trees.
+///
+/// **Resolve:** decompile the mark handler at `008811e0` and read whether the
+/// original labels a mark *at all*. The join it would need (`unique_id` → ref
+/// id → quest) exists in no single packet, so "the original shows no name
+/// either" is a live possibility rather than a gap in this client. If it does
+/// label, the capture that shows how is a login whose active-quest block names
+/// exactly one `0x40` NPC that a `0x30D6` of the same session also points at.
+///
+/// What **is** available, and is the better name source than the current
+/// spawned-entity join: the mark's own position is a row of the player's
+/// `npcpos.txt` (`ref_obj_id, region, x, y, z`) — all 8 captured marks match
+/// one exactly on region/x/z, which yields the target's `ref_obj_id` and
+/// through `characterdata_*.txt` its `SN_NPC_*` name without the target having
+/// to be spawned. That is the NPC's name, not the quest's.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct QuestMarkAdd {
     pub mark_id: u32,
