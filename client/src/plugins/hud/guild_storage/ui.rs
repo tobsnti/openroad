@@ -49,7 +49,7 @@ use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::game_window::{self, abs_node};
 use crate::plugins::hud::guild_storage::model::GuildStorageState;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::storage::model::STORAGE_SLOTS_PER_PAGE;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::textdata::{ClientItemData, ClientUiStrings};
@@ -208,13 +208,17 @@ pub fn sync_guild_storage_window(
     // so this returns the pair and every call site spawns both
     // (`hud/chat_bubble.rs`, `hud/minimap.rs` are the landed examples).
     let text_font = |size: f32| {
+        // `text_px` rather than `size * s`: at hud_scale 1.5 an odd ladder entry
+        // becomes a half pixel and the glyphs land off the pixel grid (PR #178,
+        // whose tree guard catches exactly this call shape).
+        let px = text_px(size, s);
         (
             TextFont {
                 font: fonts.two.clone().into(),
-                font_size: FontSize::Px(size * s),
+                font_size: FontSize::Px(px),
                 ..default()
             },
-            LineHeight::Px(size * s),
+            LineHeight::Px(px),
         )
     };
 
