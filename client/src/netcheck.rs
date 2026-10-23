@@ -17,10 +17,15 @@
 //! and first character are chosen automatically.
 //!
 //! With `NETCHECK_ACTIONS=1` the client also *drives* actions after join — it
-//! walks a short square (0x7021 → 0xB021) and selects a nearby entity
-//! (0x7045 → 0xB045) — so those C→S/response pairs are captured live without a
-//! GUI. Item-use (0x704C) is intentionally not driven here (needs itemdata from
-//! Data.pk2; see `docs/planning/ROADMAP_V2.md` Phase 2).
+//! walks a short square (0x7021 → 0xB021), selects a nearby entity
+//! (0x7045 → 0xB045) and attacks that same entity (0x7074 → 0xB074) — so those
+//! C→S/response pairs are captured live without a GUI. The attack step exists
+//! so the chain `select → attack → Started → Ended` can be proved by a run
+//! instead of by a human at a mouse click; it is also what makes
+//! `combat::action_slot`'s busy timeout checkable
+//! (`grep -c 'releasing the slot'` over a run's log). Item-use (0x704C) is
+//! intentionally not driven here (needs itemdata from Data.pk2; see
+//! `docs/planning/ROADMAP_V2.md` Phase 2).
 
 use std::env;
 use std::time::Duration;
@@ -33,10 +38,11 @@ use mac_address::get_mac_address;
 
 use packets::agent::character_data::parse_character_data;
 use packets::agent::prelude::{
-    CelestialPosition, CharacterDataBody, CharacterDataEnd, CharacterJoinRequest,
-    CharacterJoinResponse, CharacterSelectionAction, CharacterSelectionActionRequest,
-    CharacterSelectionActionResponse, GameReady, GroupEntitySpawnBegin, GroupEntitySpawnData,
-    GroupEntitySpawnEnd, MovementRequest, MovementResponse, SelectEntityRequest,
+    ActionCommand, ActionTarget, CelestialPosition, CharacterDataBody, CharacterDataEnd,
+    CharacterJoinRequest, CharacterJoinResponse, CharacterSelectionAction,
+    CharacterSelectionActionRequest, CharacterSelectionActionResponse, GameReady,
+    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, MovementRequest,
+    MovementResponse, ObjectActionRequest, ObjectActionResponse, SelectEntityRequest,
     SelectEntityResponse, SingleEntitySpawn,
 };
 
@@ -110,6 +116,7 @@ pub fn run_headless(config: ClientConfig) {
                 netcheck_capture_local_pos,
                 netcheck_drive_actions,
                 netcheck_select_target,
+                netcheck_attack_target,
                 netcheck_log_action_responses,
                 netcheck_fire_probe,
             ),
@@ -388,8 +395,8 @@ fn netcheck_dump_group_spawns(
 // Action driver (NETCHECK_ACTIONS=1)
 //
 // Idea: once joined, "play" a little so the server's C->S responses are
-// captured live — walk a short square (0x7021 -> 0xB021) and select a nearby
-// entity (0x7045 -> 0xB045). Item-use (0x704C) is deliberately NOT driven
+// captured live — walk a short square (0x7021 -> 0xB021), select a nearby
+// entity (0x7045 -> 0xB045) and attack it (0x7074 -> 0xB074). Item-use (0x704C) is deliberately NOT driven
 // here: resolving a real consumable slot -> packed type_id needs the client's
 // itemdata tables (Data.pk2), which the headless harness does not load, so it
 // belongs to a GUI play session (see docs/planning/ROADMAP_V2.md, Phase 2).
@@ -410,6 +417,10 @@ struct ActionDriver {
     /// until the settle delay after position is known has been scheduled.
     next_move_at: Option<f64>,
     select_sent: bool,
+    /// The uid the select named, kept so the attack step can act on the same
+    /// entity the server just confirmed.
+    selected_uid: Option<u32>,
+    attack_sent: bool,
     /// A CHARACTER_DATA body that arrived before the unique id did, kept so the
     /// scan can be retried once `CelestialPosition` names the id (#728).
     pending_body: Option<Bytes>,
@@ -587,6 +598,53 @@ fn netcheck_select_target(
             uid, entity.position.region
         );
         driver.select_sent = true;
+        driver.selected_uid = Some(uid);
+        break;
+    }
+}
+
+/// Attack the entity the select just confirmed, once.
+///
+/// Waits for the `0xB045` ack rather than firing straight after the request:
+/// the point of this step is the closed chain `0x7045 -> 0xB045 -> 0x7074 ->
+/// 0xB074`, and an attack sent before the server acknowledged the selection
+/// would prove the first half of it by accident.
+///
+/// **Builds the frame directly instead of writing an `AttackOrder`.** That
+/// message is consumed by `combat::send_attack_request`, which the headless
+/// app does not register — it runs `MinimalPlugins + NetworkCorePlugin` and no
+/// combat plugin, so an `AttackOrder` here would be written and never read.
+/// The select step one function up builds its request the same way and for the
+/// same reason.
+fn netcheck_attack_target(
+    mut driver: ResMut<ActionDriver>,
+    mut reader: MessageReader<SelectEntityResponse>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    if !driver.enabled || driver.attack_sent {
+        return;
+    }
+    let Ok(conn) = conn.single() else {
+        return;
+    };
+    for ack in reader.read() {
+        // `result != 1` is a refused selection; attacking what the server did
+        // not give us would be a different test than the one this drives.
+        if ack.result != 1 {
+            continue;
+        }
+        let Some(uid) = driver.selected_uid.filter(|&uid| uid == ack.unique_id) else {
+            continue;
+        };
+        let request = ObjectActionRequest::Execute(ActionCommand::Attack(ActionTarget::Entity {
+            unique_id: uid,
+        }));
+        if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+            error!("netcheck: failed to send attack: {}", e.0);
+            return;
+        }
+        info!("netcheck: sent attack (0x7074 Execute/Attack) on uid={uid}");
+        driver.attack_sent = true;
         break;
     }
 }
@@ -597,6 +655,7 @@ fn netcheck_log_action_responses(
     driver: Res<ActionDriver>,
     mut moves: MessageReader<MovementResponse>,
     mut selects: MessageReader<SelectEntityResponse>,
+    mut actions: MessageReader<ObjectActionResponse>,
 ) {
     if !driver.enabled {
         return;
@@ -616,6 +675,12 @@ fn netcheck_log_action_responses(
             s.unique_id,
             s.tail.len()
         );
+    }
+    // The other half of the chain this driver now closes. `Started` means the
+    // server took the attack; `Ended` is the one a missing implementation used
+    // to withhold, which is what `combat::action_slot`'s timeout guards.
+    for a in actions.read() {
+        info!("netcheck: ObjectActionResponse (0xB074) {a:?}");
     }
 }
 
