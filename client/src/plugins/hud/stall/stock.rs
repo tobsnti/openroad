@@ -469,9 +469,12 @@ pub fn sync_stock_modal(
                 });
         });
     // The amount is the field a player edits most often, and the box is modal
-    // anyway — the same first-field focus the store's quantity modal takes.
+    // anyway — the same first-field focus the store's quantity modal takes,
+    // with the cause it uses: `Navigated` is what every focus set in this tree
+    // passes (`store/ui.rs:1650`, `ui_v2::widgets`, `captcha`), and the enum
+    // has no "programmatic" arm to pick instead.
     if let Some(field) = amount_field {
-        focus.set(field, FocusCause::Programmatic);
+        focus.set(field, FocusCause::Navigated);
     }
 }
 
