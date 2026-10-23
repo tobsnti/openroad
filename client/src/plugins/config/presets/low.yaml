@@ -57,6 +57,8 @@ graphics:
     enabled: false
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: low
+  # soft particles off: effects are the frame's heaviest overdraw
+  effect_soft_fade: 0.0
   lens_flare: false
   dungeon:
     max_lights: 8

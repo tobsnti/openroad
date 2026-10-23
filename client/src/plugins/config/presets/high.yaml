@@ -44,6 +44,8 @@ graphics:
     map_size: 2048
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: high
+  # armed, but dormant until depth_prepass is on (ultra-only today)
+  effect_soft_fade: 10.0
   lens_flare: true
   dungeon:
     max_lights: 16

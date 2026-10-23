@@ -43,6 +43,8 @@ graphics:
     map_size: 1024
   # particle caps (Effect Quality) and the sun's lens flare
   effect_quality: medium
+  # no depth_prepass in this preset, so the fade would be inert anyway
+  effect_soft_fade: 0.0
   lens_flare: false
   dungeon:
     max_lights: 16
