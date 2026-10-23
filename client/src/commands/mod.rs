@@ -1350,6 +1350,61 @@ mod tests {
     use super::*;
     use crate::assets::bsr::bsr::PrimitiveAnimationEvent;
 
+    /// The crossfade `ObjectLodSettings::part_range` asks for only happens if
+    /// the material's fragment entry runs the dither. bevy's own `pbr.wesl`
+    /// does it for [`StandardMaterial`]; the three shaders that *replace* that
+    /// entry on a mesh part — `PreparedMeshGroups::{Rim, Sheen}` and the
+    /// TexAni swap in `plugins::texani` — have to call it themselves, and
+    /// nothing in a unit test can watch a shader run. So the gate is the
+    /// source text, the same way `assets::bmt::rim` gates `alpha_discard`.
+    #[test]
+    fn every_mesh_part_shader_honours_the_lod_crossfade() {
+        // The premise: the range really does ask for a fade band. With
+        // `fade: 0` there would be nothing for a shader to honour.
+        let ctx = PartLodContext {
+            lod: ObjectLodSettings::default(),
+            nature: false,
+            ceiling: ViewRange::default().static_cull,
+        };
+        let (range, _) = mesh_visibility_range((Vec3::ZERO, Vec3::splat(10.0)), &ctx);
+        assert!(
+            range.end_margin.start < range.end_margin.end,
+            "no crossfade band to honour: {:?}",
+            range.end_margin
+        );
+
+        for (name, source) in [
+            (
+                "sro_rim.wesl",
+                include_str!("../../../assets/shaders/sro_rim.wesl"),
+            ),
+            (
+                "sro_sheen.wesl",
+                include_str!("../../../assets/shaders/sro_sheen.wesl"),
+            ),
+            (
+                "sro_uv_scroll.wesl",
+                include_str!("../../../assets/shaders/sro_uv_scroll.wesl"),
+            ),
+        ] {
+            assert!(
+                source.contains("import bevy_pbr::render::pbr_functions::visibility_range_dither;"),
+                "{name} does not import the dither"
+            );
+            assert!(
+                source
+                    .contains("visibility_range_dither(in.position, in.visibility_range_dither);"),
+                "{name} imports the dither but never calls it, so its parts hard-cut"
+            );
+            assert_eq!(
+                source.matches("@if(VISIBILITY_RANGE_DITHER)").count(),
+                2,
+                "{name} has to guard both the import and the call: without the shader def \
+                 the vertex stage writes no dither level and the field does not exist"
+            );
+        }
+    }
+
     /// `graphics.objects.nature_view_distance` caps vegetation only, and only
     /// when set; everything else keeps the fog ceiling.
     #[test]

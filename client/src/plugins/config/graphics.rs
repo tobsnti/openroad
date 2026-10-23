@@ -639,8 +639,10 @@ pub struct ObjectLodSettings {
     /// Floor on that distance: nothing closer than this is ever part-culled,
     /// so small props stay visible in the immediate area regardless of size.
     pub min_distance: f32,
-    /// Width of the dither/crossfade band before the cull distance. Materials
-    /// without the crossfade path hard-cut at the far edge instead.
+    /// Width of the dither/crossfade band before the cull distance. Every
+    /// material a mesh part can carry honours it: bevy's own fragment entry
+    /// for [`StandardMaterial`], and `sro_rim`/`sro_sheen`/`sro_uv_scroll`
+    /// through the same `visibility_range_dither` call.
     pub fade: f32,
     /// View distance (world units) for `res/nature/` resources — trees, grass,
     /// flowers. 0 = unlimited (they reach the fog like everything else). Their
@@ -679,8 +681,9 @@ impl Default for ObjectLodSettings {
 impl ObjectLodSettings {
     /// The cull range of a mesh part whose largest dimension is `extent`.
     /// It is fully visible up to the size-scaled distance, then dithered out
-    /// over `fade`; materials without the crossfade path hard-cut at the far
-    /// edge.
+    /// over `fade` — in every material a part can carry (see [`fade`]).
+    ///
+    /// [`fade`]: ObjectLodSettings::fade
     ///
     /// `ceiling` is the cull distance (`ViewRange::static_cull`), which no part
     /// outlives. For a `nature` part, `nature_view_distance` lowers that
