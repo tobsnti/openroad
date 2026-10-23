@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod character_info;
 pub mod entities;
+pub mod friend;
 pub mod gateway;
 pub mod guild;
 pub mod inventory;
