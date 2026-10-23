@@ -445,18 +445,24 @@ fn on_slot_activate(
         TargetVerb::Pickup => {
             pickups.write(PickupOrder(target));
         }
-        TargetVerb::Trace => actions.write(TargetMenuAction {
-            target,
-            action: TargetAction::Trace,
-        }),
-        TargetVerb::Exchange => actions.write(TargetMenuAction {
-            target,
-            action: TargetAction::Exchange,
-        }),
-        TargetVerb::Party => actions.write(TargetMenuAction {
-            target,
-            action: TargetAction::InviteParty,
-        }),
+        TargetVerb::Trace => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::Trace,
+            });
+        }
+        TargetVerb::Exchange => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::Exchange,
+            });
+        }
+        TargetVerb::Party => {
+            actions.write(TargetMenuAction {
+                target,
+                action: TargetAction::InviteParty,
+            });
+        }
     }
 }
 
