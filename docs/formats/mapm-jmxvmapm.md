@@ -41,8 +41,52 @@ and the field's meaning is UNKNOWN.
 | size | type | field | notes |
 |---|---|---|---|
 | 1 | i8 | `WaterType` | `-1` none, `0` water, `1` ice |
-| 1 | u8 | `WaterWaveType` | |
+| 1 | u8 | `WaterWaveType` | not a wave parameter — see below |
 | 4 | f32 LE | `WaterHeight` | |
+
+#### `WaterWaveType` is a water-coverage class, not a wave strength (census 2026-10-23)
+
+Measured over this corpus (4,644 valid regions, 167,184 blocks) by comparing each
+block's 289 vertex heights against its own `WaterHeight`. "Coverage" below is the
+share of those vertices that lie *below* the water plane.
+
+| value | water blocks | coverage | reading |
+|---|---|---|---|
+| 0 | 5,937 (16.1%) | exactly 0.000 | the plane is below every vertex: no water surface in this block |
+| 1 | 23,988 (64.9%) | exactly 1.000 | every vertex is under it: the block is fully submerged |
+| 2 | 2,963 (8.0%) | 0.003 .. 0.997 | the water line crosses this block |
+| 3 | 4,088 (11.1%) | 0.003 .. 0.997 | the water line crosses this block |
+
+On the 36,976 `WaterType == 0` blocks that is **exceptionless in all three
+directions**: no `0` with a vertex below the plane, no `1` with a vertex above it,
+no `2`/`3` with full or empty coverage. Read as two bits, bit 1 is "the water line
+crosses this block" (set for exactly `2` and `3`).
+
+So the field carries no wave, swell or current information: it restates what the
+vertex grid already says. Hanging a wave strength on it would make water calm or
+rough depending on whether a block is a shore block.
+
+**What separates `2` from `3` is UNKNOWN.** Refuted over the 7,051 partial blocks:
+coverage amount (`2` quartiles 0.121/0.388/0.723, `3` 0.287/0.616/0.886 — a tilt, but
+both span 0.003..0.997), the number of the block's four corners under water (`2`
+spread 261/929/1171/519/83 over 0..4, `3` 68/786/1800/1317/117), the `(0,0)` vertex,
+the centre vertex, and the region (256 regions contain both values). It is also not a
+property of a water *body*: of the 8,021 adjacent partial-block pairs that sit at one
+and the same `WaterHeight`, 729 (9.1%) disagree — so the value is spatially clustered
+but flips inside one continuous surface.
+
+**On ice (`WaterType == 1`, 955 blocks) the byte is only approximately true**: 103
+blocks contradict the reading — 8 of the 111 `0`-blocks have something below the
+plane, 20 of the 641 `1`-blocks have something above it, and 75 of the 203 `2`/`3`
+blocks are fully covered or empty. The vertex grid is therefore the source that
+cannot be wrong, not this byte.
+
+Reproduce: `python3 scripts/re/census_water_wave_type.py --map-dir <your Map>`.
+
+Consequence recorded in `plugins/map/terrain`: a plane that lies below every vertex
+of its own block cannot be seen (the terrain is a triangulated heightfield, and a
+linear interpolant's minimum is at a vertex), so 5,937 water and 109 ice planes were
+submitted for nothing before 2026-10-23.
 
 ### Tiles — 16 × 16, `z` outer
 
@@ -108,7 +152,10 @@ the world-origin corner (`Map/0/{0,1,2}.m`, `Map/1/{0,1}.m`) — valid signature
 bodies that are not 36 blocks.
 
 - `Block.Flag = 1` (Culled) occurs in only **2** of 167,184 blocks.
-- `WaterType` ∈ {−1 ×129,253, 0 ×36,976, 1 (ice) ×955}; `WaterWaveType` ∈ {0,1,2,3}.
+- `WaterType` ∈ {−1 ×129,253, 0 ×36,976, 1 (ice) ×955}; `WaterWaveType` ∈ {0,1,2,3}
+  on every block of every valid file, water or not (the byte is not cleared where
+  there is no water: 3,430 of the 129,253 `WaterType == -1` blocks carry a non-zero
+  value, so a consumer must gate on `WaterType` first). Meaning: see the Water section.
 - Texture ids span **0..718** (comfortably inside the 10-bit field).
 - The bits-10-15 "Scale" code is **always a multiple of 8** (0 ×23.2M, 16 ×19.1M,
   8 ×5.8M, 24 ×218,685, 32 ×770) ⇒ bits 10-12 are always zero and the field is
