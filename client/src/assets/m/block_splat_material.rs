@@ -12,6 +12,8 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
+use serde::Deserialize;
+
 use super::tile_arrays::TerrainTileArrays;
 use crate::assets::ifo::IFOAsset;
 use crate::assets::m::TerrainBlock;
@@ -325,12 +327,19 @@ pub struct TerrainRenderParams {
     /// render-debug panel; `on_settings_changed` carries the current value
     /// through its rebuild instead of resetting it.
     pub lightmap_enabled: bool,
-    /// Extra sun-shadow darkening on the lit ground. Always 0 now — it stood
-    /// in for a vanilla-mode player shadow that vanilla no longer casts at
-    /// all (vanilla fully disables the Sun's shadow maps). Kept as a no-op
-    /// GPU-layout slot rather than reworking `terrain_splat.wesl`'s uniform
-    /// layout for its removal.
-    pub shadow_strength: f32,
+    /// Slope-aware albedo sampling on steep ground
+    /// (`terrain_splat.wesl`, `slope_projection`). Follows
+    /// `graphics.terrain.slope_sampling`; `Off` is the single top-down sample
+    /// the ground has always used, so it is also the default here — the
+    /// buffer is written once at startup before any config exists
+    /// (`init_terrain_params_buffer`).
+    ///
+    /// This occupies the GPU slot that used to hold an extra sun-shadow
+    /// darkening. That value had been dead (always 0) since vanilla stopped
+    /// casting the Sun's shadow maps, and its own doc said the slot was kept
+    /// "rather than reworking the uniform layout for its removal" — so the
+    /// next parameter is what it was kept for.
+    pub slope_sampling: TerrainSlopeSampling,
     /// Tiling repeat factors for the five splat-scale codes `8·i`
     /// (`docs/formats/mapm-jmxvmapm.md`), index `i` = code/8, all
     /// live-tunable from the render-debug panel. Playtest verdict
@@ -349,8 +358,41 @@ impl Default for TerrainRenderParams {
             lightmap_flip_v: false,
             lighting_mode: TerrainLightingMode::Dynamic,
             lightmap_enabled: true,
-            shadow_strength: 0.0,
+            slope_sampling: TerrainSlopeSampling::default(),
             splat_factors: [0.25; 5],
+        }
+    }
+}
+
+/// How many projections the ground albedo is sampled from on a **steep**
+/// fragment (`terrain_splat.wesl`: `SLOPE_START`, 60 degrees). Flat ground is
+/// one sample in every setting, which is what keeps the cost bounded to the
+/// 9.4% of the map's footprint that leans past that angle.
+///
+/// Deserialized here rather than mirrored by a second enum in
+/// `plugins::config::graphics`, so the config word and the GPU value cannot
+/// drift apart.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainSlopeSampling {
+    /// Top-down XZ only: the smeared cliffs the original has.
+    #[default]
+    Off,
+    /// One extra projection on a steep fragment — the side plane its normal
+    /// leans into.
+    Blend,
+    /// Both side planes, cross-faded by the normal.
+    Full,
+}
+
+impl TerrainSlopeSampling {
+    /// The shader reads this as a float from `terrain_params[2].w` and
+    /// compares against 0.5 / 1.5.
+    fn to_gpu(self) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::Blend => 1.0,
+            Self::Full => 2.0,
         }
     }
 }
@@ -370,8 +412,8 @@ impl TerrainRenderParams {
     /// `[1].x` = lighting mode as float (the shader branches on `< 0.5`),
     /// `[1].yzw` + `[2].xy` = the splat repeat factors for codes 0..32,
     /// `[2].z` = lightmap strength (1 = multiply baked lightmap into albedo,
-    /// 0 = off, PBR mode), `[2].w` = extra sun-shadow darkening — unused,
-    /// always 0 (see [`TerrainRenderParams::shadow_strength`]).
+    /// 0 = off, PBR mode), `[2].w` = slope-aware sampling mode
+    /// (see [`TerrainSlopeSampling`]).
     /// Factors are clamped away from 0 — the shader divides by them.
     fn to_gpu(&self) -> [f32; 12] {
         let (scale_v, offset_v) = if self.lightmap_flip_v {
@@ -385,9 +427,9 @@ impl TerrainRenderParams {
         };
         let f = self.splat_factors.map(|factor| factor.max(0.01));
         let lightmap = if self.lightmap_enabled { 1.0 } else { 0.0 };
-        let shadow = self.shadow_strength.clamp(0.0, 1.0);
+        let slope = self.slope_sampling.to_gpu();
         [
-            1.0, scale_v, 0.0, offset_v, mode, f[0], f[1], f[2], f[3], f[4], lightmap, shadow,
+            1.0, scale_v, 0.0, offset_v, mode, f[0], f[1], f[2], f[3], f[4], lightmap, slope,
         ]
     }
 }
@@ -888,6 +930,47 @@ impl TerrainBlockSplatMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slope mode rides in the slot the dead shadow strength used to hold,
+    /// and the shader compares it against 0.5 / 1.5 — so the three words have
+    /// to land on 0/1/2 in `[2].w`, which is index 11. The default is `Off`
+    /// because this buffer is written once at startup before any config
+    /// exists, and that write must not change a pixel.
+    #[test]
+    fn the_slope_mode_rides_in_the_last_param_slot_and_defaults_to_off() {
+        let off = TerrainRenderParams::default().to_gpu();
+        assert_eq!(off[11], 0.0);
+        for (mode, want) in [
+            (TerrainSlopeSampling::Off, 0.0),
+            (TerrainSlopeSampling::Blend, 1.0),
+            (TerrainSlopeSampling::Full, 2.0),
+        ] {
+            let params = TerrainRenderParams {
+                slope_sampling: mode,
+                ..TerrainRenderParams::default()
+            };
+            assert_eq!(params.to_gpu()[11], want, "{mode:?}");
+        }
+        // nothing else moves with it: the other eleven slots are identical
+        let full = TerrainRenderParams {
+            slope_sampling: TerrainSlopeSampling::Full,
+            ..TerrainRenderParams::default()
+        }
+        .to_gpu();
+        assert_eq!(off[..11], full[..11]);
+    }
+
+    /// The config word is deserialized into this very enum, so the three
+    /// spellings a preset may use are pinned here rather than in the config
+    /// module that maps them.
+    #[test]
+    fn the_config_words_are_off_blend_full() {
+        let parse = |s: &str| serde_yaml::from_str::<TerrainSlopeSampling>(s).unwrap();
+        assert_eq!(parse("off"), TerrainSlopeSampling::Off);
+        assert_eq!(parse("blend"), TerrainSlopeSampling::Blend);
+        assert_eq!(parse("full"), TerrainSlopeSampling::Full);
+        assert!(serde_yaml::from_str::<TerrainSlopeSampling>("triplanar").is_err());
+    }
 
     /// Tile ids are 10-bit by construction, so every id the map can express has an array layer.
     #[test]
