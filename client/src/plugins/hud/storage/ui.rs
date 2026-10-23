@@ -1020,30 +1020,28 @@ fn on_gold_modal_button(
         modal.open = false;
         return;
     }
-    let Some(session) = &state.session else {
+    // The gold ops carry no NPC id, but they still need an open session: the
+    // server books them against the one 0x703C opened.
+    if state.session.is_none() {
         modal.open = false;
         return;
-    };
+    }
     let player_gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
     let (amount, request) = match button {
         GoldModalButton::Deposit => {
             let amount = amount.0.min(player_gold);
             (
                 amount,
-                InventoryOperationRequest::InventoryGoldToStorage {
-                    amount,
-                    npc_unique_id: session.npc_id,
-                },
+                // No NPC id on the wire: the server books the gold against
+                // the session 0x703C opened (measured, see the type).
+                InventoryOperationRequest::InventoryGoldToStorage { amount },
             )
         }
         GoldModalButton::Withdraw => {
             let amount = amount.0.min(state.items.gold);
             (
                 amount,
-                InventoryOperationRequest::StorageGoldToInventory {
-                    amount,
-                    npc_unique_id: session.npc_id,
-                },
+                InventoryOperationRequest::StorageGoldToInventory { amount },
             )
         }
         GoldModalButton::Cancel => unreachable!(),

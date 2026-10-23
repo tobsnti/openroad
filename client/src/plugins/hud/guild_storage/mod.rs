@@ -1,11 +1,18 @@
 pub mod model;
+pub mod ui;
 
 use bevy::prelude::*;
 
-/// Self-registration for the guild-storage consumer (#558). Model only: the
-/// guild warehouse has no window yet (`GDR_GUILDSTORAGEROOM` is not ported),
-/// so this plugin owns the session state and the wire round trip, and the
-/// only player-visible output is the refusal path.
+/// Self-registration for the guild warehouse (#558): the session state, the
+/// wire round trip, and the window that shows what they fetch.
+///
+/// The window is `GDR_GUILDSTORAGEROOM` — the same `CIFStorageRoom` class,
+/// geometry and art as the personal warehouse, so every interior rect comes
+/// from `ifstorageroom.txt` (cited per constant in `ui.rs`) and none of it is
+/// a fresh design.
+///
+/// Carry/drop and the money button are not in this lap: the grid draws and
+/// pages, and the wire ops it will send (0x7034 ops 29..=33) already exist.
 pub struct GuildStoragePlugin;
 
 impl Plugin for GuildStoragePlugin {
@@ -18,6 +25,7 @@ impl Plugin for GuildStoragePlugin {
                     model::open_guild_storage,
                     model::on_guild_storage_response,
                     model::close_guild_storage_with_dialog,
+                    ui::sync_guild_storage_window,
                     // chained for the same reason the personal storage push
                     // is: begin/chunk/end usually land in ONE frame, and an
                     // unordered tuple lets `end` parse an empty buffer
@@ -29,6 +37,12 @@ impl Plugin for GuildStoragePlugin {
                         .chain(),
                 )
                     .run_if(super::hud_scenes),
+            )
+            // PostUpdate like the sibling windows: despawning inside the
+            // observer that closed the window tears down the entity being read.
+            .add_systems(
+                PostUpdate,
+                ui::despawn_closing_guild_storage.run_if(super::hud_scenes),
             );
     }
 }

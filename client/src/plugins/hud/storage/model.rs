@@ -368,6 +368,18 @@ pub fn on_storage_response(
                 debug!("storage: withdrew {amount} gold (player total via 0x304E)");
                 state.items.gold = state.items.gold.saturating_sub(amount);
             }
+            // The guild warehouse shares this opcode but not this state: ops
+            // 29..=33 belong to `guild_storage`, which applies them against
+            // its own mirror. Named rather than swallowed by the catch-all —
+            // a guild ack arriving while the personal window is open is a
+            // routing question, and a silent arm would hide it.
+            InventoryOperationResult::GuildStorageToGuildStorage { .. }
+            | InventoryOperationResult::InventoryToGuildStorage { .. }
+            | InventoryOperationResult::GuildStorageToInventory { .. }
+            | InventoryOperationResult::InventoryGoldToGuildStorage { .. }
+            | InventoryOperationResult::GuildStorageGoldToInventory { .. } => {
+                debug!("storage: guild-warehouse ack, not ours — guild_storage owns it");
+            }
             _ => {}
         }
     }

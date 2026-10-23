@@ -152,11 +152,66 @@ pub enum InventoryOperationRequest {
         pet_slot: u8,
     },
     /// Withdraw gold: storage → inventory (op 10 is drop-gold-to-ground).
+    ///
+    /// **No NPC id.** The gold arm writes the `u64` and returns; the session
+    /// the server books it against is the one `0x703C` opened. Op 11 itself
+    /// has no capture, but its two siblings on the same arm do — see op 12.
     #[sro_packet(value = 11)]
-    StorageGoldToInventory { amount: u64, npc_unique_id: u32 },
-    /// Deposit gold: inventory → storage.
+    StorageGoldToInventory { amount: u64 },
+    /// Deposit gold: inventory → storage. No NPC id, same arm as 11/13.
+    ///
+    /// `[V]`: two captured frames, both nine bytes —
+    /// `0c 0b00000000000000` (op 12, amount 11). A body with the NPC id this
+    /// used to declare would be thirteen.
     #[sro_packet(value = 12)]
-    InventoryGoldToStorage { amount: u64, npc_unique_id: u32 },
+    InventoryGoldToStorage { amount: u64 },
+    /// Stage gold on our side of a trade — an absolute amount, not a delta.
+    ///
+    /// `[V]`: eight captured frames, all nine bytes, e.g.
+    /// `0d 6400000000000000` (100) and `0d 0100000000000000` (1).
+    /// `agent/exchange.rs` already names this op as missing; it is the same
+    /// gold arm as 11/12, which is why it lands with them.
+    #[sro_packet(value = 13)]
+    InventoryGoldToExchange { amount: u64 },
+    /// Op 29 — move an item between two **guild** warehouse slots.
+    ///
+    /// `[S]`, no capture: no guild-storage op appears in any of the 99
+    /// captured `0x7034` frames. The body is the old line's reading, which
+    /// takes it as the same arm as op 1 plus a quantity. **Note the
+    /// discrepancy:** today's op 1 carries no `amount`, the line this is
+    /// ported from gave op 1 one. Neither has a frame, so op 1 is left
+    /// untouched and this is `[U]` until a capture settles the pair.
+    #[sro_packet(value = 29)]
+    GuildStorageToGuildStorage {
+        source: u8,
+        target: u8,
+        amount: u16,
+        npc_unique_id: u32,
+    },
+    /// Op 30 — deposit: inventory `source` → guild `target`. Whole slot, no
+    /// quantity (same arm as op 2). `[S]`, see op 29.
+    #[sro_packet(value = 30)]
+    InventoryToGuildStorage {
+        source: u8,
+        target: u8,
+        npc_unique_id: u32,
+    },
+    /// Op 31 — withdraw: guild `source` → inventory `target`. Whole slot
+    /// (same arm as op 3). `[S]`, see op 29.
+    #[sro_packet(value = 31)]
+    GuildStorageToInventory {
+        source: u8,
+        target: u8,
+        npc_unique_id: u32,
+    },
+    /// Op 32 — deposit gold into the guild account. No NPC id, same arm as
+    /// ops 11/12/13 — and that arm is measured (op 12/13), which is the one
+    /// piece of this family that does not rest on a reading alone.
+    #[sro_packet(value = 32)]
+    InventoryGoldToGuildStorage { amount: u64 },
+    /// Op 33 — withdraw gold from the guild account. `[S]`, see op 32.
+    #[sro_packet(value = 33)]
+    GuildStorageGoldToInventory { amount: u64 },
 }
 
 /// 0x703E — client → server item repair at an NPC (AGENT_INVENTORY_ITEM_REPAIR
@@ -683,6 +738,21 @@ pub enum InventoryOperationResult {
     /// Op 11 — gold moved storage → inventory; `amount` is subtracted from
     /// the storage total.
     StorageGoldToInventory { amount: u64 },
+    /// Op 29 — a move inside the **guild** warehouse: `source, target,
+    /// amount u16` — the same shape as op 1, only the container differs
+    /// (xBot `PacketParser.cs:2142-2194`, GPL-3.0, cited).
+    GuildStorageToGuildStorage { source: u8, target: u8, amount: u16 },
+    /// Op 30 — a deposit into the guild warehouse: inventory slot, guild
+    /// slot; whole record, the inventory slot is cleared (`:2195-2207`).
+    InventoryToGuildStorage { source: u8, target: u8 },
+    /// Op 31 — a withdraw: guild slot, inventory slot (`:2208-2220`).
+    GuildStorageToInventory { source: u8, target: u8 },
+    /// Op 32 — gold moved inventory → guild account; `amount` is a **delta**
+    /// added to the guild total (`:2221-2226`), exactly like op 12.
+    InventoryGoldToGuildStorage { amount: u64 },
+    /// Op 33 — gold moved guild account → inventory; `amount` is subtracted
+    /// from the guild total (`:2227-2232`).
+    GuildStorageGoldToInventory { amount: u64 },
     /// Op 12 — gold moved inventory → storage; `amount` is added to the
     /// storage total.
     InventoryGoldToStorage { amount: u64 },
@@ -939,6 +1009,29 @@ impl TryFrom<Bytes> for InventoryOperationResponse {
             12 if value.len() >= 10 => InventoryOperationResult::InventoryGoldToStorage {
                 amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
             },
+            // --- guild warehouse (ops 29..=33). Same four shapes as the NPC
+            // storage ops above, only the container differs; the ack bodies
+            // are xBot's reading (`PacketParser.cs:2142-2232`, GPL-3.0, cited)
+            // and carry no capture — see the request variants.
+            29 if value.len() >= 6 => InventoryOperationResult::GuildStorageToGuildStorage {
+                source: value[2],
+                target: value[3],
+                amount: u16::from_le_bytes(value[4..6].try_into().unwrap()),
+            },
+            30 if value.len() >= 4 => InventoryOperationResult::InventoryToGuildStorage {
+                source: value[2],
+                target: value[3],
+            },
+            31 if value.len() >= 4 => InventoryOperationResult::GuildStorageToInventory {
+                source: value[2],
+                target: value[3],
+            },
+            32 if value.len() >= 10 => InventoryOperationResult::InventoryGoldToGuildStorage {
+                amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
+            },
+            33 if value.len() >= 10 => InventoryOperationResult::GuildStorageGoldToInventory {
+                amount: u64::from_le_bytes(value[2..10].try_into().unwrap()),
+            },
             // --- pick-pet / COS bag ops (`docs/re/systems/pet-pick-cos.md` §3)
             17 if value.len() >= 7 => InventoryOperationResult::GroundToPet {
                 cos_unique_id: u32::from_le_bytes(value[2..6].try_into().unwrap()),
@@ -1059,6 +1152,36 @@ impl From<InventoryOperationResponse> for Bytes {
             }
             Some(InventoryOperationResult::InventoryGoldToStorage { amount }) => {
                 buf.put_u8(12);
+                buf.put_u64_le(amount);
+            }
+            // The guild warehouse mirrors the four NPC-storage shapes above;
+            // only the op byte and the container differ.
+            Some(InventoryOperationResult::GuildStorageToGuildStorage {
+                source,
+                target,
+                amount,
+            }) => {
+                buf.put_u8(29);
+                buf.put_u8(source);
+                buf.put_u8(target);
+                buf.put_u16_le(amount);
+            }
+            Some(InventoryOperationResult::InventoryToGuildStorage { source, target }) => {
+                buf.put_u8(30);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::GuildStorageToInventory { source, target }) => {
+                buf.put_u8(31);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::InventoryGoldToGuildStorage { amount }) => {
+                buf.put_u8(32);
+                buf.put_u64_le(amount);
+            }
+            Some(InventoryOperationResult::GuildStorageGoldToInventory { amount }) => {
+                buf.put_u8(33);
                 buf.put_u64_le(amount);
             }
             Some(InventoryOperationResult::GroundToPet {
@@ -1770,16 +1893,13 @@ mod tests {
             withdraw
         );
 
-        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw
-        let gold = InventoryOperationRequest::InventoryGoldToStorage {
-            amount: 1000,
-            npc_unique_id: 0x539,
-        };
+        // gold DEPOSIT is op 12 (inventory -> storage); op 11 is the withdraw.
+        // Nine bytes, not thirteen: the gold arm carries no NPC id — two
+        // captured frames say so (`0c 0b00000000000000`), and the session the
+        // server books against is the one 0x703C opened.
+        let gold = InventoryOperationRequest::InventoryGoldToStorage { amount: 1000 };
         let bytes: Bytes = gold.clone().into();
-        assert_eq!(
-            bytes.as_ref(),
-            &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0, 0x39, 0x05, 0, 0]
-        );
+        assert_eq!(bytes.as_ref(), &[0x0C, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
         assert_eq!(InventoryOperationRequest::try_from(bytes).unwrap(), gold);
     }
 
@@ -2016,5 +2136,119 @@ mod tests {
         let decoded = InventoryCapacityUpdate::try_from(Bytes::from_static(&[0x00])).unwrap();
         assert!(!decoded.success);
         assert_eq!(decoded.new_capacity, None);
+    }
+
+    /// The gold arm carries no NPC id. Two captured op-12 frames and eight
+    /// op-13 frames are all nine bytes — `op + u64` — and a body with the NPC
+    /// id this type used to declare would be thirteen.
+    #[test]
+    fn the_gold_ops_are_nine_bytes_like_the_capture() {
+        for (req, want) in [
+            (
+                InventoryOperationRequest::InventoryGoldToStorage { amount: 11 },
+                &[0x0c, 0x0b, 0, 0, 0, 0, 0, 0, 0][..],
+            ),
+            (
+                InventoryOperationRequest::InventoryGoldToExchange { amount: 100 },
+                &[0x0d, 0x64, 0, 0, 0, 0, 0, 0, 0][..],
+            ),
+        ] {
+            let wire: Bytes = req.clone().into();
+            assert_eq!(&wire[..], want);
+            assert_eq!(wire.len(), 9);
+            assert_eq!(InventoryOperationRequest::try_from(wire).unwrap(), req);
+        }
+    }
+
+    /// The five guild-warehouse ops. No capture holds one — none of the 99
+    /// captured 0x7034 frames carries op 29..=33 — so what is pinned here is
+    /// the shape the port claims, byte for byte, and that each op byte is the
+    /// one the enum promises.
+    #[test]
+    fn the_guild_warehouse_ops_roundtrip_their_claimed_shapes() {
+        let cases: Vec<(InventoryOperationRequest, Vec<u8>)> = vec![
+            (
+                InventoryOperationRequest::GuildStorageToGuildStorage {
+                    source: 0x0d,
+                    target: 0x0e,
+                    amount: 1,
+                    npc_unique_id: 0x0001_60AA,
+                },
+                vec![29, 0x0d, 0x0e, 0x01, 0x00, 0xAA, 0x60, 0x01, 0x00],
+            ),
+            (
+                InventoryOperationRequest::InventoryToGuildStorage {
+                    source: 0x0d,
+                    target: 0x00,
+                    npc_unique_id: 0x0001_60AA,
+                },
+                vec![30, 0x0d, 0x00, 0xAA, 0x60, 0x01, 0x00],
+            ),
+            (
+                InventoryOperationRequest::GuildStorageToInventory {
+                    source: 0x00,
+                    target: 0x0d,
+                    npc_unique_id: 0x0001_60AA,
+                },
+                vec![31, 0x00, 0x0d, 0xAA, 0x60, 0x01, 0x00],
+            ),
+            (
+                InventoryOperationRequest::InventoryGoldToGuildStorage { amount: 500 },
+                vec![32, 0xf4, 0x01, 0, 0, 0, 0, 0, 0],
+            ),
+            (
+                InventoryOperationRequest::GuildStorageGoldToInventory { amount: 500 },
+                vec![33, 0xf4, 0x01, 0, 0, 0, 0, 0, 0],
+            ),
+        ];
+        for (req, want) in cases {
+            let wire: Bytes = req.clone().into();
+            assert_eq!(&wire[..], &want[..], "{req:?}");
+            assert_eq!(InventoryOperationRequest::try_from(wire).unwrap(), req);
+        }
+    }
+
+    /// The acks for the same five ops, read the way xBot reads them.
+    #[test]
+    fn the_guild_warehouse_acks_decode_their_claimed_shapes() {
+        let ok = |body: &[u8]| {
+            let mut v = vec![0x01u8];
+            v.extend_from_slice(body);
+            InventoryOperationResponse::try_from(Bytes::from(v)).unwrap()
+        };
+        let success = |r: InventoryOperationResponse| {
+            assert_eq!(r.result, 1, "the fixture builds a success ack");
+            r.operation.expect("a success ack carries its operation")
+        };
+        assert_eq!(
+            success(ok(&[29, 0x0d, 0x0e, 0x01, 0x00])),
+            InventoryOperationResult::GuildStorageToGuildStorage {
+                source: 0x0d,
+                target: 0x0e,
+                amount: 1,
+            }
+        );
+        assert_eq!(
+            success(ok(&[30, 0x0d, 0x00])),
+            InventoryOperationResult::InventoryToGuildStorage {
+                source: 0x0d,
+                target: 0x00,
+            }
+        );
+        assert_eq!(
+            success(ok(&[31, 0x00, 0x0d])),
+            InventoryOperationResult::GuildStorageToInventory {
+                source: 0x00,
+                target: 0x0d,
+            }
+        );
+        assert_eq!(
+            success(ok(&[32, 0xf4, 0x01, 0, 0, 0, 0, 0, 0])),
+            InventoryOperationResult::InventoryGoldToGuildStorage { amount: 500 }
+        );
+        assert_eq!(
+            success(ok(&[33, 0xf4, 0x01, 0, 0, 0, 0, 0, 0])),
+            InventoryOperationResult::GuildStorageGoldToInventory { amount: 500 }
+        );
     }
 }

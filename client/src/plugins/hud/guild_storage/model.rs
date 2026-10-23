@@ -38,6 +38,7 @@ use packets::{hexdump, Packet};
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::npc_dialog::model::{NpcDialogState, OpenGuildStorage};
+use crate::plugins::hud::storage::model::STORAGE_SLOTS_PER_PAGE;
 use crate::plugins::hud::system_message::model::format_template;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::character_info::CharacterInfo;
@@ -93,6 +94,18 @@ pub struct GuildStorageState {
     pub items: Inventory,
     /// The item stream arrived for this session.
     pub synced: bool,
+    /// Which page of [`STORAGE_SLOTS_PER_PAGE`] the window shows. Lives in the
+    /// model, not the window, so a rebuild (every arriving 0x3254) keeps it.
+    pub active_page: u8,
+}
+
+impl GuildStorageState {
+    /// Pages the mirrored contents need, never fewer than one — an empty
+    /// warehouse still shows page 1 rather than no page at all.
+    pub fn page_count(&self) -> u8 {
+        let slots = self.items.size();
+        slots.div_ceil(STORAGE_SLOTS_PER_PAGE).max(1)
+    }
 }
 
 /// Why an open attempt did not reach the wire. Split out so the gate is
