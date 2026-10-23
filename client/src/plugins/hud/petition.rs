@@ -870,6 +870,9 @@ mod test {
         .init_resource::<ChatHistory>()
         .init_resource::<ClientUiStrings>()
         .init_resource::<NetworkEntities>()
+        // `on_game_invite` consults the gameplay toggles to decide whether an
+        // arm is auto-refused; shipped defaults refuse nothing.
+        .init_resource::<GameOptions>()
         .insert_resource(FontAssets {
             one: Handle::default(),
             two: Handle::default(),
