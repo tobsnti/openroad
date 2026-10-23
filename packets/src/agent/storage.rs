@@ -18,7 +18,7 @@ use bevy::prelude::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 use std::io::Cursor;
 
-use crate::agent::character_data::{parse_item_section, InventoryItem, ItemClassResolver};
+use crate::agent::character_data::{parse_item_section, ItemClassResolver, ItemSection};
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;
@@ -134,7 +134,7 @@ impl From<StorageDataEnd> for Bytes {
 pub fn parse_storage_items(
     raw: &[u8],
     resolver: &impl ItemClassResolver,
-) -> Result<(u8, Vec<InventoryItem>), SerializationError> {
+) -> Result<ItemSection, SerializationError> {
     let mut cursor = Cursor::new(raw);
     parse_item_section(&mut cursor, resolver)
 }
@@ -193,6 +193,19 @@ mod tests {
         }
     }
 
+    /// Routes the one ref the warehouse body carries and nothing else — the
+    /// state of a client whose itemdata lacks a row the server's table has.
+    struct PartialResolver;
+    impl ItemClassResolver for PartialResolver {
+        fn item_class(&self, ref_id: u32) -> ItemClass {
+            if ref_id == 4 {
+                ItemClass::Expendable { tid3: 0, tid4: 0 }
+            } else {
+                ItemClass::Unknown
+            }
+        }
+    }
+
     #[test]
     fn chunks_concatenate_into_an_item_section() {
         // size 60, count 1: slot 3, rent 0, ref id 4, stack 2 — split across
@@ -205,8 +218,10 @@ mod tests {
         buf.extend_from_slice(&first.raw);
         buf.extend_from_slice(&second.raw);
 
-        let (size, items) = parse_storage_items(&buf, &MockResolver).expect("parse");
-        assert_eq!(size, 60);
+        let section = parse_storage_items(&buf, &MockResolver).expect("parse");
+        let items = section.items;
+        assert_eq!(section.size, 60);
+        assert_eq!(section.stopped_at, None);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].slot, 3);
         assert_eq!(items[0].ref_id, 4);
@@ -221,5 +236,26 @@ mod tests {
 
         // a garbage body fails the parse instead of panicking
         assert!(parse_storage_items(&[5, 9], &MockResolver).is_err());
+    }
+
+    #[test]
+    fn a_stopped_storage_section_reports_where_it_stopped() {
+        // 0x3049 had the silent half of #425: an unresolvable ref ends the
+        // section, `parse_item_section` dropped `stopped_at`, and the HUD saw a
+        // short list it could not tell from a complete one.
+        // size 60, count 2: slot 3 ref 4 (routable, stack 2), then slot 7
+        // ref 4242, whose body width is unknown — everything behind it is
+        // unreliable, so the section stops and says so.
+        let raw = [
+            60, 2, 3, 0, 0, 0, 0, 0x04, 0, 0, 0, 0x02, 0, 7, 0, 0, 0, 0, 0x92, 0x10, 0, 0,
+        ];
+        let section = parse_storage_items(&raw, &PartialResolver).expect("short read tolerated");
+        assert_eq!(section.size, 60);
+        assert_eq!(section.items.len(), 1, "the record before it survives");
+        assert_eq!(section.items[0].slot, 3);
+        let stop = section.stopped_at.expect("stop reported");
+        assert_eq!(stop.index, 1);
+        assert_eq!(stop.ref_id, 4242);
+        assert_eq!(stop.offset, 13);
     }
 }
