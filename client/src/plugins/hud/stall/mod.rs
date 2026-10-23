@@ -1,6 +1,7 @@
 pub mod model;
 pub mod net;
 pub mod owner;
+pub mod stock;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -14,6 +15,7 @@ impl Plugin for StallPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<model::StallState>()
             .init_resource::<owner::RequestedStallTitle>()
+            .init_resource::<stock::StockModal>()
             .add_message::<owner::OpenStallCommand>()
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_stall)
             .add_systems(PostUpdate, ui::despawn_closing_stall)
@@ -34,6 +36,11 @@ impl Plugin for StallPlugin {
                     net::on_stall_leave_response,
                     ui::spawn_stall_window.run_if(ui::open_pending_stall),
                     ui::refresh_stall_window,
+                    // after the window, so a drop sees this frame's hover and
+                    // the box is rebuilt in the same frame it is raised
+                    stock::stock_drop_on_stall,
+                    stock::clear_stock_with_stall,
+                    stock::sync_stock_modal,
                 )
                     .chain()
                     .run_if(super::hud_scenes),
