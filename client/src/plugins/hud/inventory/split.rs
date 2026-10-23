@@ -294,11 +294,18 @@ pub fn sync_split_modal(
     };
     let s = hud_scale();
     let size = text_px(font_index_px(TEXT_FONT_INDEX), s);
-    let text_font = || TextFont {
-        font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size),
-        line_height: LineHeight::Px(size),
-        ..default()
+    // Two components, not one field: in bevy 0.20 `LineHeight` is its own
+    // component (`hud/chat_bubble.rs`, `hud/minimap.rs`). Every text of this
+    // section is one authored line, so both carry the same rounded value.
+    let text_font = || {
+        (
+            TextFont {
+                font: fonts.two.clone().into(),
+                font_size: FontSize::Px(size),
+                ..default()
+            },
+            LineHeight::Px(size),
+        )
     };
     let button_style = ImageButtonStyle {
         normal: asset_server.load("media://interface/ifcommon/com_button.ddj"),
@@ -878,23 +885,27 @@ mod tests {
     /// font size rather than Bevy's 1.2 — otherwise a 12 px glyph lays out
     /// 14.4 px tall in a 19 px box and sits low with the descender over the
     /// edge (`font_index_px`'s "One-line boxes").
+    ///
+    /// `LineHeight` is its own component in bevy 0.20, so the pairing is what
+    /// the test reads: every text entity has to carry both, with the same
+    /// value. A text that carries only `TextFont` is the defect.
     #[test]
     fn one_line_fields_pin_their_line_box_to_the_font_size() {
         let mut app = modal_app();
-        let fonts: Vec<TextFont> = app
+        let pairs: Vec<(FontSize, Option<LineHeight>)> = app
             .world_mut()
-            .query_filtered::<&TextFont, With<Text>>()
+            .query_filtered::<(&TextFont, Option<&LineHeight>), With<Text>>()
             .iter(app.world())
-            .cloned()
+            .map(|(font, line)| (font.font_size, line.copied()))
             .collect();
-        assert!(!fonts.is_empty(), "the box draws no text at all");
-        for font in fonts {
+        assert!(!pairs.is_empty(), "the box draws no text at all");
+        for (font_size, line_height) in pairs {
+            let FontSize::Px(px) = font_size else {
+                panic!("the box sizes a text relatively: {font_size:?}");
+            };
             assert_eq!(
-                font.line_height,
-                LineHeight::Px(match font.font_size {
-                    FontSize::Px(px) => px,
-                    other => panic!("the box sizes a text relatively: {other:?}"),
-                }),
+                line_height,
+                Some(LineHeight::Px(px)),
                 "a one-line field keeps Bevy's 1.2 line box"
             );
         }
