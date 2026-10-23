@@ -2915,6 +2915,66 @@ impl CharacterActionRequest {
     }
 }
 
+/// 0x3091 — client → server: play an emote. **One byte, the emote code.**
+///
+/// Builder `sro_client.exe@00794278`, which opens the packet at `:0079428e`
+/// (`push 0x3091`) and writes a single byte. The action window's seven emote
+/// slots are its only caller (`actionwnddata.txt` 4000..=4006).
+///
+/// Direction caveat, the same one [`GetUpRequest`] carries: 0x3091 sits in the
+/// 0x3xxx range this repo otherwise treats as S→C. It really does travel both
+/// ways, and **with two different bodies** — the builder writes this one byte,
+/// the client's own handler reads [`EmoteUpdate`]. That is why the registry
+/// binds one type per direction: one type for both would decode another
+/// character's emote as a one-byte request, reading the first byte of their
+/// entity id as the code and dropping the rest.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct EmoteRequest {
+    pub emote: u8,
+}
+
+/// 0x3091 — server → client: a character plays an emote. Entity first, then
+/// the same code [`EmoteRequest`] carries.
+///
+/// **No frame of this exists in any dump tree here** — `0x3091` has no capture
+/// in either direction. What *is* measured is that the direction exists at
+/// all: the original registers a handler for 0x3091 in its first dispatch
+/// table (`sro_client.exe@008A7950`, registered at `:00870311`, source-file
+/// string `NetProcessInObject.cpp`). A client that parses an opcode receives
+/// it. The field order below is read off that handler and is therefore `[S]`,
+/// not `[V]`; one captured emote from another character settles it.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct EmoteUpdate {
+    pub unique_id: u32,
+    pub emote: u8,
+}
+
+/// `actionwnddata.txt` command id → the 0x3091 code that plays it, decompiled
+/// arm by arm from the seven callers of the builder above.
+///
+/// **The wire order is not the slot order** — laugh is 6, pokun is 1, joy is 3.
+/// Reading `4000 + n` off the icon row, which is what the window's layout
+/// invites, would send five of the seven wrong.
+pub const EMOTE_CODES: [(u32, u8); 7] = [
+    (4000, 0), // 인사 greeting — @00794278
+    (4001, 6), // 웃음 laugh — @007943ac
+    (4002, 1), // 포권 pokun — @007944b8 (writes `bl`, which is 1)
+    (4003, 5), // 네 yes — @007945c3
+    (4004, 2), // 돌진 rush — @0079453d
+    (4005, 3), // 아자 joy — @00794326
+    (4006, 4), // 아니오 no — @00794432
+];
+
+impl EmoteRequest {
+    /// The emote an `actionwnddata.txt` command id plays, if it is one.
+    pub fn for_command(command_id: u32) -> Option<Self> {
+        EMOTE_CODES
+            .iter()
+            .find(|(id, _)| *id == command_id)
+            .map(|(_, emote)| Self { emote: *emote })
+    }
+}
+
 /// 0x70A7 — client → server: the hwan (jahwan / berserk) activation request.
 ///
 /// One byte. The original's builder writes exactly one
@@ -3628,6 +3688,55 @@ mod test {
     /// off the **original** 1.188 client (`capture-orig/STATE.md` documents the
     /// proxy chain); `02` has two undocumented-session frames; `03` has none
     /// anywhere, which is why it is marked [U] on the constant.
+    /// The test this whole `inbound`/`outbound` split exists for, and the only
+    /// thing that type-checks that macro arm: Rust compiles a macro arm when it
+    /// is used, so before 0x3091 there was no user and no check.
+    ///
+    /// 0x3091 travels both ways with two different bodies. One type for both
+    /// would have read the first byte of the entity id as the emote code and
+    /// dropped the rest — which is why `EmoteRequest` is encode-only.
+    #[test]
+    fn the_emote_opcode_decodes_inbound_and_encodes_outbound() {
+        let inbound =
+            crate::Packet::deserialize(0x3091, Bytes::from_static(&[0xAA, 0x60, 0x01, 0x00, 0x03]))
+                .unwrap();
+        let crate::Packet::EmoteUpdate(update) = &inbound else {
+            panic!("an inbound 0x3091 must be the update, not the request");
+        };
+        assert_eq!(
+            update,
+            &EmoteUpdate {
+                unique_id: 0x0001_60AA,
+                emote: 3,
+            }
+        );
+        let (opcode, back) = inbound.into_serialize();
+        assert_eq!(opcode, 0x3091);
+        assert_eq!(&back[..], &[0xAA, 0x60, 0x01, 0x00, 0x03]);
+
+        // ...and our own emote still goes out as the bare code.
+        let (opcode, out) = crate::Packet::from(EmoteRequest { emote: 3 }).into_serialize();
+        assert_eq!(opcode, 0x3091);
+        assert_eq!(&out[..], &[0x03]);
+    }
+
+    /// The codes are read off the builder's callers, not off the slot order.
+    /// Pinned because `4000 + n` is the reading the icon row invites and it is
+    /// wrong for five of the seven.
+    #[test]
+    fn the_emote_codes_are_not_the_slot_order() {
+        assert_eq!(EmoteRequest::for_command(4000).unwrap().emote, 0);
+        assert_eq!(EmoteRequest::for_command(4001).unwrap().emote, 6);
+        assert_eq!(EmoteRequest::for_command(4002).unwrap().emote, 1);
+        assert_eq!(EmoteRequest::for_command(4005).unwrap().emote, 3);
+        assert!(EmoteRequest::for_command(1003).is_none());
+        // seven authored emote rows, seven codes, no duplicates
+        assert_eq!(EMOTE_CODES.len(), 7);
+        let mut codes: Vec<u8> = EMOTE_CODES.iter().map(|(_, c)| *c).collect();
+        codes.sort_unstable();
+        assert_eq!(codes, vec![0, 1, 2, 3, 4, 5, 6]);
+    }
+
     #[test]
     fn character_action_request_is_one_captured_byte() {
         let wire: Bytes = CharacterActionRequest::sit_stand().into();

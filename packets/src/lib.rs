@@ -44,8 +44,16 @@ impl From<FromUtf16Error> for PacketError {
     }
 }
 
-macro_rules! packets {
-    ($($opcode:literal => $name:ident),*) => {
+/// Builds the `Packet` enum and its wiring from three lists: every type that is
+/// a packet, the opcodes that can be **decoded** into one, and the opcodes a
+/// packet is **encoded** onto. For almost every opcode the three agree; the
+/// exception is below in [`packets`].
+macro_rules! packets_impl {
+    (
+        all: [ $($name:ident),* $(,)? ],
+        decode: [ $($de_opcode:literal => $de_name:ident),* $(,)? ],
+        encode: [ $($en_opcode:literal => $en_name:ident),* $(,)? ]
+    ) => {
         #[derive(Message)]
         pub enum Packet {
             $($name($name)),*
@@ -54,7 +62,7 @@ macro_rules! packets {
         impl Packet {
             pub fn deserialize(opcode: u16, data: Bytes) -> Result<Packet, PacketError> {
                 match opcode {
-                    $($opcode => Ok(Packet::$name(data.try_into()?)),)*
+                    $($de_opcode => Ok(Packet::$de_name(data.try_into()?)),)*
                     _ => {
                         trace!("unparsable packet body: {:X}", data);
                         Err(PacketError::UnknownOpcode(opcode))
@@ -64,7 +72,7 @@ macro_rules! packets {
 
             pub fn into_serialize(self) -> (u16, Bytes) {
                 match self {
-                    $(Packet::$name(data) => ($opcode, data.into()),)*
+                    $(Packet::$en_name(data) => ($en_opcode, data.into()),)*
                 }
             }
         }
@@ -111,14 +119,70 @@ macro_rules! packets {
     }
 }
 
+/// The opcode registry. `0x…  => Type` binds one type to one opcode and travels
+/// both ways through it, which is what almost every opcode does — including the
+/// three that carry traffic in both directions with the **same** body
+/// (`0x2001`, `0x2113`, `0x3080`) and the one whose direction contradicts its
+/// range (`0x6005`). Direction is documentation, not code: it lives in the
+/// ledger's Direction column.
+///
+/// Two optional sections carry the one case that cannot work that way — an
+/// opcode whose two directions have **different bodies**:
+///
+/// The registry below then reads, after its ordinary entries:
+///
+/// ```text
+///     ;
+///     inbound  { 0x3091 => EmoteUpdate }    // decoded and encoded
+///     outbound { 0x3091 => EmoteRequest }   // encoded only
+/// ```
+///
+/// `inbound` is what arrives, so it must be decodable; `outbound` is only ever
+/// built by us, so binding it for decoding too is what would make the client
+/// read an incoming frame with the wrong body. The same opcode may appear in
+/// both sections, once per direction.
+///
+/// The two sections are **one** optional group behind a single `;`, and they
+/// come in this order. A direction with nothing in it is written as an empty
+/// `inbound { }` rather than left out — macro_rules matches the rule as a
+/// whole, and two separately-optional sections would each have needed their
+/// own `;`, which is not how the registry below reads.
+macro_rules! packets {
+    (
+        $($opcode:literal => $name:ident),* $(,)?
+        $(; inbound { $($in_opcode:literal => $in_name:ident),* $(,)? }
+           outbound { $($out_opcode:literal => $out_name:ident),* $(,)? })?
+    ) => {
+        packets_impl! {
+            all: [
+                $($name,)*
+                $($($in_name,)* $($out_name,)*)?
+            ],
+            decode: [
+                $($opcode => $name,)*
+                $($($in_opcode => $in_name,)*)?
+            ],
+            encode: [
+                $($opcode => $name,)*
+                $($($in_opcode => $in_name,)* $($out_opcode => $out_name,)*)?
+            ]
+        }
+    }
+}
+
 // COUNTING RULE for this table — four planning docs once quoted four different
 // "wired opcodes" numbers (85 / 67 / 171 / 176). They were not four measures: the
 // two counting methods in use (this line-anchored grep and the macro-block parser
 // in scripts/check_opcode_ledger.py) return the same set, so those were four
 // undated snapshots of ONE number. State the date and the method, or the next
-// reader re-derives the same confusion. One entry below = one wired opcode:
+// reader re-derives the same confusion. The number is **distinct opcodes**:
 //
-//   grep -cE '^\s*0x[0-9A-Fa-f]{4} => ' packets/src/lib.rs
+//   grep -oE '^\s*0x[0-9A-Fa-f]{4} => ' packets/src/lib.rs | sort -u | wc -l
+//
+// The `sort -u` is load-bearing since the inbound/outbound sections exist: an
+// opcode whose two directions carry different bodies has TWO entries and is
+// still ONE wired opcode, so a plain `grep -c` now counts one too many. The
+// gate (`scripts/check_opcode_ledger.py`) counts the same way.
 //
 // It counts BOTH directions. A direction split needs the ledger's Direction
 // column (`docs/protocol/opcodes.md`), not this file: three opcodes (0x2001,
@@ -205,9 +269,9 @@ packets! {
     // evidence are wired: 0x3011 is source- and capture-verified, 0x304D rests
     // on a single capture. Their two siblings stay documented-only until a
     // capture exists — 0x305C ENTITY_DISPLAY_EFFECT (level-up glow, transform
-    // and buff visuals) and 0x3091 EMOTE_USE (one opcode aliased in both
-    // directions); neither has a parser in the original, so no layout is
-    // invented for them here.
+    // and buff visuals). 0x3091 EMOTE_USE is wired below in the inbound/outbound
+    // sections: it is aliased in both directions AND carries a different body
+    // each way, which is exactly what those sections are for.
     0x3011 => CharacterDied,
     0x304D => DropUnlocked,
 
@@ -657,6 +721,19 @@ packets! {
     // docs/net-stall-0x30B7.md §9.
     0xB0B3 => StallTalkResponse,
     0x30BB => EntityStallTitleUpdate
+
+    // --- opcodes whose two directions carry different bodies ---------------
+    //
+    // Not "opcodes that travel both ways" — 0x2001, 0x2113 and 0x3080 do that
+    // with ONE body and stay ordinary entries above. These are the ones where
+    // the two directions disagree about the body, so one type cannot serve
+    // both.
+    ;
+    // Emote. We send the bare code; what arrives names the character first.
+    // Builder sro_client.exe@00794278, inbound handler @008A7950 — see
+    // EmoteRequest/EmoteUpdate for which half is measured and which is not.
+    inbound { 0x3091 => EmoteUpdate }
+    outbound { 0x3091 => EmoteRequest }
 }
 
 /// A compact hex preview of a packet body, for validating layouts against live

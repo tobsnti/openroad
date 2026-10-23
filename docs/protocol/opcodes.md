@@ -13,6 +13,13 @@ table and the macro disagree, so coverage stays honest.
   server→client handlers and 169 client→server builders (10 opcodes appear in both
   directions). Use 320 as the S→C denominator when quoting coverage: it counts
   server→client handlers only, so C→S requests never count against it.
+- **Two rows, one opcode:** an opcode whose two directions carry **different
+  bodies** is bound to one type per direction and therefore gets **one row per
+  direction** here. `scripts/check_opcode_ledger.py` compares the *set* of types
+  per opcode, so both rows must be present and both names must match the
+  `inbound`/`outbound` sections of the `packets!` registry. An opcode whose two
+  directions share a body stays one row with a combined Direction cell — that is
+  what `0x3080` does.
 - **Status legend:** `wired` = typed and fanned out; `experimental` = layout not
   yet capture-verified (marked EXPERIMENTAL in-code).
 - **Counter-list:** some ids must **never** become packet types — the original's
@@ -23,7 +30,8 @@ table and the macro disagree, so coverage stays honest.
 > (`0x2xxx`/`0x6xxx`/`0x7xxx` client→server; `0xAxxx`/`0xBxxx`/`0x3xxx`
 > server→client) and cross-checked against the macro's own section comments.
 > Where a capture contradicts the convention, **the capture wins** and the row says so —
-> `0x6005` is the measured exception so far.
+> `0x6005` is the measured exception so far. A *builder* can contradict it too, without any
+> capture: `0x3053` and `0x3091` are C→S despite their range because the original builds them.
 
 
 ## What is *not* in this ledger
@@ -114,6 +122,8 @@ same handler there.
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
 | `0x3053` | GetUpRequest | C→S | wired | death-window "Return"/get-up (CLIENT_GETUP) |
+| `0x3091` | EmoteRequest | C→S | wired | our own emote: the code alone, one byte. C→S in the 0x3xxx range — the same documented exception as `0x3053`, here from the builder `sro_client.exe@00794278` rather than from a capture. Codes come from its seven callers and are **not** the slot order (`EMOTE_CODES`) |
+| `0x3091` | EmoteUpdate | S→C | wired | another character's emote: `u32` entity id + the same code byte. One opcode, two bodies — the registry binds one type per direction. **No frame exists in any dump tree**; what is measured is that the original registers a handler for it (`@008A7950`, `NetProcessInObject.cpp`), so the field order is `[S]` |
 | `0x3056` | ReceiveExperience | S→C | wired |  |
 | `0x3057` | EntityBarsUpdate | S→C | wired |  |
 | `0x304E` | CharacterPointsUpdate | S→C | wired |  |
