@@ -63,14 +63,16 @@ pub fn modal_interior(width: f32, height: f32) -> (f32, f32, f32, f32) {
 }
 
 /// The fullscreen scrim a modal sits on: click-blocking, dimming, and the
-/// thing that centres the plate (the plate's `margin: auto` resolves against
-/// it).
+/// thing that centres the plate — by flex, for the reason spelled out on
+/// [`modal_scrim_node`].
 pub fn modal_scrim() -> impl Scene {
     bsn! {
         Node {
             position_type: PositionType::Absolute,
             width: percent(100),
             height: percent(100),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
         }
         BackgroundColor({MODAL_SCRIM})
     }
@@ -83,10 +85,8 @@ pub fn modal_plate(art: Handle<Image>, width: f32, height: f32) -> impl Scene {
     bsn! {
         ImageNode { image: {art}, image_mode: NodeImageMode::Stretch }
         Node {
-            position_type: PositionType::Absolute,
             width: px(width),
             height: px(height),
-            margin: {UiRect::all(Val::Auto)},
         }
     }
 }
@@ -250,5 +250,25 @@ mod tests {
             assert_eq!((left, top), (MODAL_SIDE, MODAL_TOP));
             assert!(iw > 0.0 && ih > 0.0, "{w}x{h} has no interior");
         }
+    }
+
+    /// Centring is the scrim's job, not an auto margin's. A plate that asks
+    /// for `position_type: Absolute` and `margin: Auto` lands in the top-left
+    /// corner, because auto margins only centre against definite opposite
+    /// insets -- `choice_confirm` showed exactly that
+    /// (`evidence/gallery-2026-10-23/choice_confirm.png`).
+    #[test]
+    fn the_scrim_centres_and_the_plate_does_not_try_to() {
+        let mut world = World::new();
+        let scrim = world.spawn(modal_scrim_node()).id();
+        let node = world.get::<Node>(scrim).unwrap();
+        assert_eq!(node.justify_content, JustifyContent::Center);
+        assert_eq!(node.align_items, AlignItems::Center);
+
+        let plate = world.spawn(modal_plate_node(100.0, 50.0, 2.0)).id();
+        let node = world.get::<Node>(plate).unwrap();
+        assert_eq!(node.position_type, PositionType::Relative);
+        assert_eq!(node.margin, UiRect::default());
+        assert_eq!((node.width, node.height), (Val::Px(200.0), Val::Px(100.0)));
     }
 }

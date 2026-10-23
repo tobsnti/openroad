@@ -32,7 +32,9 @@ use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::FontAssets;
-use crate::plugins::hud::modal_dialog::{MODAL_BOTTOM, MODAL_SCRIM, MODAL_SIDE, MODAL_TOP};
+use crate::plugins::hud::modal_dialog::{
+    modal_plate_node, modal_scrim_node, MODAL_BOTTOM, MODAL_SIDE, MODAL_TOP,
+};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::scenes::SceneState;
@@ -156,26 +158,11 @@ pub fn sync_academy_appraisal(
             Name::from("Academy Appraisal"),
             UiTargetCamera(camera),
             GlobalZIndex(90),
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..default()
-            },
-            BackgroundColor(MODAL_SCRIM),
+            modal_scrim_node(),
         ))
         .with_children(|scrim| {
             scrim
-                .spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: Val::Px(PLATE.0 * s),
-                        height: Val::Px(PLATE.1 * s),
-                        margin: UiRect::all(Val::Auto),
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ))
+                .spawn((modal_plate_node(PLATE.0, PLATE.1, s),))
                 .with_children(|plate| {
                     // the msgbox2_window_ 8-piece ring: 16 at the sides, 40
                     // top, 16 bottom (`hud/modal_dialog.rs`)
