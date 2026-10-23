@@ -118,6 +118,9 @@ fn foliage_material(
     // the flip turned every back-facing quad dark — random yaws then read as
     // an alternating dark/bright tuft patchwork whenever sun N·L dominates
     // the ambient. Without the flip both faces shade like the ground.
+    // `..base` carries the .bmt material's own alpha mode, so native grass
+    // follows `graphics.foliage_alpha_to_coverage` through the loader
+    // (`SroMaterial::to_masked_material`) without a second decision here.
     let foliage = StandardMaterial {
         double_sided: false,
         cull_mode: None,
