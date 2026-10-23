@@ -261,7 +261,10 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                (map::setup_terrain_mesh), while inside the high tier \
                map::water_options::apply_water_reflection_option moves the \
                reflection blend on every change, which is what lets the Water \
-               Reflection row drop its note too. \
+               Reflection row drop its note too. `water.underwater_view` is \
+               read per frame by environment::underwater::apply_underwater_view \
+               and writes nothing while the camera is dry, so switching it off \
+               takes effect on the next frame. \
                `preset` has one more \
                writer since the Video pane's Graphics Preset row became \
                settable: `video.preset_override` in user_settings.yaml, read \

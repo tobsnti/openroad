@@ -407,6 +407,14 @@ graphics:
     # reflection: true
     # shore_fade: 24.0
     # absorption: 1.0
+    # Tint and sight distance while the camera itself is below a water plane.
+    # The camera has no collision, so at a shore it does go under, and without
+    # this the view is a flat grey-green sheet with a hard edge. Nothing here is
+    # tunable because nothing is invented: the tint is the water colour your own
+    # environment.ifo gives this region at this time of day, the reach is the
+    # same extinction length the water surface absorbs over (64 units). The
+    # original client has no underwater view, so false is the faithful image.
+    # underwater_view: true
   # Fraction of the window the 3D view renders at. The HUD is always composited
   # at the window's native size, so text and icons stay sharp; only the world
   # softens, and an FXAA post pass already runs over it.

@@ -33,6 +33,9 @@ graphics:
     # depth prepass this tier does not run.
     shore_fade: 0.0
     absorption: 0.0
+    # Off for the same reason: while the camera is under water this swaps the
+    # linear fog band for an exponential one, per shaded pixel.
+    underwater_view: false
   objects:
     factor: 100.0
     min_distance: 800.0
