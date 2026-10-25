@@ -36,7 +36,7 @@
 //! `FontIndex` through [`font_index_px`]; all nine text blocks carry index 0.
 
 use bevy::prelude::*;
-use bevy::text::LineHeight;
+use bevy::text::{LineBreak, LineHeight};
 use bevy::ui_widgets::Activate;
 
 use crate::assets::resinfo::interface_text::font_index_px;
@@ -222,8 +222,15 @@ pub fn spawn_my_info_window(
             MyInfoFace,
             // filled by `update_my_info_portrait` once the mini-info panel's
             // offscreen head render exists; it is created in another plugin's
-            // enter system, so the handle cannot be read at spawn time
+            // enter system, so the handle cannot be read at spawn time.
+            //
+            // Hidden until then, because `Handle::default()` is bevy's white
+            // 1x1 placeholder: an unfilled picture slot draws a white square
+            // over the ring (`evidence/gallery-2026-10-23/item_mall.png`).
+            // The ring alone is the honest empty state — the pane says "no
+            // portrait yet" instead of showing a blank one.
             ImageNode::new(Handle::default()),
+            Visibility::Hidden,
             abs_node(content_rect(FACE_RECT), s),
             Pickable::IGNORE,
         ));
@@ -232,8 +239,7 @@ pub fn spawn_my_info_window(
             Text::default(),
             text_font(&fonts, font_px, s),
             TextColor(Color::WHITE),
-            TextLayout::justify(Justify::Center),
-            abs_node(content_rect(NAME_RECT), s),
+            one_line(Justify::Center, content_rect(NAME_RECT), s),
             Pickable::IGNORE,
         ));
         content.spawn((
@@ -241,8 +247,7 @@ pub fn spawn_my_info_window(
             Text::default(),
             text_font(&fonts, font_px, s),
             TextColor(Color::WHITE),
-            TextLayout::justify(Justify::Right),
-            abs_node(content_rect(LEVEL_RECT), s),
+            one_line(Justify::Right, content_rect(LEVEL_RECT), s),
             Pickable::IGNORE,
         ));
         for (index, row) in ROWS.iter().enumerate() {
@@ -252,8 +257,7 @@ pub fn spawn_my_info_window(
                 Text::new(ui_strings.get_or(row.key, row.fallback)),
                 text_font(&fonts, font_px, s),
                 TextColor(Color::WHITE),
-                TextLayout::justify(Justify::Right),
-                abs_node(content_rect(row.label), s),
+                one_line(Justify::Right, content_rect(row.label), s),
                 Pickable::IGNORE,
             ));
             content.spawn((
@@ -263,12 +267,39 @@ pub fn spawn_my_info_window(
                 Text::default(),
                 text_font(&fonts, font_px, s),
                 TextColor(Color::WHITE),
-                TextLayout::justify(Justify::Right),
-                abs_node(content_rect(row.value), s),
+                one_line(Justify::Right, content_rect(row.value), s),
                 Pickable::IGNORE,
             ));
         }
     });
+}
+
+/// One authored line, clipped to its authored box.
+///
+/// Every static in this pane is **14 units tall** at a row pitch of 24
+/// (`ifitemmallmyinfo.txt`, the three label rows `:6`/`:25`/`:44` at
+/// y = 122/98/73), so a wrapped string does not grow its box — it lands on the
+/// next row. Measured on the gallery shot
+/// (`evidence/gallery-2026-10-23/item_mall.png`, window 369x278 px against
+/// 248x187 units = hud scale 1.49): `UIIT_CTL_SILK_INQUIRY_GIFT_SILK`
+/// ("Bonus Silk") needs about 85 px where its box gives 83, and the wrap put
+/// "Silk" on top of the "Point" row with its value beside it.
+///
+/// So the answer is the data's own: one line, clipped — not a smaller font,
+/// which would make this pane disagree with every other `FontIndex=0` surface.
+/// `party_matching/ui.rs` answered the same defect the same way in this round.
+fn one_line(justify: Justify, rect: (f32, f32, f32, f32), s: f32) -> (TextLayout, Node) {
+    (
+        TextLayout {
+            justify,
+            linebreak: LineBreak::NoWrap,
+            ..default()
+        },
+        Node {
+            overflow: Overflow::clip(),
+            ..abs_node(rect, s)
+        },
+    )
 }
 
 /// The pane's text pair: a font size and the line box that goes with it.
@@ -401,14 +432,18 @@ pub fn update_my_info_identity(
 /// this runs until it appears instead of reading it at spawn time.
 pub fn update_my_info_portrait(
     target: Option<Res<PortraitTarget>>,
-    mut faces: Query<&mut ImageNode, With<MyInfoFace>>,
+    mut faces: Query<(&mut ImageNode, &mut Visibility), With<MyInfoFace>>,
 ) {
     let Some(target) = target else {
         return;
     };
-    for mut face in faces.iter_mut() {
+    for (mut face, mut visibility) in faces.iter_mut() {
         if face.image != target.0 {
             face.image = target.0.clone();
+        }
+        // the slot was hidden while it held the white placeholder handle
+        if *visibility != Visibility::Inherited {
+            *visibility = Visibility::Inherited;
         }
     }
 }
@@ -429,6 +464,22 @@ mod test {
             game_window::outer_size((CONTENT_W, CONTENT_H)),
             (248.0, 187.0)
         );
+    }
+
+    /// The premise of `one_line`: the pane's rows are 24 units apart and every
+    /// static in them is 14 tall, so a second line has nowhere to go but the
+    /// next row — which is exactly what the gallery shot caught.
+    #[test]
+    fn a_wrapped_label_lands_on_the_next_row() {
+        let [silk, gift, point] = [ROWS[0].label, ROWS[1].label, ROWS[2].label];
+        for rect in [silk, gift, point] {
+            assert_eq!(rect.3, 14.0, "{rect:?} is not the authored line height");
+        }
+        assert_eq!(gift.1 - silk.1, 25.0);
+        assert_eq!(point.1 - gift.1, 24.0);
+        // a second line starts one line-height below and is already inside the
+        // next row's box
+        assert!(gift.1 + gift.3 > point.1 - gift.3);
     }
 
     /// Rebasing is one translation by the plate's origin, and **every** element
