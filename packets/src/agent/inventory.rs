@@ -1269,6 +1269,16 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u8(inventory_slot);
                 buf.put_u8(pet_slot);
             }
+            Some(InventoryOperationResult::AvatarToInventory { source, target }) => {
+                buf.put_u8(35);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::InventoryToAvatar { source, target }) => {
+                buf.put_u8(36);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
             Some(InventoryOperationResult::GroundToPetToInventory {
                 cos_unique_id,
                 slot,
