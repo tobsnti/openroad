@@ -146,10 +146,34 @@ pub struct StorageCarryData {
 #[derive(Component)]
 pub struct StorageGhost;
 
+/// Which warehouse the gold popup is acting on.
+///
+/// One popup, two targets, rather than a second copy for the guild window:
+/// the two differ only in which state holds the stored total and which pair of
+/// `0x7034` ops the buttons send (11/12 against 32/33). A second
+/// implementation would be the same 165 lines of layout twice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GoldTarget {
+    #[default]
+    Storage,
+    GuildStorage,
+}
+
 /// The gold deposit/withdraw popup behind the money button.
 #[derive(Resource, Default)]
 pub struct GoldModal {
     pub open: bool,
+    pub target: GoldTarget,
+}
+
+impl GoldModal {
+    /// Open the popup for one warehouse. The target is set together with the
+    /// flag so a popup can never be open against the window that did not ask
+    /// for it.
+    pub fn open_for(&mut self, target: GoldTarget) {
+        self.open = true;
+        self.target = target;
+    }
 }
 
 /// The typed amount, parsed from the input every frame (empty = 0).
@@ -518,7 +542,7 @@ fn on_storage_page_press(
 }
 
 fn on_money_button(_: On<Activate>, mut modal: ResMut<GoldModal>) {
-    modal.open = true;
+    modal.open_for(GoldTarget::Storage);
 }
 
 /// Publish the hovered storage item for the shared item tooltip
@@ -813,6 +837,7 @@ pub fn deposit_drop_on_storage(
 pub fn sync_gold_modal(
     modal: Res<GoldModal>,
     state: Res<StorageState>,
+    guild: Res<crate::plugins::hud::guild_storage::model::GuildStorageState>,
     existing: Query<Entity, With<GoldModalRoot>>,
     inventories: Query<&Inventory, With<Player>>,
     ui_strings: Res<ClientUiStrings>,
@@ -840,6 +865,10 @@ pub fn sync_gold_modal(
     };
     amount.0 = 0;
     let player_gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
+    let stored_gold = match modal.target {
+        GoldTarget::Storage => state.items.gold,
+        GoldTarget::GuildStorage => guild.items.gold,
+    };
     let s = hud_scale();
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
@@ -900,8 +929,11 @@ pub fn sync_gold_modal(
                     ));
                     panel.spawn((
                         Text::new(format!(
-                            "Inventory: {player_gold}   Storage: {}",
-                            state.items.gold
+                            "Inventory: {player_gold}   {}: {stored_gold}",
+                            match modal.target {
+                                GoldTarget::Storage => "Storage",
+                                GoldTarget::GuildStorage => "Guild",
+                            }
                         )),
                         text_font(7.5),
                         TextColor(PRICE_COLOR),
@@ -1007,6 +1039,7 @@ fn on_gold_modal_button(
     activate: On<Activate>,
     buttons: Query<&GoldModalButton>,
     state: Res<StorageState>,
+    guild: Res<crate::plugins::hud::guild_storage::model::GuildStorageState>,
     inventories: Query<&Inventory, With<Player>>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     amount: Res<GoldAmount>,
@@ -1021,14 +1054,18 @@ fn on_gold_modal_button(
         return;
     }
     // The gold ops carry no NPC id, but they still need an open session: the
-    // server books them against the one 0x703C opened.
-    if state.session.is_none() {
+    // server books them against the one 0x703C (or 0x7250) opened.
+    let (has_session, stored_gold) = match modal.target {
+        GoldTarget::Storage => (state.session.is_some(), state.items.gold),
+        GoldTarget::GuildStorage => (guild.session.is_some(), guild.items.gold),
+    };
+    if !has_session {
         modal.open = false;
         return;
     }
     let player_gold = inventories.single().map(|inv| inv.gold).unwrap_or(0);
-    let (amount, request) = match button {
-        GoldModalButton::Deposit => {
+    let (amount, request) = match (button, modal.target) {
+        (GoldModalButton::Deposit, GoldTarget::Storage) => {
             let amount = amount.0.min(player_gold);
             (
                 amount,
@@ -1037,14 +1074,30 @@ fn on_gold_modal_button(
                 InventoryOperationRequest::InventoryGoldToStorage { amount },
             )
         }
-        GoldModalButton::Withdraw => {
-            let amount = amount.0.min(state.items.gold);
+        (GoldModalButton::Withdraw, GoldTarget::Storage) => {
+            let amount = amount.0.min(stored_gold);
             (
                 amount,
                 InventoryOperationRequest::StorageGoldToInventory { amount },
             )
         }
-        GoldModalButton::Cancel => unreachable!(),
+        // The guild pair, ops 32/33 — same arm as 11/12 and likewise without
+        // an NPC id.
+        (GoldModalButton::Deposit, GoldTarget::GuildStorage) => {
+            let amount = amount.0.min(player_gold);
+            (
+                amount,
+                InventoryOperationRequest::InventoryGoldToGuildStorage { amount },
+            )
+        }
+        (GoldModalButton::Withdraw, GoldTarget::GuildStorage) => {
+            let amount = amount.0.min(stored_gold);
+            (
+                amount,
+                InventoryOperationRequest::GuildStorageGoldToInventory { amount },
+            )
+        }
+        (GoldModalButton::Cancel, _) => unreachable!(),
     };
     if amount == 0 {
         info!("storage: gold amount is 0, nothing to send");
@@ -1055,11 +1108,17 @@ fn on_gold_modal_button(
         warn!("storage: no agent connection, dropping gold request");
         return;
     };
-    pending.0 = Some(match button {
-        GoldModalButton::Deposit => StorageOp::GoldDeposit,
-        GoldModalButton::Withdraw => StorageOp::GoldWithdraw,
-        GoldModalButton::Cancel => unreachable!(),
-    });
+    // `PendingStorageOp` guards the PERSONAL warehouse's ack application; the
+    // guild side has no such guard and applies its own acks, so arming it for
+    // a guild request would make the personal window swallow the next ack it
+    // did not cause.
+    if modal.target == GoldTarget::Storage {
+        pending.0 = Some(match button {
+            GoldModalButton::Deposit => StorageOp::GoldDeposit,
+            GoldModalButton::Withdraw => StorageOp::GoldWithdraw,
+            GoldModalButton::Cancel => unreachable!(),
+        });
+    }
     info!("storage: sending {:?}", request);
     if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
         error!("network: failed to send storage gold request: {}", e.0);

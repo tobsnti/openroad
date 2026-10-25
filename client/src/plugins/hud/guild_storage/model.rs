@@ -85,8 +85,8 @@ pub struct GuildStorageSession {
     pub npc_id: u32,
 }
 
-/// The guild warehouse as the server last described it. Model only: there is
-/// no window to render it yet (see the module note).
+/// The guild warehouse as the server last described it, and what the window in
+/// `ui.rs` renders (#185, #190).
 #[derive(Resource, Default)]
 pub struct GuildStorageState {
     pub session: Option<GuildStorageSession>,
@@ -524,12 +524,18 @@ pub fn on_guild_storage_operation(
                     inventory.gain_item(item.clone());
                 }
             }
-            // Gold (32/33) belongs to the money button's slice; naming them
-            // here rather than letting them fall through keeps the backlog
-            // visible instead of silent.
-            InventoryOperationResult::InventoryGoldToGuildStorage { .. }
-            | InventoryOperationResult::GuildStorageGoldToInventory { .. } => {
-                debug!("guild storage: gold ack, no money button in this lap");
+            // Gold: the ack's amount is authoritative for the GUILD total
+            // only. The player's own total is NOT touched here — the server
+            // sends the authoritative new value in a 0x304E alongside, and
+            // subtracting on top of it double-counted the move until a relog.
+            // That trap is the personal warehouse's, already paid for once.
+            InventoryOperationResult::InventoryGoldToGuildStorage { amount } => {
+                debug!("guild storage: deposited {amount} gold (player total via 0x304E)");
+                state.items.gold = state.items.gold.saturating_add(amount);
+            }
+            InventoryOperationResult::GuildStorageGoldToInventory { amount } => {
+                debug!("guild storage: withdrew {amount} gold (player total via 0x304E)");
+                state.items.gold = state.items.gold.saturating_sub(amount);
             }
             _ => {}
         }

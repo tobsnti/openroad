@@ -54,7 +54,9 @@ use crate::plugins::hud::guild_storage::model::GuildStorageState;
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::inventory::ui::{DragGhost, InventoryRoot};
 use crate::plugins::hud::scale::{hud_scale, text_px};
+use crate::plugins::hud::storage::model::StorageHoveredItem;
 use crate::plugins::hud::storage::model::STORAGE_SLOTS_PER_PAGE;
+use crate::plugins::hud::storage::ui::{GoldModal, GoldTarget};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::inventory::{Inventory, BAG_FIRST_SLOT};
 use crate::plugins::player::Player;
@@ -113,6 +115,8 @@ const MONEY_RECT: (f32, f32, f32, f32) = (
     CONTENT_W,
     24.0,
 );
+/// `GDR_STORAGE_BTN_MONEY` (`ifstorageroom.txt:645`) — the button itself.
+const MONEY_BTN_RECT: (f32, f32, f32, f32) = content_rect((78.0, 286.0, 20.0, 20.0));
 /// `GDR_STORAGE_BTN_MONEY` (`ifstorageroom.txt:645`) — the same rect the
 /// personal warehouse uses, because it is the same layout file for the same
 /// `CIFStorageRoom` class (module note).
@@ -456,7 +460,39 @@ pub fn sync_guild_storage_window(
             abs_node((MONEY_RECT.0 + 96.0, MONEY_RECT.1 + 6.0, 126.0, 14.0), s),
             Pickable::IGNORE,
         ));
+        // com_moneybutton ships no focus/press art variants (the personal
+        // warehouse's own note), so the style reuses the base texture.
+        let money_art: Handle<Image> =
+            asset_server.load("media://interface/ifcommon/com_moneybutton.ddj");
+        content
+            .spawn((
+                GuildMoneyButton,
+                Button,
+                Hovered::default(),
+                abs_node(MONEY_BTN_RECT, s),
+                ImageNode {
+                    image: money_art.clone(),
+                    image_mode: NodeImageMode::Stretch,
+                    ..default()
+                },
+                ImageButtonStyle {
+                    normal: money_art.clone(),
+                    hover: money_art.clone(),
+                    press: money_art,
+                    ..Default::default()
+                },
+            ))
+            .observe(on_money_button);
     });
+}
+
+/// The money button names its own warehouse and nothing else: the popup is the
+/// shared one in `storage::gold_modal`-less `storage/ui.rs`, parameterised over
+/// a [`GoldTarget`], which turns Store/Take into ops 32/33 for this side.
+/// Nothing is applied here — the `0xB034` ack moves the gold, and it moves it
+/// on the guild side only (`model::on_guild_storage_operation`).
+fn on_money_button(_: On<Activate>, mut modal: ResMut<GoldModal>) {
+    modal.open_for(GoldTarget::GuildStorage);
 }
 
 /// what sends the 0x7251 that releases it — it fires precisely because the
@@ -803,4 +839,49 @@ pub fn clear_carry_with_guild_storage(
     }
     let data = carry.0.take().expect("checked above");
     commands.entity(data.ghost).despawn();
+}
+
+/// `GDR_STORAGE_BTN_MONEY` on this window.
+#[derive(Component)]
+struct GuildMoneyButton;
+
+/// Publish the hovered guild item for the shared item tooltip, the same way
+/// the personal warehouse does — one resource, one tooltip, two windows.
+/// Suppressed while something is on the cursor: a tooltip under a carried
+/// icon describes the slot the player is about to cover.
+pub fn track_guild_storage_hover(
+    state: Res<GuildStorageState>,
+    cells: Query<(&GuildStorageSlotCell, &Hovered)>,
+    carry: Res<GuildStorageCarry>,
+    inv_state: Res<InventoryState>,
+    mut hovered: ResMut<StorageHoveredItem>,
+) {
+    let carrying = carry.0.is_some() || inv_state.drag.is_some();
+    let item = (!carrying)
+        .then(|| {
+            cells
+                .iter()
+                .find(|(_, hovered)| hovered.get())
+                .and_then(|(cell, _)| state.items.get(wire_slot(&state, cell.cell)))
+        })
+        .flatten();
+    if hovered.0.as_ref() != item {
+        hovered.0 = item.cloned();
+    }
+}
+
+/// OnExit cleanup — the window and the mirrored contents both go, so a second
+/// visit does not open onto the previous guild's shelves.
+pub fn cleanup_guild_storage(
+    mut commands: Commands,
+    windows: Query<Entity, With<GuildStorageWindowRoot>>,
+    mut state: ResMut<GuildStorageState>,
+) {
+    for entity in windows.iter() {
+        commands.entity(entity).despawn();
+    }
+    state.session = None;
+    state.items = Inventory::default();
+    state.synced = false;
+    state.active_page = 0;
 }

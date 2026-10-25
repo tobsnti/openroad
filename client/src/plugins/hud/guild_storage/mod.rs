@@ -33,6 +33,7 @@ impl Plugin for GuildStoragePlugin {
                     ui::finish_guild_storage_carry,
                     ui::deposit_drop_on_guild_storage,
                     ui::clear_carry_with_guild_storage,
+                    ui::track_guild_storage_hover,
                     // chained for the same reason the personal storage push
                     // is: begin/chunk/end usually land in ONE frame, and an
                     // unordered tuple lets `end` parse an empty buffer
@@ -44,6 +45,12 @@ impl Plugin for GuildStoragePlugin {
                         .chain(),
                 )
                     .run_if(super::hud_scenes),
+            )
+            // Same seam as the personal warehouse: leaving the world drops the
+            // window and the mirror together.
+            .add_systems(
+                OnExit(crate::scenes::SceneState::GameWorld),
+                ui::cleanup_guild_storage,
             )
             // PostUpdate like the sibling windows: despawning inside the
             // observer that closed the window tears down the entity being read.
