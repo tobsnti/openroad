@@ -32,6 +32,7 @@ use crate::scenes::testing::particles::ParticleTestingScenePlugin;
 use crate::scenes::testing::party_matching_ui::PartyMatchingUiPreviewPlugin;
 use crate::scenes::testing::party_ui::PartyUiPreviewPlugin;
 use crate::scenes::testing::quest_reward_ui::QuestRewardUiPreviewPlugin;
+use crate::scenes::testing::quest_ui::QuestUiPreviewPlugin;
 use crate::scenes::testing::skill_window_ui::SkillWindowUiPreviewPlugin;
 use crate::scenes::testing::skills::SkillsScenePlugin;
 use crate::scenes::testing::stall_ui::StallUiPreviewPlugin;
@@ -210,6 +211,9 @@ fn add_ui_previews(app: &mut App) {
     if wanted("npc_dialog") {
         app.add_plugins(NpcDialogUiPreviewPlugin);
     }
+    if wanted("quest") {
+        app.add_plugins(QuestUiPreviewPlugin);
+    }
     if wanted("quest_reward") {
         app.add_plugins(QuestRewardUiPreviewPlugin);
     }
@@ -241,7 +245,7 @@ fn add_ui_previews(app: &mut App) {
 
 /// Every name [`add_ui_previews`] knows, for the gallery runner and for the
 /// test that keeps the two in step.
-pub const UI_PREVIEW_NAMES: [&str; 19] = [
+pub const UI_PREVIEW_NAMES: [&str; 20] = [
     "char_select",
     "mini_info",
     "minimap",
@@ -252,6 +256,7 @@ pub const UI_PREVIEW_NAMES: [&str; 19] = [
     "character_info",
     "party",
     "npc_dialog",
+    "quest",
     "quest_reward",
     "choice_confirm",
     "world_map",
