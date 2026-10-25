@@ -70,12 +70,13 @@ use crate::plugins::net::agent::AgentConnection;
 use crate::assets::FontAssets;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::inventory::model::InventoryState;
+use crate::plugins::hud::inventory::ui::InventoryRoot;
 use crate::plugins::hud::modal_dialog::{
     modal_interior, modal_plate_node, modal_scrim_node, spawn_modal_frame,
 };
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::stall::model::StallState;
-use crate::plugins::hud::stall::ui::StallWindowRoot;
+use crate::plugins::hud::stall::ui::{StallSlot, StallWindowRoot};
 use crate::plugins::net::inventory::Inventory;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientItemData, ClientTextNames, ClientUiStrings};
@@ -575,6 +576,173 @@ pub fn send_remove(conn: &Query<&SilkroadConnection, With<AgentConnection>>, sta
     );
 }
 
+/// A row lifted off our own stall, on its way back to the bag.
+///
+/// Mirror image of [`stock_drop_on_stall`]: that one carries an item *into*
+/// the stall and raises the price box, this one carries a listed row *out* and
+/// sends `0x70BA` type 3 on release over the inventory.
+///
+/// Why a drag at all, and what is `[S]` about it: the row template's icon
+/// socket `GDR_STALLSLOT_ICON` is a **`CIFSlotWithHelp`**
+/// (`ifstallslot.txt:82`), the corpus class for a slot that carries
+/// drag-and-drop — the row's other control, `GDR_STALLSLOT_MODIFY`, is a plain
+/// `CIFButton` and already does the re-pricing. So the data says this socket
+/// takes a gesture, and taking the row off sale is the only remaining act the
+/// wire has a type for. What is **not** measured is the original's exact
+/// gesture (no capture, no decompile arm) — hence `[S]`, and hence nothing is
+/// invented beyond "drag out of the window, like every other item socket in
+/// this tree".
+#[derive(Resource, Default)]
+pub struct StallCarry(pub Option<StallCarryData>);
+
+pub struct StallCarryData {
+    /// The carried row's stall slot — the only field `0x70BA` type 3 has.
+    pub stall_slot: u8,
+    pub ghost: Entity,
+    /// True until the pickup press's own `just_pressed` frame has passed.
+    pub just_picked: bool,
+}
+
+/// The take-down carry's cursor-following icon.
+#[derive(Component)]
+pub struct StallCarryGhost;
+
+/// Lift row `index` off our own stall: spawns the ghost and describes the
+/// carry. `None` when there is no row, no itemdata icon for it, or the index
+/// is not a wire slot — no ghost, no carry, nothing sent.
+///
+/// A row with no icon happens for real: `ref_id` is only as good as the user's
+/// itemdata, and the offline preview builds rows by hand. Refusing the carry
+/// there is better than a carry the player cannot see.
+pub fn begin_take_down(
+    state: &StallState,
+    index: usize,
+    item_data: &ClientItemData,
+    asset_server: &AssetServer,
+    camera: Option<Entity>,
+    commands: &mut Commands,
+) -> Option<StallCarryData> {
+    let row = state.slots.get(index).and_then(Option::as_ref)?;
+    let stall_slot = u8::try_from(index).ok()?;
+    let icon = item_data
+        .get(&(row.ref_id as i32))
+        .and_then(|item| item.icon_path())?;
+    let size = super::ui::SLOT_ICON.2 * hud_scale();
+    let mut ghost = commands.spawn((
+        StallCarryGhost,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(-1000.0),
+            top: Val::Px(-1000.0),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            ..default()
+        },
+        ImageNode {
+            image: asset_server.load(icon),
+            image_mode: NodeImageMode::Stretch,
+            ..default()
+        },
+        GlobalZIndex(80),
+        Pickable::IGNORE,
+    ));
+    if let Some(camera) = camera {
+        ghost.insert(bevy::ui::UiTargetCamera(camera));
+    }
+    Some(StallCarryData {
+        stall_slot,
+        ghost: ghost.id(),
+        just_picked: true,
+    })
+}
+
+/// Cursor-follow for the take-down ghost.
+pub fn update_stall_ghost(
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut ghosts: Query<&mut Node, With<StallCarryGhost>>,
+) {
+    if ghosts.is_empty() {
+        return;
+    }
+    let Some(cursor) = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position())
+    else {
+        return;
+    };
+    let size = super::ui::SLOT_ICON.2 * hud_scale();
+    for mut node in ghosts.iter_mut() {
+        node.left = Val::Px(cursor.x - size / 2.0);
+        node.top = Val::Px(cursor.y - size / 2.0);
+    }
+}
+
+/// Route the take-down carry's drop: the inventory window → `0x70BA` type 3,
+/// the row it came from → stay a click-carry, anywhere else → cancel.
+///
+/// Why the drop target cannot be more precise than "the inventory": type 3 is
+/// `{stall_slot, unknown0}` and has **no** target slot, so a hovered bag slot
+/// and the window body are the same request. The server decides where the item
+/// lands, and the `0xB0BA` ack re-sends the whole listing — which is why
+/// nothing here writes into [`StallState`].
+///
+/// Dropping on a *different* row is a cancel rather than a re-order: `0x70BA`
+/// has no type that moves a row within the stall (1 re-prices, 2 adds, 3
+/// removes), so there is nothing to send for that gesture.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_stall_carry(
+    buttons: Res<ButtonInput<MouseButton>>,
+    stall: Res<StallState>,
+    inv_state: Res<InventoryState>,
+    cells: Query<(&StallSlot, &Hovered)>,
+    inv_roots: Query<&Hovered, With<InventoryRoot>>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut carry: ResMut<StallCarry>,
+    mut commands: Commands,
+) {
+    let Some(data) = &carry.0 else {
+        return;
+    };
+    if buttons.just_pressed(MouseButton::Right) || !stall.open || !stall.owner {
+        let data = carry.0.take().expect("checked above");
+        commands.entity(data.ghost).despawn();
+        return;
+    }
+    let clicked = buttons.just_pressed(MouseButton::Left);
+    let released = buttons.just_released(MouseButton::Left);
+    if !clicked && !released {
+        return;
+    }
+    if clicked && data.just_picked {
+        // the pickup press itself
+        if let Some(data) = carry.0.as_mut() {
+            data.just_picked = false;
+        }
+        return;
+    }
+
+    let source = data.stall_slot;
+    let over_own_row = cells
+        .iter()
+        .any(|(cell, hovered)| hovered.get() && cell.0 == source as usize);
+    if over_own_row && released {
+        // release over the picked row keeps it a click-carry, the same vanilla
+        // feel the warehouse windows reproduce
+        return;
+    }
+    let over_inventory =
+        inv_state.hovered_slot.is_some() || inv_roots.iter().any(|hovered| hovered.get());
+
+    let data = carry.0.take().expect("checked above");
+    commands.entity(data.ghost).despawn();
+    if !over_inventory || over_own_row {
+        return;
+    }
+    info!("stall: taking slot {source} off sale (0x70BA type 3)");
+    send_remove(&conn, source);
+}
+
 /// Keep the two numbers in step with the two fields.
 ///
 /// The clamp lives here rather than in the click for the reason the store's
@@ -666,6 +834,7 @@ mod tests {
         use crate::plugins::hud::stall::model::StallRow;
         let mut state = StallState::default();
         state.slots[2] = Some(StallRow {
+            ref_id: 0,
             name: "Elixir".into(),
             quantity: 7,
             price: 1234,

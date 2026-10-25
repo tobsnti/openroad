@@ -459,12 +459,14 @@ mod test {
     fn an_item_list_ack_replaces_the_whole_grid() {
         let mut state = owned_stall();
         state.slots[0] = Some(StallRow {
+            ref_id: 0,
             name: "old".into(),
             quantity: 1,
             price: 10,
         });
         let mut replacement = vec![None; STALL_SLOTS];
         replacement[4] = Some(StallRow {
+            ref_id: 0,
             name: "new".into(),
             quantity: 3,
             price: 99,
@@ -492,6 +494,7 @@ mod test {
     fn an_item_update_ack_reprices_a_row_and_never_invents_one() {
         let mut state = owned_stall();
         state.slots[2] = Some(StallRow {
+            ref_id: 0,
             name: "sword".into(),
             quantity: 1,
             price: 10,

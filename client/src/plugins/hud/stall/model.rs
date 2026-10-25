@@ -30,10 +30,15 @@ pub enum StallTradingState {
 /// value cell in the tree is `Text=""` — server-authoritative.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StallRow {
+    /// itemdata ref id of the listed item, straight from the wire row
+    /// (`StallItemRow::item.ref_id`). The listing carries the whole item body,
+    /// so the icon is available — the row kept only the *name* derived from
+    /// this id and threw the id itself away, which left the take-down carry
+    /// with nothing to draw.
+    pub ref_id: u32,
     pub name: String,
-    /// Read by the row template's quantity cell once the slot art lands
-    /// (`ifstallslot.txt`); kept now so the model matches the wire row.
-    #[allow(dead_code)]
+    /// Drawn by the row template's quantity cell `GDR_STALLSLOT_AMOUNT`
+    /// (`ifstallslot.txt:44`).
     pub quantity: u16,
     pub price: u64,
 }
