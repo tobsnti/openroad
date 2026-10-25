@@ -287,6 +287,33 @@ pub fn on_inventory_operation_response(
                     }
                 }
             }
+            // The two avatar-container acks (ops 35/36). Whole-slot, no
+            // quantity, and they move between two different bands — see
+            // `Inventory::apply_avatar_move`.
+            (
+                Some(
+                    op @ (InventoryOperationResult::AvatarToInventory { .. }
+                    | InventoryOperationResult::InventoryToAvatar { .. }),
+                ),
+                _,
+            ) => {
+                let (source, target, to_avatar) = match op {
+                    InventoryOperationResult::AvatarToInventory { source, target } => {
+                        (*source, *target, false)
+                    }
+                    InventoryOperationResult::InventoryToAvatar { source, target } => {
+                        (*source, *target, true)
+                    }
+                    _ => unreachable!("the arm above matches exactly these two"),
+                };
+                debug!(
+                    "inventory: avatar move {source} -> {target} ({})",
+                    if to_avatar { "on" } else { "off" }
+                );
+                for mut inventory in inventories.iter_mut() {
+                    inventory.apply_avatar_move(source, target, to_avatar);
+                }
+            }
             (Some(InventoryOperationResult::Drop { slot }), _) => {
                 debug!("inventory: dropped the item in slot {slot}");
                 for mut inventory in inventories.iter_mut() {

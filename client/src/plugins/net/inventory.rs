@@ -41,8 +41,9 @@ pub struct Inventory {
     /// One entry per wire slot; `None` is an empty slot.
     pub slots: Vec<Option<InventoryItem>>,
     /// The separate avatar inventory (0x3013's second item section),
-    /// slot-indexed like `slots`. Display-only: go-sro implements no avatar
-    /// equip/unequip operations.
+    /// slot-indexed like `slots`. Moves in and out of it are ops 35/36 and are
+    /// applied by [`Inventory::apply_avatar_move`]; go-sro implements neither
+    /// op, which is why there is no capture of them to check against.
     pub avatar_slots: Vec<Option<InventoryItem>>,
     pub gold: u64,
 }
@@ -196,6 +197,55 @@ impl Inventory {
             }
         }
         self.slots[target] = Some(moved);
+    }
+
+    /// Apply an avatar-container move: the two acks of ops 35/36
+    /// (`InventoryOperationResult::{AvatarToInventory, InventoryToAvatar}`).
+    ///
+    /// The avatar container is a **second** vector (`avatar_slots`), with its
+    /// own slot numbering, so this cannot go through [`apply_move`]: that one
+    /// moves inside `slots` and knows nothing about the other band. Whole-slot
+    /// only — neither op carries a quantity, so there is no merge and no split
+    /// to mirror; what the ack describes is one item changing container.
+    ///
+    /// `[S]` like the two acks themselves: the move is applied exactly as the
+    /// server described it, and an ack that contradicts the local model (an
+    /// empty source) is logged and dropped rather than invented around. A later
+    /// `0x3013` snapshot is the correction path, as it is for every other band.
+    ///
+    /// [`apply_move`]: Self::apply_move
+    pub fn apply_avatar_move(&mut self, source: u8, target: u8, to_avatar: bool) {
+        let (from, to): (
+            &mut Vec<Option<InventoryItem>>,
+            &mut Vec<Option<InventoryItem>>,
+        ) = if to_avatar {
+            let (bag, avatar) = (&mut self.slots, &mut self.avatar_slots);
+            (bag, avatar)
+        } else {
+            let (avatar, bag) = (&mut self.avatar_slots, &mut self.slots);
+            (avatar, bag)
+        };
+        let (source, target) = (source as usize, target as usize);
+        if source >= from.len() {
+            warn!("inventory: avatar ack names source slot {source}, which this band has not");
+            return;
+        }
+        let Some(mut moved) = from[source].take() else {
+            warn!("inventory: avatar ack moves an empty slot {source} — local state had drifted");
+            return;
+        };
+        if target >= to.len() {
+            to.resize(target + 1, None);
+        }
+        moved.slot = target as u8;
+        // A swap is what the original's own container move does when the target
+        // is taken: the costume already worn goes back to the slot the new one
+        // came from.
+        if let Some(mut swapped) = to[target].take() {
+            swapped.slot = source as u8;
+            from[source] = Some(swapped);
+        }
+        to[target] = Some(moved);
     }
 
     /// Combine two stacks of the same item, if that is what this move is.
@@ -475,6 +525,52 @@ mod test {
                 None => ItemTypeData::TransformScroll { mask_ref_id: 0 },
             },
         }
+    }
+
+    /// The avatar container is a second band, so its ack cannot go through
+    /// `apply_move`. Both directions, the swap the original's own container
+    /// move does, and the refusal when the ack contradicts the local model.
+    #[test]
+    fn an_avatar_move_crosses_the_two_bands() {
+        let mut inv = Inventory {
+            slots: {
+                let mut s = vec![None; (BAG_FIRST_SLOT + 3) as usize];
+                s[BAG_FIRST_SLOT as usize] = Some(item(BAG_FIRST_SLOT, 70, None));
+                s
+            },
+            avatar_slots: vec![None; 5],
+            gold: 0,
+        };
+
+        // put on: bag -> avatar, the bag slot empties and the slot id follows
+        inv.apply_avatar_move(BAG_FIRST_SLOT, 2, true);
+        assert!(inv.get(BAG_FIRST_SLOT).is_none());
+        let worn = inv.get_avatar(2).expect("the costume is worn");
+        assert_eq!((worn.ref_id, worn.slot), (70, 2));
+
+        // take off: avatar -> bag, the other way round
+        inv.apply_avatar_move(2, BAG_FIRST_SLOT + 1, false);
+        assert!(inv.get_avatar(2).is_none());
+        let back = inv
+            .get(BAG_FIRST_SLOT + 1)
+            .expect("the costume is in the bag");
+        assert_eq!((back.ref_id, back.slot), (70, BAG_FIRST_SLOT + 1));
+
+        // a taken target swaps: the costume already worn goes back to the
+        // source slot, which is what a container move does
+        inv.avatar_slots[0] = Some(item(0, 71, None));
+        inv.apply_avatar_move(BAG_FIRST_SLOT + 1, 0, true);
+        assert_eq!(inv.get_avatar(0).map(|i| i.ref_id), Some(70));
+        let displaced = inv
+            .get(BAG_FIRST_SLOT + 1)
+            .expect("the worn costume came back");
+        assert_eq!((displaced.ref_id, displaced.slot), (71, BAG_FIRST_SLOT + 1));
+
+        // an ack that names an empty source changes nothing — local drift is
+        // logged and dropped, never invented around
+        let before = inv.avatar_slots.clone();
+        inv.apply_avatar_move(BAG_FIRST_SLOT + 2, 3, true);
+        assert_eq!(inv.avatar_slots, before);
     }
 
     fn inventory(size: u8, items: Vec<InventoryItem>) -> Inventory {
