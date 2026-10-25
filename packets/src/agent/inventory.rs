@@ -212,6 +212,28 @@ pub enum InventoryOperationRequest {
     /// Op 33 — withdraw gold from the guild account. `[S]`, see op 32.
     #[sro_packet(value = 33)]
     GuildStorageGoldToInventory { amount: u64 },
+    /// Op 35 (`0x23`) — take a costume **off**: avatar `source` → inventory
+    /// `target`.
+    ///
+    /// `[S]`, and the mark is measured rather than assumed: across all 13
+    /// `packet_dump` roots on this machine there is exactly **one** `0x7034`
+    /// capture (7 frames, `or-gate/packet_dump/c2s/0x7034.log`) and **every
+    /// one of them is op 8** (buy). So neither avatar op has ever been on the
+    /// wire here, and the body below rests on the original's own item-move
+    /// builder, not on a frame.
+    ///
+    /// What that builder does, for the avatar container `0x4E`: the same arm
+    /// that writes ops 2/3/26/27 writes **two bare slot bytes** and returns —
+    /// `+3 = source`, `+4 = target` — so there is no quantity here. An avatar
+    /// move is whole-slot, exactly as the pet ops above are, and for the same
+    /// reason: the response layout carries no count either.
+    #[sro_packet(value = 35)]
+    AvatarToInventory { source: u8, target: u8 },
+    /// Op 36 (`0x24`) — put a costume **on**: inventory `source` → avatar
+    /// `target`. Same arm and therefore the same two bytes as op 35 with the
+    /// slots swapped. `[S]`, see op 35.
+    #[sro_packet(value = 36)]
+    InventoryToAvatar { source: u8, target: u8 },
 }
 
 /// 0x703E — client → server item repair at an NPC (AGENT_INVENTORY_ITEM_REPAIR
@@ -795,6 +817,17 @@ pub enum InventoryOperationResult {
         inventory_slot: u8,
         pet_slot: u8,
     },
+    /// Op 35 — the costume moved out of the avatar container into the bag.
+    ///
+    /// `[S]`, same reading as the request (`InventoryOperationRequest::
+    /// AvatarToInventory`): the client's own serializer answers this op on the
+    /// arm that writes `+2 u8, +3 u8` and then the repeated-slot list op 0's
+    /// ack also carries. Only the two slots are decoded, and the list is
+    /// ignored exactly as op 0 ignores it.
+    AvatarToInventory { source: u8, target: u8 },
+    /// Op 36 — the bag item moved into the avatar container. Same arm and
+    /// layout as op 35. `[S]`.
+    InventoryToAvatar { source: u8, target: u8 },
     /// Op 28 — the pick pet grabbed an item and passed it through to the
     /// character's inventory: `cosUid:u32, slot:u8, [<item body> only if
     /// slot != 254]` (`:2122-2127`). See [`PET_PICKUP_SLOT_NONE`] — on the
@@ -1054,6 +1087,16 @@ impl TryFrom<Bytes> for InventoryOperationResponse {
                 inventory_slot: value[6],
                 pet_slot: value[7],
             },
+            // The two avatar ops: two bare slots, and whatever list follows is
+            // ignored the way op 0's is.
+            35 if value.len() >= 4 => InventoryOperationResult::AvatarToInventory {
+                source: value[2],
+                target: value[3],
+            },
+            36 if value.len() >= 4 => InventoryOperationResult::InventoryToAvatar {
+                source: value[2],
+                target: value[3],
+            },
             // The sentinel is not a special case *here*: `slice(7..)` is empty
             // exactly when the body ended at the slot byte, which is what the
             // sentinel produces. Reading an item body unconditionally is what
@@ -1225,6 +1268,16 @@ impl From<InventoryOperationResponse> for Bytes {
                 buf.put_u32_le(cos_unique_id);
                 buf.put_u8(inventory_slot);
                 buf.put_u8(pet_slot);
+            }
+            Some(InventoryOperationResult::AvatarToInventory { source, target }) => {
+                buf.put_u8(35);
+                buf.put_u8(source);
+                buf.put_u8(target);
+            }
+            Some(InventoryOperationResult::InventoryToAvatar { source, target }) => {
+                buf.put_u8(36);
+                buf.put_u8(source);
+                buf.put_u8(target);
             }
             Some(InventoryOperationResult::GroundToPetToInventory {
                 cos_unique_id,
@@ -1688,6 +1741,39 @@ mod tests {
                 cos_unique_id: 0x539,
                 inventory_slot: 13,
                 pet_slot: 4,
+            })
+        );
+        let back: Bytes = response.into();
+        assert_eq!(back, bytes);
+    }
+
+    /// The two avatar ops (35/36): two bare slots, nothing else, and the
+    /// round-trip holds. `[S]` — no capture of either exists on this machine
+    /// (one `0x7034` dump, 7 frames, all op 8), so this pins the reading, not
+    /// a frame.
+    #[test]
+    fn the_avatar_ops_carry_two_bare_slots() {
+        // op 35 — take off: avatar slot 2 -> bag slot 14
+        let bytes = Bytes::from_static(&[0x01, 35, 2, 14]);
+        let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
+        assert_eq!(
+            response.operation,
+            Some(InventoryOperationResult::AvatarToInventory {
+                source: 2,
+                target: 14,
+            })
+        );
+        let back: Bytes = response.into();
+        assert_eq!(back, bytes);
+
+        // op 36 — put on: the same two bytes with the slots swapped
+        let bytes = Bytes::from_static(&[0x01, 36, 14, 2]);
+        let response = InventoryOperationResponse::try_from(bytes.clone()).unwrap();
+        assert_eq!(
+            response.operation,
+            Some(InventoryOperationResult::InventoryToAvatar {
+                source: 14,
+                target: 2,
             })
         );
         let back: Bytes = response.into();
