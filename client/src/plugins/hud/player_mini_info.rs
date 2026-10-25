@@ -1425,6 +1425,68 @@ pub fn attach_portrait_rig(
     }
 }
 
+/// One line, once: where the portrait camera really ends up after propagation.
+///
+/// IDEA. The portrait pose is built in PLAYER space (`portrait_transform`
+/// aims at the head box with `looking_at`) and then inherited through the
+/// player's own transform — and `spawn_player_character` spawns the character
+/// MIRRORED in X. A mirror does not commute with `looking_at`: the local pose
+/// can be right while the propagated one is not, so the question "is the
+/// camera still in front of the face?" cannot be read off the local transform.
+/// It needs the propagated `GlobalTransform`, which is why this runs in
+/// `PostUpdate` after `TransformSystems::Propagate`.
+///
+/// Three numbers in the line answer it, all horizontal (the front/back
+/// question has no vertical part, and the camera sits at head height while
+/// the player's origin is at the feet):
+/// * `side` — the camera's position relative to the character along the
+///   character's back axis (`camera.rs`: back is +Z). `+1` = standing behind
+///   the head, `-1` = in front of the face.
+/// * `aim` — does the camera look at the character at all? `+1` yes, `-1`
+///   away from it.
+/// * `handed` — the determinant of the camera's propagated basis. Negative
+///   means the mirror reached the view, i.e. the portrait image is flipped
+///   even when `side`/`aim` are right.
+///
+/// This is a probe, not a fix: it says whether the next slice belongs at the
+/// mirror or at the distance.
+pub fn log_portrait_pose_once(
+    config: Option<Res<crate::plugins::config::ClientConfig>>,
+    cameras: Query<(&GlobalTransform, &ChildOf, &PortraitAim), With<PortraitCamera>>,
+    players: Query<&GlobalTransform, With<Player>>,
+    mut logged: Local<bool>,
+) {
+    if *logged || !config.is_some_and(|config| config.dev_tools) {
+        return;
+    }
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+    for (camera_gt, child_of, aim) in cameras.iter() {
+        // An unaimed camera still carries the default pose, which would say
+        // nothing about the framing the player actually sees.
+        if aim.signature == 0 {
+            continue;
+        }
+        let Ok(player_gt) = players.get(child_of.parent()) else {
+            continue;
+        };
+        let offset = flat(camera_gt.translation() - player_gt.translation());
+        let forward = camera_gt.forward().as_vec3();
+        info!(
+            "portrait probe: camera {:.2?} forward {:.2?} | player {:.2?} back {:.2?} \
+             scale {:.2?} | side {:+.2} aim {:+.2} handed {:+.3}",
+            camera_gt.translation(),
+            forward,
+            player_gt.translation(),
+            player_gt.back().as_vec3(),
+            player_gt.compute_transform().scale,
+            offset.dot(flat(player_gt.back().as_vec3())),
+            flat(forward).dot(flat(player_gt.translation() - camera_gt.translation())),
+            camera_gt.affine().matrix3.determinant(),
+        );
+        *logged = true;
+    }
+}
+
 /// Camera pose looking at `focus` (player space) from `distance` in front of
 /// the face (the body faces -Z), yawed slightly to meet the stand pose's
 /// head turn.
@@ -1682,6 +1744,35 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use packets::NetworkExt;
+
+    /// What the probe's three numbers mean, pinned on a hand-built pair so the
+    /// log line can be read without re-deriving the convention: a character
+    /// mirrored in X (as `spawn_player_character` spawns it) with the portrait
+    /// camera at its local `-Z`, i.e. in front of the face.
+    ///
+    /// Expected in a healthy run: `side` negative (camera on the face side),
+    /// `aim` near +1 (it looks at the character), `handed` negative (the
+    /// mirror reaches the view, so the portrait image itself is flipped).
+    /// A log line that disagrees names which of the three is the defect.
+    #[test]
+    fn the_probes_numbers_say_which_side_the_camera_is_on() {
+        let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+        let player = GlobalTransform::from(Transform::from_scale(Vec3::new(-1.0, 1.0, 1.0)));
+        let camera = player.mul_transform(portrait_transform(
+            PORTRAIT_DEFAULT_FOCUS,
+            PORTRAIT_DEFAULT_DISTANCE,
+        ));
+
+        let offset = flat(camera.translation() - player.translation());
+        let side = offset.dot(flat(player.back().as_vec3()));
+        let aim =
+            flat(camera.forward().as_vec3()).dot(flat(player.translation() - camera.translation()));
+        let handed = camera.affine().matrix3.determinant();
+
+        assert!(side < -0.9, "the camera stands on the face side: {side}");
+        assert!(aim > 0.9, "and looks at the character: {aim}");
+        assert!(handed < 0.0, "the mirrored parent flips the view: {handed}");
+    }
 
     /// The panel is the one place in the HUD where the tree names **two**
     /// slots: the HP/MP overlays are its only `FontIndex=1` blocks and the
@@ -2173,5 +2264,18 @@ impl Plugin for PlayerMiniInfoPlugin {
                         .and_then(not(crate::plugins::settings::keymap::text_field_focused)),
                 ),
             );
+
+        // The probe is registered unconditionally and reads its `dev_tools`
+        // gate inside the system: a `build` that derives from `ClientConfig`
+        // freezes the value for the process, which
+        // `no_plugin_build_derives_a_value_from_the_config` forbids. For a
+        // system that logs one line and then returns on every later frame,
+        // the check costs nothing and follows a changed setting.
+        app.add_systems(
+            PostUpdate,
+            log_portrait_pose_once
+                .after(bevy::transform::TransformSystems::Propagate)
+                .run_if(in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting))),
+        );
     }
 }

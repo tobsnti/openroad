@@ -157,7 +157,13 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                plugins or systems, and Bevy has neither plugin nor system \
                removal, so the whole flag is restart by construction — \
                checked at HEAD for #730, which expected a live half here \
-               and there is none",
+               and there is none. One read is NOT a registration site: the \
+               portrait probe (hud/player_mini_info.rs) is registered \
+               unconditionally and reads the flag in its own body, because a \
+               `Plugin::build` that derives from ClientConfig is what \
+               `no_plugin_build_derives_a_value_from_the_config` forbids. It \
+               therefore follows a change, but it only decides whether one \
+               dev log line is printed — the verdict stays Restart",
     },
     SettingsGroup {
         field: "dev_fast_login",
