@@ -7,8 +7,8 @@
 use bevy::prelude::*;
 
 use packets::agent::character_data::{
-    CharacterStats, EntityState, InventoryItem, JobInfo, KnownSkill, Mastery, ParsedCharacterInfo,
-    PlayerExtras,
+    ActiveQuest, CharacterStats, EntityState, InventoryItem, JobInfo, KnownSkill, Mastery,
+    ParsedCharacterInfo, PlayerExtras,
 };
 
 /// The character record the server sent for this entity. Sections the parser
@@ -24,6 +24,14 @@ pub struct CharacterInfo {
     pub masteries: Vec<Mastery>,
     pub skills: Vec<KnownSkill>,
     pub completed_quests: Vec<u32>,
+    /// The active-quest records of the quest section, mirrored here like every
+    /// other section of the record (layout: [`ActiveQuest`]).
+    ///
+    /// An empty vec means "the server sent none **or** the section did not
+    /// parse" — `ParsedCharacterInfo::active_quests` is an `Option`, and the
+    /// difference is lost here. The quest window therefore states what it
+    /// shows ("no active quest") rather than inferring why the list is empty.
+    pub active_quests: Vec<ActiveQuest>,
     pub job: Option<JobInfo>,
     pub extras: Option<PlayerExtras>,
     /// The character's body state at login (invisibility/stealth/berserk), from
@@ -42,6 +50,7 @@ impl From<&ParsedCharacterInfo> for CharacterInfo {
             masteries: info.masteries.clone().unwrap_or_default(),
             skills: info.skills.clone().unwrap_or_default(),
             completed_quests: info.completed_quests.clone().unwrap_or_default(),
+            active_quests: info.active_quests.clone().unwrap_or_default(),
             job: info.job.clone(),
             extras: info.extras.clone(),
             body_state: info.state.as_ref().map(|s| s.body_state),

@@ -61,6 +61,7 @@ pub mod party_matching;
 pub mod pet_mini_info;
 pub mod petition;
 pub mod player_mini_info;
+pub mod quest;
 pub mod quest_reward;
 pub mod quest_reward_confirm;
 pub mod quick_party;
@@ -183,6 +184,9 @@ impl Plugin for HudPlugin {
                 // five pages of the original's single frame behave as one.
                 main_popup::MainPopupPlugin,
                 cast_gauge::CastGaugePlugin,
+                // The quest list (#this slice). Group 4 because groups 1-3 are
+                // at or near the arity Bevy implements; see the note above.
+                quest::QuestWindowPlugin,
                 // Not a window: parks closed windows' content out of the UI
                 // tree so Bevy's per-frame UI passes skip it.
                 ui_parking::UiParkingPlugin,
