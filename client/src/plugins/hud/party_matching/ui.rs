@@ -506,23 +506,30 @@ pub fn spawn_match_window(
                             Text::new(""),
                             font(8.5),
                             TextColor(TEXT_COLOR),
-                            // One line, clipped to the authored box. Every
-                            // cell of `ifpartymatchslot.txt` is a `CIFStatic`
-                            // with `Style=0` and a height of **11** — a single
-                            // line, with no multiline flag anywhere in the row
-                            // template. Wrapping instead is what cut "Trade
-                            // Union" and "Thief Union" in half across the
-                            // 11 px box (`evidence/gallery-2026-10-23/
-                            // party.png`): the second line had nowhere to go.
+                            // One authored line. Every cell of
+                            // `ifpartymatchslot.txt` is a `CIFStatic` with
+                            // `Style=0` and a height of **11** — one line, no
+                            // multiline flag anywhere in the row template.
+                            // Wrapping instead is what cut "Trade Union" and
+                            // "Thief Union" in half across the 11 px box
+                            // (`evidence/gallery-2026-10-23/party.png`): the
+                            // second line had nowhere to go.
+                            //
+                            // A value wider than its column then overflows to
+                            // the right rather than being clipped, and that is
+                            // measured, not assumed: `Overflow::clip()` here
+                            // does nothing, because a node's clip rect applies
+                            // to its *children* and the glyphs are the node's
+                            // own content. "Trade Union" runs 10 authored px
+                            // past the 37 px box and still clears the Member
+                            // column by 9 screen px at `hud_scale` 1.5
+                            // (`evidence/gallery-fixes-2026-10-23/party.png`).
                             TextLayout {
                                 justify,
                                 linebreak: LineBreak::NoWrap,
                                 ..default()
                             },
-                            Node {
-                                overflow: Overflow::clip(),
-                                ..abs_node(rect, s)
-                            },
+                            abs_node(rect, s),
                             Pickable::IGNORE,
                         ));
                     }
