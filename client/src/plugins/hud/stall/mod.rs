@@ -18,6 +18,7 @@ impl Plugin for StallPlugin {
             .init_resource::<stock::StockModal>()
             .init_resource::<stock::StockAmount>()
             .init_resource::<stock::StockPrice>()
+            .init_resource::<stock::StallCarry>()
             .add_message::<owner::OpenStallCommand>()
             .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_stall)
             .add_systems(PostUpdate, ui::despawn_closing_stall)
@@ -41,6 +42,10 @@ impl Plugin for StallPlugin {
                     // after the window, so a drop sees this frame's hover and
                     // the box is rebuilt in the same frame it is raised
                     stock::stock_drop_on_stall,
+                    // the take-down carry, mirror of the drop above: the
+                    // ghost follows the cursor and the release routes it
+                    stock::update_stall_ghost,
+                    stock::finish_stall_carry,
                     stock::clear_stock_with_stall,
                     stock::sync_stock_modal,
                     // after the box exists, so the first frame already has

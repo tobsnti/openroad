@@ -51,7 +51,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::text::FontSize;
+use bevy::text::{FontSize, LineHeight};
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
@@ -157,10 +157,19 @@ const MODIFY_BUTTON: (f32, f32, f32, f32) = (183.0, 0.0, 24.0, 24.0);
 /// (`evidence/gallery-2026-10-23/stall.png`). The price moves with it: the
 /// data puts it on the row's **second** line (`y = 26`), right-aligned
 /// (`HAlign=2`), not beside the name.
-/// `GDR_STALLSLOT_ICON` `3,3,32,32` — not spawned (the socket is baked into
-/// the row plate art), but it is the box the name has to clear.
-const SLOT_ICON_RIGHT: f32 = 3.0 + 32.0;
+/// `GDR_STALLSLOT_ICON` (`ifstallslot.txt:82`, rect `:93`) — not spawned (the
+/// socket is baked into the row plate art), but it is the box the name has to
+/// clear, and its **class** is what makes the row draggable:
+/// `CIFSlotWithHelp`, the corpus's drag-and-drop socket
+/// (`stock::StallCarry`).
+pub const SLOT_ICON: (f32, f32, f32, f32) = (3.0, 3.0, 32.0, 32.0);
+const SLOT_ICON_RIGHT: f32 = SLOT_ICON.0 + SLOT_ICON.2;
 const SLOT_NAME: (f32, f32, f32, f32) = (46.0, 6.0, 132.0, 14.0);
+/// `GDR_STALLSLOT_AMOUNT` (`ifstallslot.txt:44`, rect `:53`) — the quantity,
+/// on the row's second line to the LEFT of the price and right-aligned like
+/// it (`HAlign=2`, `:51`). It shares that line: 42..83 for the amount,
+/// 86..200 for the price, which is why the two never collide.
+const SLOT_AMOUNT: (f32, f32, f32, f32) = (42.0, 26.0, 41.0, 12.0);
 const SLOT_PRICE: (f32, f32, f32, f32) = (86.0, 26.0, 114.0, 12.0);
 const MODIFY_BUTTON_DDJ: &str = "media://interface/stall/stl_edit_button.ddj";
 
@@ -325,14 +334,21 @@ pub fn refresh_stall_window(
             Pickable::IGNORE,
         )
     };
+    // Every label in this window is one authored line in a box as tall as the
+    // font (the row cells are 12..14 with `FontIndex=0` = 12 px), so the line
+    // box is the rounded size itself rather than bevy's 1.2 — the same pairing
+    // the line-height slice gave `minimap`, `underbar` and `item_mall`.
+    // `LineHeight` is its own component in bevy 0.20, not a `TextFont` field.
     let label = |content: String, rect: (f32, f32, f32, f32), color: Color| {
+        let size = text_px(FONT, s);
         (
             Text::new(content),
             TextFont {
                 font: font.clone().into(),
-                font_size: FontSize::Px(text_px(FONT, s)),
+                font_size: FontSize::Px(size),
                 ..default()
             },
+            LineHeight::Px(size),
             TextColor(color),
             abs_node(rect, s),
             Pickable::IGNORE,
@@ -418,6 +434,10 @@ pub fn refresh_stall_window(
                 // clicks would send buys for slots the stall does not sell
                 // (#780).
                 if occupied {
+                    // `Hovered` is what tells a release over the row it came
+                    // from (a click-carry) from a release somewhere else
+                    // (`stock::finish_stall_carry`).
+                    cell.insert(Hovered::default());
                     cell.observe(super::net::on_stall_slot_press);
                 } else {
                     cell.insert(Pickable::IGNORE);
@@ -426,6 +446,16 @@ pub fn refresh_stall_window(
                     window.spawn(label(
                         row.name.clone(),
                         (x + SLOT_NAME.0, y + SLOT_NAME.1, SLOT_NAME.2, SLOT_NAME.3),
+                        Color::WHITE,
+                    ));
+                    window.spawn(label(
+                        row.quantity.to_string(),
+                        (
+                            x + SLOT_AMOUNT.0,
+                            y + SLOT_AMOUNT.1,
+                            SLOT_AMOUNT.2,
+                            SLOT_AMOUNT.3,
+                        ),
                         Color::WHITE,
                     ));
                     window.spawn(label(
@@ -662,5 +692,23 @@ mod test {
         }
         // the price is the row's second line, not the name's neighbour
         assert!(SLOT_PRICE.1 >= SLOT_NAME.1 + SLOT_NAME.3);
+    }
+
+    /// The quantity cell `GDR_STALLSLOT_AMOUNT` shares the row's second line
+    /// with the price, and the two authored boxes do not overlap — which is
+    /// the only thing that makes drawing both of them safe.
+    #[test]
+    fn the_amount_and_the_price_share_the_second_line_without_touching() {
+        assert_eq!(SLOT_AMOUNT.1, SLOT_PRICE.1);
+        assert!(
+            SLOT_AMOUNT.0 + SLOT_AMOUNT.2 <= SLOT_PRICE.0,
+            "the amount ends at {} and the price starts at {}",
+            SLOT_AMOUNT.0 + SLOT_AMOUNT.2,
+            SLOT_PRICE.0
+        );
+        // and it clears the icon socket the same way the name does
+        assert!(SLOT_AMOUNT.0 >= SLOT_ICON_RIGHT);
+        assert!(SLOT_AMOUNT.0 + SLOT_AMOUNT.2 <= CELL_W);
+        assert!(SLOT_AMOUNT.1 + SLOT_AMOUNT.3 <= CELL_H);
     }
 }

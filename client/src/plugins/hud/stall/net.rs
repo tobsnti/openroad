@@ -40,7 +40,9 @@ use packets::agent::stall::{
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
+use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::hud::stall::model::{StallRow, StallState};
+use crate::plugins::hud::stall::stock::StallCarry;
 use crate::plugins::hud::stall::ui::{StallSlot, STALL_SLOTS};
 use crate::plugins::hud::toast::{ShowToast, ToastKind};
 use crate::plugins::net::agent::AgentConnection;
@@ -162,6 +164,7 @@ pub fn rows_to_slots(
             continue;
         };
         *cell = Some(StallRow {
+            ref_id: row.item.ref_id,
             name: name_of(row.item.ref_id),
             quantity: row.quantity,
             price: row.price,
@@ -299,11 +302,18 @@ pub fn on_stall_leave_response(
 /// sends the row directly and reports the server's verdict; the dialog lands
 /// with the snapshot opcode (#759), which is what would give it a price to
 /// show in the first place.
+#[allow(clippy::too_many_arguments)]
 pub fn on_stall_slot_press(
     press: On<PointerPress>,
     cells: Query<&StallSlot>,
     state: Res<StallState>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    inv_state: Res<InventoryState>,
+    item_data: Res<ClientItemData>,
+    asset_server: Res<AssetServer>,
+    cam_query: Query<Entity, With<Camera2d>>,
+    mut carry: ResMut<StallCarry>,
+    mut commands: Commands,
 ) {
     if press.button != PointerButton::Primary {
         return;
@@ -314,11 +324,23 @@ pub fn on_stall_slot_press(
     if state.slots.get(cell.0).and_then(Option::as_ref).is_none() {
         return;
     }
-    // You cannot buy from your own stall, and the owner's edit is not this
-    // click: the row template gives it its own control
-    // (`GDR_STALLSLOT_MODIFY`, `ui::on_stall_modify_button`), so the click on
-    // the row stays a buy and does nothing on a stall of ours.
+    // You cannot buy from your own stall. The owner's two acts on a row are
+    // the ones the row template declares: the `CIFButton` re-prices
+    // (`ui::on_stall_modify_button`) and the `CIFSlotWithHelp` socket is a
+    // drag — pressing the row lifts it for take-down, and the drop decides
+    // whether `0x70BA` type 3 goes out (`stock::finish_stall_carry`).
     if state.owner {
+        if carry.0.is_some() || inv_state.drag.is_some() {
+            return;
+        }
+        carry.0 = super::stock::begin_take_down(
+            &state,
+            cell.0,
+            &item_data,
+            &asset_server,
+            cam_query.single().ok(),
+            &mut commands,
+        );
         return;
     }
     let Ok(slot) = u8::try_from(cell.0) else {
@@ -416,6 +438,10 @@ mod test {
         assert_eq!(slots[3].as_ref().map(|r| r.quantity), Some(2));
         assert!(slots[1].is_none(), "an unlisted slot stays empty");
         assert_eq!(slots.iter().filter(|s| s.is_some()).count(), 2);
+        // the wire's ref id is kept, not only the name derived from it: the
+        // take-down carry draws the icon from it
+        assert_eq!(slots[3].as_ref().map(|r| r.ref_id), Some(111));
+        assert_eq!(slots[0].as_ref().map(|r| r.ref_id), Some(222));
     }
 
     /// A row past the ten-slot capacity must not panic or land in slot 0.

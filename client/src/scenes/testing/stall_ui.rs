@@ -26,12 +26,21 @@ fn open_stall_window(mut state: ResMut<StallState>) {
     state.trading = StallTradingState::Open;
     // Three of the ten cells filled, so the preview shows both an occupied and
     // an empty plate in both columns.
-    for (index, (name, quantity, price)) in [
-        (0usize, ("Steppe Blade", 1u16, 12_500u64)),
-        (1, ("HP Potion (S)", 20, 400)),
-        (4, ("Devil's Spirit", 3, 98_000)),
+    // Real ref ids with the names the player's own data gives them, so the
+    // rows resolve an icon (the take-down drag needs one for its ghost) and
+    // the label is not an invented item: 3632 = `ITEM_CH_SWORD_01_A_DEF`
+    // "Copper Sword" (`itemdata_5000.txt`, name via
+    // `textdata_equip&skill.txt`), 4 = `ITEM_ETC_HP_POTION_01` "HP Recovery
+    // Herb" and 3681 = `ITEM_ETC_ARCHEMY_REINFORCE_RECIPE_ARMOR_B`
+    // "Intensifing Elixir(protector)" (both `textdata_object.txt`). Only the
+    // three prices are ours.
+    for (index, (ref_id, name, quantity, price)) in [
+        (0usize, (3632u32, "Copper Sword", 1u16, 12_500u64)),
+        (1, (4, "HP Recovery Herb", 20, 400)),
+        (4, (3681, "Intensifing Elixir(protector)", 3, 98_000)),
     ] {
         state.slots[index] = Some(StallRow {
+            ref_id,
             name: name.to_string(),
             quantity,
             price,
