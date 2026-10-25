@@ -1369,60 +1369,75 @@ pub fn on_hwan_level_update(
 /// rather than `OnEnter` because the player entity is spawned by another
 /// plugin's enter systems (only visible after a command flush), and so a
 /// respawned player re-acquires its rig.
+///
+/// **One rig at a time, however many players exist.** `PortraitTarget` is a
+/// single image and the HUD draws a single portrait, so a second camera on it
+/// is not a second portrait — it is two cameras of equal order writing the
+/// same texture, which Bevy reports as `Camera order ambiguities` and which
+/// makes the visible portrait depend on camera iteration order. A player that
+/// should be portrayed instead of the current one despawns first (the debug
+/// window's respawn), and that frees the rig again.
 pub fn attach_portrait_rig(
     target: Option<Res<PortraitTarget>>,
     player: Query<Entity, (With<Player>, Without<PortraitRig>)>,
+    rigged: Query<(), With<PortraitRig>>,
     mut commands: Commands,
 ) {
     let Some(target) = target else {
         return;
     };
-    for player_entity in player.iter() {
-        let camera = commands
-            .spawn((
-                PortraitCamera,
-                Name::from("Portrait Camera"),
-                Camera3d::default(),
-                Camera {
-                    // transparent: the UI's backdrop disc shows through
-                    clear_color: ClearColorConfig::Custom(Color::NONE),
-                    // render before the main (0) and UI (1) cameras
-                    order: -1,
-                    ..default()
-                },
-                RenderTarget::from(target.0.clone()),
-                Projection::Perspective(PerspectiveProjection {
-                    fov: PORTRAIT_FOV,
-                    near: 0.5,
-                    far: 60.0,
-                    ..default()
-                }),
-                RenderLayers::layer(CameraLayers::Portrait.into()),
-                PortraitCapture(Timer::from_seconds(PORTRAIT_CAPTURE_DELAY, TimerMode::Once)),
-                PortraitAim::default(),
-                portrait_transform(PORTRAIT_DEFAULT_FOCUS, PORTRAIT_DEFAULT_DISTANCE),
-                // portrait lighting is self-contained: world lights live on the
-                // main layer and never reach this view
-                AmbientLight {
-                    color: Color::WHITE,
-                    brightness: 500.0,
-                    ..default()
-                },
-                ChildOf(player_entity),
-            ))
-            .id();
-        // headlight: identity transform → shines wherever the camera looks
-        commands.spawn((
-            DirectionalLight {
-                illuminance: 3_000.0,
+    if !rigged.is_empty() {
+        return;
+    }
+    // `.next()`, not a loop: with two unrigged players the loop would rig both
+    // in the same run, which the check above cannot catch.
+    let Some(player_entity) = player.iter().next() else {
+        return;
+    };
+    let camera = commands
+        .spawn((
+            PortraitCamera,
+            Name::from("Portrait Camera"),
+            Camera3d::default(),
+            Camera {
+                // transparent: the UI's backdrop disc shows through
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                // render before the main (0) and UI (1) cameras
+                order: -1,
                 ..default()
             },
+            RenderTarget::from(target.0.clone()),
+            Projection::Perspective(PerspectiveProjection {
+                fov: PORTRAIT_FOV,
+                near: 0.5,
+                far: 60.0,
+                ..default()
+            }),
             RenderLayers::layer(CameraLayers::Portrait.into()),
-            ChildOf(camera),
-        ));
-        commands.entity(player_entity).insert(PortraitRig);
-        debug!("mini-info: portrait camera attached to player");
-    }
+            PortraitCapture(Timer::from_seconds(PORTRAIT_CAPTURE_DELAY, TimerMode::Once)),
+            PortraitAim::default(),
+            portrait_transform(PORTRAIT_DEFAULT_FOCUS, PORTRAIT_DEFAULT_DISTANCE),
+            // portrait lighting is self-contained: world lights live on the
+            // main layer and never reach this view
+            AmbientLight {
+                color: Color::WHITE,
+                brightness: 500.0,
+                ..default()
+            },
+            ChildOf(player_entity),
+        ))
+        .id();
+    // headlight: identity transform → shines wherever the camera looks
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 3_000.0,
+            ..default()
+        },
+        RenderLayers::layer(CameraLayers::Portrait.into()),
+        ChildOf(camera),
+    ));
+    commands.entity(player_entity).insert(PortraitRig);
+    debug!("mini-info: portrait camera attached to player");
 }
 
 /// Camera pose looking at `focus` (player space) from `distance` in front of

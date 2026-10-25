@@ -31,6 +31,7 @@ use crate::scenes::testing::npc_dialog_ui::NpcDialogUiPreviewPlugin;
 use crate::scenes::testing::particles::ParticleTestingScenePlugin;
 use crate::scenes::testing::party_matching_ui::PartyMatchingUiPreviewPlugin;
 use crate::scenes::testing::party_ui::PartyUiPreviewPlugin;
+use crate::scenes::testing::preview_player::PreviewPlayerPlugin;
 use crate::scenes::testing::quest_reward_ui::QuestRewardUiPreviewPlugin;
 use crate::scenes::testing::quest_ui::QuestUiPreviewPlugin;
 use crate::scenes::testing::skill_window_ui::SkillWindowUiPreviewPlugin;
@@ -241,7 +242,21 @@ fn add_ui_previews(app: &mut App) {
     if wanted("party_matching") {
         app.add_plugins(PartyMatchingUiPreviewPlugin);
     }
+
+    // The preview character is registered here, once, for whichever of these
+    // previews is active: it is a shared entity, and a preview that spawned
+    // its own could not see a sibling's (sibling `OnEnter` commands only land
+    // at the schedule's sync point), which is how the gallery run ended up
+    // with several portrait cameras on one portrait image.
+    if PLAYER_PREVIEWS.iter().copied().any(wanted) {
+        app.add_plugins(PreviewPlayerPlugin);
+    }
 }
+
+/// The previews that read the local `Player`: the portrait rig shoots it, both
+/// maps place their arrow on it, the inventory window reads its bag and the
+/// quest list reads its `CharacterInfo`.
+const PLAYER_PREVIEWS: [&str; 5] = ["mini_info", "minimap", "world_map", "inventory", "quest"];
 
 /// Every name [`add_ui_previews`] knows, for the gallery runner and for the
 /// test that keeps the two in step.
@@ -363,5 +378,18 @@ mod gallery_tests {
             UI_PREVIEW_NAMES.len(),
             "a preview is registered under a name the gallery list does not know"
         );
+    }
+
+    /// A typo in `PLAYER_PREVIEWS` does not fail to compile — it silently
+    /// leaves that preview without a character, which is the defect the single
+    /// owner was introduced to remove.
+    #[test]
+    fn every_player_preview_is_a_known_preview_name() {
+        for name in PLAYER_PREVIEWS {
+            assert!(
+                UI_PREVIEW_NAMES.contains(&name),
+                "`{name}` needs the preview player but is not a preview name"
+            );
+        }
     }
 }
