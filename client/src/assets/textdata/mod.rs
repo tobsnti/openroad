@@ -14,6 +14,7 @@ use crate::assets::textdata::gameguide::GuideIndex;
 use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
 use crate::assets::textdata::leveldata::LevelData;
 use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
+use crate::assets::textdata::magicoptionassign::MagicOptionAssign;
 use crate::assets::textdata::masterydata::MasteryData;
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::NpcChat;
@@ -41,6 +42,7 @@ pub mod itemdata;
 pub mod job;
 pub mod leveldata;
 pub mod magicoption;
+pub mod magicoptionassign;
 pub mod masterydata;
 pub mod names;
 pub mod npcchat;
@@ -104,6 +106,8 @@ pub enum Textdata {
     MasteryData(MasteryData),
     SkillGroups(SkillGroupTable),
     MagicOption(MagicOptionData),
+    /// `magicoptionassign.txt` — which `MATTR_*` each item class may carry.
+    MagicOptionAssign(MagicOptionAssign),
     UiSystem(UiSystemText),
     /// `gameguidedata.txt` — the in-game help book's category/page tree (#575).
     GameGuide(GuideIndex),
@@ -432,6 +436,13 @@ impl AssetLoader for TextdataLoader {
                 }
             }
             Ok(Textdata::LevelData(data))
+        } else if file_stem.starts_with("magicoptionassign") {
+            // Before the `magicoption` arm on purpose: that one is a prefix of
+            // this name, so the shorter test would eat this file and parse its
+            // origin column as an option id.
+            Ok(Textdata::MagicOptionAssign(MagicOptionAssign::parse(
+                &content,
+            )))
         } else if file_stem.starts_with("magicoption") {
             // single file: id \t <codename cols>; col 1 = id, 2 = MATTR_* code,
             // 3 = display operator.

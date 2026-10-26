@@ -15,6 +15,7 @@ use crate::assets::textdata::gameguide::{GuideIndex, GuideNode};
 use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
 use crate::assets::textdata::leveldata::LevelData;
 use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
+use crate::assets::textdata::magicoptionassign::MagicOptionAssign;
 use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
@@ -277,6 +278,50 @@ impl ClientMagicOptions {
     pub fn get(&self, id: u32) -> Option<&MagicOptionInfo> {
         self.0.as_ref().and_then(|data| data.get(&id))
     }
+}
+
+/// The alchemy legality table (`magicoptionassign.txt`).
+#[derive(Resource, Default)]
+pub struct ClientMagicOptionAssign(Option<MagicOptionAssign>);
+
+impl ClientMagicOptionAssign {
+    /// Seed the resource directly, bypassing the asset pipeline (tests only).
+    #[cfg(test)]
+    pub(crate) fn from_table(table: MagicOptionAssign) -> Self {
+        Self(Some(table))
+    }
+
+    /// Whether this attribute may go on this item class; `None` where the
+    /// table does not decide (see [`MagicOptionAssign::permits`]).
+    pub fn permits(&self, tid3: u32, tid4: u32, attr: &str) -> Option<bool> {
+        self.0
+            .as_ref()
+            .and_then(|table| table.permits(tid3, tid4, attr))
+    }
+
+    /// The attributes an item class may carry, for a window that wants to
+    /// show the whole list rather than ask about one stone.
+    pub fn allowed(&self, tid3: u32, tid4: u32) -> Option<&[String]> {
+        self.0.as_ref().and_then(|table| table.allowed(tid3, tid4))
+    }
+}
+
+/// Whether this alchemy stone may be fused onto this item, as the player's own
+/// tables decide it: the stone names its `MATTR_*`, the target names its class,
+/// and `magicoptionassign.txt` holds the pairing.
+///
+/// `None` is "the data does not say" and keeps its three causes apart only in
+/// the sense that all three are undecided: the stone is not a magic stone (an
+/// elemental `NATTR_*` attribute stone, or any other item), the target class
+/// has no row, or the attribute appears nowhere in the table.
+pub fn alchemy_fusion_allowed(
+    assign: &ClientMagicOptionAssign,
+    stone: &ItemDataRow,
+    target: &ItemDataRow,
+) -> Option<bool> {
+    let attr = stone.magic_stone_attribute()?;
+    let (_, _, tid3, tid4) = target.type_ids()?;
+    assign.permits(tid3, tid4, attr)
 }
 
 #[derive(Resource, Default)]
@@ -792,6 +837,7 @@ impl Plugin for TextdataPlugin {
             .init_resource::<ClientLevelData>()
             .init_resource::<ClientTextNames>()
             .init_resource::<ClientMagicOptions>()
+            .init_resource::<ClientMagicOptionAssign>()
             .init_resource::<ClientRareEffects>()
             .init_resource::<ClientZoneNames>()
             .init_resource::<ClientGameGuide>()
@@ -837,6 +883,8 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/questdata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textdataname.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/magicoption.txt"),
+        // the alchemy legality rule: which MATTR_* an item class may carry
+        asset_server.load("media://server_dep/silkroad/textdata/magicoptionassign.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textuisystem.txt"),
         // the in-game help book: the tree and its bodies (#575)
         asset_server.load("media://server_dep/silkroad/textdata/gameguidedata.txt"),
@@ -979,6 +1027,10 @@ fn add_resource_when_textdata_loaded(
                 Textdata::SkillGroups(groups) => {
                     info!("loaded {} skill-group branches", groups.len());
                     commands.insert_resource(ClientSkillGroups(Some(groups)))
+                }
+                Textdata::MagicOptionAssign(assign) => {
+                    info!("loaded {} magic-option item classes", assign.len());
+                    commands.insert_resource(ClientMagicOptionAssign(Some(assign)))
                 }
                 Textdata::MagicOption(magic_options) => {
                     info!("loaded {} magic-option rows", magic_options.len());
@@ -1209,6 +1261,48 @@ mod tests {
         assert_eq!(row.asset_path(), "data://prim/snd/ui/uibutton_a.wav");
         assert_eq!(row.gain(), 0.8);
         assert_eq!(loaded.sounds(&click).len(), 2);
+    }
+
+    /// The alchemy question end to end, every link a literal row of the
+    /// player's own files: the `ITEM_ETC_ARCHEMY_MAGICSTONE_STR_01` columns
+    /// that name its option (`itemdata_10000.txt:1227`), two target items with
+    /// the `TID3/TID4` their rows carry, and the two
+    /// `magicoptionassign.txt` lines for those classes. `MATTR_STR` is legal
+    /// on both; the hit-ratio stone is the one the classes separate.
+    #[test]
+    fn a_stone_and_a_target_decide_fusion_from_their_own_rows() {
+        let assign = ClientMagicOptionAssign::from_table(MagicOptionAssign::parse(
+            "1\t0\t6\t2\tMATTR_STR\tMATTR_HR\tMATTR_REPAIR\txxx\txxx\n\
+             1\t0\t1\t1\tMATTR_STR\tMATTR_HP\tMATTR_MP\txxx\txxx\n",
+        ));
+        let item = |tid3: &str, tid4: &str, desc: &str| {
+            let mut row = vec![String::new(); 120];
+            row[9] = "3".to_string();
+            row[10] = "1".to_string();
+            row[11] = tid3.to_string();
+            row[12] = tid4.to_string();
+            row[119] = desc.to_string();
+            ItemDataRow(row)
+        };
+        let stone = item("11", "1", "MATTR_STR");
+        let hr_stone = item("11", "1", "MATTR_HR");
+        // an elemental attribute stone, same column, different mechanic
+        let attr_stone = item("11", "2", "NATTR_PA");
+        let sword = item("6", "2", "");
+        let armour = item("1", "1", "");
+
+        assert_eq!(alchemy_fusion_allowed(&assign, &stone, &sword), Some(true));
+        assert_eq!(alchemy_fusion_allowed(&assign, &stone, &armour), Some(true));
+        assert_eq!(
+            alchemy_fusion_allowed(&assign, &hr_stone, &sword),
+            Some(true)
+        );
+        assert_eq!(
+            alchemy_fusion_allowed(&assign, &hr_stone, &armour),
+            Some(false)
+        );
+        // not a magic stone: the table is not asked at all
+        assert_eq!(alchemy_fusion_allowed(&assign, &attr_stone, &sword), None);
     }
 
     /// The naming chain a quest mark depends on, all three links fed with

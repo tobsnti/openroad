@@ -163,6 +163,17 @@ impl ItemDataRow {
         &self.0[ItemdataFields::CodeName]
     }
 
+    /// The `MATTR_*` option an alchemy magic stone grants, from the generic
+    /// `Desc1` column the stones use for it. Measured over the player's 468
+    /// alchemy stone rows: the 300 magic stones (`TID 3/3/11/1`) name their
+    /// attribute here, while the 168 attribute stones (`3/3/11/2`) carry an
+    /// elemental `NATTR_*` in the same column and are a different mechanic —
+    /// hence the `MATTR_` test rather than a TID test.
+    pub fn magic_stone_attribute(&self) -> Option<&str> {
+        self.field(ItemdataFields::Desc1 as usize)
+            .filter(|value| value.starts_with("MATTR_"))
+    }
+
     /// A column as a trimmed string, `None` when the row is too short or the
     /// value is empty / the `xxx` placeholder.
     fn field(&self, index: usize) -> Option<&str> {
