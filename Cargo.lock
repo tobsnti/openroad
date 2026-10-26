@@ -9148,6 +9148,7 @@ dependencies = [
  "gltf-json",
  "image 0.24.9",
  "lazy_static",
+ "packets",
  "regex",
  "serde",
  "serde_json",
