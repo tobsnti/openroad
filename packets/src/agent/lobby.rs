@@ -783,6 +783,10 @@ mod tests {
             "the frame must come out even — a leftover byte means a field width is wrong"
         );
 
+        // The width claim first: "the body comes out even" must not depend on
+        // how the fields below are unpacked.
+        assert_eq!(response.byte_size(), wire.len());
+
         let characters = response.characters.expect("List carries a body");
         assert_eq!(characters.count, 1);
         let character = &characters.characters[0];
@@ -795,6 +799,5 @@ mod tests {
         assert_eq!(character.char_items[0].id, 287);
         assert_eq!(character.char_items[6].plus, 1);
         assert!(character.avatar_items.is_empty());
-        assert_eq!(response.byte_size(), wire.len());
     }
 }
