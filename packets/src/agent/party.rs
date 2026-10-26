@@ -192,9 +192,20 @@ pub struct PartyMemberCore {
     pub position_dungeon: Option<PartyPositionDungeon>,
     #[sro_packet(when = "presence & 0x20 != 0 && region.is_some_and(|r| r & 0x8000 == 0)")]
     pub position_world: Option<PartyPositionWorld>,
-    /// The `u32` at record+0x54, read under the *same* bit as the position. Its
-    /// meaning has no reachable name in the binary — UNKNOWN, kept because
-    /// dropping it would desynchronise everything after it.
+    /// The `u32` at record+0x54, read under the *same* bit as the position.
+    ///
+    /// The **width** is measured: `00883620` reads it with a single 4-byte call,
+    /// the way it reads a dungeon coordinate, and not as the two 2-byte calls it
+    /// uses for the three overworld coordinates at `+0x48`/`+0x4c`/`+0x50`. So a
+    /// server-side reading of these bytes as `u16 world_id + u16 layer_id` (an
+    /// external claim, DBAD source, not ported) does **not** describe how this
+    /// client reads them, and splitting the field would not match the original.
+    ///
+    /// The **meaning** stays UNKNOWN. Every one of our 119 captured records
+    /// carrying this bit holds the same four bytes, `01 00 01 00` — which is a
+    /// plausible `(1, 1)` pair and an implausible single `65537`, so the split
+    /// may well be right about the *semantics*. One value cannot settle it, and
+    /// all 119 are overworld records: the dungeon branch is unexercised here.
     #[sro_packet(when = "presence & 0x20 != 0")]
     pub position_tail: Option<u32>,
     #[sro_packet(when = "presence & 0x40 != 0")]

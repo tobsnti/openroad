@@ -150,8 +150,62 @@ pub struct QuestMarkRemove {
     pub mark_id: u32,
 }
 
+/// 0x30D5 — server → client journal delta, the packet that carries quest
+/// progress *and* the countdown panel. Modelled from our own decompile of the
+/// handler at `008812b0`, because no capture of this opcode exists in any of
+/// our dump trees.
+///
+/// Idea of the shape: the handler reads the two prefix fields unconditionally
+/// and then switches on `subtype & 0xff`. Subtypes 1 and 2 both call the same
+/// field reader (`008b94d0`); subtypes 3 and 4 share a branch body whose three
+/// calls (`00778d10`, `009d4c60`, `008b9910`) contain **no** packet read at
+/// all, so those two carry nothing past the prefix. Anything outside 1..4
+/// falls out of the switch, which is why an unknown subtype must decode to an
+/// empty body instead of failing.
+///
+/// `opaque` is deliberately unnamed: the handler passes it to four different
+/// consumers without ever narrowing it, so a name here would be a guess.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct QuestJournalUpdate {
+    /// Only 1..4 reach a branch body. `008812b0` masks with `& 0xff`.
+    pub subtype: u8,
+    /// Read unconditionally before the switch; meaning is **[U]**.
+    pub opaque: u32,
+    #[sro_packet(when = "subtype == 1 || subtype == 2")]
+    pub unk_08: Option<u8>,
+    #[sro_packet(when = "subtype == 1 || subtype == 2")]
+    pub unk_09: Option<u8>,
+    /// The field selector for everything below it (record `+0x0A`).
+    #[sro_packet(when = "subtype == 1 || subtype == 2")]
+    pub flags: Option<u8>,
+    /// Flag `0x04`. `0xFFFFFFFF` means "no timer": the handler compares the
+    /// stored value against `-1` and rewrites it to 0 before anything reads it.
+    #[sro_packet(when = "flags.is_some_and(|f| f & 0x04 != 0)")]
+    pub timer: Option<u32>,
+    /// Flag `0x08` (record `+0x10`); meaning **[U]**.
+    #[sro_packet(when = "flags.is_some_and(|f| f & 0x08 != 0)")]
+    pub unk_10: Option<u8>,
+    /// Flag `0x10` — a counted list of single bytes, each passed through
+    /// `008b8d80` and, when that returns non-zero, into `008b6ed0`.
+    #[sro_packet(when = "flags.is_some_and(|f| f & 0x10 != 0)")]
+    pub entry_count: Option<u8>,
+    #[sro_packet(list_type = "by-size-field", size_field = "entry_count.unwrap_or(0)")]
+    pub entries: Vec<u8>,
+}
+
+impl QuestJournalUpdate {
+    /// `0xFFFFFFFF` is the handler's "inactive" sentinel, not a duration.
+    pub const TIMER_INACTIVE: u32 = 0xFFFF_FFFF;
+
+    pub fn timer_secs(&self) -> Option<u32> {
+        self.timer.filter(|t| *t != Self::TIMER_INACTIVE)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use bytes::Bytes;
 
@@ -215,5 +269,60 @@ mod tests {
             ],
             [1, 2, 3, 4]
         );
+    }
+
+    /// `0x30D5`'s branch structure, pinned against the decompile of
+    /// `008812b0` + `008b94d0` — there is no captured frame to replay, so the
+    /// test states what the handler reads rather than what a server sent.
+    ///
+    /// Subtypes 3 and 4 are the interesting half: their branch body holds no
+    /// packet read at all, so the body must stop after the prefix. A model that
+    /// read the flag byte unconditionally would consume two bytes that are not
+    /// there.
+    #[test]
+    fn journal_update_reads_a_body_only_for_subtypes_one_and_two() {
+        let decode = |wire: &[u8]| {
+            let mut cursor = Cursor::new(wire);
+            let decoded = QuestJournalUpdate::read_from(&mut cursor).expect("decodes");
+            assert_eq!(
+                cursor.position() as usize,
+                wire.len(),
+                "the body must come out even"
+            );
+            assert_eq!(decoded.byte_size(), wire.len());
+            decoded
+        };
+
+        // Subtype 3: prefix only.
+        let bare = decode(&[0x03, 0x2a, 0x00, 0x00, 0x00]);
+        assert_eq!(bare.subtype, 3);
+        assert_eq!(bare.opaque, 42);
+        assert!(bare.flags.is_none());
+
+        // Subtype 2 with no flag bits: the three bytes behind the prefix are
+        // unconditional once the branch is taken.
+        let plain = decode(&[0x02, 0x01, 0x00, 0x00, 0x00, 0x07, 0x08, 0x00]);
+        assert_eq!(plain.flags, Some(0));
+        assert!(plain.timer.is_none());
+        assert!(plain.entries.is_empty());
+
+        // Flag 0x04 pulls the timer, and 0xFFFFFFFF is the inactive sentinel
+        // rather than a duration.
+        let inactive = decode(&[
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xff, 0xff, 0xff, 0xff,
+        ]);
+        assert_eq!(inactive.timer, Some(QuestJournalUpdate::TIMER_INACTIVE));
+        assert_eq!(inactive.timer_secs(), None);
+
+        // All three conditional groups at once, in the order the handler reads
+        // them: timer (0x04), the single byte (0x08), then the counted list
+        // (0x10).
+        let full = decode(&[
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x3c, 0x00, 0x00, 0x00, 0x09, 0x02,
+            0x11, 0x22,
+        ]);
+        assert_eq!(full.timer_secs(), Some(60));
+        assert_eq!(full.unk_10, Some(9));
+        assert_eq!(full.entries, vec![0x11, 0x22]);
     }
 }

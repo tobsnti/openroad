@@ -435,6 +435,7 @@ packets! {
     // opcodes of the quest family with evidence on this machine: both are
     // capture-verified from packet_dump/, and the family's other 15 are
     // listed unwired with their reasons in that doc (#758).
+    0x30D5 => QuestJournalUpdate,
     0x30D6 => QuestMarkAdd,
     0x30D7 => QuestMarkRemove,
 
