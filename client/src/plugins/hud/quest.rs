@@ -36,7 +36,7 @@
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::LineHeight;
-use bevy::ui_widgets::Activate;
+use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::resinfo::interface_text::font_index_px;
 use crate::assets::textdata::quest::QuestTable;
@@ -213,6 +213,7 @@ pub fn spawn_quest_window(
             node.display = Display::None;
             page.spawn((
                 QuestRow(row),
+                Button,
                 node,
                 ImageNode {
                     image: asset_server.load(ROW_ART),
@@ -241,7 +242,9 @@ pub fn spawn_quest_window(
                     },
                     Pickable::IGNORE,
                 )],
-            ));
+            ))
+            // picking a row is what opens the detail pane (`hud::quest_detail`)
+            .observe(crate::plugins::hud::quest_detail::on_quest_row_activate);
         }
     });
 }
@@ -279,7 +282,7 @@ pub fn apply_quest_window_visibility(
 /// What a row shows for one active quest: the table's title where it has one,
 /// the codename where the title key is missing, and the raw id where the table
 /// has no row at all — which 2 of the 9 ids our own server sends really are.
-fn row_title(ref_id: u32, table: Option<&QuestTable>, ui_strings: &ClientUiStrings) -> String {
+pub fn row_title(ref_id: u32, table: Option<&QuestTable>, ui_strings: &ClientUiStrings) -> String {
     match table.and_then(|table| table.quest(ref_id)) {
         Some(quest) => match quest.title_key.as_deref() {
             Some(key) => ui_strings.get_or(key, &quest.codename).to_string(),
