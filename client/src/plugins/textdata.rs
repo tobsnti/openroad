@@ -21,6 +21,7 @@ use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
 use crate::assets::textdata::npcpos::NpcPositions;
+use crate::assets::textdata::optionalteleport::{OptionalTeleport, OptionalTeleportTable};
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{
     QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValue, QuestRewardValues,
@@ -268,6 +269,24 @@ impl ClientTextNames {
     /// tables (item/mob/npc names).
     pub fn name(&self, key: &str) -> Option<&str> {
         self.0.as_ref().and_then(|names| names.get(key))
+    }
+}
+
+/// The game's own teleport destinations (`refoptionalteleport.txt`): zone key
+/// plus a server-style position per row. The label comes from the zone key
+/// through [`ClientTextNames`], so the list reads in the player's own
+/// language and follows the installed data rather than a transcription.
+#[derive(Resource, Default)]
+pub struct ClientOptionalTeleports(Option<OptionalTeleportTable>);
+
+impl ClientOptionalTeleports {
+    /// The destinations in service, in the table's own order. Empty until the
+    /// table has loaded — the window then offers only its own debug spots.
+    pub fn active(&self) -> Vec<&OptionalTeleport> {
+        self.0
+            .as_ref()
+            .map(|table| table.active().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -887,6 +906,7 @@ impl Plugin for TextdataPlugin {
             .init_resource::<ClientSkillGroups>()
             .init_resource::<ClientLevelData>()
             .init_resource::<ClientTextNames>()
+            .init_resource::<ClientOptionalTeleports>()
             .init_resource::<ClientMagicOptions>()
             .init_resource::<ClientMagicOptionAssign>()
             .init_resource::<ClientRareEffects>()
@@ -930,6 +950,7 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/skillgroup.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/leveldata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textzonename.txt"),
+        asset_server.load("media://server_dep/silkroad/textdata/refoptionalteleport.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/refqusetreward.txt"),
         // Quest structure: questdata.txt pulls in questcontentsdata.txt.
         asset_server.load("media://server_dep/silkroad/textdata/questdata.txt"),
@@ -1096,6 +1117,14 @@ fn add_resource_when_textdata_loaded(
                         book.items.len()
                     );
                     commands.insert_resource(ClientCollectionBook(Some(book)))
+                }
+                Textdata::OptionalTeleport(table) => {
+                    info!(
+                        "loaded {} teleport destinations ({} in service)",
+                        table.0.len(),
+                        table.active().count()
+                    );
+                    commands.insert_resource(ClientOptionalTeleports(Some(table.clone())))
                 }
                 Textdata::ActionWnd(table) => {
                     info!("loaded {} action-window commands", table.0.len());
