@@ -377,8 +377,9 @@ pub struct QuestSection {
 }
 
 /// A quest type whose record carries a remaining-time field. Not exercised by
-/// any captured body — [U], field layout from `silkroad-docs`
-/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:108`).
+/// any captured body — [U], field layout from
+/// `silkroad-docs/docs/messages/3013_SERVER_CHARACTER_DATA.md:108` (a reference
+/// repository outside this workspace, not a file here).
 pub const QUEST_TYPE_TIMED: u8 = 28;
 /// A quest type whose record has no objective list. Not exercised by any
 /// captured body — [U], same source as [`QUEST_TYPE_TIMED`].
@@ -1133,8 +1134,9 @@ fn forward_parse(
 ///
 /// Idea: the record is three conditional blocks hung off `quest_type`, which
 /// the derive cannot express, so it is read by hand like the movement block.
-/// The layout is the one `silkroad-docs`
-/// (`docs/messages/3013_SERVER_CHARACTER_DATA.md:94-133`) describes, verified
+/// The layout is the one
+/// `silkroad-docs/docs/messages/3013_SERVER_CHARACTER_DATA.md:94-133` describes
+/// (a reference repository outside this workspace, not a file here), verified
 /// against the user's captures before it was written: 85 bodies, 765 records,
 /// 935 objectives, and the block ends on the byte where the collection book
 /// and the expected tail unique id begin in all 85. Measured field values:
