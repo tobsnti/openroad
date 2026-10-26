@@ -447,6 +447,7 @@ family has is listed unwired, with its handler VA and its reason, in
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
+| `0x30D5` | QuestJournalUpdate | S→C | wired | `u8 subtype` + `u32 opaque`, then a body only for subtypes 1 and 2 (both call `008b94d0`): two `u8`, a flag byte, and behind it `0x04` → `u32` timer (`0xFFFFFFFF` = inactive), `0x08` → `u8`, `0x10` → counted `u8` list. Subtypes 3 and 4 share a branch whose three calls hold no packet read, so they carry nothing past the prefix. Modelled from our own decompile of `008812b0`; **no captured frame exists** in any dump tree, so every field name except `subtype` and `timer` is [U] |
 | `0x30D6` | QuestMarkAdd | S→C | wired | 24 bytes; `mark_id` is a server pool handle, and the four trailing `u32`s are the target's spawn record — `x`/`y`/`z` truncated plus its `unique_id`, joined against `0x3019` over 294 captured bodies (2026-10-23). A **quest id** is not in the body, and [U] by measurement rather than by omission: no quest table in the player's data names an NPC, CHARACTER_DATA's `quest_type`-`0x40` NPC list covers 1 of the 8 captured targets and maps it to two quests, and `0x30D5` has no captured frame. Resolve by decompiling `008811e0` — see `packets/src/agent/quest.rs` |
 | `0x30D7` | QuestMarkRemove | S→C | wired | whole body is a `mark_id` an earlier `0x30D6` introduced — the capture proves the pairing |
 
