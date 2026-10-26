@@ -63,6 +63,7 @@ pub mod petition;
 pub mod player_mini_info;
 pub mod quest;
 pub mod quest_detail;
+pub mod quest_mini;
 pub mod quest_reward;
 pub mod quest_reward_confirm;
 pub mod quick_party;
@@ -190,6 +191,10 @@ impl Plugin for HudPlugin {
                 // above.
                 quest::QuestWindowPlugin,
                 quest_detail::QuestDetailPlugin,
+                // The on-screen strip of the same quests. Its own plugin, not
+                // part of the list's: it is the surface that stays when every
+                // window is closed.
+                quest_mini::QuestStripPlugin,
                 // Not a window: parks closed windows' content out of the UI
                 // tree so Bevy's per-frame UI passes skip it.
                 ui_parking::UiParkingPlugin,

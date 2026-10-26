@@ -259,7 +259,10 @@ pub fn apply_quest_detail_visibility(
 ///
 /// Records carry 1 or 3 objectives in our captures and the slot authors one
 /// condition row, so a three-objective quest shows the first enabled line.
-fn condition_line(quest: &ActiveQuest, speech: impl Fn(&str) -> Option<String>) -> String {
+pub(crate) fn condition_line(
+    quest: &ActiveQuest,
+    speech: impl Fn(&str) -> Option<String>,
+) -> String {
     let objective = quest
         .objectives
         .iter()
