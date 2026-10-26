@@ -742,30 +742,70 @@ pub fn is_nature_path(path: &bevy::asset::AssetPath) -> bool {
 ///
 /// The idea: Bevy's `DistanceFog` can add a *directional in-scattering* term —
 /// a sun glow blended into the fog color, `pow(dot(view_dir, sun_dir),
-/// exponent)` scaled by the light's color. The original client's fog is
-/// fixed-function D3D linear fog with no such term, so **0.0 is the faithful
-/// value** and this exists only to dial the halo back in as an enhancement.
+/// exponent)` scaled by the light's color. Our fog itself is
+/// `FogFalloff::Linear` between the two planes the environment profile
+/// carries, which is the shape of the data: `EnvironmentProfile` holds
+/// `fog_near_plane`, `fog_far_plane` and a `fog_color` graph and **no**
+/// scattering coefficients (`assets/ifo/environment.rs`).
 ///
-/// It is off by default because the term reads as *gloss*, not haze: the sun's
-/// color arrives premultiplied by its 10 000 lux illuminance
+/// What the original does on the terrain path is a different equation, and the
+/// player's own shaders spell it out — `Data/shader/scattervs10.vsh` and
+/// `terrainps14.psh`, both headed "(c) 2002 Nathaniel Hoffman, Kenneth J.
+/// Mitchell and Arcot J. Preetham":
+///
+/// ```text
+/// Phase1(theta) = 1 + cos^2(theta)                        ; Rayleigh
+/// Phase2(theta) = (1-g^2)/(1+g-2g*cos(theta))^(3/2)       ; Henyey-Greenstein
+/// E = exp(-(beta_1+beta_2) * s) * terrain_reflectance
+/// I = (beta'_1*Phase1 + beta'_2*Phase2) * (1-E1) / (beta_1+beta_2) * frac_ins
+/// Final_color = Surf_color * E + I          ; terrainps14.psh
+/// Sky         = I                           ; skyps10.psh — "just inscattering"
+/// ```
+///
+/// So the earlier claim here — that the original has "no such term, so 0.0 is
+/// the faithful value" — was wrong twice over: the original's in-scattering is
+/// unconditional (the sky is *nothing but* `I`), and its directionality comes
+/// from two phase functions rather than a `pow()` lobe. 0.0 is a **deliberate
+/// deviation**, not fidelity.
+///
+/// It is a deviation we keep, because the term reads as *gloss*, not haze: the
+/// sun's color arrives premultiplied by its 10 000 lux illuminance
 /// (`plugins/map/mod.rs`), it is multiplied by the shadow map (so it lands in
 /// patches on geometry rather than uniformly in the air), and it scales with
 /// the fog blend, so it is strongest on the most distant objects. With the
 /// default exponent it is a ~7-degree-wide hot disc that sweeps across distant
 /// terrain as the camera turns — indistinguishable from a specular lobe on
-/// objects that should be flat and fogged out.
+/// objects that should be flat and fogged out. A faithful `I` would need the
+/// phase functions and the `beta` pair, and **those values are not in the
+/// player's files** — the shader declares them as constant registers the client
+/// fills at runtime (`CV_BETA_1`, `CV_BETA_2`, `CV_HG`). Inventing them is what
+/// ADR 0009 forbids; reproducing the equation without them is not possible from
+/// data we have.
+///
+/// Version note: the profile format grows by appended graphs
+/// (`terrain_shadow_color` at fileVersion 1003, `sky_bottom_color` and
+/// `water_color` at 1002, `graph12` at 1001), but the three fog fields predate
+/// all of them. So fog reads the same across every profile version we parse,
+/// while a client older than 1002 has no `sky_bottom_color` to gradient with.
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct FogGraphicsSettings {
-    /// Strength of the sun's in-scattering halo in fog. **0.0 = faithful
-    /// 1.188** (no in-scattering at all); 0.5 restores the value this shipped
-    /// with before it was found to read as gloss on distant objects.
+    /// Strength of the sun's in-scattering halo in fog. **0.0 is our choice,
+    /// not the original's** — see the type's note: the original in-scatters
+    /// unconditionally. 0.5 restores the value this shipped with before the
+    /// halo was found to read as gloss on distant objects.
     pub sun_scattering: f32,
     /// Angular tightness of that halo — the `pow()` exponent on
     /// `dot(view_dir, sun_dir)`. Only has an effect when `sun_scattering > 0`.
     /// Lower is a broader, more atmospheric glow; the previous shipped value
     /// of 100 is half-strength at ~6.7 degrees, which is what made it read as a
     /// specular highlight rather than scattered light.
+    ///
+    /// This number is **ours with a reason, not a transcription**: the original
+    /// shapes its lobe with `Phase2`'s asymmetry `g`, which lives in the
+    /// runtime-filled `CV_HG` register and in none of the player's files, so
+    /// there is nothing here to copy.
     pub sun_scattering_exponent: f32,
 }
 
