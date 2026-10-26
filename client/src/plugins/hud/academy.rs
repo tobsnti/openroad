@@ -212,7 +212,9 @@ pub fn refresh_academy_window(
             LineHeight::Px(text_px(size, s)),
         )
     };
-    let tile = |path: &str| ImageNode {
+    // `&'static str` rather than `&str`: `AssetServer::load` wants a path
+    // that outlives the call, and every caller here passes a literal.
+    let tile = |path: &'static str| ImageNode {
         image: asset_server.load(path),
         image_mode: NodeImageMode::Stretch,
         ..default()
