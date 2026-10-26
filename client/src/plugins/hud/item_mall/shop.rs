@@ -27,6 +27,13 @@
 //! `mall_moneybutton.ddj` (20x20) at `284,12` and the unit label at
 //! `342,16,28,15` with the key `UIIT_STT_ROLL_OF_CLOTH`.
 //!
+//! **Why six rows is the authored number.** The plates fill the band from the
+//! list's top edge to the pager's top edge *exactly*: `81 + 5*73 + 76 == 522`,
+//! and `GDR_ITEM_MALL_SHOP_PAGE_MGR` sits at `15,522,385,26` (`:1251`). The
+//! background tile is not the bound — the plate overhangs it on both sides —
+//! and the rows overlap each other by 3 units, which is what a 76-tall plate
+//! at pitch 73 means.
+//!
 //! **Version note (the mandate to replace *any* client).** This archive ships
 //! a second generation of the same screen: `ifnewitemmall.txt` with
 //! `ifnewitemmallshopitemslot.txt`, `..._shopmainslot`, `..._shopsubslot` and
@@ -115,8 +122,24 @@ const TAB_ICON_INSET: f32 = 6.0;
 const TAB_LABEL_X: f32 = 30.0;
 const TAB_LABEL_Y: f32 = 10.0;
 /// `GDR_ITEM_MALL_SHOP_MAIN_BG` `26,81,364,440` (`:1045`), the list's own
-/// backing tile letter.
+/// backing tile.
+///
+/// **It is a fill, not a bound.** The 380-wide slot plate overhangs it by 7
+/// units on the left (19 against 26) and 9 on the right (399 against 390), so
+/// a row was never meant to fit inside it; what bounds the rows is the frame
+/// below and the pager's top edge.
 const LIST_BG_RECT: (f32, f32, f32, f32) = (26.0, 81.0, 364.0, 440.0);
+/// `GDR_ITEM_MALL_SHOP_FRAME` `14,61,388,479` (`:101`) on `equip_window_` —
+/// the frame the rows really sit in (x 14..402, y 61..540). Not drawn: the
+/// window's own chrome stands in for it. Kept because it is what bounds the
+/// row count, which the test checks.
+#[allow(dead_code)]
+const LIST_FRAME: (f32, f32, f32, f32) = (14.0, 61.0, 388.0, 479.0);
+/// `GDR_ITEM_MALL_SHOP_PAGE_MGR` `15,522,385,26` (`:1251`). The pager itself
+/// is not built (see the module note), but its top edge is where the six
+/// plates end exactly, so it is the number the row count rests on.
+#[allow(dead_code)]
+const PAGER_TOP: f32 = 522.0;
 const BG_TILE: &str = "media://interface/ifcommon/bg_tile/com_bg_tile_d.ddj";
 
 /// Which storefront the page shows, by its `mallitemmenulistdata` order.
@@ -394,16 +417,30 @@ mod test {
         assert!(goods_of(&shops, "MALL_CONSUME").is_empty());
     }
 
-    /// Six authored slots at pitch 73 fit the list plate they sit on
-    /// (`GDR_ITEM_MALL_SHOP_MAIN_BG` `26,81,364,440`), and a seventh would not.
+    /// Why six, measured rather than asserted: the six authored plates fill
+    /// the band from the list's top edge to the **pager's** top edge exactly —
+    /// `81 + 5*73 + 76 == 522 == GDR_ITEM_MALL_SHOP_PAGE_MGR.y`. A seventh
+    /// would start at 519, inside the last row, and end 55 units past the
+    /// frame.
+    ///
+    /// The first version of this test compared against the background tile and
+    /// failed by one unit. That was the test being right and its reference
+    /// wrong: the plate also overhangs that tile by 7 and 9 units
+    /// horizontally, so the tile never bounded a row (see [`LIST_BG_RECT`]).
     #[test]
-    fn the_six_authored_slots_fit_the_list_plate() {
-        let bottom = SLOT_FIRST_Y + (SLOTS_PER_PAGE - 1) as f32 * SLOT_PITCH + PLATE.1;
-        let plate_bottom = LIST_BG_RECT.1 + LIST_BG_RECT.3;
-        assert!(bottom <= plate_bottom);
-        let seventh = SLOT_FIRST_Y + SLOTS_PER_PAGE as f32 * SLOT_PITCH + PLATE.1;
-        assert!(seventh > plate_bottom);
-        // the plate is as wide as the authored slot art, inside the pane
-        assert!(SLOT_X + PLATE.0 <= CONTENT_W - PANE_X);
+    fn the_six_plates_end_exactly_at_the_pager() {
+        let plate_bottom = |slot: usize| SLOT_FIRST_Y + slot as f32 * SLOT_PITCH + PLATE.1;
+        assert_eq!(plate_bottom(SLOTS_PER_PAGE - 1), PAGER_TOP);
+        // a seventh row would start inside the sixth and leave the frame
+        let seventh_top = SLOT_FIRST_Y + SLOTS_PER_PAGE as f32 * SLOT_PITCH;
+        assert!(seventh_top < plate_bottom(SLOTS_PER_PAGE - 1));
+        assert!(plate_bottom(SLOTS_PER_PAGE) > LIST_FRAME.1 + LIST_FRAME.3);
+        // the rows do sit inside the frame, in both axes
+        assert!(SLOT_X >= LIST_FRAME.0);
+        assert!(SLOT_X + PLATE.0 <= LIST_FRAME.0 + LIST_FRAME.2);
+        assert!(plate_bottom(SLOTS_PER_PAGE - 1) <= LIST_FRAME.1 + LIST_FRAME.3);
+        // and they overhang the fill tile, which is why it is not the bound
+        assert!(SLOT_X < LIST_BG_RECT.0);
+        assert!(SLOT_X + PLATE.0 > LIST_BG_RECT.0 + LIST_BG_RECT.2);
     }
 }
