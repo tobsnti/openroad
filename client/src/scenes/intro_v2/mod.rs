@@ -700,7 +700,7 @@ pub(super) fn unescape_newlines(text: &str) -> String {
 /// Replaces the `%d` placeholders of a textdata string, in order, with
 /// `values`. Extra placeholders are left as-is rather than dropped, so a
 /// template with more fields than we can fill stays recognisable.
-pub(super) fn fill_placeholders(template: &str, values: &[u32]) -> String {
+pub(crate) fn fill_placeholders(template: &str, values: &[u32]) -> String {
     let mut out = String::with_capacity(template.len() + 8);
     let mut rest = template;
     let mut values = values.iter();
