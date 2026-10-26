@@ -5,6 +5,8 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
+use crate::plugins::map::water_hq_material::WaterHqSettings;
+
 // Idea: the low graphics tier answers the same question as `water_hq_material.rs` — "make a
 // flat plane read as moving water" — with the one effect that actually carries that reading
 // (a scrolling surface) and none of the ones that cost per-pixel work.
@@ -38,9 +40,10 @@ pub struct WaterLowExtension {
 /// Std140 layout; field order must match `WaterLowSettings` in `water.wesl`.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct WaterLowSettings {
-    /// UV/sec scroll of the base diffuse. Matches the HQ tier's primary octave
-    /// (`WaterHqSettings::scroll_speed_a`) so switching tiers does not change how
-    /// fast the water appears to move.
+    /// UV/sec scroll of the base diffuse. **Taken from** the HQ tier's primary
+    /// octave (`WaterHqSettings::scroll_speed_a`) rather than repeated, so
+    /// switching tiers cannot change how fast the water appears to move —
+    /// repeating it is how the two drift apart.
     pub scroll_speed: Vec2,
     pub _padding: Vec2,
 }
@@ -48,7 +51,7 @@ pub struct WaterLowSettings {
 impl Default for WaterLowSettings {
     fn default() -> Self {
         Self {
-            scroll_speed: Vec2::new(0.008, 0.004),
+            scroll_speed: WaterHqSettings::default().scroll_speed_a,
             _padding: Vec2::ZERO,
         }
     }

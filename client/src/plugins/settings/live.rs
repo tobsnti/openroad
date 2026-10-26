@@ -270,7 +270,10 @@ pub const SETTINGS_AUDIT: &[SettingsGroup] = &[
                Reflection row drop its note too. `water.underwater_view` is \
                read per frame by environment::underwater::apply_underwater_view \
                and writes nothing while the camera is dry, so switching it off \
-               takes effect on the next frame. \
+               takes effect on the next frame. `water.flow_speed` rides \
+               the same arrangement as reflection: \
+               map::water_options::apply_water_flow_option scales the \
+               sourced scroll vectors on every change, high tier only. \
                `preset` has one more \
                writer since the Video pane's Graphics Preset row became \
                settable: `video.preset_override` in user_settings.yaml, read \

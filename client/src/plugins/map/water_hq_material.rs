@@ -219,12 +219,6 @@ mod test {
             "map::water_options reads this as On"
         );
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
     /// The two scroll speeds are the original's own, and the test exists so a
     /// later "that looks slow, bump it" does not quietly turn them back into
     /// invented numbers. `Data/shader/oceanwater.vsh:21` names
