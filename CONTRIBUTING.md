@@ -116,6 +116,27 @@ If you need such material to justify a change, keep it locally and summarise the
 ## Documentation
 
 Update `README.md` and `docs/*.md` when behaviour or workflows change. Architecture
-decisions go to `docs/adrs/adr-xxxx-*.md` with Date and Status. Some older code comments
-cite paths under `docs/re/…`; that knowledge base was retired by the documentation
-cleanup and is no longer published.
+decisions go to `docs/adrs/adr-xxxx-*.md` with Date and Status.
+
+### Citations that point at documents this repository does not carry
+
+Many comments cite `docs/re/…` or `docs/net-*.md`. **Those files are not here, and that is
+deliberate**: the reverse-engineering knowledge base was taken out of publication by the
+documentation cleanup (commit `dd4821019`), for the reasons the "Working process" bullet
+above gives. If you cannot find such a file, you have not missed anything — it was never
+published.
+
+The scale, measured on 2026-10-26: the tree cites **189** distinct `docs/*.md` targets in
+**590** places, and **157** of those targets are not in the repository. So a reader who
+follows a `docs/` path in a comment is more likely to find nothing than something.
+
+Two rules keep new code honest about this:
+
+- **Cite the evidence, not a document.** A reader can act on `textuisystem.txt:917`, on a
+  `packet_dump/<opcode>.log` line, or on a decompiled address. A bare path into an
+  unpublished document is not evidence for anyone outside this machine. Where the long form
+  really lives in the local RE store, say so in the sentence ("kept in the local RE store,
+  not in this repo") rather than leaving a path that reads like a file next door.
+- **A citation of another repository carries that repository's name in the path.**
+  `silkroad-docs/docs/client_startup.md:223` is unambiguous; a bare `docs/messages/…` reads
+  like ours and sends readers and tools hunting in the wrong tree.
