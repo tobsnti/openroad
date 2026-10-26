@@ -381,20 +381,50 @@ pub fn update_friend_list(
     // other row markers — a partial set compiles and then panics at startup
     // with B0001, because Bevy's access check only needs one pair of queries
     // that could match the same entity.
+    //
+    // That is not hypothetical: this set was partial. `bars` excluded only
+    // `FriendRowOnline`, and the other three excluded only two markers each,
+    // so entering `SCENE=world` on `fork/main` died before the first frame
+    // (measured 2026-10-26): `error[B0001]: Query<(&FriendRowBar, &mut
+    // ImageNode, &mut Node), Without<FriendRowOnline>> … accesses
+    // component(s) Node in a way that conflicts with a previous system
+    // parameter`. Requiring a different marker is **not** disjointness to
+    // Bevy's access check — only a `Without` is, which is why every row query
+    // below names the other three. `count` needs the same treatment for
+    // `&mut Text`, which it shares with `names`.
     mut names: Query<
         (&FriendRowName, &mut Text, &mut Node),
-        (Without<FriendRowOnline>, Without<FriendRowRace>),
+        (
+            Without<FriendRowOnline>,
+            Without<FriendRowRace>,
+            Without<FriendRowBar>,
+        ),
     >,
     mut dots: Query<
         (&FriendRowOnline, &mut ImageNode, &mut Node),
-        (Without<FriendRowName>, Without<FriendRowRace>),
+        (
+            Without<FriendRowName>,
+            Without<FriendRowRace>,
+            Without<FriendRowBar>,
+        ),
     >,
     mut races: Query<
         (&FriendRowRace, &mut Node),
-        (Without<FriendRowName>, Without<FriendRowOnline>),
+        (
+            Without<FriendRowName>,
+            Without<FriendRowOnline>,
+            Without<FriendRowBar>,
+        ),
     >,
-    mut bars: Query<(&FriendRowBar, &mut ImageNode, &mut Node), Without<FriendRowOnline>>,
-    mut count: Query<&mut Text, With<FriendCountText>>,
+    mut bars: Query<
+        (&FriendRowBar, &mut ImageNode, &mut Node),
+        (
+            Without<FriendRowName>,
+            Without<FriendRowOnline>,
+            Without<FriendRowRace>,
+        ),
+    >,
+    mut count: Query<&mut Text, (With<FriendCountText>, Without<FriendRowName>)>,
 ) {
     if !roster.is_changed() && !selection.is_changed() {
         return;
@@ -496,6 +526,51 @@ fn ring(w: f32, h: f32, p: f32) -> [((f32, f32, f32, f32), &'static str); 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The query set of [`update_friend_list`] must stay disjoint.
+    ///
+    /// This is the regression test for the startup crash of 2026-10-26: four
+    /// of its queries take `&mut Node` and two take `&mut Text`, and a
+    /// *partial* `Without` set compiles fine and then panics on the first run
+    /// with `error[B0001]`. Running the system once is the only way to find
+    /// that — `cargo check` cannot, and neither can a test that only reads
+    /// constants, which is why the window had five of those and still shipped
+    /// a scene that could not start.
+    #[test]
+    fn the_row_queries_do_not_conflict_on_node_or_text() {
+        let mut app = App::new();
+        // `asset_server.load()` inside the system spawns an IO task, so the
+        // pools have to exist first (`loading_screen`'s chrome_app note).
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .init_resource::<FriendRoster>()
+        .init_resource::<FriendSelection>()
+        .add_systems(Update, update_friend_list);
+
+        // One entity per marker, all carrying the components the queries write,
+        // so the archetypes the access check reasons about actually exist.
+        app.world_mut()
+            .spawn((FriendRowName(0), Text::default(), Node::default()));
+        app.world_mut()
+            .spawn((FriendRowOnline(0), ImageNode::default(), Node::default()));
+        app.world_mut().spawn((FriendRowRace(0), Node::default()));
+        app.world_mut().spawn((
+            FriendRowBar {
+                row: 0,
+                piece: "test",
+            },
+            ImageNode::default(),
+            Node::default(),
+        ));
+        app.world_mut().spawn((FriendCountText, Text::default()));
+
+        // A change is needed, or the system returns before touching anything.
+        app.world_mut().resource_mut::<FriendRoster>().set_changed();
+        app.update();
+    }
 
     /// Eleven rows at the authored 23-unit pitch have to stay inside the
     /// manager's own 256 of height — that is where `VISIBLE_ROWS` comes from,
