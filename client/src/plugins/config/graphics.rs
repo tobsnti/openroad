@@ -818,7 +818,40 @@ pub struct FogGraphicsSettings {
     /// This number is **ours with a reason, not a transcription**: the original
     /// shapes its lobe with `Phase2`'s asymmetry `g`, which lives in the
     /// runtime-filled `CV_HG` register and in none of the player's files, so
-    /// there is nothing here to copy.
+    /// there is nothing here to copy. What it *can* be measured against is the
+    /// shape, and 30.0 turns out to be the best `cos^n` match to a
+    /// Henyey-Greenstein lobe of **g = 0.78** — mid-band for atmospheric Mie
+    /// scattering (0.75-0.9), so the guess was a good one for the lobe's
+    /// *width*.
+    ///
+    /// The bound, both lobes normalised to the same peak over 0-90 degrees:
+    ///
+    /// ```text
+    /// level 0.9 .. 0.25 (the bright core)   within 1.25 degrees
+    /// level 0.10                            5.75 degrees off
+    /// level 0.05                           12.05 degrees off
+    /// worst amplitude error   0.077 of peak at 26.3 degrees
+    /// share of the contribution beyond 20 deg   HG 0.50  vs  cos^30 0.14
+    /// beyond 30 deg                             HG 0.32  vs  cos^30 0.01
+    /// ```
+    ///
+    /// So `pow` reproduces the core and loses the halo: half of the
+    /// Henyey-Greenstein contribution sits past 20 degrees where `cos^30` puts
+    /// a seventh of it. **The error floors at ~6.5% of peak and does not fall
+    /// as `g` rises** — fitting the amplitude as well (which is what
+    /// `sun_scattering` does) buys about 1.5 points and moves the floor by
+    /// nothing. That is the useful part: no exponent and no gain make a `pow`
+    /// lobe an HG profile, so **a real halo needs its own term**, not a better
+    /// exponent. It is also why this term reads as gloss — a `pow` lobe is a
+    /// disc, HG is a disc *with* a halo, and a disc on distant geometry is what
+    /// a specular highlight looks like.
+    ///
+    /// Computed from the equation in `Data/shader/scattervs10.vsh`; `g` itself
+    /// is still unmeasured, so the numbers hold "if `g` is in the Mie band".
+    /// The register comment reads `1-g^2, 1+g, 2g` where textbook HG wants
+    /// `(1-g)^2, 1+g^2, 2g` — one character apart and not separable from data
+    /// the shader only consumes. Under the register reading 30.0 means g = 0.93
+    /// and the floor is 0.08; the conclusion is the same either way.
     pub sun_scattering_exponent: f32,
 }
 
