@@ -494,6 +494,16 @@ pub fn plain_text(pml: &str) -> String {
 pub struct ClientShops(Option<ShopTable>);
 
 impl ClientShops {
+    /// The denormalized inventory of a shop that has no NPC, by its store
+    /// codename — the item mall's five storefronts (`MALL_CONSUME`,
+    /// `MALL_AVATAR`, `MALL_PET`, `MALL_PREMIUM`, `MALL_ARCHEMY`), which is
+    /// the same key `mallitemmenulistdata.txt` gives the mall's menu entries.
+    pub fn shop_for_store(&self, store_codename: &str) -> Option<&ShopLayout> {
+        self.0
+            .as_ref()
+            .and_then(|shops| shops.store(store_codename))
+    }
+
     /// The denormalized shop inventory of an NPC, by its characterdata
     /// codename.
     pub fn shop_for_npc(&self, npc_codename: &str) -> Option<&ShopLayout> {
