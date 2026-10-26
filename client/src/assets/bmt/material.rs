@@ -9,7 +9,7 @@ use std::sync::Arc;
 use bevy::asset::{io::Reader, Asset, AssetLoader, AssetServer, LoadContext};
 use bevy::color::LinearRgba;
 use bevy::pbr::ExtendedMaterial;
-use bevy::prelude::{trace, AlphaMode, Color, Handle, Image, StandardMaterial};
+use bevy::prelude::{trace, warn, AlphaMode, Color, Handle, Image, StandardMaterial};
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::Face;
 use bevy::utils::default;
@@ -52,23 +52,64 @@ pub struct SroMaterial {
     pub diffuse_map_is_absolute: bool,
 }
 
-impl<T: Buf> From<&mut T> for SroMaterial {
-    fn from(value: &mut T) -> Self {
-        Self {
-            name: value.get_double_len_string(),
-            diffuse: value.get_color_rgba(),
-            ambient: value.get_color_rgba(),
-            specular: value.get_color_rgba(),
-            emissive: value.get_color_rgba(),
-            power: value.get_f32_le(),
-            flag: value.get_u32_le(),
-            diffuse_map_path: value.get_path_buf_double_len(),
+/// Fixed part of one material record: four RGBA colors, power, flag, the
+/// diffuse float and its three trailing bytes — everything but the two
+/// length-prefixed strings.
+const MATERIAL_FIXED_LEN: usize = 4 * 16 + 4 + 4 + 4 + 3;
+
+/// A length-prefixed string, refusing a prefix the buffer cannot hold.
+///
+/// `get_fixed_size_string` slices `chunk()` directly, so a bogus `u32` length
+/// **panics** rather than failing the load — and one file in the user's own
+/// data reaches exactly that (see [`JMXVBMT::from`]). Same guard the `.bms`
+/// header reader grew for the same reason.
+fn read_string<T: Buf>(value: &mut T) -> Option<String> {
+    if value.remaining() < 4 {
+        return None;
+    }
+    let len = u32::from_le_bytes(value.chunk().get(..4)?.try_into().ok()?) as usize;
+    if value.remaining() < 4 + len {
+        return None;
+    }
+    Some(value.get_double_len_string())
+}
+
+impl SroMaterial {
+    /// Reads one material, or `None` when the buffer does not hold a whole one.
+    fn read<T: Buf>(value: &mut T) -> Option<Self> {
+        let name = read_string(value)?;
+        if value.remaining() < 4 * 16 + 4 + 4 + 4 {
+            return None;
+        }
+        let diffuse = value.get_color_rgba();
+        let ambient = value.get_color_rgba();
+        let specular = value.get_color_rgba();
+        let emissive = value.get_color_rgba();
+        let power = value.get_f32_le();
+        let flag = value.get_u32_le();
+        let diffuse_map_path = PathBuf::from(
+            read_string(value)?
+                .replace(r"\\", r"\")
+                .replace(r"\", std::path::MAIN_SEPARATOR_STR),
+        );
+        if value.remaining() < 4 + 3 {
+            return None;
+        }
+        Some(Self {
+            name,
+            diffuse,
+            ambient,
+            specular,
+            emissive,
+            power,
+            flag,
+            diffuse_map_path,
             diffuse_map_float: value.get_f32_le(),
             diffuse_map_unk0: value.get_u8(),
             diffuse_map_unk1: value.get_u8(),
             diffuse_map_is_absolute: value.get_u8() == 1,
             ..default()
-        }
+        })
     }
 }
 
@@ -166,12 +207,48 @@ pub struct JMXVBMT {
 }
 
 impl JMXVBMT {
-    pub fn from<T: Buf>(mut value: &mut T, path: PathBuf) -> Self {
+    /// Reads a material set, stopping at the first record the buffer does not
+    /// hold instead of panicking on it.
+    ///
+    /// Why the guard is not defensive dressing: a census of the user's own
+    /// `Data.pk2` (2026-10-26, 3,759 `.bmt`) finds **one** file this reader
+    /// cannot follow, `prim/mtrl/item/etc/avatar_w_ghostcaptain_2.bmt`. Its
+    /// four bump-flagged materials each carry an **extra** length-prefixed
+    /// path — the diffuse name with `_n` appended, a normal map — plus four
+    /// bytes, and with that rule the file consumes exactly (969/969). No other
+    /// file in the corpus does: the other 31 files carrying the same `0x2000`
+    /// flag consume exactly **without** it, and none consumes under both
+    /// rules. So the extra block is not what the flag means; it is one
+    /// repacked file from the same `item/etc` family as the three `.bms` the
+    /// mesh reader cannot follow either. Modelling it from a single sample
+    /// would be inventing a format, so this reads what it can and says what it
+    /// dropped.
+    ///
+    /// (`prim/mtrl/mob/arabia/mustafa.bmt` ends with two bytes nobody reads;
+    /// they are a file tail, not a material field — both rules leave exactly
+    /// those two over.)
+    pub fn from<T: Buf>(value: &mut T, path: PathBuf) -> Self {
+        if value.remaining() < 4 {
+            warn!("{}: no material count", path.display());
+            return Self {
+                materials: Vec::new(),
+                diffuse_textures: HashMap::new(),
+            };
+        }
         let count = value.get_u32_le();
-        // debug!("{}: found {} materials", path.display(), count);
-        let mut materials = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            let mut mat = SroMaterial::from(&mut value);
+        // a count is one u32 of a possibly broken file: only trust it as far
+        // as the bytes that are actually there
+        let capacity = count.min((value.remaining() / MATERIAL_FIXED_LEN) as u32 + 1);
+        let mut materials = Vec::with_capacity(capacity as usize);
+        for index in 0..count {
+            let Some(mut mat) = SroMaterial::read(value) else {
+                warn!(
+                    "{}: stops after {index} of {count} materials - the record does not fit \
+                     what is left",
+                    path.display()
+                );
+                break;
+            };
             mat.path = path.clone();
             materials.push(mat);
         }
@@ -670,6 +747,35 @@ mod tests {
             }],
             diffuse_textures: HashMap::from([(material_label(name), Handle::default())]),
         }
+    }
+
+    /// One real material, then a record that is cut short. The reader must
+    /// keep the first and stop — before the guard it panicked inside
+    /// `get_fixed_size_string`, which is what one file of the user's own data
+    /// (`avatar_w_ghostcaptain_2.bmt`) drives it into.
+    #[test]
+    fn a_truncated_record_stops_the_read_instead_of_panicking() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // two materials claimed
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(b"wall");
+        bytes.extend_from_slice(&[0u8; 4 * 16]); // four RGBA colors
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // power
+        bytes.extend_from_slice(&0x141u32.to_le_bytes()); // flag
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(b"wall.ddj");
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&[32, 8, 0]);
+        // the second record starts with a length prefix nothing can satisfy
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+        let mut cursor = std::io::Cursor::new(bytes);
+        let set = JMXVBMT::from(&mut cursor, PathBuf::from("prim/mtrl/test"));
+
+        assert_eq!(set.materials.len(), 1, "the readable material is kept");
+        assert_eq!(set.materials[0].name, "wall");
+        assert_eq!(set.materials[0].diffuse_map_path, PathBuf::from("wall.ddj"));
+        assert!(!set.materials[0].diffuse_map_is_absolute);
     }
 
     /// Meshes may spell a material differently from its set (`Gyo` vs `gyo`),
