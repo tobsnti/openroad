@@ -75,39 +75,31 @@ same handler there.
 | `0x6103` | AgentLoginRequest | C→S | wired |  |
 | `0xA103` | AgentLoginResponse | S→C | wired |  |
 
-## Launcher: patch, notice and file download (measured, none wired)
+## Launcher: the file download chain (measured, not wired)
 
 The original ships two executables that speak the same gateway port, and the
-`0x6100`/`0x6104` pair plus the whole `0x6004`/`0x1001`/`0xA004` download chain
-belong to the **launcher** (`silkroad.exe`), not to the game client. OpenRoad
-does not implement any of them — it does an `SV.T` preflight instead — so the
-rows below are a reading, not a wiring, and the name column stays empty on
-purpose: our own measurement does not name these packets, and the one outside
-document that does is contradicted on `0xA004` (see the note).
+`0x6004`/`0x1001`/`0xA004` download chain belongs to the **launcher**
+(`silkroad.exe`) rather than the game client — though the client carries the
+same code. OpenRoad implements none of it: its own launcher does an `SV.T`
+preflight. So the rows below are a reading, not a wiring, and the name column
+stays empty on purpose: our own measurement does not name these packets, and
+the one outside document that does is contradicted on `0xA004`.
 
-Every row is our own evidence: a capture of the **original** client through our
-proxy, or an instruction in the user's own binaries. The two write idioms are
+The patch and notice pair of the same launcher conversation — `0x6100`,
+`0xA100`, `0x6104`, `0xA104` — *is* wired, and its rows are in
+[Login & gateway](#login--gateway) with their own evidence.
+
+**No capture exists for any of the three below.** Every recorded session was
+already up to date, so the chain never ran; their widths come from the user's
+own binaries alone and their meanings are `[U]`. The two idioms are
 `MOV WORD PTR [reg], <opcode>` into the packet's opcode slot at `+0x1050`
 followed by payload writes, and `CMP WORD PTR [reg], <opcode>` in a dispatcher.
 
 | Opcode | Direction | Body | Evidence |
 |---|---|---|---|
-| `0x6100` | C→S | `u8 0x16` · `u16`+`"SR_Client"` · `u32 208` | 924 c2s frames in the 2026-09-29 original-client capture and 104 more in `packet_dump/proxy/c2s/0x6100.log` — all byte-identical `16 0900 53525f436c69656e74 d0000000`. The leading `0x16` is the same locale byte `0x6102` carries |
-| `0xA100` | S→C | `01 00` | 680 s2c frames in the same capture, every one two bytes |
-| `0x6104` | C→S | `16` | 7 c2s frames in `packet_dump/proxy/c2s/0x6104.log`, one byte each — the same locale byte again, sent 2-3 ms after `0x6100` |
-| `0xA104` | S→C | `[U]` | **no frame anywhere in the workspace**; the real gateway never answered our `0x6104` |
 | `0x6004` | C→S | two `u32` | built and sent by both binaries: `MOV WORD [EAX], 0x6004` at `0x004D12EB` (client) and `0x0040CF05` (launcher), then two payload writes of four bytes each |
 | `0xA004` | C→S | one `u8`, value `1` at the only site | same shape, `0x004D0C98` (client) / `0x0040CA44` (launcher), handed to the same vtable send slot `+0x50` as `0x6004`. This is where an outside reading says "server → client, `u8 result`" — our binaries build it on the **client** side, so the direction is ours and theirs is not adopted |
 | `0x1001` | S→C `[S]` | `[U]` | the launcher's dispatcher compares it three times (`CMP WORD [EDX], 0x1001` at `0x004148BD`, `0x00415D4F`, `0x00417C10`), which is how it recognises a packet it received. `[U]`: there is also a build site at `0x004152A2`, unexplained |
-
-No capture exists for `0x6004`, `0xA004` or `0x1001` — the recorded sessions
-were all up to date, so the download chain never ran. Their widths come from the
-binaries alone and their meanings are `[U]`.
-
-`0x6100`, `0xA100`, `0x6104` and `0xA104` are already typed on the fork branch
-`feature/item-mall-from-data` (`packets/src/gateway.rs`, with `PatchRequest`,
-`PatchResponse`, `NoticeRequest`, `NoticeResponse`); porting them to `main` is a
-code slice, not a ledger one.
 
 ## Character select / join
 
