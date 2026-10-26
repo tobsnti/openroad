@@ -3,6 +3,7 @@ pub mod alchemy;
 pub mod barena;
 pub mod character_data;
 pub mod chat;
+pub(crate) mod cursor;
 pub mod exchange;
 pub mod guild;
 pub mod guild_leadership;

@@ -375,11 +375,16 @@ Details: .
 `0x30EF` keys a **guild-id** set, not an entity flag — one packet changes the
 relation to every member of that guild. `0xB114`'s `u32` is the compensation
 amount, named by the server writer itself (`0x4C45` = "no compensation" appears
-on both sides). Details: . `0x3109`
-`GuildWarInfo` and `0x7113` stay unwired, with reasons in that doc.
+on both sides). `0x3109 GuildWarInfo` is a `u8` count and that many entries,
+each led by a `u32` that decides its own length: zero ends the entry there,
+non-zero means seven more scalars and a name. That shape is read out of the
+original (handler `0x0087FD90`, list reader `0x0099AB20`, record reader
+`0x0087FF10`), not out of a capture — nothing names the fields, so they are
+carried as `unk_*`. `0x7113` stays unwired.
 
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
+| `0x3109` | GuildWarInfo | S→C | experimental | `u8` count, entries of variable length; field names `[U]` |
 | `0x30EF` | GuildRelationUpdate | S→C | experimental | `u8 flag, u32 guild_id`; set polarity `[U]` |
 | `0x70FF` | SiegeAuthorityUpdateRequest | C→S | experimental | `u32`, `u8` |
 | `0x7110` | GuildWarStartRequest | C→S | experimental | opposing guild name + four scalars |

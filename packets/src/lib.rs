@@ -543,9 +543,11 @@ packets! {
     0xB501 => GuildGpHistoryResponse,
 
     // Guild war & siege authority (see agent/guild_war.rs,
-    // docs/net-guild-war.md). 0x3109 GuildWarInfo stays unwired: no capture and
-    // no recorded layout. 0x7113 is a bare u32 whose verb nobody has named, so
-    // it is documented rather than modelled.
+    // docs/net-guild-war.md). 0x3109 has no capture, but it does have a layout
+    // now: the original's own reader gives it, down to the `u32` that decides
+    // whether the rest of an entry is there. 0x7113 is a bare u32 whose verb
+    // nobody has named, so it is documented rather than modelled.
+    0x3109 => GuildWarInfo,
     0x30EF => GuildRelationUpdate,
     0x70FF => SiegeAuthorityUpdateRequest,
     0x7110 => GuildWarStartRequest,
