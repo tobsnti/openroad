@@ -260,13 +260,15 @@ fn add_ui_previews(app: &mut App) {
 /// The previews that read the local `Player`: the portrait rig shoots it, both
 /// maps place their arrow on it, the inventory window reads its bag and the
 /// quest list reads its `CharacterInfo`.
-const PLAYER_PREVIEWS: [&str; 6] = [
+const PLAYER_PREVIEWS: [&str; 7] = [
     "mini_info",
     "minimap",
     "world_map",
     "inventory",
     "quest",
     "quest_detail",
+    // the character window's job strip reads the player's `CharacterInfo`
+    "character_info",
 ];
 
 /// Every name [`add_ui_previews`] knows, for the gallery runner and for the
