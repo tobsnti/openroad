@@ -694,6 +694,16 @@ packets! {
     0x7117 => PetRenameRequest,
     0x7420 => PetSettingsChangeRequest,
 
+    // Job league (see agent/job.rs). The one pair our own captures decode:
+    // 0x70E6 carries the gid of an NPC (the same four bytes the selection
+    // request 0x7045 sends), 0xB0E6 answers with the family's shared
+    // result/code shape. The other ten opcodes the client dispatches in this
+    // block stay unwired — three of them have frames whose fields cannot be
+    // split from one constant value, and naming the rest would mean naming an
+    // action no capture of ours shows. agent/job.rs lists each with its bodies.
+    0x70E6 => JobNpcRequest,
+    0xB0E6 => JobNpcResponse,
+
     // Mail/memo + consignment "avatar market" (see agent/mail.rs,
     // docs/net-mail-consignment-0x7309.md). Spec-derived: no packet_dump exists
     // for any of these yet. 0xB509's records are variable-length and their width
