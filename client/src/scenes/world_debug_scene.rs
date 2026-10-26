@@ -105,6 +105,12 @@ pub fn run_terrain_benchmark(config: ClientConfig, assets_dir: PathBuf) {
             TerrainBenchmarkPlugin { terrain_pipeline },
             FreeCameraPlugin,
             FrameTimeDiagnosticsPlugin::default(),
+            // This scene builds its own App, so it had none of the dev plugins
+            // — including the one that can photograph it. A terrain benchmark
+            // that cannot produce a picture of the terrain is the one dev
+            // plugin it genuinely needs; it stays inert unless
+            // `OPENROAD_SCREENSHOT` is set.
+            crate::plugins::dev::auto_screenshot::AutoScreenshotPlugin,
         ))
         .run();
 }
@@ -121,6 +127,15 @@ impl Plugin for TerrainBenchmarkPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WorldOrigin>()
             .init_resource::<TerrainOnlyBenchmark>()
+            // `load_terrain_system` and `load_terrain_dynamically` take
+            // `Res<ViewRange>`, and bevy fails parameter validation rather than
+            // skipping a system whose resource is missing — so without this the
+            // scene panics its schedule the moment terrain starts streaming
+            // ("Parameter `Res<ViewRange>` failed validation", measured
+            // 2026-10-26). The default is the one `ViewSettings::default()`
+            // derives; this scene has no config-driven live update, which is
+            // exactly what `MapPlugin` adds on top.
+            .init_resource::<crate::plugins::map::view_range::ViewRange>()
             .add_loading_state(LoadingState::new(GameState::Loading))
             .configure_loading_state(
                 LoadingStateConfig::new(GameState::Loading)
