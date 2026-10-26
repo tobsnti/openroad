@@ -15,6 +15,7 @@ use crate::assets::textdata::gameguide::{GuideIndex, GuideNode};
 use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
 use crate::assets::textdata::leveldata::LevelData;
 use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
+use crate::assets::textdata::mallmenu::{MallMenuTable, MallTab};
 use crate::assets::textdata::masterydata::{MasteryData, MasteryInfo};
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
@@ -292,6 +293,36 @@ impl ClientActionCommands {
     /// The live command in `index` of `group`, or `None` for an unassigned slot.
     pub fn slot(&self, group: u8, index: u8) -> Option<&ActionCommand> {
         self.0.as_ref().and_then(|table| table.slot(group, index))
+    }
+}
+
+/// The Item Mall's menu table (`mallitemmenulistdata.txt`): which tabs exist,
+/// in which order, with which string key and icon, plus the division bits the
+/// article-list captions come from.
+#[derive(Resource, Default)]
+pub struct ClientMallMenu(Option<MallMenuTable>);
+
+impl ClientMallMenu {
+    /// Test-only: build the resource from transcribed rows, so a caller's tab
+    /// logic is pinned against the table instead of against its own output.
+    #[cfg(test)]
+    pub(crate) fn from_table(table: MallMenuTable) -> Self {
+        Self(Some(table))
+    }
+
+    /// The tabs the table puts in service, in authored order. Empty when the
+    /// table has not loaded — the window then draws no tabs rather than a
+    /// hand-copied list of them.
+    pub fn tabs(&self) -> Vec<&MallTab> {
+        self.0
+            .as_ref()
+            .map(|table| table.active_tabs().collect())
+            .unwrap_or_default()
+    }
+
+    /// Caption key for a division bit (`8` is `Recommend`).
+    pub fn division(&self, bit: u32) -> Option<&str> {
+        self.0.as_ref().and_then(|table| table.division(bit))
     }
 }
 
@@ -706,6 +737,7 @@ impl Plugin for TextdataPlugin {
             .init_resource::<ClientZoneNames>()
             .init_resource::<ClientGameGuide>()
             .init_resource::<ClientActionCommands>()
+            .init_resource::<ClientMallMenu>()
             .init_resource::<ClientCollectionBook>()
             .init_resource::<ClientQuestRewards>()
             .init_resource::<ClientQuestTable>()
@@ -751,6 +783,7 @@ fn load_textdata(asset_server: Res<AssetServer>, mut commands: Commands) {
         asset_server.load("media://server_dep/silkroad/textdata/gameguidedata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/texthelp.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/actionwnddata.txt"),
+        asset_server.load("media://server_dep/silkroad/textdata/mallitemmenulistdata.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/collectionbook_theme.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/textquest_speech&name.txt"),
         asset_server.load("media://server_dep/silkroad/textdata/npcchat.txt"),
@@ -902,6 +935,15 @@ fn add_resource_when_textdata_loaded(
                 Textdata::ActionWnd(table) => {
                     info!("loaded {} action-window commands", table.0.len());
                     commands.insert_resource(ClientActionCommands(Some(table.clone())))
+                }
+                Textdata::MallMenu(table) => {
+                    info!(
+                        "loaded {} mall tabs ({} in service), {} division bits",
+                        table.tabs.len(),
+                        table.active_tabs().count(),
+                        table.divisions.len()
+                    );
+                    commands.insert_resource(ClientMallMenu(Some(table.clone())))
                 }
                 // The guide's two halves land independently and fill one
                 // resource, so they mutate it rather than replacing it.

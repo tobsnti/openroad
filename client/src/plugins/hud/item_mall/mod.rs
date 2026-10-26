@@ -96,7 +96,7 @@ use crate::assets::FontAssets;
 use crate::plugins::hud::chat::model::ChatState;
 use crate::plugins::hud::game_window::{self, ChromeFamily, WindowGeometry};
 use crate::plugins::hud::scale::{font_px, hud_scale};
-use crate::plugins::textdata::ClientUiStrings;
+use crate::plugins::textdata::{ClientMallMenu, ClientUiStrings};
 use crate::scenes::SceneState;
 
 pub mod buy_list;
@@ -179,59 +179,44 @@ const TAB_ICON_SIZE: (f32, f32) = (20.0, 20.0);
 /// at image `x = 56`, i.e. window `x = 53`, which is 35 past the tab origin.
 const TAB_LABEL_INSET: f32 = 35.0;
 
-/// One category: its shipped label and its measured icon.
+/// The tab the window draws for one row of `mallitemmenulistdata.txt`.
+///
+/// **The list is the table's, not ours.** Order, string key and icon file all
+/// come from `ITEMMALL_MENU_LIST`; the seven hand-copied entries this replaced
+/// were a transcription of the same rows and would have aged silently.
 struct Category {
-    key: &'static str,
-    fallback: &'static str,
-    icon: &'static str,
+    key: String,
+    icon: String,
 }
 
-/// Top to bottom as photographed. The keys are the shipped ones; the line
-/// numbers are `textuisystem.txt`.
-const CATEGORIES: [Category; 7] = [
-    Category {
-        // L1105
-        key: "UIIT_STT_SILKMALL_CONSUMPTION",
-        fallback: "Expendables",
-        icon: "mall_consum_icon.ddj",
-    },
-    Category {
-        // L1107
-        key: "UIIT_STT_SILKMALL_AVATA",
-        fallback: "Avatar",
-        icon: "mall_avatar_icon.ddj",
-    },
-    Category {
-        // L1108
-        key: "UIIT_STT_SILKMALL_PET",
-        fallback: "Pet",
-        icon: "mall_pet_icon.ddj",
-    },
-    Category {
-        // L1120
-        key: "UIIT_STT_SILKMALL_PREMIUM",
-        fallback: "Premium",
-        icon: "mall_premium_icon.ddj",
-    },
-    Category {
-        // L1121
-        key: "UIIT_STT_SILKMALL_ARCHEMY",
-        fallback: "Alchemy",
-        icon: "mall_alchemy_icon.ddj",
-    },
-    Category {
-        // L1104
-        key: "UIIT_STT_SILKMALL_HOT_STORE",
-        fallback: "HOT shop",
-        icon: "mall_hot_icon.ddj",
-    },
-    Category {
-        // L1110
-        key: "UIIT_STT_SILKMALL_SHOPPING_BASKET_LIST",
-        fallback: "Reserved",
-        icon: "mall_choicelist_icon.ddj",
-    },
-];
+/// The one row of the table the window does **not** draw, and why.
+///
+/// The table puts **eight** tabs in service (`MALL_EVENT` is the only `0`), but
+/// the photograph measures exactly **seven** plates: the tab art matches at
+/// `y = 75 + 32k` for `k = 0..=6` with error 0.67 and fails at `k = 7` (35.3),
+/// and the icons identify them as consumption, avatar, pet, premium, alchemy,
+/// HOT shop and the basket — in the table's order, with `MALL_PACKAGE` skipped.
+///
+/// **The data does not say why.** Of the four flag columns only two vary at
+/// all: column 7 is `1` for avatar and pet alone, column 10 is `0` for the
+/// basket alone. Neither isolates the bundle row, and no other column in the
+/// file distinguishes it. So the exception stays here, named and sourced,
+/// rather than being dressed up as a rule the table does not carry — `[U]`
+/// until a capture or a decompile names the condition.
+const TAB_NOT_DRAWN: &str = "MALL_PACKAGE";
+
+/// The tabs to draw: the table's own rows, minus the one the photograph does
+/// not show (see [`TAB_NOT_DRAWN`]).
+fn categories(menu: &ClientMallMenu) -> Vec<Category> {
+    menu.tabs()
+        .into_iter()
+        .filter(|tab| tab.code != TAB_NOT_DRAWN)
+        .map(|tab| Category {
+            key: tab.text_key.clone(),
+            icon: tab.icon.clone(),
+        })
+        .collect()
+}
 
 /// `GDR_RENEWAL_ITEM_MALL_SEARCH_BG`, `Rect="141,43,0,0"`, art `mall_find_wnd.ddj`
 /// (332x24), and `_SEARCH` above it, `Rect="141,43,332,24"` — the edit box is
@@ -547,12 +532,14 @@ pub fn spawn_confirm(
 }
 
 /// `Yes` replaces the box with the page; `No` just closes it.
+#[allow(clippy::too_many_arguments)]
 fn on_confirm_button(
     activate: On<Activate>,
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     fonts: Res<FontAssets>,
     ui_strings: Res<ClientUiStrings>,
+    menu: Res<ClientMallMenu>,
     cam_query: Query<Entity, With<Camera2d>>,
     yes: Query<&ConfirmYes>,
     boxes: Query<Entity, With<ItemMallConfirmRoot>>,
@@ -568,7 +555,14 @@ fn on_confirm_button(
         warn!("item mall: no 2d camera to attach to");
         return;
     };
-    spawn_item_mall(&mut commands, &asset_server, &fonts, &ui_strings, camera);
+    spawn_item_mall(
+        &mut commands,
+        &asset_server,
+        &fonts,
+        &ui_strings,
+        &menu,
+        camera,
+    );
 }
 
 /// Builds the page. Split out of the observer so a test can call it.
@@ -577,6 +571,7 @@ pub fn spawn_item_mall(
     asset_server: &AssetServer,
     fonts: &FontAssets,
     ui_strings: &ClientUiStrings,
+    menu: &ClientMallMenu,
     camera: Entity,
 ) -> Entity {
     let s = hud_scale();
@@ -632,7 +627,8 @@ pub fn spawn_item_mall(
             ImageNode::new(asset_server.load(format!("{ART}mall_mainpage.ddj"))),
             Pickable::IGNORE,
         ));
-        for (i, category) in CATEGORIES.iter().enumerate() {
+        let drawn = categories(menu);
+        for (i, category) in drawn.iter().enumerate() {
             let top = TAB_TOP + TAB_PITCH * i as f32;
             content.spawn((
                 game_window::abs_node((TAB_X, top, TAB_SIZE.0, TAB_SIZE.1), s),
@@ -649,13 +645,15 @@ pub fn spawn_item_mall(
                     ),
                     s,
                 ),
-                ImageNode::new(asset_server.load(format!("{ART}{}", category.icon))),
+                // the table's path is media-relative already (`interface/mall/…`)
+                ImageNode::new(asset_server.load(format!("media://{}", category.icon))),
                 Pickable::IGNORE,
             ));
             content.spawn(label(
-                ui_strings
-                    .get_or(category.key, category.fallback)
-                    .to_string(),
+                // no English fallback: the label is the player's own string
+                // or nothing, the same rule the action window's data-driven
+                // slots follow
+                ui_strings.get_or(&category.key, "").to_string(),
                 (
                     TAB_X + TAB_LABEL_INSET,
                     top + 9.0,
@@ -901,48 +899,129 @@ impl Plugin for ItemMallPlugin {
 mod test {
     use super::list::LIST_AT;
     use super::*;
+    use crate::assets::textdata::mallmenu::MallMenuTable;
+
+    /// The nine real rows of `ITEMMALL_MENU_LIST`, transcribed from
+    /// `Media/server_dep/silkroad/textdata/mallitemmenulistdata.txt`: eight in
+    /// service, `MALL_EVENT` out of it.
+    fn menu_fixture() -> ClientMallMenu {
+        let mut rows = String::from("#section\tITEMMALL_MENU_LIST\n");
+        for (active, order, code, key, icon) in [
+            (
+                1,
+                1,
+                "MALL_CONSUME",
+                "UIIT_STT_SILKMALL_CONSUMPTION",
+                "mall_consum_icon.ddj",
+            ),
+            (
+                1,
+                2,
+                "MALL_AVATAR",
+                "UIIT_STT_SILKMALL_AVATA",
+                "mall_avatar_icon.ddj",
+            ),
+            (
+                1,
+                3,
+                "MALL_PET",
+                "UIIT_STT_SILKMALL_PET",
+                "mall_pet_icon.ddj",
+            ),
+            (
+                1,
+                4,
+                "MALL_PREMIUM",
+                "UIIT_STT_SILKMALL_PREMIUM",
+                "mall_premium_icon.ddj",
+            ),
+            (
+                1,
+                5,
+                "MALL_ARCHEMY",
+                "UIIT_STT_SILKMALL_ARCHEMY",
+                "mall_alchemy_icon.ddj",
+            ),
+            (
+                1,
+                6,
+                "xxx",
+                "UIIT_STT_SILKMALL_HOT_STORE",
+                "mall_hot_icon.ddj",
+            ),
+            (
+                1,
+                7,
+                "MALL_PACKAGE",
+                "UIIT_STT_SILKMALL_PACKAGE",
+                "mall_bundle_icon.ddj",
+            ),
+            (
+                1,
+                8,
+                "xxx",
+                "UIIT_STT_SILKMALL_SHOPPING_BASKET_LIST",
+                "mall_choicelist_icon.ddj",
+            ),
+            (
+                0,
+                9,
+                "MALL_EVENT",
+                "UIIT_STT_SILKMALL_SPECIAL_COAST",
+                "mall_event_icon.ddj",
+            ),
+        ] {
+            rows.push_str(&format!(
+                "{active}\t{order}\t{code}\t{key}\tinterface\\mall\\mall_item_tab.ddj\tinterface\\mall\\{icon}\t0\t1\t1\t1\n"
+            ));
+        }
+        ClientMallMenu::from_table(MallMenuTable::parse(&rows))
+    }
 
     /// The seven tabs sit where the art matched the photograph: `x = 18`,
     /// `y = 75 + 32k`, and the eighth row is *not* part of the window.
     #[test]
     fn the_seven_category_tabs_are_the_measured_ones() {
-        assert_eq!(CATEGORIES.len(), 7);
-        let tops: Vec<f32> = (0..CATEGORIES.len())
-            .map(|i| TAB_TOP + TAB_PITCH * i as f32)
-            .collect();
+        let drawn = categories(&menu_fixture()).len();
+        assert_eq!(drawn, 7);
+        let tops: Vec<f32> = (0..drawn).map(|i| TAB_TOP + TAB_PITCH * i as f32).collect();
         assert_eq!(tops, vec![75.0, 107.0, 139.0, 171.0, 203.0, 235.0, 267.0]);
         // The pitch is the art's own height, which is why the rows abut.
         assert_eq!(TAB_PITCH, TAB_SIZE.1);
         // The last tab stays inside the left frame (`15,42,124,542`).
-        let last_bottom = TAB_TOP + TAB_PITCH * (CATEGORIES.len() as f32 - 1.0) + TAB_SIZE.1;
+        let last_bottom = TAB_TOP + TAB_PITCH * (drawn as f32 - 1.0) + TAB_SIZE.1;
         assert!(last_bottom < 42.0 + 542.0);
         // And the head button sits directly above the first tab.
         assert!(MAIN_PAGE_AT.1 + MAIN_PAGE_AT.3 <= TAB_TOP);
     }
 
-    /// Every category label is a shipped `UIIT_STT_SILKMALL_*` key, in the
-    /// photographed order.
+    /// The table decides the order, the keys and the icons — this pins the
+    /// one place where we *overrule* it: the bundle row the photograph does
+    /// not show (see [`TAB_NOT_DRAWN`]).
     #[test]
-    fn the_categories_are_the_photographed_order() {
-        let names: Vec<&str> = CATEGORIES.iter().map(|c| c.fallback).collect();
+    fn the_tabs_are_the_tables_rows_minus_the_bundle() {
+        let menu = menu_fixture();
+        assert_eq!(menu.tabs().len(), 8, "the table puts eight tabs in service");
+        let drawn = categories(&menu);
+        assert_eq!(drawn.len(), 7);
+        let keys: Vec<&str> = drawn.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(
-            names,
+            keys,
             vec![
-                "Expendables",
-                "Avatar",
-                "Pet",
-                "Premium",
-                "Alchemy",
-                "HOT shop",
-                "Reserved"
+                "UIIT_STT_SILKMALL_CONSUMPTION",
+                "UIIT_STT_SILKMALL_AVATA",
+                "UIIT_STT_SILKMALL_PET",
+                "UIIT_STT_SILKMALL_PREMIUM",
+                "UIIT_STT_SILKMALL_ARCHEMY",
+                "UIIT_STT_SILKMALL_HOT_STORE",
+                "UIIT_STT_SILKMALL_SHOPPING_BASKET_LIST",
             ]
         );
-        for category in CATEGORIES.iter() {
-            assert!(
-                category.key.starts_with("UIIT_STT_SILKMALL_"),
-                "{} is not a shipped mall key",
-                category.key
-            );
+        assert!(
+            !keys.contains(&"UIIT_STT_SILKMALL_PACKAGE"),
+            "the photograph shows no bundle tab"
+        );
+        for category in &drawn {
             assert!(category.icon.ends_with("_icon.ddj"));
         }
     }

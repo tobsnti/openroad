@@ -14,6 +14,7 @@ use crate::assets::textdata::gameguide::GuideIndex;
 use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
 use crate::assets::textdata::leveldata::LevelData;
 use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
+use crate::assets::textdata::mallmenu::MallMenuTable;
 use crate::assets::textdata::masterydata::MasteryData;
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::NpcChat;
@@ -83,6 +84,8 @@ async fn read_sibling(
 pub enum Textdata {
     /// `actionwnddata.txt` — what the action window's 52 empty slots contain.
     ActionWnd(ActionWndData),
+    /// `mallitemmenulistdata.txt` — the Item Mall's tabs and division captions.
+    MallMenu(MallMenuTable),
     CharacterData(CharacterData),
     /// `collectionbook_theme.txt` + its `collectionbook_item.txt` sibling.
     CollectionBook(CollectionBookTable),
@@ -156,6 +159,7 @@ impl AssetLoader for TextdataLoader {
             .unwrap()
             .to_string();
         if !file_stem.starts_with("actionwnddata")
+            && !file_stem.starts_with("mallitemmenulistdata")
             && !file_stem.starts_with("characterdata")
             && !file_stem.starts_with("collectionbook_theme")
             && !file_stem.starts_with("itemdata")
@@ -245,6 +249,9 @@ impl AssetLoader for TextdataLoader {
         } else if file_stem.starts_with("actionwnddata") {
             // single file: the action window's command → icon/string bindings
             Ok(Textdata::ActionWnd(ActionWndData::parse(&content)))
+        } else if file_stem.starts_with("mallitemmenulistdata") {
+            // single file, two sections: the mall's tabs and its division bits
+            Ok(Textdata::MallMenu(MallMenuTable::parse(&content)))
         } else if file_stem.starts_with("refqusetreward") {
             // The mode table names no items and the item table names no mode,
             // so the pair is read together (like the ref-shop chain) — the

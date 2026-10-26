@@ -163,11 +163,21 @@ pub struct MallItem {
     pub badge: Option<MallBadge>,
 }
 
-/// One captioned block of articles — `Best item`, `Recommend`, ... The caption
-/// is server content too (only `Best item` has a shipped key,
-/// `UIIT_STT_SILKMALL_BESTSELLER_ITEM` L4320; there is no `SILKMALL` key whose
-/// text is `Recommend` — the positive control is that the same grep finds
-/// `Best item` at L4320 and `Original` at L4321).
+/// One captioned block of articles — `Best item`, `Recommend`, ...
+///
+/// **Correction (measured 2026-10-26).** This used to say no shipped key reads
+/// `Recommend`. It does: `UILM_STT_DIVISION_RECOMMENDATION`, `textuisystem.txt`
+/// **L88**. All six captions are in the player's own data, bound to a bit of
+/// the article's division mask by `mallitemmenulistdata.txt`'s second section
+/// (`ITEMMALL_HOTITEM_LIST`, read by `assets::textdata::mallmenu`): 1 new item
+/// (L4319), 2 best item (L4320), 4 sale item (L4322, out of service), 8
+/// recommend (L88), 16 and 32 limited sales (L1228).
+///
+/// Why the old claim survived review is the part worth keeping: its positive
+/// control grepped for `SILKMALL` too — the *same* pattern that hid the answer,
+/// since `UILM_STT_DIVISION_*` is the one family that does not carry it. A
+/// positive control has to sit **outside** the suspect pattern, or it only
+/// confirms the pattern.
 #[derive(Clone, Debug)]
 pub struct MallSection {
     pub title: String,
