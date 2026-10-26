@@ -73,6 +73,7 @@ impl Plugin for NetworkCorePlugin {
             .add_plugins(crate::plugins::net::party::PartyPlugin)
             .add_plugins(crate::plugins::net::guild::GuildPlugin)
             .add_plugins(crate::plugins::net::quest::QuestMarkPlugin)
+            .add_plugins(crate::plugins::net::siege::SiegePlugin)
             .add_plugins(crate::plugins::net::silk::SilkPlugin)
             .add_plugins(crate::plugins::net::stall::StallEntitiesPlugin)
             .init_resource::<NetworkState>()
