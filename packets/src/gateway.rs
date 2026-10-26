@@ -277,5 +277,4 @@ mod tests {
         let encoded: Bytes = response.into();
         assert_eq!(encoded.as_ref(), &[0x00]);
     }
-
 }
