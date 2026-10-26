@@ -25,6 +25,8 @@ bytes = { workspace = true }
 futures-lite = "2.5"
 bevy_pk2 = { path = "../bevy_pk2" }
 client = { path = "../client" }
+# `dump_census` reads captured frames back through the client's own opcode registry.
+packets = { path = "../packets" }
 gltf-json = { version = "1.4", features = ["names", "extras"] }
 fbxcel = { version = "0.9", features = ["writer", "tree"] }
 
