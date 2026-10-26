@@ -23,7 +23,7 @@ pub mod navmesh_lines;
 pub mod world_inspector;
 // pub: `map::objects::cull_fogged_objects` reads `RenderDebugSettings` to
 // stand down while the panel's render_objects toggle owns wrapper visibility
-mod auto_screenshot;
+pub mod auto_screenshot;
 /// `openroad/build_info`, the client's own answer to "which build is this".
 /// Registered from `main.rs` with the measurement tier.
 pub mod build_info;
