@@ -66,6 +66,8 @@ class in the PR**. The class decides what you are allowed to do with it:
 | Class | Sources | Allowed use |
 |---|---|---|
 | **MIT** | Veykril/pk2 crate, JMX-File-Editor (C# — structures portable), NVMTerrainExtractor, SRO-2DT-Editor, SR_Db2Media (skilldata cipher) | Depend on / port code and structures |
+| **GPL-3.0 / GPL-3.0-or-later** | lobot (GitLab, vSRO 1.188 bot), Mgunbatti/xSilkroad-blender-plugin | Depend on / port code and structures; name the source and its licence in the PR |
+| **GPL-2.0-only** | *(none catalogued yet)* | Treat as **No license** below: GPL-2.0-only cannot be combined into a GPL-3.0 work, so facts and field layouts only |
 | **DBAD** | florian0/SRO_DevKit, go-sro | Read/reference only for GPL-3.0 purposes |
 | **No license** (all-rights-reserved by default) | SilkroadDoc wiki, sr_formats, Silkroad-Effect-Viewer, both Blender importers, NVMEditor, threejs-pyside6, srodevs-docs, devtekve Security.cs | Learn facts and field layouts; **never copy code or text** |
 | **AGPL-3.0** | skrillax (server), RSBot | Behavior/spec reference only; **no code porting** |
@@ -75,10 +77,12 @@ class in the PR**. The class decides what you are allowed to do with it:
 This table is the source of truth for source classes; the same table appears in
 `AGENTS.md` for agent sessions.
 
-Two classes are worth restating because they are the easy mistakes: **AGPL-3.0** sources
+Three classes are worth restating because they are the easy mistakes: **AGPL-3.0** sources
 (skrillax, RSBot) may be *observed*, never ported — describe behaviour in your own words
 from your own captures. **No license** sources are all-rights-reserved by default: you may
 learn a fact or a field layout from them, but you may not copy their code or their text.
+And **GPL-2.0-only** reads as free as GPL-3.0 while being the one GPL version that cannot be
+combined into this project, so it is handled like *No license*.
 
 ## What this repository does not publish
 

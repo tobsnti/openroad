@@ -74,6 +74,8 @@
 | Class | Sources | Allowed use |
 |---|---|---|
 | **MIT** | Veykril/pk2 crate, JMX-File-Editor (C# — structures portable), NVMTerrainExtractor, SRO-2DT-Editor, SR_Db2Media (skilldata cipher) | Depend on / port code and structures |
+| **GPL-3.0 / GPL-3.0-or-later** | lobot (GitLab, vSRO 1.188 bot), Mgunbatti/xSilkroad-blender-plugin | Depend on / port code and structures; name the source and its licence in the PR |
+| **GPL-2.0-only** | *(none catalogued yet)* | Treat as **No license** below: GPL-2.0-only cannot be combined into a GPL-3.0 work, so facts and field layouts only |
 | **DBAD** | florian0/SRO_DevKit, go-sro | Read/reference only for GPL-3.0 purposes |
 | **No license** (all-rights-reserved by default) | SilkroadDoc wiki, sr_formats, Silkroad-Effect-Viewer, both Blender importers, NVMEditor, threejs-pyside6, srodevs-docs, devtekve Security.cs | Learn facts and field layouts; **never copy code or text** |
 | **AGPL-3.0** | skrillax (server), RSBot | Behavior/spec reference only; **no code porting** |
@@ -81,8 +83,9 @@
 | **Proprietary** | "Silkroad Origin" mobile remake data | Static inspection of a user-supplied install only; never redistribute, never commit; **not** v1.188 ground truth |
 
 - Same table in `CONTRIBUTING.md`, which is the source of truth for source classes.
-- The two easy mistakes: **AGPL-3.0** sources are observed, never ported; **no license**
-  sources are all-rights-reserved — learn facts and field layouts, never copy code or text.
+- The easy mistakes: **AGPL-3.0** sources are observed, never ported; **no license**
+  sources are all-rights-reserved — learn facts and field layouts, never copy code or text;
+  and **GPL-2.0-only** looks as free as GPL-3.0 but cannot be combined into this project.
 
 ## What must not enter the repository
 - Decompiler output and everything shaped by it: pseudocode, function addresses, the
