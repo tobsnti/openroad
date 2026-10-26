@@ -538,6 +538,73 @@ mod tests {
     use super::*;
     use bytes::Bytes;
 
+    /// Two frames of a real 1.188 elixir fuse, recorded on a proxy between an
+    /// original client and a private 1.188 server (source and licence class in
+    /// the commit): a failed attempt without Lucky Powder and the retry with
+    /// it. They are the first wire evidence this family has had, and they are
+    /// pinned here byte for byte because every layout below used to be read
+    /// off the client's own builders instead.
+    ///
+    /// Request side, what they settle:
+    /// * the third byte is a **count**, not a slot — two factors send five
+    ///   bytes, three send six;
+    /// * Lucky Powder is not an optional trailing field, it is the third entry
+    ///   of that counted list;
+    /// * the type byte really is `3` on this opcode, which had no literal in
+    ///   any builder we hold and was inferred from the enum until now.
+    #[test]
+    fn the_captured_elixir_fuse_is_byte_for_byte_what_we_send() {
+        let without_powder: Bytes = AlchemyReinforceRequest::fuse(vec![0x32, 0x34])
+            .expect("two factors")
+            .into();
+        assert_eq!(
+            without_powder,
+            Bytes::from_static(&[0x02, 0x03, 0x02, 0x32, 0x34])
+        );
+
+        let with_powder: Bytes = AlchemyReinforceRequest::fuse(vec![0x32, 0x35, 0x34])
+            .expect("three factors")
+            .into();
+        assert_eq!(
+            with_powder,
+            Bytes::from_static(&[0x02, 0x03, 0x03, 0x32, 0x35, 0x34])
+        );
+    }
+
+    /// The ack arms of the same two frames — and the byte that was only ever a
+    /// client-side reading.
+    ///
+    /// The failed frame carries **one byte more** than the successful one, and
+    /// it sits exactly where `read_fuse_ack` expects the breakdown flag: after
+    /// the slot, before the item record. Both frames then describe the same
+    /// shield (`ref_id` 262, `owner` 0), which is what makes the extra byte
+    /// visible at all — the capture's own annotation leaves it unnamed.
+    #[test]
+    fn the_captured_acks_put_the_record_where_the_breakdown_flag_says() {
+        // failure: delivery 0, flag 0, record follows
+        let failed = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x01, 0x00, 0x00, 0x00,
+        ]))
+        .unwrap();
+        assert_eq!(failed.outcome, Some((AlchemyOutcome::Failure, 0x32)));
+        assert_eq!(
+            failed.item_tail.as_ref(),
+            // owner u32 = 0, ref_id u32 = 262, opt_level = 0
+            &[0x00, 0x00, 0x00, 0x00, 0x06, 0x01, 0x00, 0x00, 0x00]
+        );
+
+        // success: delivery 1, no flag, the same record one byte earlier
+        let succeeded = AlchemyReinforceResponse::try_from(Bytes::from_static(&[
+            0x01, 0x02, 0x01, 0x32, 0x00, 0x00, 0x00, 0x00, 0x06, 0x01, 0x00, 0x00, 0x01,
+        ]))
+        .unwrap();
+        assert_eq!(succeeded.outcome, Some((AlchemyOutcome::Success, 0x32)));
+        assert_eq!(
+            succeeded.item_tail.as_ref(),
+            &[0x00, 0x00, 0x00, 0x00, 0x06, 0x01, 0x00, 0x00, 0x01]
+        );
+    }
+
     /// The ack classifies by its two discriminators, not by the item that
     /// follows. Both bodies are built here from the layout, because only the
     /// refusal arm has ever been seen on the wire.
