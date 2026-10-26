@@ -57,19 +57,37 @@ impl HeightMap {
         let tx = fx - x0 as f32;
         let tz = fz - z0 as f32;
         let h = |xi: usize, zi: usize| self.0[zi * HEIGHT_MAP_VERTS_PER_SIDE + xi];
-        let (h00, h10) = (h(x0, z0), h(x0 + 1, z0));
-        let (h01, h11) = (h(x0, z0 + 1), h(x0 + 1, z0 + 1));
-        if (x0 & 1) == (z0 & 1) {
-            if tz >= tx {
-                h00 + tz * (h01 - h00) + tx * (h11 - h01)
-            } else {
-                h00 + tx * (h10 - h00) + tz * (h11 - h10)
-            }
-        } else if tx + tz <= 1.0 {
-            h00 + tx * (h10 - h00) + tz * (h01 - h00)
+        let corners = [h(x0, z0), h(x0 + 1, z0), h(x0, z0 + 1), h(x0 + 1, z0 + 1)];
+        height_in_quad(corners, (x0 & 1) == (z0 & 1), tx, tz)
+    }
+}
+
+/// Height inside one terrain quad at the in-quad fractions (`tx`, `tz`), from
+/// the corners in `[h00, h10, h01, h11]` order (`h10` is +1 in x, `h01` is +1
+/// in z).
+///
+/// This is the one place that decides which surface a quad has — the nav height
+/// field (above) and the grass scatter (`plugins::map::foliage::scatter`) read
+/// the same quads and must not disagree about where the ground is. See
+/// [`HeightMap::height_at`] for the origin of the rule and for what the
+/// alternative (a bilinear patch) costs.
+///
+/// `even_parity` is `(cell_x % 2) == (cell_z % 2)` of the quad's own grid
+/// indices, which selects the split diagonal.
+pub(crate) fn height_in_quad(corners: [f32; 4], even_parity: bool, tx: f32, tz: f32) -> f32 {
+    let [h00, h10, h01, h11] = corners;
+    if even_parity {
+        // Split h00-h11.
+        if tz >= tx {
+            h00 + tz * (h01 - h00) + tx * (h11 - h01)
         } else {
-            h11 + (1.0 - tx) * (h01 - h11) + (1.0 - tz) * (h10 - h11)
+            h00 + tx * (h10 - h00) + tz * (h11 - h10)
         }
+    } else if tx + tz <= 1.0 {
+        // Split h10-h01.
+        h00 + tx * (h10 - h00) + tz * (h01 - h00)
+    } else {
+        h11 + (1.0 - tx) * (h01 - h11) + (1.0 - tz) * (h10 - h11)
     }
 }
 
