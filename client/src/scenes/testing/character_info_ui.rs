@@ -7,12 +7,15 @@
 
 use bevy::prelude::*;
 
+use packets::agent::character_data::JobInfo;
 use packets::agent::prelude::CharacterStatsUpdate;
 
 use crate::plugins::hud::character_info::model::{CharacterInfoState, PlayerStats};
 use crate::plugins::hud::character_info::ui::spawn_character_info_window;
 use crate::plugins::hud::player_mini_info::PlayerVitals;
 use crate::plugins::hud::underbar::model::PlayerProgress;
+use crate::plugins::net::character_info::CharacterInfo;
+use crate::plugins::player::Player;
 use crate::scenes::SceneState;
 
 pub struct CharacterInfoUiPreviewPlugin;
@@ -22,6 +25,13 @@ impl Plugin for CharacterInfoUiPreviewPlugin {
         app.add_systems(
             OnEnter(SceneState::UiTesting),
             (seed_mock_stats, spawn_character_info_window).chain(),
+        )
+        // The job strip reads the player's `CharacterInfo`, and the player is
+        // spawned through `Commands` by `PreviewPlayerPlugin`, so it is not
+        // queryable in the `OnEnter` run above.
+        .add_systems(
+            Update,
+            seed_captured_job.run_if(in_state(SceneState::UiTesting)),
         );
     }
 }
@@ -59,4 +69,25 @@ fn seed_mock_stats(
     progress.exp_offset = 1_284_550;
 
     state.open = true;
+}
+
+/// The one real job record in our captures, byte for byte:
+/// `packet_dump/proxy/0x3013.log` frame 2 (a recording of the original
+/// client) — `job_name="jobname"`, type 1, level 2, exp 221737, contribution
+/// 73336, reward 0. Every other `0x3013` frame we hold carries type 0 with
+/// level 1, which is what a jobless character sends.
+fn seed_captured_job(mut commands: Commands, fresh: Query<Entity, Added<Player>>) {
+    for player in fresh.iter() {
+        commands.entity(player).insert(CharacterInfo {
+            job: Some(JobInfo {
+                job_name: "jobname".into(),
+                job_type: 1,
+                job_level: 2,
+                job_exp: 221_737,
+                job_contribution: 73_336,
+                job_reward: 0,
+            }),
+            ..default()
+        });
+    }
 }

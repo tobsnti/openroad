@@ -14,7 +14,8 @@
 //! spawned once (hidden) on entering a playable scene and toggled via
 //! `CharacterInfoState.open`; `refresh_character_info` repaints the level,
 //! exp, stat-point, STR/INT, HP/MP gauge and combat-stat texts from
-//! `PlayerStats`/`PlayerVitals`/`PlayerProgress`. The + buttons send the
+//! `PlayerStats`/`PlayerVitals`/`PlayerProgress`, plus the job strip's grade,
+//! grade name and job exp from the player's own `CharacterInfo::job`. The + buttons send the
 //! EXPERIMENTAL 0x7050/0x7051 stat-spend requests (model.rs applies acks).
 
 use bevy::picking::hover::Hovered;
@@ -122,6 +123,19 @@ const JOB_LABEL_W: f32 = 57.0;
 const JOB_LEVEL_X: f32 = 84.0;
 const JOB_LEVEL_W: f32 = 32.0;
 const JOB_BOARD_X: f32 = 217.0;
+/// `GDR_PI_TEXT_<JOB>_TITLE` `134,y,89,14` (`ifplayerinfo.txt:177`, `:310`,
+/// `:44`) — the grade name, which the player's own text table ships per job
+/// and level (`UIIT_STT_CLASS_MERCHANT_1..7`, `textuisystem.txt:601-608`).
+const JOB_TITLE_X: f32 = 122.0;
+const JOB_TITLE_W: f32 = 89.0;
+/// `GDR_PI_TEXT_<JOB>_EXP` `232,y,120,14` (`:234`, `:367`, `:101`) — sits on
+/// the `chr_stat_window02` plate, so it is spawned after it.
+///
+/// Its authored `FontIndex=1` (11 px) is not used: this window still draws
+/// every cell at its own unsourced 8.0, and one cell in the authored size
+/// inside an off-ladder window would look like a defect rather than a fix.
+const JOB_EXP_X: f32 = 220.0;
+const JOB_EXP_W: f32 = 120.0;
 
 const LABEL_COLOR: Color = Color::srgb_u8(239, 218, 164);
 const GOLD_COLOR: Color = Color::srgb_u8(255, 217, 83);
@@ -158,9 +172,14 @@ pub enum CiValue {
     MagDef,
     MagBal,
     Parry,
-    /// Job level rows: 0 = merchant/trader, 1 = hunter, 2 = thief (matching
-    /// the vSRO `JobInfo.job_type` 1/2/3 minus one).
+    /// Job rows, by the window's own vertical order: 0 = merchant/trader,
+    /// 1 = hunter, 2 = thief (the authored y order, `ifplayerinfo.txt`
+    /// `GDR_PI_TEXT_MERCHANT`/`_HUNTER`/`_THIEF` at y=266/284/302). The wire's
+    /// `job_type` is mapped onto it by [`job_row`], which is *not* the same
+    /// order.
     JobLevel(u8),
+    JobTitle(u8),
+    JobExp(u8),
 }
 
 #[derive(Component)]
@@ -625,6 +644,19 @@ pub fn spawn_character_info_window(
                 (JOB_BOARD_X, y - 2.0, 125.0, 12.0),
                 format!("{ART}chr_stat_window02.ddj"),
             ));
+            content.spawn(value(
+                (JOB_TITLE_X, y, JOB_TITLE_W, 14.0),
+                CiValue::JobTitle(row as u8),
+                VALUE_COLOR,
+                Justify::Left,
+            ));
+            // after the plate, so it draws on top of it
+            content.spawn(value(
+                (JOB_EXP_X, y, JOB_EXP_W, 14.0),
+                CiValue::JobExp(row as u8),
+                VALUE_COLOR,
+                Justify::Center,
+            ));
         }
     });
 }
@@ -704,11 +736,60 @@ pub fn character_info_needs_refresh(
 
 /// Repaint every value text, the gauges and the + button enabled state.
 #[allow(clippy::too_many_arguments)]
+/// Which window row a wire `job_type` belongs to, or `None` for 0 (no job).
+///
+/// The window's rows are in the authored vertical order (merchant, hunter,
+/// thief), and `job_type` is **not** numbered that way. Two independent places
+/// in the player's own data agree on trader / thief / hunter:
+///
+/// * job equipment is `TID 3/1/7/x`, and over the 8650 equipment rows of
+///   `itemdata_*.txt` every `x` is one job: `1` TRADER (24 items), `2` THIEF
+///   (24), `3` HUNTER (24);
+/// * `textuisystem.txt` lists the three grade labels in that same order —
+///   `UIIT_STT_MERCHANT_LEVEL` `:588`, `UIIT_STT_THIEF_LEVEL` `:589`,
+///   `UIIT_STT_HUNTER_LEVEL` `:590`.
+///
+/// `[S]`, not `[V]`: the only job record in our captures is `job_type == 1`
+/// (`packet_dump/proxy/0x3013.log` frame 2 — `job_name="jobname"`, level 2,
+/// exp 221737, contribution 73336), which both readings call the trader, so it
+/// cannot separate them. A hunter or thief character settles it. The previous
+/// mapping here was `job_type - 1` against the vertical order, which carried no
+/// source at all and disagrees with both of the above for 2 and 3.
+fn job_row(job_type: u8) -> Option<u8> {
+    match job_type {
+        1 => Some(0),
+        2 => Some(2),
+        3 => Some(1),
+        _ => None,
+    }
+}
+
+/// The grade name the player's own text table ships for this row and level:
+/// `UIIT_STT_CLASS_{MERCHANT,HUNTER,THIEF}_{1..7}`
+/// (`textuisystem.txt:601-622`).
+///
+/// Only the Chinese list is used. The table also ships
+/// `UIIT_STT_CLASS_EU_*` (`:623-643`), but this archive has **no European
+/// player character at all** — all 26 `CHAR_*` rows of
+/// `characterdata_*.txt` are `CHAR_CH_*` — so there is nothing to select it
+/// with yet. Grade 6 also has a second merchant key (`_6_NEW`, "Elite
+/// Merchant", `:607`); which one the original prefers is `[U]`, so the plain
+/// `_6` is used.
+fn job_grade_name(row: u8, level: u8, ui_strings: &ClientUiStrings) -> Option<String> {
+    if !(1..=7).contains(&level) {
+        return None;
+    }
+    let stem = ["MERCHANT", "HUNTER", "THIEF"].get(row as usize)?;
+    let key = format!("UIIT_STT_CLASS_{stem}_{level}");
+    ui_strings.get(&key).map(str::to_string)
+}
+
 pub fn refresh_character_info(
     stats: Res<PlayerStats>,
     vitals: Res<PlayerVitals>,
     progress: Res<PlayerProgress>,
     level_data: Res<ClientLevelData>,
+    ui_strings: Res<ClientUiStrings>,
     asset_server: Res<AssetServer>,
     player: Query<&CharacterInfo, With<Player>>,
     mut values: Query<(&CiValue, &mut Text)>,
@@ -770,8 +851,16 @@ pub fn refresh_character_info(
             CiValue::Hit => sheet.map_or("-".into(), |s| s.hit_rate.to_string()),
             CiValue::Parry => sheet.map_or("-".into(), |s| s.parry_rate.to_string()),
             CiValue::JobLevel(row) => job
-                .filter(|j| j.job_type == row + 1)
+                .filter(|j| job_row(j.job_type) == Some(*row))
                 .map(|j| j.job_level.to_string())
+                .unwrap_or_else(|| "-".into()),
+            CiValue::JobTitle(row) => job
+                .filter(|j| job_row(j.job_type) == Some(*row))
+                .and_then(|j| job_grade_name(*row, j.job_level, &ui_strings))
+                .unwrap_or_else(|| "-".into()),
+            CiValue::JobExp(row) => job
+                .filter(|j| job_row(j.job_type) == Some(*row))
+                .map(|j| j.job_exp.to_string())
                 .unwrap_or_else(|| "-".into()),
         };
         if text.0 != new {
@@ -825,6 +914,45 @@ pub fn refresh_character_info(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The two orderings the player's own data gives for `job_type`, as a
+    /// table: the window's rows run merchant/hunter/thief down the page, and
+    /// the wire's 1/2/3 is trader/thief/hunter.
+    #[test]
+    fn the_job_type_maps_onto_the_row_the_data_orders_it_to() {
+        assert_eq!(job_row(1), Some(0));
+        assert_eq!(job_row(2), Some(2));
+        assert_eq!(job_row(3), Some(1));
+        // 0 is what a jobless character sends, and it still sends level 1 —
+        // measured on 11 of the 12 `0x3013` frames we hold, so the row must
+        // resolve to nothing rather than printing that level.
+        assert_eq!(job_row(0), None);
+        assert_eq!(job_row(4), None);
+    }
+
+    /// Grade names straight out of `textuisystem.txt`, through the production
+    /// parser: the captured record (`job_type` 1, level 2) is "Novice Trader",
+    /// and a level the table has no key for stays empty.
+    #[test]
+    fn the_grade_name_comes_from_the_players_own_table() {
+        let strings = ClientUiStrings::from_tsv(
+            "1\tUIIT_STT_CLASS_MERCHANT_2\t\t\t\t\t\t\t\tNovice Trader\r\n\
+             1\tUIIT_STT_CLASS_THIEF_7\t\t\t\t\t\t\t\tMaster Thief\r\n",
+        );
+        assert_eq!(
+            job_grade_name(0, 2, &strings).as_deref(),
+            Some("Novice Trader")
+        );
+        assert_eq!(
+            job_grade_name(2, 7, &strings).as_deref(),
+            Some("Master Thief")
+        );
+        // the table stops at 7; 8 is not asked for at all
+        assert_eq!(job_grade_name(0, 8, &strings), None);
+        assert_eq!(job_grade_name(0, 0, &strings), None);
+        // a row the table has no entry for yields nothing, not a key
+        assert_eq!(job_grade_name(1, 2, &strings), None);
+    }
 
     /// The level caption shares the title band with the close button, and the
     /// band is the one place in a window where two unrelated things compete for
