@@ -10,5 +10,6 @@ pub mod packet_send;
 pub mod party;
 pub mod plugin;
 pub mod quest;
+pub mod siege;
 pub mod silk;
 pub mod stall;
