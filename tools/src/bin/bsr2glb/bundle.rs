@@ -93,12 +93,12 @@ pub fn load(source: &dyn Source, bsr_path: &str, mirror: bool) -> Result<Resourc
             .unwrap_or_default();
         let set = JMXVBMT::from(&mut cursor, bmt_dir.clone());
         for material in set.materials {
-            // replicate BmtLoader's texture path semantics: is_relative
-            // means pk2-root-relative, otherwise relative to the .bmt's dir
+            // same texture-path rule as `BmtLoader`: an absolute path is the
+            // archive path, anything else sits next to the `.bmt`
             let map_path = material.diffuse_map_path.to_string_lossy().to_string();
             let texture_key = if map_path.is_empty() {
                 None
-            } else if material.diffuse_map_is_relative {
+            } else if material.diffuse_map_is_absolute {
                 Some(normalize(&map_path))
             } else {
                 Some(normalize(&format!("{}/{map_path}", bmt_dir.display())))
