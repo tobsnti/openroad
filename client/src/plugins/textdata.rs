@@ -21,7 +21,7 @@ use crate::assets::textdata::npcchat::{NpcChat, NpcChatEntry};
 use crate::assets::textdata::npcpos::NpcPositions;
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{
-    QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValues,
+    QuestRewardItem, QuestRewardItems, QuestRewardModes, QuestRewardValue, QuestRewardValues,
 };
 use crate::assets::textdata::shops::{ShopLayout, ShopTable};
 use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
@@ -696,9 +696,11 @@ impl ClientQuestRewards {
             .is_some_and(|(modes, _, _)| modes.choose_one(quest))
     }
 
-    // There is no accessor for the gold/exp reward table: it is parsed and
-    // held in this resource, but no consumer reads it. Exposing it is one line
-    // the day a quest journal needs it.
+    /// The quest's gold/experience reward (`refqusetreward.txt` columns
+    /// 10/11) — read by the quest detail pane.
+    pub fn gold_exp(&self, quest: u32) -> Option<QuestRewardValue> {
+        self.0.as_ref().and_then(|(_, values, _)| values.get(quest))
+    }
 
     /// The quest's reward rows: candidates in pick-one mode, all granted
     /// otherwise.

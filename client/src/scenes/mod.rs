@@ -32,6 +32,7 @@ use crate::scenes::testing::particles::ParticleTestingScenePlugin;
 use crate::scenes::testing::party_matching_ui::PartyMatchingUiPreviewPlugin;
 use crate::scenes::testing::party_ui::PartyUiPreviewPlugin;
 use crate::scenes::testing::preview_player::PreviewPlayerPlugin;
+use crate::scenes::testing::quest_detail_ui::QuestDetailPreviewPlugin;
 use crate::scenes::testing::quest_reward_ui::QuestRewardUiPreviewPlugin;
 use crate::scenes::testing::quest_ui::QuestUiPreviewPlugin;
 use crate::scenes::testing::skill_window_ui::SkillWindowUiPreviewPlugin;
@@ -215,6 +216,9 @@ fn add_ui_previews(app: &mut App) {
     if wanted("quest") {
         app.add_plugins(QuestUiPreviewPlugin);
     }
+    if wanted("quest_detail") {
+        app.add_plugins(QuestDetailPreviewPlugin);
+    }
     if wanted("quest_reward") {
         app.add_plugins(QuestRewardUiPreviewPlugin);
     }
@@ -256,11 +260,18 @@ fn add_ui_previews(app: &mut App) {
 /// The previews that read the local `Player`: the portrait rig shoots it, both
 /// maps place their arrow on it, the inventory window reads its bag and the
 /// quest list reads its `CharacterInfo`.
-const PLAYER_PREVIEWS: [&str; 5] = ["mini_info", "minimap", "world_map", "inventory", "quest"];
+const PLAYER_PREVIEWS: [&str; 6] = [
+    "mini_info",
+    "minimap",
+    "world_map",
+    "inventory",
+    "quest",
+    "quest_detail",
+];
 
 /// Every name [`add_ui_previews`] knows, for the gallery runner and for the
 /// test that keeps the two in step.
-pub const UI_PREVIEW_NAMES: [&str; 20] = [
+pub const UI_PREVIEW_NAMES: [&str; 21] = [
     "char_select",
     "mini_info",
     "minimap",
@@ -272,6 +283,7 @@ pub const UI_PREVIEW_NAMES: [&str; 20] = [
     "party",
     "npc_dialog",
     "quest",
+    "quest_detail",
     "quest_reward",
     "choice_confirm",
     "world_map",
