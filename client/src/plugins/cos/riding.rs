@@ -266,8 +266,9 @@ pub fn slave_riders_to_cos(
 /// from — so the mount lies flush with the shading under it.
 const SLOPE_SAMPLE_DISTANCE: f32 = 20.0;
 /// Slerp weight per second toward a new ground normal. The heightfield is
-/// bilinear, so its gradient is piecewise constant and jumps across cell
-/// borders; without this easing the mount would visibly snap at every border.
+/// triangulated (`nvm::height_map`), so its gradient is constant inside a
+/// triangle and jumps at every triangle and cell border; without this easing
+/// the mount would visibly snap at each one.
 const SLOPE_ALIGN_SPEED: f32 = 8.0;
 /// Steepest tilt we apply, so a cliff edge can't lay the model on its side.
 const MAX_SLOPE_TILT: f32 = std::f32::consts::FRAC_PI_4 * 0.9; // ~40°

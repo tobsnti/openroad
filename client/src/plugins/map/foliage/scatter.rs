@@ -27,6 +27,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::Mesh;
 
 use crate::assets::m::{TerrainBlock, WaterType};
+use crate::assets::nvm::height_map::height_in_quad;
 use crate::util::mesh::reverse_winding_u32;
 
 use super::{FoliageLibrary, FoliageModel, NativeModelState};
@@ -318,15 +319,21 @@ fn cell_light_factor(tint: &TintContext, block: &TerrainBlock, cx: usize, cz: us
     1.0 - strength * (1.0 - v)
 }
 
-/// Bilinear ground height inside cell (cx, cz) at fraction (fx, fz).
+/// Ground height inside cell (cx, cz) at fraction (fx, fz), from the same split
+/// as the nav height field — a tuft is rooted on the surface the mover walks
+/// on, not on a bilinear patch through the same corners.
+///
+/// The parity that picks the split diagonal is the cell's *region-local* one,
+/// but a block is 16 cells wide, so block-local `cx`/`cz` have the same parity
+/// and no block offset is needed.
 fn cell_height(block: &TerrainBlock, cx: usize, cz: usize, fx: f32, fz: f32) -> f32 {
-    let h00 = block.vertices[cz * 17 + cx].height;
-    let h10 = block.vertices[cz * 17 + cx + 1].height;
-    let h01 = block.vertices[(cz + 1) * 17 + cx].height;
-    let h11 = block.vertices[(cz + 1) * 17 + cx + 1].height;
-    let h0 = h00 + (h10 - h00) * fx;
-    let h1 = h01 + (h11 - h01) * fx;
-    h0 + (h1 - h0) * fz
+    let corners = [
+        block.vertices[cz * 17 + cx].height,
+        block.vertices[cz * 17 + cx + 1].height,
+        block.vertices[(cz + 1) * 17 + cx].height,
+        block.vertices[(cz + 1) * 17 + cx + 1].height,
+    ];
+    height_in_quad(corners, (cx & 1) == (cz & 1), fx, fz)
 }
 
 #[cfg(test)]
@@ -336,6 +343,30 @@ mod tests {
     use crate::plugins::map::foliage::{FoliagePartGeometry, TileRecipe};
     use bevy::asset::Handle;
     use bevy::mesh::VertexAttributeValues;
+
+    /// A tuft sits on the split diagonal of its quad, not on the average of the
+    /// four corners — the same surface the mover walks on. A bilinear patch
+    /// would give 16.25 in both quads below.
+    #[test]
+    fn cell_height_follows_the_alternating_split() {
+        let corners = [
+            (0usize, 0usize, 10.0),
+            (1, 0, 13.0),
+            (0, 1, 17.0),
+            (1, 1, 25.0),
+        ];
+        let centre_of = |x0: usize, z0: usize| {
+            let mut block = flat_block(1);
+            for (dx, dz, h) in corners {
+                block.vertices[(z0 + dz) * 17 + x0 + dx].height = h;
+            }
+            cell_height(&block, x0, z0, 0.5, 0.5)
+        };
+        // Parities agree: split h00-h11 -> (10 + 25) / 2.
+        assert_eq!(centre_of(2, 2), 17.5);
+        // Parities differ: split h10-h01 -> (13 + 17) / 2.
+        assert_eq!(centre_of(2, 3), 15.0);
+    }
 
     fn flat_block(tile_id: u16) -> TerrainBlock {
         let mut vertices = Vec::with_capacity(17 * 17);
