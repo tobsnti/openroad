@@ -64,6 +64,10 @@ same handler there.
 | `0x6323` | LoginCaptchaConfirmRequest | C→S | wired |  |
 | `0xA323` | LoginCaptchaConfirmResponse | S→C | wired |  |
 | `0x2322` | LoginCaptchaChallenge | S→C | wired |  |
+| `0x6100` | PatchRequest | C→S | wired | the **launcher's** version check, not ours: locale byte, `u16`-prefixed module name, build `u32`. Direction measured, not assumed — 924 c2s frames in the 2026-09-29 original-client capture plus 104 in `packet_dump/proxy/c2s/0x6100.log`, all byte-identical `16 0900 53525f436c69656e74 d0000000`. OpenRoad's client does not send it (`SV.T` preflight instead) |
+| `0xA100` | PatchResponse | S→C | wired | 680 s2c frames in the same capture, every one **two** bytes `01 00` — this type models the success case as one byte, which is what our test peer sends and what the launcher accepts, but not what the real gateway sends. The second byte is `[U]`; see the type's doc comment |
+| `0x6104` | NoticeRequest | C→S | wired | one content-id byte, the same `0x16` the patch request carries. 7 c2s frames in `packet_dump/proxy/c2s/0x6104.log`, sent 2-3 ms after `0x6100` |
+| `0xA104` | NoticeResponse | S→C | wired | only `notice_count` is modelled: the derive cannot express a counted list of structs, and the only answer we send is the empty one. **Direction is `[S]`, not measured** — no `0xA104` frame exists anywhere in the workspace, because the real gateway never answered our `0x6104`. The launcher blocks on this packet: with a dead notice service it never offers Start |
 | `0x6101` | ShardListRequest | C→S | wired |  |
 | `0xA101` | ShardListResponse | S→C | wired |  |
 | `0x6106` | ShardListPingRequest | C→S | wired |  |
