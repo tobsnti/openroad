@@ -19,6 +19,16 @@
 //! with no drag observers, and the combo boxes render as empty boxes — what they
 //! enumerate is UNKNOWN too, and this repo has no combo widget to fill them
 //! with. Cancel (and the shell's X) closes the window.
+//!
+//! What it displays is also empty in practice, which is worth knowing before
+//! anyone calls that a bug: of **322** `0x3013` frames in the tree's dumps that
+//! parse completely (measured 2026-10-26 over every `packet_dump/**` log),
+//! **282** carry `auto_hp = auto_mp = auto_universal = 0`, including all 13
+//! frames of the original-client proxy capture. The only non-zero ones are
+//! **40** frames from the skrillax test server (`or-client-skrillax`,
+//! `or-meas-ours`), which writes `0x0001` — a value the vanilla client's own
+//! packing cannot produce. So an empty panel is the servers' doing, not the
+//! panel's, and the skrillax frames are not a sample to calibrate against.
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
