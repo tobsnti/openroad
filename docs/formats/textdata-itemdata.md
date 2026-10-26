@@ -91,8 +91,19 @@ The table has no localized `SN_*` key, so `MATTR_*` → English is mapped inline
 `client/src/assets/textdata/magicoption.rs` (`mattr_display`). Flag-like options
 (`MATTR_ATHANASIA` = Immortal, `MATTR_SOLID` = Steady, `MATTR_LUCK` = Lucky,
 `MATTR_ASTRAL` = Astral) are shown without a magnitude. The related
-`magicoptionassign.txt` (item-type → allowed `MATTR_*` list) is not loaded — it
-is a server-side validation table, not needed for display.
+`magicoptionassign.txt` (item class → allowed `MATTR_*` list) **is** loaded, by
+`client/src/assets/textdata/magicoptionassign.rs`: 74 rows keyed on the item's
+`(TID3, TID4)`, covering 68 of the 70 pairs the player's 8650 equipment rows
+use. It was called "server-side validation, not needed for display" here until
+2026-10-26; it is both — the server still validates, and the client can say
+*before* the round trip whether a stone belongs on an item. Its origin column
+(0/1/3) is not part of the rule: the five pairs listed twice carry identical
+lists, and no pair disagrees across origins.
+
+A magic stone names its own option in its generic `Desc1` column
+(`ItemDataRow::magic_stone_attribute`), measured over the player's 468 alchemy
+stone rows: 300 magic stones (`3/3/11/1`) carry a `MATTR_*` there, the 168
+attribute stones (`3/3/11/2`) an elemental `NATTR_*`.
 
 Consumers: `ItemDataRow::{gender, is_rare, stat_range}`,
 `ClientMagicOptions`, and the inventory tooltip.
