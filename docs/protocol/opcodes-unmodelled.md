@@ -80,4 +80,27 @@ Handler addresses are deliberately not published here; they live in the local RE
 same way the rest of the decompiler material does (`CONTRIBUTING.md` on the retired knowledge
 base). What is worth knowing without them: every opcode above has a measured entry point in
 those notes, so a lane that wants one does not have to re-derive it — `0x3041` was looked up
-that way in October 2026, and the only thing still missing for it is a captured frame.
+that way in October 2026, and what is still missing for it is a frame **of the original**.
+`packet_dump/0x3041.log` is not one: its 50 frames carry a skill list with the skill *names*
+on the wire, which is our own test peer's invention — the original's handler for this opcode
+reads five or seven bytes and could not parse it. A dump file is evidence about the peer that
+sent it, not about the opcode.
+
+### One pair that is no longer ambiguous: free-PvP mode (`0x7516` / `0xB516`)
+
+Both were `[S]` from a third-party opcode list, and two such lists disagreed about the ack.
+The client itself settles it, and the shapes are worth having here even while the pair stays
+unmodelled:
+
+- **`0x7516`, client → server:** body is **one byte**. The client's builder for this opcode
+  writes exactly one field and sends.
+- **`0xB516`, server → client:** the handler reads **1 byte**, then — nested one level — **4
+  bytes and 1 byte**, and on the other branch **2 bytes**. That is a result byte with two
+  alternative tails, not a flat record.
+- **The competing reading (five flat bytes, "client battle action") is wrong for this
+  opcode**: the entry point that list names belongs, in our own dispatch table, to a
+  *different* opcode, and the read sequence above is not five single bytes. Recorded so the
+  next lane does not re-open it.
+
+What is still missing is a captured frame: the shapes come from the client's own code, so
+they say what it *can* parse, not what a server sends.
