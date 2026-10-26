@@ -15,6 +15,16 @@
 //! 890 gold). The legacy shopdata/shoptabdata/shopitemdata files describe the
 //! same shops in the old id-keyed form and are not used. Docs:
 //! `docs/formats/shops.md`.
+//!
+//! **Two indexes, because the first join excludes a shop that exists.** The
+//! chain starts at an NPC codename, and 7 of the 92 `refshopgroup` rows carry
+//! `xxx` there, so those shops resolve to no NPC and used to end at that
+//! condition rather than at a missing row. [`ShopTable::by_store`] keys them by
+//! store codename instead: the item mall's five storefronts — and one that is
+//! **not** a mall: `GROUP_STORE_SD_ACCESSORY` → `STORE_SD_ACCESSORY`, three
+//! tabs and 31 goods (its tab codenames even read `STORE_SE_*`). A reader of
+//! that index must expect an ordinary store in it, not only mall pages;
+//! whether the original reaches it through an NPC after all is unknown.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
