@@ -1,3 +1,4 @@
+pub mod shop;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -18,8 +19,12 @@ impl Plugin for ItemMallPlugin {
         use crate::scenes::SceneState;
 
         app.init_resource::<ItemMallState>()
+            .init_resource::<shop::MallShopState>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_my_info_window)
-            .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_my_info_window)
+            .add_systems(
+                OnExit(SceneState::GameWorld),
+                (ui::cleanup_my_info_window, shop::cleanup_mall_shop_window),
+            )
             .add_systems(
                 Update,
                 (
@@ -27,6 +32,9 @@ impl Plugin for ItemMallPlugin {
                     ui::update_my_info_values,
                     ui::update_my_info_identity,
                     ui::update_my_info_portrait,
+                    // The article page builds and rebuilds itself from the
+                    // selection, so it has no spawn-on-enter system.
+                    shop::sync_mall_shop_window,
                 )
                     .run_if(
                         in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),

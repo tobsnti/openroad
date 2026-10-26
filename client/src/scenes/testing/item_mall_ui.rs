@@ -3,6 +3,11 @@
 //! the live client, so a UI-testing run has to spawn it here, and the three
 //! silk counters come from `0x3153` — a push no offline scene ever receives.
 //!
+//! The article page next to it needs no mock at all: its tabs come from
+//! `mallitemmenulistdata.txt` and its goods from the ref-shop chain, both of
+//! which the preview scene loads like any other table. Opening it is the whole
+//! seeding — if it shows rows, the join works.
+//!
 //! **Mock:** the three counters and the name/level line. The values are
 //! deliberately **different from each other** (and the point counter non-zero,
 //! which no captured frame of the user's own account has), so each of the
@@ -12,6 +17,7 @@
 
 use bevy::prelude::*;
 
+use crate::plugins::hud::item_mall::shop::MallShopState;
 use crate::plugins::hud::item_mall::{ui::spawn_my_info_window, ItemMallState};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
 use crate::plugins::net::silk::{SilkBalance, SilkCounters};
@@ -32,7 +38,10 @@ fn seed_mock_silk(
     mut balance: ResMut<SilkBalance>,
     mut vitals: ResMut<PlayerVitals>,
     mut state: ResMut<ItemMallState>,
+    mut shop: ResMut<MallShopState>,
 ) {
+    // the article page builds itself from the tables, so opening it is enough
+    shop.open = true;
     balance.0 = Some(SilkCounters {
         own: 1_000_000_500,
         gift: 50_000,
