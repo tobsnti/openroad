@@ -115,8 +115,16 @@ fn generate_size_for(field: &Field, ident: TokenStream) -> TokenStream {
             let inner_ty = get_type_of(inner);
             let inner_ts = generate_size_for_inner(inner, &inner_ty, quote!(elem));
             let length_type = field_args.list_type.unwrap_or_else(|| "length".to_string());
-            if length_type == "break" || length_type == "has-more" || length_type == "by-size-field"
-            {
+            if length_type == "by-size-field" {
+                // The count lives in a separate field that is sized on its own,
+                // and the list carries neither a terminator nor per-element
+                // markers — so the elements are the whole contribution. Lumping
+                // this in with `break`/`has-more` below over-counted it by
+                // `1 + len`, which `byte_size()` reported but nothing else read.
+                quote_spanned! { field.span() =>
+                    #ident.iter().map(|elem| #inner_ts).sum::<usize>()
+                }
+            } else if length_type == "break" || length_type == "has-more" {
                 quote_spanned! { field.span() =>
                     1 + #ident.iter().map(|elem| #inner_ts + 1).sum::<usize>()
                 }
