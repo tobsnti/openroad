@@ -577,13 +577,23 @@ mod test {
         assert_ne!(COMMUNITY_ROW_ID, GUILD_ROW_ID);
         // Guardian Matching, Quest, Craft and Stall have no window. Academy
         // left this list when the member panel landed; the row now toggles it.
-        for id in [102, 111, 115, 117] {
+        let unwired = [102, 111, 115, 117];
+        for id in unwired {
             assert!(
                 !wired.iter().any(|(wired, ..)| *wired == id),
                 "row {id} has no window in openroad yet"
             );
             assert!(ROWS.iter().any(|(row, ..)| *row == id), "row {id} is drawn");
         }
-        assert_eq!(wired.len() + 5, ROWS.len());
+        // The closing claim is "wired and unwired together are every drawn row",
+        // derived from the two lists above rather than written as a sum. A
+        // literal here is a constant that moves with every slice that wires a
+        // row, so wiring one would mean editing two places and the count would
+        // be the one people forget.
+        assert_eq!(
+            wired.len() + unwired.len(),
+            ROWS.len(),
+            "every drawn row is either wired or listed as unwired"
+        );
     }
 }
