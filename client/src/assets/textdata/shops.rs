@@ -15,6 +15,16 @@
 //! 890 gold). The legacy shopdata/shoptabdata/shopitemdata files describe the
 //! same shops in the old id-keyed form and are not used. Docs:
 //! `docs/formats/shops.md`.
+//!
+//! **Two indexes, because the first join excludes a shop that exists.** The
+//! chain starts at an NPC codename, and 7 of the 92 `refshopgroup` rows carry
+//! `xxx` there, so those shops resolve to no NPC and used to end at that
+//! condition rather than at a missing row. [`ShopTable::by_store`] keys them by
+//! store codename instead: the item mall's five storefronts — and one that is
+//! **not** a mall: `GROUP_STORE_SD_ACCESSORY` → `STORE_SD_ACCESSORY`, three
+//! tabs and 31 goods (its tab codenames even read `STORE_SE_*`). A reader of
+//! that index must expect an ordinary store in it, not only mall pages;
+//! whether the original reaches it through an NPC after all is unknown.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -22,6 +32,16 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default)]
 pub struct ShopTable {
     pub by_npc: HashMap<String, ShopLayout>,
+    /// Shops whose `refshopgroup` row names **no** NPC (`xxx`), keyed by their
+    /// store codename instead — the item mall's five storefronts and one
+    /// NPC-less store group. Measured in the v1.188 archive: 7 of the 92
+    /// `refshopgroup` rows carry `xxx` (`GROUP_MALL` plus the five dead
+    /// `GROUP_MALL_<KIND>` rows that `refmappingshopgroup` never mentions, and
+    /// `GROUP_STORE_SD_ACCESSORY`). `GROUP_MALL` alone maps to the five
+    /// `MALL_*` stores, and the store codename is the key
+    /// `mallitemmenulistdata.txt` uses for the mall's own menu entries, so the
+    /// window's tab strip and this catalog join on it.
+    pub by_store: HashMap<String, ShopLayout>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -128,6 +148,12 @@ impl ShopTable {
         self.by_npc.get(npc_codename)
     }
 
+    /// A shop that has no NPC to stand behind, by its store codename (e.g.
+    /// `MALL_CONSUME`). See [`Self::by_store`].
+    pub fn store(&self, store_codename: &str) -> Option<&ShopLayout> {
+        self.by_store.get(store_codename)
+    }
+
     /// Assemble the denormalized table from the seven decoded file contents.
     pub fn assemble(
         shopgroup: &str,
@@ -153,9 +179,14 @@ impl ShopTable {
 
         // group codename -> npc codename (refshopgroup: svc|country|id|group|npc)
         let mut npc_of_group: HashMap<String, String> = HashMap::new();
+        // the same file's NPC-less groups, in row order: their stores are
+        // keyed by store codename instead (see `ShopTable::by_store`)
+        let mut npcless_groups: Vec<String> = Vec::new();
         for row in rows(shopgroup) {
             if row.len() > 4 && !row[4].is_empty() && row[4] != "xxx" {
                 npc_of_group.insert(row[3].clone(), row[4].clone());
+            } else if row.len() > 4 {
+                npcless_groups.push(row[3].clone());
             }
         }
         // group -> stores (refmappingshopgroup: svc|country|group|store)
@@ -243,44 +274,50 @@ impl ShopTable {
         // — a plain insert would keep an arbitrary one per run (HashMap
         // iteration order). NPC_TD_THIEF_SELL has a single group and was
         // previously conflated with NPC_TD_THIEF_BUY.
+        // One store's pages, from the five maps above. Shared by both indexes:
+        // the mall walks the same chain as an NPC store and differs only in
+        // what it is keyed by.
+        let layout_of_store = |store: &str| -> ShopLayout {
+            let mut layout = ShopLayout::default();
+            for tabgroup in tabgroups_of_store.get(store).into_iter().flatten() {
+                let mut page = ShopPage::default();
+                for (_, tab_codename, name_key) in tabs_of_group.get(tabgroup).into_iter().flatten()
+                {
+                    let mut tab = ShopTab {
+                        name_key: name_key.clone(),
+                        goods: Vec::new(),
+                    };
+                    for (slot, package) in goods_of_tab.get(tab_codename).into_iter().flatten() {
+                        let Some((item_codename, opt_level)) = item_of_package.get(package) else {
+                            continue;
+                        };
+                        let (price, currency) =
+                            price_of_package.get(package).copied().unwrap_or_default();
+                        tab.goods.push(ShopGood {
+                            slot: *slot,
+                            item_codename: item_codename.clone(),
+                            opt_level: *opt_level,
+                            price,
+                            currency,
+                        });
+                    }
+                    tab.goods.sort_by_key(|good| good.slot);
+                    page.tabs.push(tab);
+                }
+                if !page.tabs.is_empty() {
+                    layout.pages.push(page);
+                }
+            }
+            layout
+        };
+
         let mut groups: Vec<(&String, &String)> = npc_of_group.iter().collect();
         groups.sort_by(|a, b| a.0.cmp(b.0));
         let mut by_npc: HashMap<String, ShopLayout> = HashMap::new();
         for (group, npc) in groups {
             let mut layout = ShopLayout::default();
             for store in stores_of_group.get(group).into_iter().flatten() {
-                for tabgroup in tabgroups_of_store.get(store).into_iter().flatten() {
-                    let mut page = ShopPage::default();
-                    for (_, tab_codename, name_key) in
-                        tabs_of_group.get(tabgroup).into_iter().flatten()
-                    {
-                        let mut tab = ShopTab {
-                            name_key: name_key.clone(),
-                            goods: Vec::new(),
-                        };
-                        for (slot, package) in goods_of_tab.get(tab_codename).into_iter().flatten()
-                        {
-                            let Some((item_codename, opt_level)) = item_of_package.get(package)
-                            else {
-                                continue;
-                            };
-                            let (price, currency) =
-                                price_of_package.get(package).copied().unwrap_or_default();
-                            tab.goods.push(ShopGood {
-                                slot: *slot,
-                                item_codename: item_codename.clone(),
-                                opt_level: *opt_level,
-                                price,
-                                currency,
-                            });
-                        }
-                        tab.goods.sort_by_key(|good| good.slot);
-                        page.tabs.push(tab);
-                    }
-                    if !page.tabs.is_empty() {
-                        layout.pages.push(page);
-                    }
-                }
+                layout.pages.append(&mut layout_of_store(store).pages);
             }
             if !layout.pages.is_empty() {
                 by_npc
@@ -290,7 +327,17 @@ impl ShopTable {
                     .append(&mut layout.pages);
             }
         }
-        ShopTable { by_npc }
+
+        let mut by_store: HashMap<String, ShopLayout> = HashMap::new();
+        for group in &npcless_groups {
+            for store in stores_of_group.get(group).into_iter().flatten() {
+                let layout = layout_of_store(store);
+                if !layout.pages.is_empty() {
+                    by_store.insert(store.clone(), layout);
+                }
+            }
+        }
+        ShopTable { by_npc, by_store }
     }
 }
 
@@ -336,8 +383,66 @@ mod test {
         assert_eq!(goods[1].slot, 3);
         assert_eq!(goods[1].item_codename, "ITEM_CH_BLADE_01_A");
         assert_eq!(goods[1].price, 890);
-        // groups without an NPC produce no shop
+        // groups without an NPC produce no *NPC* shop — the `GROUP_MALL` row
+        // above maps to no store here, so neither index gains anything from it
         assert_eq!(table.by_npc.len(), 1);
+        assert!(table.by_store.is_empty());
+    }
+
+    /// The item mall's catalog, with literal rows of the player's own files:
+    /// `GROUP_MALL` carries `xxx` where an NPC codename would be, which is why
+    /// it is keyed by its store codename. Rows taken from
+    /// `refshopgroup.txt` (id 1051), `refmappingshopgroup.txt`,
+    /// `refmappingshopwithtab.txt`, `refshoptab.txt` (ids 2397/2399),
+    /// `refshopgoods.txt`, `refscrapofpackageitem.txt` and
+    /// `refpricepolicyofitem.txt` — the astral stone's price really is 2 silk
+    /// (currency flag 2, which all 101 mall goods carry).
+    #[test]
+    fn the_mall_has_no_npc_and_is_keyed_by_its_store() {
+        let shopgroup = "1\t15\t1051\tGROUP_MALL\txxx\t-1\txxx\n";
+        let mapping_group = "1\t15\tGROUP_MALL\tMALL_CONSUME\n\
+                             1\t15\tGROUP_MALL\tMALL_ARCHEMY\n";
+        let mapping_tab = "1\t15\tMALL_ARCHEMY\tMALL_ARCHEMY_GROUP1\n\
+                           1\t15\tMALL_CONSUME\tMALL_CONSUME_GROUP1\n";
+        let shoptab = "1\t15\t2399\tMALL_CONSUME_POTION\tMALL_CONSUME_GROUP1\tUIIT_STT_SILKMALL_POTION\n\
+                       1\t15\t2397\tMALL_CONSUME_SPECIAL\tMALL_CONSUME_GROUP1\tUIIT_STT_SILKMALL_SPECIAL\n\
+                       1\t15\t2430\tMALL_ARCHEMY_ASTRAL\tMALL_ARCHEMY_GROUP1\tUIIT_STT_SILKMALL_ARCHEMY_ASTRAL\n";
+        let goods =
+            "1\t15\tMALL_ARCHEMY_ASTRAL\tPACKAGE_ITEM_ETC_ARCHEMY_MAGICSTONE_ASTRAL_01\t0\n";
+        let scrap = "1\t15\tPACKAGE_ITEM_ETC_ARCHEMY_MAGICSTONE_ASTRAL_01\tITEM_ETC_ARCHEMY_MAGICSTONE_ASTRAL\t0\t0\t1\n";
+        let prices = "1\t15\tPACKAGE_ITEM_ETC_ARCHEMY_MAGICSTONE_ASTRAL_01\t2\t0\t2\n";
+
+        let table = ShopTable::assemble(
+            shopgroup,
+            mapping_group,
+            mapping_tab,
+            shoptab,
+            goods,
+            scrap,
+            prices,
+        );
+        // no NPC anywhere in this chain
+        assert!(table.by_npc.is_empty());
+        // A tab with no goods row still exists as a tab: `MALL_CONSUME` keeps
+        // both of its, ordered by their `refshoptab` row id (2397 before
+        // 2399). The real archive has such a tab too — `MALL_AVATAR` carries
+        // one with no goods at all.
+        let consume = table.store("MALL_CONSUME").expect("mall store");
+        let consume_tabs = &consume.pages[0].tabs;
+        assert_eq!(consume_tabs.len(), 2);
+        assert_eq!(consume_tabs[0].name_key, "UIIT_STT_SILKMALL_SPECIAL");
+        assert!(consume_tabs[0].goods.is_empty());
+
+        let archemy = table.store("MALL_ARCHEMY").expect("mall store");
+        assert_eq!(archemy.pages.len(), 1);
+        let tabs = &archemy.pages[0].tabs;
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].name_key, "UIIT_STT_SILKMALL_ARCHEMY_ASTRAL");
+        let good = &tabs[0].goods[0];
+        assert_eq!(good.item_codename, "ITEM_ETC_ARCHEMY_MAGICSTONE_ASTRAL");
+        assert_eq!(good.price, 2);
+        assert_eq!(good.currency, ShopCurrency::Silk);
+        assert_eq!(good.currency.label(), Some("Silk"));
     }
 
     #[test]

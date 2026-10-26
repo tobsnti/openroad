@@ -14,7 +14,7 @@ textdataname 0). The resolver tries both tables.
 
 | file | columns (0-based) | example |
 |---|---|---|
-| refshopgroup.txt | 2 id, 3 group codename, 4 **NPC codename** | `978 GROUP_STORE_CH_SMITH NPC_CH_SMITH` |
+| refshopgroup.txt | 2 id, 3 group codename, 4 **NPC codename** (`xxx` on 7 of 92 rows — the mall and one store group) | `978 GROUP_STORE_CH_SMITH NPC_CH_SMITH` |
 | refmappingshopgroup.txt | 2 group, 3 **store** | `GROUP_STORE_CH_SMITH STORE_CH_SMITH` |
 | refmappingshopwithtab.txt | 2 store, 3 **tab group** | `STORE_CH_SMITH STORE_CH_SMITH_GROUP1` |
 | refshoptab.txt | 2 id (tab order), 3 tab codename, 4 tab group, 5 **name key** | `2402 STORE_CH_SMITH_TAB1 … SN_TAB_WEAPON` |
@@ -84,7 +84,13 @@ Two facts that matter for the assembler:
   `refshopgoods` row at all, so following the full chain
   `refshopgoods → refshoptab → refmappingshopwithtab → refmappingshopgroup →
   refshopgroup` every one of them resolves to NPC `xxx`. **None is reachable
-  from a real NPC store.**
+  from a real NPC store.** They are reachable from the *store* codename
+  instead: since 2026-10-26 `ShopTable::by_store` assembles the NPC-less groups
+  the same way and keys them by store (`MALL_CONSUME`, `MALL_AVATAR`,
+  `MALL_PET`, `MALL_PREMIUM`, `MALL_ARCHEMY`) — 21 mall tabs, **17** of them
+  with goods, 101 goods, every one priced in silk. The four empty ones are
+  `MALL_ARCHEMY_ETC` and the avatar hat/dress/attach tabs, and they stay in the
+  strip because the tab exists in the data.
 - Where a gold row exists it is always the file-order first row for that
   package (793 packages, exactly one gold row each, zero exceptions), so the
   old first-row-wins lookup never actually mispriced an NPC good. The
