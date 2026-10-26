@@ -186,12 +186,20 @@ pub const ALCHEMY_REQUEST_TAG: u8 = 2;
 /// `1` on either.
 pub const ALCHEMY_ACTION_CANCEL: u8 = 1;
 
-/// Second byte of `0x7150`: the `AlchemyType`. **`[S]`, not `[V]`** — unlike
-/// its siblings below, no builder we hold writes this value as a literal:
-/// `sro_client.exe@00825c50` takes it from its caller, and no caller of that
-/// function is in the corpus. `3` is `AlchemyType::Elixir` from the enum, which
-/// maps 1:1 onto the opcode split. Advanced elixir is type `8` on the same
-/// opcode, so this is the elixir arm, not the whole opcode.
+/// Second byte of `0x7150`: the `AlchemyType`. No builder we hold writes this
+/// value as a literal — `sro_client.exe@00825c50` takes it from its caller, and
+/// no caller of that function is in the corpus — so `3` was
+/// `AlchemyType::Elixir` read off the enum. **`[V]` since the frames**:
+/// `packet_dump/admin6/c2s/0x7150.log` carries it three times
+/// (`02 03 00`, `02 03 01 0c`, `02 03 01 46`).
+///
+/// **The opcode does not decide this byte, and the same four frames show it**:
+/// the fourth is `02 06 01 46` — type `6` on this very opcode. Advanced elixir
+/// is type `8` here too, and `0x7151` likewise carries two kinds (4 and 5). So
+/// the type is the finer discriminator and the request opcode groups types
+/// rather than fixing one — which is the direction the cancel builder shows
+/// from the other side: `@008210f0` is one function that picks 0x7150 or
+/// 0x7151 **from its kind argument**.
 pub const ALCHEMY_REINFORCE_OP_FUSE: u8 = 3;
 
 /// Second byte of `0x7151`: a magic stone. Which of the two kinds the player is
@@ -877,5 +885,45 @@ mod tests {
             AlchemyDismantleResponse::try_from(Bytes::from_static(&[0x02, 0x0E, 0x1C])).unwrap();
         assert!(!refused.is_success());
         assert_eq!(refused.error_code, Some(0x1C0E));
+    }
+
+    /// The four recorded `0x7150` requests, and what they settle about the
+    /// type byte. They are ours: `packet_dump/admin6/c2s/0x7150.log`, four
+    /// frames from one session on 2026-08-21.
+    ///
+    /// Our own client cannot have sent them — on that date `packets!{}` held
+    /// `0x7157` alone out of this block and `AlchemyReinforceRequest` did not
+    /// exist yet (`817d9c83b`), so nothing here could serialise a `0x7150`
+    /// body. The sender was the other side of that recording.
+    ///
+    /// What they show: three frames carry type `3` and the fourth carries type
+    /// `6` on the **same opcode**, so the opcode groups types instead of
+    /// fixing one. The count byte also reads out exactly — including `n = 0`
+    /// with nothing after it, which a layout of two fixed slot bytes cannot
+    /// produce at three bytes total.
+    #[test]
+    fn the_recorded_requests_show_two_types_on_the_one_opcode() {
+        for (frame, slots) in [
+            (&[0x02, 0x03, 0x00][..], &[][..]),
+            (&[0x02, 0x03, 0x01, 0x0C][..], &[0x0C][..]),
+            (&[0x02, 0x03, 0x01, 0x46][..], &[0x46][..]),
+        ] {
+            let decoded = AlchemyReinforceRequest::try_from(Bytes::copy_from_slice(frame)).unwrap();
+            assert_eq!(
+                decoded,
+                AlchemyReinforceRequest::Fuse {
+                    slots: slots.to_vec()
+                }
+            );
+        }
+
+        // The fourth frame is type 6 on this opcode. This reader is the elixir
+        // arm and refuses it rather than guessing a variant — the refusal is
+        // the point, because it is what "the opcode does not decide the type"
+        // costs us.
+        assert!(
+            AlchemyReinforceRequest::try_from(Bytes::from_static(&[0x02, 0x06, 0x01, 0x46]))
+                .is_err()
+        );
     }
 }
