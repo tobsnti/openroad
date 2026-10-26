@@ -615,17 +615,25 @@ packets! {
     // 0x7151 (stone) depending on the material, while the four-tab window's
     // Disjoint/Manufacture send the same action on 0x7155.
     //
-    // `0x7150`'s type byte is the one discriminator with NO literal in any
-    // builder we hold — `@00825c50` takes it from its caller and no caller is
-    // in the corpus. `3` comes from the `AlchemyType` enum, which is 1:1 with
-    // the opcode split; that makes it [S], not [V]. Advanced elixir is type 8
-    // on the same opcode.
+    // `0x7150`'s type byte has NO literal in any builder we hold —
+    // `@00825c50` takes it from its caller — so `3` was inferred from the
+    // `AlchemyType` enum. Two recorded frames now show it on the wire, so the
+    // value is [V]. Advanced elixir is type 8 on the same opcode.
     //
-    // Two builder generations exist for `0x7150`: `@00825c50` writes the
-    // grammar above, `@008214f0` writes `{u8 count, slots}` with no action and
-    // no type. Both have live callers and WHICH ONE 1.188's box reaches is [U];
-    // we implement `@00825c50`. A capture of one real fuse settles it, and
-    // there is none — no `packet_dump/0x715*.log` exists.
+    // Three builders write `0x7150`, and their recorded write counts are
+    // 1 / 2 / 4 — which is three CALL SITES of one variable-length body, not
+    // three bodies. `@008210f0` writes the bare `01` (cancel). `@008214f0`
+    // writes `{u8 n, n x slot+13}`, `@00825c50` writes `{u8 2, u8 type, u8 n,
+    // n x slot+13}`; in both the slots come from a loop over `n`, so the last
+    // write counts once however many slots go out. Counting a loop body as one
+    // field is the same trap that once made a count byte look like a result
+    // byte, and it is why "four writes" is a five-byte frame for two slots.
+    //
+    // The wire settles which form the fuse button reaches: a recorded elixir
+    // fuse is `02 03 02 32 34`, and the retry with Lucky Powder is
+    // `02 03 03 32 35 34` — `@00825c50`'s form, which is what we implement,
+    // with Lucky Powder as the third entry of the counted list rather than an
+    // optional trailing field. `@008214f0`'s short form has never been seen.
     //
     // `0x7157 {u8 count, u8[] slots}` -> `0xB157 {u8 result, if result == 2
     // u16 code}` stays the one externally published body. The acks
