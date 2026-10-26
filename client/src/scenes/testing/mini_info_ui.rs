@@ -4,13 +4,12 @@
 //! `SCENE=ui_testing`; combine with `OPENROAD_SCREENSHOT` for headless
 //! capture. The HUD's own Update systems (refresh, portrait rig/tagging) are
 //! already gated to also run in `SceneState::UiTesting`, so this only spawns
-//! the panel, a character to portray, and the fake numbers.
+//! the panel and the fake numbers. The character to portray comes from
+//! `preview_player`, which owns the single preview player.
 
 use bevy::prelude::*;
 
 use crate::plugins::hud::player_mini_info::{spawn_mini_info, PlayerVitals};
-use crate::plugins::player::{Player, PlayerConfig};
-use crate::scenes::testing::preview_player::ensure_preview_player;
 use crate::scenes::SceneState;
 
 pub struct MiniInfoUiPreviewPlugin;
@@ -24,13 +23,7 @@ impl Plugin for MiniInfoUiPreviewPlugin {
     }
 }
 
-fn spawn_mock_data(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    config: Res<PlayerConfig>,
-    mut vitals: ResMut<PlayerVitals>,
-    existing: Query<(), With<Player>>,
-) {
+fn spawn_mock_data(mut vitals: ResMut<PlayerVitals>) {
     *vitals = PlayerVitals {
         name: "Testchar".to_string(),
         level: 42,
@@ -41,7 +34,4 @@ fn spawn_mock_data(
         berserk_pips: 3,
         hwan_level: 0,
     };
-    // a real character for the portrait camera to shoot — shared with the
-    // map previews, so whichever runs first spawns it
-    ensure_preview_player(&mut commands, &asset_server, &config, &existing);
 }

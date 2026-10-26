@@ -18,8 +18,7 @@ use packets::agent::character_data::ActiveQuest;
 
 use crate::plugins::hud::quest::QuestWindowState;
 use crate::plugins::net::character_info::CharacterInfo;
-use crate::plugins::player::{Player, PlayerConfig};
-use crate::scenes::testing::preview_player::ensure_preview_player;
+use crate::plugins::player::Player;
 use crate::scenes::SceneState;
 
 pub struct QuestUiPreviewPlugin;
@@ -28,9 +27,9 @@ impl Plugin for QuestUiPreviewPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(SceneState::UiTesting), open_quest_preview)
             // The record lands on the player the frame it appears: the player
-            // is spawned through `Commands`, so it does not exist yet inside
-            // `open_quest_preview`. `Added<Player>` is also what keeps this
-            // from re-seeding every frame.
+            // is spawned by `preview_player` in the same enter run, so it is
+            // only queryable after that schedule's sync point. `Added<Player>`
+            // is also what keeps this from re-seeding every frame.
             .add_systems(
                 Update,
                 seed_quest_record.run_if(in_state(SceneState::UiTesting)),
@@ -42,17 +41,10 @@ impl Plugin for QuestUiPreviewPlugin {
 /// in it (see the module note).
 const QUEST_IDS: [u32; 5] = [7, 8, 9, 220, 10];
 
-fn open_quest_preview(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    config: Res<PlayerConfig>,
-    existing: Query<(), With<Player>>,
-    mut state: ResMut<QuestWindowState>,
-) {
-    // The window reads `Query<&CharacterInfo, With<Player>>`, so it needs the
-    // shared preview player rather than one of its own (see
-    // `preview_player::ensure_preview_player`).
-    ensure_preview_player(&mut commands, &asset_server, &config, &existing);
+fn open_quest_preview(mut state: ResMut<QuestWindowState>) {
+    // The window reads `Query<&CharacterInfo, With<Player>>`; that player is
+    // spawned by `preview_player`, which `add_ui_previews` registers for this
+    // preview.
     state.open = true;
 }
 

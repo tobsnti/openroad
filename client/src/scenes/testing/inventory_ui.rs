@@ -2,10 +2,10 @@
 //! a +5 weapon and full heavy-armor set on the equipment slots, stacked
 //! potions across two bag pages, and enough gold to exercise the thousands
 //! grouping. Run with `SCENE=ui_testing`. The inventory's own Update systems
-//! already run in `SceneState::UiTesting`, so this only spawns the window, a
-//! stand-in player entity carrying the mock `Inventory` component, and opens
-//! it. Ref ids are vanilla itemdata rows (ITEM_CH_* / ITEM_ETC_*), so icons,
-//! names and tooltip stats are real.
+//! already run in `SceneState::UiTesting`, so this only spawns the window,
+//! hands the preview player the mock `Inventory` component, and opens it. Ref
+//! ids are vanilla itemdata rows (ITEM_CH_* / ITEM_ETC_*), so icons, names and
+//! tooltip stats are real.
 
 use bevy::prelude::*;
 
@@ -24,6 +24,10 @@ impl Plugin for InventoryUiPreviewPlugin {
         app.add_systems(
             OnEnter(SceneState::UiTesting),
             (spawn_inventory_window, seed_mock_inventory).chain(),
+        )
+        .add_systems(
+            Update,
+            give_the_preview_player_its_inventory.run_if(in_state(SceneState::UiTesting)),
         );
     }
 }
@@ -41,7 +45,24 @@ const CH_RING: u32 = 1799; // ITEM_CH_RING_01_A
 const HP_POTION: u32 = 4; // ITEM_ETC_HP_POTION_01
 const MP_POTION: u32 = 11; // ITEM_ETC_MP_POTION_01
 
-fn seed_mock_inventory(mut state: ResMut<InventoryState>, mut commands: Commands) {
+/// The preview player is spawned by `preview_player` in the same `OnEnter`
+/// run, so its entity is only queryable after that schedule's sync point —
+/// hence an `Update` system that fills the bag on the first frame it can see
+/// the player, the same polling shape `attach_portrait_rig` uses and for the
+/// same reason. The filter empties itself once the component is on.
+fn give_the_preview_player_its_inventory(
+    player: Query<Entity, (With<Player>, Without<Inventory>)>,
+    mut commands: Commands,
+) {
+    for entity in player.iter() {
+        commands.entity(entity).insert(mock_inventory());
+    }
+}
+
+/// The mock bag: a +5 weapon and a full heavy-armor set on the equipment
+/// slots, stacked potions across two bag pages, and enough gold to exercise
+/// the thousands grouping.
+fn mock_inventory() -> Inventory {
     let equipment = |slot: u8, ref_id: u32, opt_level: u8| InventoryItem {
         slot,
         rent: RentInfo::default(),
@@ -94,16 +115,13 @@ fn seed_mock_inventory(mut state: ResMut<InventoryState>, mut commands: Commands
         slots[slot] = Some(item);
     }
 
-    // a stand-in player entity: the HUD reads Inventory off the Player, and
-    // gameplay systems are not active in UiTesting
-    commands.spawn((
-        Player,
-        Name::from("Preview Player"),
-        Inventory {
-            slots,
-            avatar_slots: vec![None; 5],
-            gold: 123_456_789,
-        },
-    ));
+    Inventory {
+        slots,
+        avatar_slots: vec![None; 5],
+        gold: 123_456_789,
+    }
+}
+
+fn seed_mock_inventory(mut state: ResMut<InventoryState>) {
     state.open = true;
 }
