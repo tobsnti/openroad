@@ -20,6 +20,7 @@
 //! (the `.chain()` groups that *did* express order are intra-window and moved
 //! together).
 
+pub mod academy;
 pub mod academy_appraisal;
 pub mod action;
 pub mod alchemy;
@@ -195,6 +196,9 @@ impl Plugin for HudPlugin {
                 // part of the list's: it is the surface that stays when every
                 // window is closed.
                 quest_mini::QuestStripPlugin,
+                // The academy member panel. Group 4 for the same arity reason;
+                // the appraisal dialog stays in group 1 where it already sits.
+                academy::AcademyPlugin,
                 // Not a window: parks closed windows' content out of the UI
                 // tree so Bevy's per-frame UI passes skip it.
                 ui_parking::UiParkingPlugin,

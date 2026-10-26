@@ -37,6 +37,7 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
 
 use crate::assets::FontAssets;
+use crate::plugins::hud::academy::AcademyWindowState;
 use crate::plugins::hud::action::ActionWindowState;
 use crate::plugins::hud::alchemy::model::AlchemyState;
 use crate::plugins::hud::autopotion::model::AutoPotionState;
@@ -215,6 +216,8 @@ const ACTION_ROW_ID: u32 = 105;
 const COLLECTION_ROW_ID: u32 = 104;
 /// "Party ( P )" — the roster page. Its caption already names the key, so the
 /// row and `KeyParty` toggle the same state.
+/// `UIIT_CTL_TC_SHORTKEY_L` — the academy member panel.
+const ACADEMY_ROW_ID: u32 = 99;
 const PARTY_ROW_ID: u32 = 83;
 /// "Party Matching(E)" — the LFG board.
 const PARTY_MATCH_ROW_ID: u32 = 93;
@@ -387,6 +390,7 @@ fn on_row_activate(
     cameras: Query<Entity, With<Camera2d>>,
     asset_server: Res<AssetServer>,
     ui_strings: Res<ClientUiStrings>,
+    mut academy_state: ResMut<AcademyWindowState>,
     mut alchemy: ResMut<AlchemyState>,
     mut action_state: ResMut<ActionWindowState>,
     mut collection_state: ResMut<CollectionWindowState>,
@@ -400,6 +404,7 @@ fn on_row_activate(
         return;
     };
     let handled = match *id {
+        ACADEMY_ROW_ID => toggle(&mut academy_state.open),
         PARTY_ROW_ID => toggle(&mut party_state.open),
         PARTY_MATCH_ROW_ID => toggle(&mut party_match_state.open),
         COLLECTION_ROW_ID => toggle(&mut collection_state.open),
@@ -551,6 +556,7 @@ mod test {
     #[test]
     fn only_the_wired_rows_have_targets() {
         let wired = [
+            (ACADEMY_ROW_ID, 99, "UIIT_CTL_TC_SHORTKEY_L"),
             (SYSTEM_ROW_ID, 126, "UIIT_STT_TOGGLE_SYSTEM"),
             (ACTION_ROW_ID, 105, "UIIT_STT_TOGGLE_ACTION"),
             (ALCHEMY_ROW_ID, 114, "UIIT_STT_TOGGLE_ENCHANT"),
@@ -569,14 +575,25 @@ mod test {
         // Community and Guild are two rows onto one resource, which is correct:
         // vanilla's Guild button opens the Community window on its guild page.
         assert_ne!(COMMUNITY_ROW_ID, GUILD_ROW_ID);
-        // Academy, Guardian Matching, Quest, Craft and Stall have no window.
-        for id in [99, 102, 111, 115, 117] {
+        // Guardian Matching, Quest, Craft and Stall have no window. Academy
+        // left this list when the member panel landed; the row now toggles it.
+        let unwired = [102, 111, 115, 117];
+        for id in unwired {
             assert!(
                 !wired.iter().any(|(wired, ..)| *wired == id),
                 "row {id} has no window in openroad yet"
             );
             assert!(ROWS.iter().any(|(row, ..)| *row == id), "row {id} is drawn");
         }
-        assert_eq!(wired.len() + 5, ROWS.len());
+        // The closing claim is "wired and unwired together are every drawn row",
+        // derived from the two lists above rather than written as a sum. A
+        // literal here is a constant that moves with every slice that wires a
+        // row, so wiring one would mean editing two places and the count would
+        // be the one people forget.
+        assert_eq!(
+            wired.len() + unwired.len(),
+            ROWS.len(),
+            "every drawn row is either wired or listed as unwired"
+        );
     }
 }
