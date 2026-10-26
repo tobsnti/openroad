@@ -329,6 +329,8 @@ pub fn lobby_error_text(code: u16) -> LobbyErrorText {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use bytes::Bytes;
 
     use super::*;
@@ -728,5 +730,71 @@ mod tests {
         // 0x0419 is the first code past the 0x17-entry array
         assert_eq!(lobby_error_text(0x0419), LobbyErrorText::CodeOnly);
         assert_eq!(lobby_error_text(0xffff), LobbyErrorText::CodeOnly);
+    }
+
+    /// The `0xB007` List body, pinned against a real captured frame — 78 bytes,
+    /// one character, seven equipment items.
+    ///
+    /// Idea: two widths in this struct cannot be read off the bytes of a
+    /// *single* field, only off whether the whole frame comes out even, so the
+    /// test is one exact decode plus a size round-trip rather than per-field
+    /// assertions. `exp_offset` is 8 bytes and both item lists count with a
+    /// **u8** (the derive's default list type, `deserialize.rs`'s fallback arm
+    /// `let size = u8::read_from(reader)?`). Measured over our own dumps: of
+    /// 117 distinct `0xB007` bodies in `packet_dump/0xb007.log`, this layout
+    /// consumes **108** exactly; u16 counters consume 11 and u32 exactly 1.
+    /// Both wrong widths also move `hp`/`mp`, which is why pinning `hp` here
+    /// catches either mistake.
+    #[test]
+    fn list_response_decodes_a_captured_frame_exactly() {
+        let wire: &[u8] = &[
+            0x02, 0x01, // action = List, result = 1
+            0x01, // count = 1
+            0x73, 0x07, 0x00, 0x00, // ref_obj_id = 1907
+            0x04, 0x00, b'1', b'2', b'3', b'4', // name, u16 LE length
+            0x22, // scale
+            0x11, // level = 17
+            0xba, 0x5a, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // exp_offset, u64
+            0x24, 0x00, // str = 36
+            0x54, 0x00, // int = 84
+            0x00, 0x00, // stat_points = 0
+            0xee, 0x01, 0x00, 0x00, // hp = 494
+            0x81, 0x04, 0x00, 0x00, // mp = 1153
+            0x00, // is_deleting = false
+            0x00, // guild_member_class
+            0x00, // is_guild_rename_required = false
+            0x00, // academy_member_class
+            0x07, // char_items count, u8
+            0x1f, 0x01, 0x00, 0x00, 0x00, // 7 x (u32 id, u8 plus)
+            0x8b, 0x01, 0x00, 0x00, 0x00, //
+            0x67, 0x01, 0x00, 0x00, 0x00, //
+            0xd3, 0x01, 0x00, 0x00, 0x00, //
+            0xaf, 0x01, 0x00, 0x00, 0x00, //
+            0xf7, 0x01, 0x00, 0x00, 0x00, //
+            0xb8, 0x00, 0x00, 0x00, 0x01, //
+            0x00, // avatar_items count, u8
+        ];
+
+        let mut cursor = Cursor::new(wire);
+        let response = CharacterSelectionActionResponse::read_from(&mut cursor).expect("decodes");
+        assert_eq!(
+            cursor.position() as usize,
+            wire.len(),
+            "the frame must come out even — a leftover byte means a field width is wrong"
+        );
+
+        let characters = response.characters.expect("List carries a body");
+        assert_eq!(characters.count, 1);
+        let character = &characters.characters[0];
+        assert_eq!(character.name, "1234");
+        assert_eq!(character.level, 17);
+        assert_eq!(character.exp_offset, 88762);
+        assert_eq!(character.hp, 494);
+        assert_eq!(character.mp, 1153);
+        assert_eq!(character.char_items.len(), 7);
+        assert_eq!(character.char_items[0].id, 287);
+        assert_eq!(character.char_items[6].plus, 1);
+        assert!(character.avatar_items.is_empty());
+        assert_eq!(response.byte_size(), wire.len());
     }
 }
