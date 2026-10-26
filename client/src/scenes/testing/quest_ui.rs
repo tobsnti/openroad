@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use packets::agent::character_data::ActiveQuest;
 
-use crate::plugins::hud::quest::QuestWindowState;
+use crate::plugins::hud::quest::{spawn_quest_window, QuestWindowState};
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::player::Player;
 use crate::scenes::SceneState;
@@ -25,15 +25,21 @@ pub struct QuestUiPreviewPlugin;
 
 impl Plugin for QuestUiPreviewPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(SceneState::UiTesting), open_quest_preview)
-            // The record lands on the player the frame it appears: the player
-            // is spawned by `preview_player` in the same enter run, so it is
-            // only queryable after that schedule's sync point. `Added<Player>`
-            // is also what keeps this from re-seeding every frame.
-            .add_systems(
-                Update,
-                seed_quest_record.run_if(in_state(SceneState::UiTesting)),
-            );
+        // `QuestWindowPlugin` spawns the window in `OnEnter(GameWorld)` only,
+        // so without this the preview scene had no window to open at all —
+        // the same shape `inventory_ui` uses for its window.
+        app.add_systems(
+            OnEnter(SceneState::UiTesting),
+            (spawn_quest_window, open_quest_preview).chain(),
+        )
+        // The record lands on the player the frame it appears: the player
+        // is spawned by `preview_player` in the same enter run, so it is
+        // only queryable after that schedule's sync point. `Added<Player>`
+        // is also what keeps this from re-seeding every frame.
+        .add_systems(
+            Update,
+            seed_quest_record.run_if(in_state(SceneState::UiTesting)),
+        );
     }
 }
 
@@ -42,9 +48,9 @@ impl Plugin for QuestUiPreviewPlugin {
 const QUEST_IDS: [u32; 5] = [7, 8, 9, 220, 10];
 
 fn open_quest_preview(mut state: ResMut<QuestWindowState>) {
-    // The window reads `Query<&CharacterInfo, With<Player>>`; that player is
-    // spawned by `preview_player`, which `add_ui_previews` registers for this
-    // preview.
+    // After the spawn, which resets the resource. The window reads
+    // `Query<&CharacterInfo, With<Player>>`; that player is spawned by
+    // `preview_player`, which `add_ui_previews` registers for this preview.
     state.open = true;
 }
 

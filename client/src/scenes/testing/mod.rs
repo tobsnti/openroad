@@ -18,6 +18,7 @@ pub(crate) mod particles;
 pub(crate) mod party_matching_ui;
 pub(crate) mod party_ui;
 pub(crate) mod preview_player;
+pub(crate) mod quest_detail_ui;
 pub(crate) mod quest_reward_ui;
 pub(crate) mod quest_ui;
 pub(crate) mod skill_window_ui;
