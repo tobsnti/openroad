@@ -53,6 +53,7 @@ pub mod quest;
 pub mod questreward;
 pub mod shops;
 pub mod siegefortress;
+pub mod siegefortressreward;
 pub mod skilldata;
 pub mod skilleffect;
 pub mod skillgroup;
