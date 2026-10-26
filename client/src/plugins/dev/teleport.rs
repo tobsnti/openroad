@@ -19,6 +19,7 @@ use bevy_egui::{egui, EguiContexts, EguiPrimaryContextPass};
 use crate::plugins::map::terrain::Terrain;
 use crate::plugins::nav::NavLocation;
 use crate::plugins::player::{Player, PlayerCommands};
+use crate::plugins::textdata::{ClientOptionalTeleports, ClientTextNames};
 use crate::plugins::world_origin::{set_world_origin, WorldOrigin};
 use crate::scenes::game_scene::server_position_to_sro;
 use crate::scenes::SceneState;
@@ -32,6 +33,37 @@ struct TeleportTarget {
     z: f32,
 }
 
+/// The game's own destinations, read from `refoptionalteleport.txt` through
+/// [`ClientOptionalTeleports`] and labelled from the row's `SN_ZONE_*` key.
+///
+/// Measured over the user's own file (2026-10-26): **32 rows, 31 in service**,
+/// each with a zone key that resolves in `textdata_object.txt`
+/// (`SN_ZONE_22004` → "Constantinople"). A client of another version ships its
+/// own table, which is the point of reading it instead of transcribing it.
+///
+/// A row whose key does not resolve keeps the key as its label rather than
+/// disappearing: a missing string is a data gap worth seeing, not a reason to
+/// hide a destination.
+fn data_targets(
+    teleports: &ClientOptionalTeleports,
+    names: &ClientTextNames,
+) -> Vec<(String, u16, f32, f32, f32)> {
+    teleports
+        .active()
+        .into_iter()
+        .map(|row| {
+            let label = names
+                .name(&row.zone_key)
+                .unwrap_or(row.zone_key.as_str())
+                .to_string();
+            (label, row.region, row.x, row.y, row.z)
+        })
+        .collect()
+}
+
+/// Spots this project measured for itself — not in any table, and not the
+/// game's. They stay because they are what a renderer check needs (the splat
+/// codes, the water gate), and the data list cannot carry them.
 const TARGETS: &[TeleportTarget] = &[
     TeleportTarget {
         label: "Jangan West",
@@ -117,6 +149,7 @@ impl Plugin for TeleportPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn teleport_window(
     mut contexts: EguiContexts,
     mut selected: Local<usize>,
@@ -124,29 +157,47 @@ fn teleport_window(
     mut player: Query<(&mut Transform, &mut NavLocation), With<Player>>,
     mut terrain: Query<&mut Transform, (With<Terrain>, Without<Player>)>,
     mut commands: ResMut<PlayerCommands>,
+    teleports: Res<ClientOptionalTeleports>,
+    names: Res<ClientTextNames>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
+    // The game's destinations first, our own measured spots after them, so the
+    // list reads as "where the game can send you" plus a debug tail.
+    let mut entries = data_targets(&teleports, &names);
+    entries.extend(
+        TARGETS
+            .iter()
+            .map(|t| (t.label.to_string(), t.region, t.x, t.y, t.z)),
+    );
+
     egui::Window::new("Teleport")
         .default_open(false)
         .show(ctx, |ui| {
-            *selected = (*selected).min(TARGETS.len() - 1);
+            *selected = (*selected).min(entries.len().saturating_sub(1));
 
             egui::ComboBox::from_label("Destination")
-                .selected_text(TARGETS[*selected].label)
+                .selected_text(
+                    entries
+                        .get(*selected)
+                        .map(|e| e.0.as_str())
+                        .unwrap_or_default(),
+                )
                 .show_ui(ui, |ui| {
-                    for (i, target) in TARGETS.iter().enumerate() {
-                        ui.selectable_value(&mut *selected, i, target.label);
+                    for (i, entry) in entries.iter().enumerate() {
+                        ui.selectable_value(&mut *selected, i, entry.0.as_str());
                     }
                 });
 
             ui.separator();
 
             if ui.button("Teleport").clicked() {
-                let target = &TARGETS[*selected];
-                let sro = server_position_to_sro(target.region, target.x, target.y, target.z);
+                let Some(&(_, region, x, y, z)) = entries.get(*selected) else {
+                    return;
+                };
+                let sro = server_position_to_sro(region, x, y, z);
 
                 // Re-anchor first so the target lands at small render-space
                 // coordinates, then place the player at the re-based position.

@@ -20,6 +20,7 @@ use crate::assets::textdata::masterydata::MasteryData;
 use crate::assets::textdata::names::TextdataNames;
 use crate::assets::textdata::npcchat::NpcChat;
 use crate::assets::textdata::npcpos::NpcPositions;
+use crate::assets::textdata::optionalteleport::OptionalTeleportTable;
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{QuestRewardItems, QuestRewardModes, QuestRewardValues};
 use crate::assets::textdata::shops::ShopTable;
@@ -49,6 +50,7 @@ pub mod masterydata;
 pub mod names;
 pub mod npcchat;
 pub mod npcpos;
+pub mod optionalteleport;
 pub mod quest;
 pub mod questreward;
 pub mod shops;
@@ -91,6 +93,8 @@ pub enum Textdata {
     ActionWnd(ActionWndData),
     /// `mallitemmenulistdata.txt` — the Item Mall's tabs and division captions.
     MallMenu(MallMenuTable),
+    /// `refoptionalteleport.txt` — the game's own teleport destinations.
+    OptionalTeleport(OptionalTeleportTable),
     CharacterData(CharacterData),
     /// `collectionbook_theme.txt` + its `collectionbook_item.txt` sibling.
     CollectionBook(CollectionBookTable),
@@ -169,6 +173,7 @@ impl AssetLoader for TextdataLoader {
             .unwrap()
             .to_string();
         if !file_stem.starts_with("actionwnddata")
+            && !file_stem.starts_with("refoptionalteleport")
             && !file_stem.starts_with("mallitemmenulistdata")
             && !file_stem.starts_with("characterdata")
             && !file_stem.starts_with("collectionbook_theme")
@@ -256,6 +261,11 @@ impl AssetLoader for TextdataLoader {
             let items = read_sibling(load_context, "collectionbook_item.txt").await?;
             Ok(Textdata::CollectionBook(CollectionBookTable::parse(
                 &content, &items,
+            )))
+        } else if file_stem.starts_with("refoptionalteleport") {
+            // single file: the destinations the teleport window offers
+            Ok(Textdata::OptionalTeleport(OptionalTeleportTable::parse(
+                &content,
             )))
         } else if file_stem.starts_with("actionwnddata") {
             // single file: the action window's command → icon/string bindings
