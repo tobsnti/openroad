@@ -39,7 +39,17 @@ pub struct SroMaterial {
     pub diffuse_map_float: f32, // could be lightness? contains at least same value as in Color
     pub diffuse_map_unk0: u8,
     pub diffuse_map_unk1: u8,
-    pub diffuse_map_is_relative: bool,
+    /// `1` = the path above is the **full archive path** (`prim\mtrl\…`),
+    /// `0` = a bare file name next to the `.bmt` itself.
+    ///
+    /// Named `diffuse_map_is_relative` until 2026-10-26, which said the
+    /// opposite of what it holds: a census of the user's own `Data.pk2` finds
+    /// the flag set on **539** materials, **all 539** carrying a separator in
+    /// the path, and clear on **13,946**, **none** of which carry one (424 of
+    /// those are empty). The behaviour was always right — only the name was
+    /// backwards, which is why `bsr2glb/bundle.rs` had to explain it against
+    /// itself. JMX-File-Editor (MIT) calls the same field `isAbsolute`.
+    pub diffuse_map_is_absolute: bool,
 }
 
 impl<T: Buf> From<&mut T> for SroMaterial {
@@ -56,21 +66,30 @@ impl<T: Buf> From<&mut T> for SroMaterial {
             diffuse_map_float: value.get_f32_le(),
             diffuse_map_unk0: value.get_u8(),
             diffuse_map_unk1: value.get_u8(),
-            diffuse_map_is_relative: value.get_u8() == 1,
+            diffuse_map_is_absolute: value.get_u8() == 1,
             ..default()
         }
     }
 }
 
-// PrimMtrlFlag decoded from a census of all 12,227 materials in Data.pk2
-// (2026-07-09). Only 6 bits are ever set anywhere; nothing above 0x200 is used:
-//   0x0001 bit0  two-sided / no backface cull        (26.3%)  is_two_sided
-//   0x0004 bit2  D3D sun specular enable              (0.2%)  is_specular_emphasis
-//   0x0008 bit3  self-illuminated / emissive          (0.9%)  is_emissive
-//   0x0040 bit6  ALWAYS set - mandatory format marker (100%)  has_color_tint (misnomer)
-//   0x0100 bit8  has diffuse map / texture           (96.4%)  has_diffuse_map
-//   0x0200 bit9  has alpha channel                   (36.4%)  has_alpha_channel
-// The wiki's "BumpMap" 0x2000 is never set in this build; bits 1,4,5,7,10-31 unused.
+// PrimMtrlFlag, from a census of the user's own `Data.pk2` (2026-10-26):
+// 14,485 materials in 3,757 of its 3,759 `.bmt` files, counting only files this
+// reader consumes to the last byte. Only **7** of the 32 bits are ever set, in
+// **18** distinct flag words — that is the number worth keeping, because it is
+// what says the other 25 bits need no implementation:
+//   0x0001 bit0  two-sided / no backface cull       3,969  27.4%  is_two_sided
+//   0x0004 bit2  D3D sun specular enable              150   1.0%  is_specular_emphasis
+//   0x0008 bit3  self-illuminated / emissive          129   0.9%  is_emissive
+//   0x0040 bit6  ALWAYS set - mandatory marker     14,485 100.0%  has_color_tint (misnomer)
+//   0x0100 bit8  has diffuse map / texture         14,025  96.8%  has_diffuse_map
+//   0x0200 bit9  has alpha channel                  5,405  37.3%  has_alpha_channel
+//   0x2000 bit13 the wiki's "BumpMap"                 111   0.8%  has_bump_map
+// Bits 1, 4, 5, 7, 10-12 and 14-31 are set nowhere.
+//
+// The block this replaced claimed 12,227 materials (2026-07-09) and that
+// 0x2000 "is never set in this build". The second half was never true, and the
+// first has a date on it for exactly this reason: a census is a measurement,
+// not a fact about the format.
 #[allow(dead_code)]
 impl SroMaterial {
     /// PrimMtrlFlag Bit6 (0x40). The wiki labels this "ColorTint?", but the
@@ -88,9 +107,18 @@ impl SroMaterial {
         self.flag & 0x200 != 0
     }
 
-    /// PrimMtrlFlag Bit14 (0x2000), documented as "BumpMap" on the wiki, but
-    /// NOT set on any material in this client build's Data.pk2 - effectively
-    /// dead (always false) here.
+    /// PrimMtrlFlag Bit13 (0x2000), the wiki's "BumpMap": **111 materials in
+    /// 30 files** carry it (census above), so it is live, not dead.
+    ///
+    /// It also appears to change the record: the two `.bmt` files this reader
+    /// does **not** consume exactly both carry it, and in
+    /// `prim/mtrl/item/etc/avatar_w_ghostcaptain_2.bmt` the first material is
+    /// followed by a second path, `prim\mtrl\item\etc\
+    /// avatar_w_ghost_captain_n.ddj` — a normal map this struct has no field
+    /// for. Counting those two files' materials as well gives 114 in 32 files.
+    /// What decides the extra field is `[U]`: `prim/mtrl/mob/arabia/
+    /// mustafa.bmt` carries the same flag word (`0x2345`) on both materials
+    /// and has no extra path, only two unread bytes at the end.
     pub fn has_bump_map(&self) -> bool {
         self.flag & 0x2000 != 0
     }
@@ -353,7 +381,7 @@ impl AssetLoader for BmtLoader {
         let mut diffuse_textures = HashMap::new();
         for mat in &material.materials {
             // info!("material: {}", &mat.name);
-            let image: Handle<Image> = if mat.diffuse_map_is_relative {
+            let image: Handle<Image> = if mat.diffuse_map_is_absolute {
                 let path = format!("data://{}", mat.diffuse_map_path.display());
                 // info!("relative path: {}", path);
                 // PathBuf::from("")
