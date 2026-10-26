@@ -102,8 +102,22 @@ impl JMXVBMS {
                 };
 
                 // there are some outliers which are not normalized
+                //
+                // `w_sum > 0.0` is the half this was missing. A vertex whose
+                // two influences are both unused (`0xFF`, or a stored weight of
+                // zero) sums to zero, and the normalization below then divides
+                // `0.0 / 0.0` and writes **NaN** into `ATTRIBUTE_JOINT_WEIGHT`
+                // — the skinning shader cannot place such a vertex, so its
+                // triangles collapse and the mesh disappears. Measured over the
+                // user's own install (2026-10-26, census in the report): **164
+                // of 9,900,184 vertices in 6 of 20,281 `.bms`**, worst
+                // `nature/china/dunghuang/reed/w_cd_reeds_l.bms` with **69 of
+                // 136**. With no influence at all the honest value is the zero
+                // weight the file states, not a rescaled one. SroPk2Studio
+                // (MIT) guards the same division with `tot > 0.0f` — the guard
+                // here is ours, their code only confirms the reading.
                 let w_sum = w1 + w2;
-                if w_sum != 1.0 {
+                if w_sum > 0.0 && w_sum != 1.0 {
                     let diff = 1.0 - (w_sum);
                     let f1 = w1 / w_sum;
                     let f2 = w2 / w_sum;
@@ -177,6 +191,44 @@ mod tests {
             navmesh: None,
             material: "mat".into(),
             bone_data,
+        }
+    }
+
+    /// Both influences unused is a real shape in the data — 69 of the 136
+    /// vertices of `w_cd_reeds_l.bms` carry `0xFF/0xFF`. The weights have to
+    /// stay the zeros the file states; before the `w_sum > 0.0` guard the
+    /// normalization turned them into NaN, and a NaN-weighted vertex takes its
+    /// triangles out of the picture.
+    #[test]
+    fn a_vertex_with_no_influence_keeps_finite_weights() {
+        let mut bms = fixture(true);
+        let vertex_count = bms.vertex_data.vertices.len();
+        bms.bone_data = Some(MeshBones {
+            bones: vec!["Bone01".into()],
+            bone_data: vec![
+                BoneData {
+                    index1: 0xFF,
+                    weight1: 0,
+                    index2: 0xFF,
+                    weight2: 0,
+                };
+                vertex_count
+            ],
+        });
+
+        let mesh = bms.to_mesh(false, true);
+        let Some(VertexAttributeValues::Float32x4(weights)) =
+            mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT)
+        else {
+            panic!("a skinned mesh carries joint weights");
+        };
+        assert_eq!(weights.len(), vertex_count);
+        for weight in weights {
+            assert!(
+                weight.iter().all(|w| w.is_finite()),
+                "NaN weight written: {weight:?}"
+            );
+            assert_eq!(*weight, [0.0; 4]);
         }
     }
 
