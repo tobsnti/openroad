@@ -261,11 +261,11 @@ packets! {
     0x7021 => MovementRequest,
     0xB021 => MovementResponse,
     0xB023 => MovementPositionUpdate,
-    // Turn-in-place. Only the S→C half is wired: the original parses 0xB024
-    // (u32 uid + u16 angle) but has no builder for 0x7024 and an empty
-    // dispatch stub for it, so the client→server body would be invented.
-    // Wiring it needs a packet_dump/0x7024.log from a live idle turn.
+    // Turn-in-place, both halves. 0xB024 comes from the original's parser
+    // (u32 uid + u16 angle); 0x7024 is the bare heading the client reports
+    // while it turns, measured on 80 original-client frames.
     0xB024 => MovementAngleResponse,
+    0x7024 => MovementAngleRequest,
     0x30D0 => EntitySpeedUpdate,
     0x30BF => EntityStateUpdate,
     0x3054 => EntityLevelUp,
