@@ -526,11 +526,13 @@ The `0x_0E_` block belongs to the job league (merchant/hunter/thief). The client
 dispatches twelve of its opcodes; **two** are wired, because only one pair's body is
 readable from frames of our own — see `packets/src/agent/job.rs` for the measured
 inventory of the rest (`0x70E2`/`0xB0E2` have the same shapes but an unknown action,
-`0x70EA` is eight bytes of one constant, `0x34D5` is 92 frames of one constant, and
+`0x70EA` turned out to be five forms rather than one constant and is now wired, `0x34D5` is
+92 frames of one constant, and
 `0x30E0`/`0x30E6` have no frame at all).
 
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
+| `0x70EA` | JobFlagRequest | C→S | wired | eight bytes written as one blob (`0081eda0`: `FUN_00508fe0(&stack0x00000004, 8)`), carrying one `u64` flag word (the `0xB0EA` handler `00881690` reads it with a single 8-byte read at `008816c3` and shifts it with `__allshr`; the upper half is zero in all 118 captured frames). Five forms over 22 dump trees, and in every one the word has **exactly one bit set** — 2^8, 2^9, 2^16, 2^21 and 2^24, with 22/40/4/11/33 frames of each from the original client. Bit 16 is the only one whose frames sit outside a session root documented in `capture-orig/STATE.md` — two proxy directories and a replay set — so it rests on the same client through a longer chain. Byte 0 is never non-zero. Which bit means what is [U]: the caller supplies the mask and the callers are not in our decompile corpus |
 | `0x70E6` | JobNpcRequest | C→S | experimental | one `u32`, captured twice (`00000000`, `57010000`); the same four bytes are the whole body of the selection request `0x7045`, and 343 resolves through `0x3019` to an NPC's `unique_id` (ref 2037). What it asks of the NPC is `[U]` — both captures were refused |
 | `0xB0E6` | JobNpcResponse | S→C | experimental | `u8 result` + `u16` code on the error arm; both captured frames are `02 03 00`, 43–51 ms after their request. Code 3 is **not** "no target" (a real NPC's gid got it too) and the success tail is unknown, so nothing is decoded past the code |
 
