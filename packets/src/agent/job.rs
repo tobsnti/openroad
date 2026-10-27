@@ -79,45 +79,65 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// 0x70EA — client → server, eight bytes written as one blob, carrying a
 /// 32-bit flag word in which exactly one bit is ever set.
 ///
-/// Idea of the shape: the sender at `0081eda0` forwards its caller's two
-/// dwords verbatim with a single `FUN_00508fe0(&stack0x00000004, 8)` — one
-/// 8-byte write, so the *grouping* cannot be read off the write sizes the way
-/// it can elsewhere in this family (`0x704F`'s sender writes `1`, which is how
-/// that one-byte action was confirmed). The split here comes from the
-/// variation instead: across 118 frames in 22 dump trees the body takes five
-/// forms, and in every one of them the first `u32` has **exactly one bit set**
-/// while the second is zero.
+/// Idea of the shape: the sender at `0081eda0` forwards its caller's eight
+/// bytes verbatim with a single `FUN_00508fe0(&stack0x00000004, 8)`, so the
+/// *grouping* cannot be read off the write sizes the way it can elsewhere in
+/// this family (`0x704F`'s sender writes `1`, which is how that one-byte
+/// action was confirmed). Two things settle it as **one 64-bit word** rather
+/// than two dwords: the `0xB0EA` handler (`00881690`, registered at
+/// `00870973`) reads it with a single 8-byte read at `008816c3` and then
+/// shifts it with `__allshr` (`00b47710`), the 64-bit shift helper — a pair of
+/// `u32`s would not be shifted as one value; and across 118 frames in 22 dump
+/// trees the upper half is zero every time while the lower half carries
+/// **exactly one bit**.
+///
+/// The handler also says what the word is *for*: it counts the position of the
+/// highest set bit, adds 50000, and hands that to `009d4c80`, which subtracts
+/// the 50000 again (`add eax, 0xffff3cb0`) before indexing a UI object. The
+/// 50000 is a namespace marker, not a value — reading it as one means looking
+/// for a meaning that is not there.
 ///
 /// ```text
-/// 00 02 00 00 00 00 00 00   41x   2^9    original client, our peer, replay
-/// 00 00 00 01 00 00 00 00   33x   2^24   our peer only
-/// 00 01 00 00 00 00 00 00   28x   2^8    original client (four capture sets)
-/// 00 00 20 00 00 00 00 00   11x   2^21   original client, our peer
-/// 00 00 01 00 00 00 00 00    5x   2^16   our peer, replay
+/// 00 02 00 00 00 00 00 00   41x   2^9
+/// 00 00 00 01 00 00 00 00   33x   2^24
+/// 00 01 00 00 00 00 00 00   28x   2^8
+/// 00 00 20 00 00 00 00 00   11x   2^21
+/// 00 00 01 00 00 00 00 00    5x   2^16
 /// ```
 ///
-/// Byte 0 is zero in all 118, so no bit below 8 has ever been observed, and
-/// `unk_04` is zero in all 118. Both stay as they are rather than being
-/// narrowed to a `u8`/omitted: a width is only measured where it varied, and
-/// these did not.
+/// Byte 0 is zero in all 118, so no bit below 8 has ever been observed. The
+/// word stays a full `u64` rather than being narrowed to what varied: the
+/// handler reads and shifts 64 bits whatever the frames happen to carry.
 ///
-/// **Which bit means what is `[U]`.** The caller decides the mask and the
-/// callers are not in our decompile corpus, so there is nothing to read the
-/// names off. The three bits the original client sends (2^8, 2^9, 2^21) are the
-/// ones a real session uses; the other two come from our own peer and a replay,
-/// so they are *our* behaviour, not evidence about vanilla.
+/// **Which bit means what is `[U]`, and so is which bits are vanilla's.** The
+/// caller decides the mask, and `0081eda0` has **no caller in this binary** at
+/// all: zero direct `E8` calls, the address appears nowhere as a 4-byte
+/// constant (so no vtable), and the one `E9` candidate lands mid-instruction —
+/// measured against a positive control of 345 and 816 callers for two
+/// neighbours in the same body. That route is closed, not merely incomplete.
+///
+/// The provenance split is **contested and left open here on purpose**. The
+/// dump census reads four bits as the original client's (8, 9, 16, 21) and bit
+/// 24 as ours alone, which rests on `cap-src/packet_dump/proxy-local` being
+/// our peer. `capture-orig/STATE.md:2-4` documents that directory as the
+/// recording of the *original* client's own chain
+/// (`sro_client (Win) -> relay -> sro_proxy -> skrillax`, started with
+/// `--dump-dir packet_dump/proxy-local`), and bit 24's 33 frames live only
+/// there. One of the two readings is wrong and no content marker separates
+/// them — `0x4000` and `0x6100`, which only a real client sends, appear in all
+/// 22 c2s trees. So all five bits are listed as observed and none is claimed
+/// as vanilla's until the chain for that directory is settled.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct JobFlagRequest {
-    /// Exactly one bit set in every captured frame; bits 8, 9, 16, 21 and 24
-    /// observed. Modelled as the raw word because a named enum would have to
-    /// name the bits.
-    pub flags: u32,
-    /// Zero in all 118 captured frames.
-    pub unk_04: u32,
+    /// One 64-bit word with exactly one bit set in every captured frame; bits
+    /// 8, 9, 16, 21 and 24 observed, and the upper half zero in all 118. Raw
+    /// rather than a named enum because a name would have to name the bits.
+    pub flags: u64,
 }
 
 impl JobFlagRequest {
-    /// The bits our captures contain, original client and peer together.
+    /// Every bit our captures contain. Which of them a *vanilla* client sends
+    /// is contested — see the type's note.
     pub const OBSERVED_BITS: [u32; 5] = [8, 9, 16, 21, 24];
 
     /// The bit this request carries, if it is a single-bit word as every
@@ -208,7 +228,7 @@ mod tests {
             assert_eq!(cursor.position() as usize, wire.len());
             assert_eq!(decoded.byte_size(), wire.len());
             assert_eq!(decoded.single_bit(), Some(bit), "body {wire:02x?}");
-            assert_eq!(decoded.unk_04, 0);
+            assert_eq!(decoded.flags >> 32, 0, "upper half is zero in all captures");
             assert!(JobFlagRequest::OBSERVED_BITS.contains(&bit));
 
             let bytes: Bytes = decoded.into();
@@ -220,14 +240,10 @@ mod tests {
     /// any capture, so the type must not pretend to know they are invalid.
     #[test]
     fn job_flag_request_reports_unobserved_shapes_instead_of_refusing_them() {
-        let zero = JobFlagRequest {
-            flags: 0,
-            unk_04: 0,
-        };
+        let zero = JobFlagRequest { flags: 0 };
         assert_eq!(zero.single_bit(), None);
         let two_bits = JobFlagRequest {
             flags: (1 << 8) | (1 << 9),
-            unk_04: 0,
         };
         assert_eq!(two_bits.single_bit(), None);
         assert_eq!(two_bits.byte_size(), 8);
