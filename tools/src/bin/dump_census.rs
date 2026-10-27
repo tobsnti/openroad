@@ -448,6 +448,8 @@ fn log_files(root: &Path, into: &mut Vec<PathBuf>) {
 
 struct Options {
     roots: Vec<PathBuf>,
+    /// Trees to search for roots instead of being roots themselves.
+    discover: Vec<PathBuf>,
     unwired_only: bool,
     min_frames: usize,
     hist: usize,
@@ -460,6 +462,7 @@ struct Options {
 fn options() -> Options {
     let mut options = Options {
         roots: Vec::new(),
+        discover: Vec::new(),
         unwired_only: false,
         min_frames: 0,
         hist: DEFAULT_HIST,
@@ -469,6 +472,11 @@ fn options() -> Options {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--discover" => {
+                if let Some(path) = args.next() {
+                    options.discover.push(PathBuf::from(path));
+                }
+            }
             "--unwired" => options.unwired_only = true,
             "--swap-directions" => options.swap = true,
             "--original" => options.original = true,
@@ -484,10 +492,48 @@ fn options() -> Options {
             other => options.roots.push(PathBuf::from(other)),
         }
     }
+    for tree in options.discover.clone() {
+        discover_roots(&tree, &mut options.roots);
+    }
     if options.roots.is_empty() {
         options.roots.push(PathBuf::from(DEFAULT_ROOT));
     }
+    options.roots.sort();
+    options.roots.dedup();
     options
+}
+
+/// Every directory under `tree` that **holds** `0x*.log` files, minus the `c2s`
+/// halves; a directory that holds dumps is a root and is not descended into.
+///
+/// Data-driven on purpose. Searching for directories *named* `packet_dump*` is
+/// what made the first census miss **51** directories with **421,361** frames —
+/// more than the 413,718 it reported. Dumps also live in `wire-off/`,
+/// `A-packet_dump/`, `dump-lauf-c/`, `ref-capture/packet_dump2/` and
+/// `fixtures/proxy/`, and a list of names never ends.
+fn discover_roots(tree: &Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(tree) else {
+        return;
+    };
+    let mut holds_dumps = false;
+    let mut children = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            children.push(path);
+        } else if opcode_of(&path).is_some() && path.extension().is_some_and(|e| e == "log") {
+            holds_dumps = true;
+        }
+    }
+    if holds_dumps {
+        if tree.file_name().is_some_and(|name| name != "c2s") {
+            into.push(tree.to_path_buf());
+        }
+        return;
+    }
+    for child in children {
+        discover_roots(&child, into);
+    }
 }
 
 fn main() {
@@ -500,17 +546,27 @@ fn main() {
     let mut files = 0usize;
     let mut unreadable = 0usize;
     let mut redacted = 0usize;
+    let mut per_root: Vec<(PathBuf, usize)> = Vec::new();
 
     for root in &options.roots {
+        let frames_before: usize = tallies.values().map(|t| t.frames).sum();
         let mut paths = Vec::new();
         log_files(root, &mut paths);
         // `capture-orig/**` are named sessions of the real client, so the whole
         // root is original — the `proxy/` component inside a client dump is the
         // other way in (see `classify`).
-        let named_capture = root.to_string_lossy().contains("capture-orig");
+        // The session kind is a property of the **root path** as well as of the
+        // directories inside it: `--discover` makes `.../packet_dump/proxy-local`
+        // a root of its own, and then nothing *below* it is called `proxy*` any
+        // more. Reading only the relative path dropped 95 of `0x70EA`'s 118
+        // original-client frames.
+        let root_is_original = root.components().any(|part| {
+            let part = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+            part.starts_with("proxy") || part == "capture-orig"
+        }) || root.to_string_lossy().contains("capture-orig");
         let layout = Layout {
             inverted: inverted_root(root).unwrap_or(options.swap),
-            original_session: options.original || named_capture,
+            original_session: options.original || root_is_original,
             writer: if root.join("session.jsonl").is_file() {
                 Writer::Stub
             } else {
@@ -543,13 +599,23 @@ fn main() {
                 }
             }
         }
+        let frames_after: usize = tallies.values().map(|t| t.frames).sum();
+        per_root.push((root.clone(), frames_after - frames_before));
     }
 
     println!(
-        "# dump_census: {files} files, {} groups, {redacted} redacted bodies, \
+        "# dump_census: {} roots, {files} files, {} groups, {redacted} redacted bodies, \
          {unreadable} unreadable lines",
+        options.roots.len(),
         tallies.len()
     );
+    // The root set is part of the result. Two censuses over different sets give
+    // different counts for the same opcode — 108 frames against 118 for
+    // `0x70EA`, measured — and without this header that difference reads as a
+    // contradiction instead of a definition.
+    for (root, frames) in &per_root {
+        println!("# root\t{}\t{frames}", root.display());
+    }
     println!(
         "opcode\torigin\twriter\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tlossy\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
     );
