@@ -38,7 +38,7 @@
 
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::text::{EditableText, TextCursorStyle};
+use bevy::text::{EditableText, LineHeight, TextCursorStyle};
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
@@ -49,7 +49,7 @@ use crate::plugins::hud::community::letter_sub::plate_ring;
 use crate::plugins::hud::community::model::CommunityState;
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::modal_dialog::MODAL_SCRIM;
-use crate::plugins::hud::scale::hud_scale;
+use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::character_info::CharacterInfo;
 use crate::plugins::net::guild::GuildRoster;
 use crate::plugins::player::Player;
@@ -195,9 +195,16 @@ pub fn apply_guild_notice_write(
         return;
     };
     let s = hud_scale();
+    // Rounded to a whole pixel, and the line box with it: in bevy 0.20
+    // `LineHeight` is its own component, so a single-line cell carries the
+    // same rounded value twice (`inventory/split.rs` states the pair rule).
+    // The contents pane is the one multi-line field here and gets no line
+    // height of ours -- a spacing we cannot source would be a layout decision
+    // in disguise.
+    let line_height = |size: f32| LineHeight::Px(text_px(size, s));
     let text_font = |size: f32| TextFont {
         font: fonts.two.clone().into(),
-        font_size: FontSize::Px(size * s),
+        font_size: FontSize::Px(text_px(size, s)),
         ..default()
     };
     let image = |rect: (f32, f32, f32, f32), path: String| {
@@ -298,6 +305,7 @@ pub fn apply_guild_notice_write(
                         plate.spawn((
                             Text::new(caption(ui_strings.get_or(key, fallback))),
                             text_font(7.5),
+                            line_height(7.5),
                             TextColor(CAPTION_COLOR),
                             TextLayout::justify(Justify::Center),
                             abs_node(rect, s),
@@ -313,6 +321,7 @@ pub fn apply_guild_notice_write(
                         true,
                         s,
                         text_font(7.5),
+                        line_height(7.5),
                     );
                     spawn_field(
                         plate,
@@ -322,6 +331,7 @@ pub fn apply_guild_notice_write(
                         false,
                         s,
                         text_font(7.5),
+                        line_height(7.5),
                     );
 
                     for (button, x, key, fallback) in [
@@ -355,6 +365,7 @@ pub fn apply_guild_notice_write(
                                 b.spawn((
                                     Text::new(ui_strings.get_or(key, fallback).to_string()),
                                     text_font(7.5),
+                                    line_height(7.5),
                                     TextColor(NOTICE_OK_COLOR),
                                     TextLayout::justify(Justify::Center),
                                     Node {
@@ -393,13 +404,14 @@ fn spawn_field(
     single_line: bool,
     s: f32,
     font: TextFont,
+    line: LineHeight,
 ) {
     let mut node = abs_node(rect, s);
     node.padding = UiRect::all(Val::Px(2.0 * s));
     let mut editable = EditableText::new(initial);
     editable.visible_lines = if single_line { Some(1.0) } else { None };
     editable.allow_newlines = !single_line;
-    plate.spawn((
+    let mut cell = plate.spawn((
         marker,
         editable,
         node,
@@ -411,6 +423,11 @@ fn spawn_field(
             ..default()
         },
     ));
+    // Only the subject is one authored line; the contents pane wraps, and a
+    // line spacing we cannot source would be a layout decision in disguise.
+    if single_line {
+        cell.insert(line);
+    }
 }
 
 /// Cancel drops the modal. **Completed does not send yet**: the wire half
