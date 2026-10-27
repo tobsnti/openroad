@@ -9,7 +9,9 @@
 //! **A leftover is a finding, not an error.** A decoder that reads a prefix of a
 //! body and stops is what an unfinished layout looks like, so the verdicts stay
 //! apart: `exact` (re-encoding reproduces the captured bytes), `short`
-//! (re-encoding is a strict prefix — N bytes never read), `differs`, `error`
+//! (re-encoding is a strict prefix — N bytes never read), `lossy` (shorter but
+//! not a prefix: a tail the decoder reads and drops on purpose), `differs`
+//! (same length or longer and not equal — the shape that needs a look), `error`
 //! (the decoder refused), `panic` (it crashed on a captured body — a finding of
 //! its own), `no_encoder` (two acks deliberately cannot be re-encoded) and
 //! `unwired` (no type bound to this opcode). The last column is the working
@@ -77,7 +79,14 @@ enum Verdict {
     Exact,
     /// Decoded, and re-encoding is a strict prefix: the tail was never read.
     Short(usize),
-    /// Decoded, but re-encoding differs from the capture otherwise.
+    /// Decoded, and re-encoding is **shorter** than the capture without being a
+    /// prefix of it: the decoder read a tail it does not keep, and the encoder
+    /// writes the flag that says the tail is absent. `MovementResponse`
+    /// (`0xB021`) does exactly that by design, which is 28,328 of this corpus'
+    /// 28,609 non-exact round trips — a documented decision, not a defect.
+    Lossy,
+    /// Decoded, and re-encoding has the same length or is longer, but differs:
+    /// the bytes themselves disagree. This is the shape that needs a look.
     Differs,
     /// The decoder refused this body.
     Error,
@@ -177,8 +186,12 @@ fn judge(opcode: u16, body: &[u8]) -> Verdict {
     };
     if encoded.as_ref() == body {
         Verdict::Exact
-    } else if encoded.len() < body.len() && body.starts_with(encoded.as_ref()) {
-        Verdict::Short(body.len() - encoded.len())
+    } else if encoded.len() < body.len() {
+        if body.starts_with(encoded.as_ref()) {
+            Verdict::Short(body.len() - encoded.len())
+        } else {
+            Verdict::Lossy
+        }
     } else {
         Verdict::Differs
     }
@@ -338,6 +351,7 @@ struct Tally {
     exact: usize,
     short: usize,
     short_bytes: usize,
+    lossy: usize,
     differs: usize,
     error: usize,
     panics: usize,
@@ -369,6 +383,7 @@ impl Tally {
                 self.short += 1;
                 self.short_bytes += tail;
             }
+            Verdict::Lossy => self.lossy += 1,
             Verdict::Differs => self.differs += 1,
             Verdict::Error => self.error += 1,
             Verdict::Panic => self.panics += 1,
@@ -518,7 +533,7 @@ fn main() {
         tallies.len()
     );
     println!(
-        "opcode\torigin\twriter\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
+        "opcode\torigin\twriter\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tlossy\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
     );
     // Row order: the deterministic key order by default, and for the working
     // list the order that produces work — biggest opcode first, its
@@ -558,7 +573,7 @@ fn main() {
             format!("{byte:02x}")
         });
         println!(
-            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
+            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
             tally.frames,
             tally.bodies.len(),
             tally.empty,
@@ -567,6 +582,7 @@ fn main() {
             tally.exact,
             tally.short,
             tally.short_bytes,
+            tally.lossy,
             tally.differs,
             tally.error,
             tally.panics,
