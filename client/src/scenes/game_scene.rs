@@ -615,7 +615,7 @@ fn send_movement_request(
                     "network: MovementRequest click_render=({:.1},{:.1},{:.1}) region={:#06X} local=({},{},{})",
                     order.0.x, order.0.y, order.0.z, region, x, y, z
                 );
-                Packet::from(MovementRequest { region, x, y, z })
+                Packet::from(MovementRequest::ToLocation { region, x, y, z })
             }
         };
         let Ok(conn) = conn.single() else {

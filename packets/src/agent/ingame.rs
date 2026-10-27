@@ -290,23 +290,47 @@ fn put_coords(buf: &mut BytesMut, region: u16, x: i32, y: i32, z: i32) {
     }
 }
 
-/// 0x7021 — client → server move order to a location (click-to-move). `x/y/z`
-/// are raw region-local units (a capture showed ×10 scaling made the server
-/// wrap the destination several regions over).
+/// 0x7021 — client → server move order. **Two forms**, selected by the first
+/// byte, exactly mirroring [`MovementResponse`]'s two branches.
+///
+/// `1` is a destination: region plus raw region-local coordinates (a capture
+/// showed ×10 scaling made the server wrap the destination several regions
+/// over). `0` is a turn in place: a `moving` byte and a `u16` heading, no
+/// coordinates — the form the original client sends when the player steers
+/// without clicking a spot.
+///
+/// This type only had the destination form, so every turn-in-place frame failed
+/// to decode: measured with `dump_census` over 99 dump roots, **79 of 4,172**
+/// captured `0x7021` bodies are 4 bytes and were refused, **55 of them spoken
+/// by the original client**. All 79 read `00 01 <u16>`: kind 0, the same
+/// `moving` byte the response carries, and the heading. The 4,093 nine-byte
+/// bodies decode and re-encode byte-exactly.
 #[derive(Message, Clone, Debug, PartialEq)]
-pub struct MovementRequest {
-    pub region: u16,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
+pub enum MovementRequest {
+    /// Kind `1`: go to this spot.
+    ToLocation { region: u16, x: i32, y: i32, z: i32 },
+    /// Kind `0`: turn in place to this heading. `u16` over the full circle,
+    /// like [`MovementResponse::angle`].
+    ToAngle { angle: u16 },
 }
 
 impl From<MovementRequest> for Bytes {
     fn from(p: MovementRequest) -> Self {
         let mut buf = BytesMut::new();
-        buf.put_u8(1); // 1 = move to a location (vs 0 = turn to an angle)
-        buf.put_u16_le(p.region);
-        put_coords(&mut buf, p.region, p.x, p.y, p.z);
+        match p {
+            MovementRequest::ToLocation { region, x, y, z } => {
+                buf.put_u8(1);
+                buf.put_u16_le(region);
+                put_coords(&mut buf, region, x, y, z);
+            }
+            MovementRequest::ToAngle { angle } => {
+                buf.put_u8(0);
+                // Every one of the 79 captured turn frames carries `01` here,
+                // as does the response's own turn branch.
+                buf.put_u8(1);
+                buf.put_u16_le(angle);
+            }
+        }
         buf.freeze()
     }
 }
@@ -315,9 +339,12 @@ impl TryFrom<Bytes> for MovementRequest {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
         let mut r = Reader::new(&value);
-        let _kind = r.u8()?; // 1 = location (the only form we build)
+        if r.u8()? == 0 {
+            let _moving = r.u8()?;
+            return Ok(MovementRequest::ToAngle { angle: r.u16()? });
+        }
         let region = r.u16()?;
-        Ok(MovementRequest {
+        Ok(MovementRequest::ToLocation {
             region,
             x: r.coord(region)?,
             y: r.coord(region)?,
@@ -5183,7 +5210,7 @@ mod test {
 
     #[test]
     fn movement_request_overworld_uses_shorts() {
-        let req = MovementRequest {
+        let req = MovementRequest::ToLocation {
             region: 0x60A8,
             x: 10580,
             y: -77,
@@ -5197,9 +5224,26 @@ mod test {
         assert_eq!(decoded, req);
     }
 
+    /// The form this type was missing: 79 of 4,172 captured `0x7021` bodies are
+    /// a turn in place, 55 of them from the original client, and every one reads
+    /// `00 01 <u16>`. The most frequent body in the corpus is the first case.
+    #[test]
+    fn movement_request_turn_in_place_is_the_four_byte_form() {
+        for (wire, angle) in [
+            (Bytes::from_static(&[0x00, 0x01, 0xdc, 0xce]), 52956u16),
+            (Bytes::from_static(&[0x00, 0x01, 0x24, 0xc0]), 49188),
+            (Bytes::from_static(&[0x00, 0x01, 0xae, 0x59]), 22958),
+        ] {
+            let decoded: MovementRequest = wire.clone().try_into().unwrap();
+            assert_eq!(decoded, MovementRequest::ToAngle { angle });
+            let back: Bytes = decoded.into();
+            assert_eq!(back, wire);
+        }
+    }
+
     #[test]
     fn movement_request_dungeon_uses_ints() {
-        let req = MovementRequest {
+        let req = MovementRequest::ToLocation {
             region: 0x8001,
             x: 123456,
             y: -7,
