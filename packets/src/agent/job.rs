@@ -109,24 +109,29 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// word stays a full `u64` rather than being narrowed to what varied: the
 /// handler reads and shifts 64 bits whatever the frames happen to carry.
 ///
-/// **Which bit means what is `[U]`, and so is which bits are vanilla's.** The
-/// caller decides the mask, and `0081eda0` has **no caller in this binary** at
-/// all: zero direct `E8` calls, the address appears nowhere as a 4-byte
+/// **Which bit means what is `[U]`; that all five are vanilla's is `[V]`.**
+/// The caller decides the mask, and `0081eda0` has **no caller in this binary**
+/// at all: zero direct `E8` calls, the address appears nowhere as a 4-byte
 /// constant (so no vtable), and the one `E9` candidate lands mid-instruction —
 /// measured against a positive control of 345 and 816 callers for two
-/// neighbours in the same body. That route is closed, not merely incomplete.
+/// neighbours in the same body. That route is closed, not merely incomplete,
+/// which leaves the server handler (`00516870`, answering `0xB0EA`) as the way
+/// to the names.
 ///
-/// The provenance split is **contested and left open here on purpose**. The
-/// dump census reads four bits as the original client's (8, 9, 16, 21) and bit
-/// 24 as ours alone, which rests on `cap-src/packet_dump/proxy-local` being
-/// our peer. `capture-orig/STATE.md:2-4` documents that directory as the
-/// recording of the *original* client's own chain
-/// (`sro_client (Win) -> relay -> sro_proxy -> skrillax`, started with
-/// `--dump-dir packet_dump/proxy-local`), and bit 24's 33 frames live only
-/// there. One of the two readings is wrong and no content marker separates
-/// them — `0x4000` and `0x6100`, which only a real client sends, appear in all
-/// 22 c2s trees. So all five bits are listed as observed and none is claimed
-/// as vanilla's until the chain for that directory is settled.
+/// The provenance took two corrections and is worth stating once: every root
+/// holding these frames is a recording of the **original** client's own chain
+/// (`capture-orig/STATE.md:2-4`: `sro_client (Win) -> relay -> sro_proxy ->
+/// skrillax`), including `cap-src/packet_dump/proxy-local`, which carries 73 of
+/// the 118 and the only frames with bit 24. A census pass had read that
+/// directory as ours; it was a path-matching artefact. Cross-checked the other
+/// way too: none of the 22 roots contains a stub invention of ours
+/// (`"Stub Server"`, `"Sword Slash"`, `"Gilgamesh"`), with our own live session
+/// root as the positive control for that search.
+///
+/// The server in those sessions is **skrillax, not vanilla**, so only the
+/// **c2s** half proves anything about the original client. This opcode is c2s;
+/// the `0xB0EA` answer shape above is read off the client's handler rather than
+/// off captured server frames for exactly that reason.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct JobFlagRequest {
     /// One 64-bit word with exactly one bit set in every captured frame; bits
@@ -136,8 +141,7 @@ pub struct JobFlagRequest {
 }
 
 impl JobFlagRequest {
-    /// Every bit our captures contain. Which of them a *vanilla* client sends
-    /// is contested — see the type's note.
+    /// Every bit our captures contain, all of them sent by the original client.
     pub const OBSERVED_BITS: [u32; 5] = [8, 9, 16, 21, 24];
 
     /// The bit this request carries, if it is a single-bit word as every
