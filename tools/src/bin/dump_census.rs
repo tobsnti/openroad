@@ -741,8 +741,13 @@ mod test {
             original_session: false,
             writer: Writer::Client,
         };
+        // `proxy/` is a proxy session: the client is the original one, the
+        // server is `skrillax` (`capture-orig/STATE.md:2-4`). So its `s2c` half
+        // is `SessionServer` — **not** `Ours`. Reading it as ours is the bug
+        // that mislabelled 45,685 frames; this line is where it would come
+        // back.
         let cases = [
-            ("proxy/0x3013.log", (Origin::Ours, Direction::S2c)),
+            ("proxy/0x3013.log", (Origin::SessionServer, Direction::S2c)),
             ("proxy/c2s/0x7021.log", (Origin::OrigClient, Direction::C2s)),
             ("admin6/c2s/0x7021.log", (Origin::Ours, Direction::C2s)),
             ("0x3013.log", (Origin::Ours, Direction::S2c)),
