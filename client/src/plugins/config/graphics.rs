@@ -222,6 +222,18 @@ pub struct WaterSettings {
     /// Beer-Lambert branch. The *colour* absorbed toward is not configurable:
     /// it is the player's own water texture (`water_hq.wesl`).
     pub absorption: f32,
+    /// Multiplier on how fast the high tier's surface flows, `1.0` being the
+    /// speed the original's own shader author wrote down
+    /// (`WaterHqSettings::scroll_speed_a`/`_b`, sourced from
+    /// `Data/shader/oceanwater.vsh:21`).
+    ///
+    /// The two vectors themselves are deliberately *not* configurable: they
+    /// have an origin, and a config key per component would invite guessing
+    /// them again. What a player (or a comparison shot) may want is the one
+    /// thing the origin cannot decide — whether that speed reads well on this
+    /// surface — so the knob is a scale, and `0` freezes the water. High tier
+    /// only, live, like `reflection` and `shore_fade`.
+    pub flow_speed: f32,
     /// Tint and sight distance while the camera itself is below a drawn water
     /// plane (`environment::underwater`).
     ///
@@ -247,6 +259,7 @@ impl Default for WaterSettings {
             reflection: true,
             shore_fade: DEFAULT_SHORE_FADE,
             absorption: 1.0,
+            flow_speed: 1.0,
             underwater_view: true,
         }
     }

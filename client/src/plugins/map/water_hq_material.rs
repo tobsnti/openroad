@@ -87,16 +87,42 @@ pub struct WaterHqSettings {
     /// Reflection tint blended in at grazing angles; alpha is the max blend strength.
     pub sky_tint: Vec4,
     /// UV/sec scroll of the base diffuse texture (the visible water surface).
+    ///
+    /// The original does the same thing in the same unit:
+    /// `Data/shader/oceanwater.vsh:110-113` multiplies the time register by
+    /// `c17.xy`, takes `frc`, and adds it to the vertex UV. Its value is the
+    /// one in the file's **header comment** (`:21`, "basetexcoord distortion
+    /// x0, y0, x1, y1"), not a `def` — the file declares none, so the client
+    /// uploads these at runtime and this is the shader author's stated intent
+    /// rather than the shipped number.
     pub scroll_speed_a: Vec2,
     /// UV/sec scroll of the second, ripple-only sample.
+    ///
+    /// Same header comment (`:21`), second pair. **Deliberate deviation**: in
+    /// the shipped original the four lines that would apply it are commented
+    /// out (`oceanwater.vsh:116-120`) and stage 1 gets an unscrolled second UV
+    /// set instead (`mov oT1, v4`). We have no second UV set — our ripples are
+    /// a second octave of the one normal map — so the scroll stays live here.
     pub scroll_speed_b: Vec2,
     /// UV scale applied before `scroll_speed_b`, kept non-integer to avoid the second normal
     /// map octave lining up with the first and canceling itself out.
+    ///
+    /// **Ours, and it has no original counterpart** — the original separates
+    /// its two bump samples by giving stage 1 its own UV channel
+    /// (`oceanwater.vsh:121`) instead of re-scaling stage 0's. Re-scaling is
+    /// what a single normal map needs for the same effect.
     pub ripple_tiling: f32,
     /// Multiplier on the combined tangent-space slope from both normal map octaves before
     /// it's rebuilt into a world-space normal — turn down for calmer water.
     pub distortion_strength: f32,
     /// Fresnel exponent; higher values narrow the reflection tint to shallower angles.
+    ///
+    /// **Ours by necessity**: the original ships *no* fresnel. Its pixel
+    /// shader is two texture loads and `mov r0, r1`
+    /// (`Data/shader/oceanwater.psh:4-11`); the environment map, the fresnel
+    /// term and the specular highlight are inside a `/* … */` block
+    /// (`:12-40`). There is no value to adopt, so this is a modern addition
+    /// under ADR-0009, not an unsourced number.
     pub fresnel_power: f32,
     /// Water column, in world units, over which the surface fades into whatever is behind it
     /// (`graphics.water.shore_fade`; 0 switches the fade off). It is a *column* width, not a
@@ -114,8 +140,11 @@ impl Default for WaterHqSettings {
         let sky = Srgba::hex(SKY_COLOR_HEX).unwrap();
         Self {
             sky_tint: Vec4::new(sky.red, sky.green, sky.blue, 0.55),
-            scroll_speed_a: Vec2::new(0.008, 0.004),
-            scroll_speed_b: Vec2::new(-0.013, 0.02),
+            // `oceanwater.vsh:21` header comment, both pairs. Ours were
+            // (0.008, 0.004) and (-0.013, 0.02) — invented, and about four
+            // times slower than what the original's author wrote down.
+            scroll_speed_a: Vec2::new(0.031, 0.04),
+            scroll_speed_b: Vec2::new(-0.03, 0.02),
             ripple_tiling: 2.3,
             distortion_strength: 1.2,
             fresnel_power: 4.0,
@@ -189,5 +218,24 @@ mod test {
             settings.sky_tint.w, 0.55,
             "map::water_options reads this as On"
         );
+    }
+    /// The two scroll speeds are the original's own, and the test exists so a
+    /// later "that looks slow, bump it" does not quietly turn them back into
+    /// invented numbers. `Data/shader/oceanwater.vsh:21` names
+    /// `{basetexcoord distortion x0, y0, x1, y1} (0.031, 0.04, -0.03, 0.02)`,
+    /// and `:110-113` is the live code that uses the first pair as UV/sec.
+    ///
+    /// The two values with no counterpart stay ours on purpose and are pinned
+    /// separately, so a change to either reads as a decision rather than a
+    /// drift.
+    #[test]
+    fn the_scroll_speeds_are_the_originals_and_the_rest_is_ours_on_purpose() {
+        let settings = WaterHqSettings::default();
+        assert_eq!(settings.scroll_speed_a, Vec2::new(0.031, 0.04));
+        assert_eq!(settings.scroll_speed_b, Vec2::new(-0.03, 0.02));
+
+        // no counterpart in the original shader — see the field docs
+        assert_eq!(settings.ripple_tiling, 2.3);
+        assert_eq!(settings.fresnel_power, 4.0);
     }
 }

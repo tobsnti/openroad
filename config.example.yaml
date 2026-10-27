@@ -407,6 +407,12 @@ graphics:
     # reflection: true
     # shore_fade: 24.0
     # absorption: 1.0
+    # How fast the surface flows, as a multiple of the speed the original's own
+    # shader was written for (its header names the UV/sec scroll it uploads).
+    # 1.0 is that speed, 0 freezes the water. The vectors themselves are not
+    # keys: they have an origin, and splitting them into four numbers here
+    # would invite guessing them again.
+    # flow_speed: 1.0
     # Tint and sight distance while the camera itself is below a water plane.
     # The camera has no collision, so at a shore it does go under, and without
     # this the view is a flat grey-green sheet with a hard edge. Nothing here is

@@ -104,6 +104,41 @@ pub fn apply_water_depth_options(
     }
 }
 
+/// Follows `graphics.water.flow_speed` into the high-quality water material.
+///
+/// The scroll vectors are the original's (`WaterHqSettings::scroll_speed_a`,
+/// `_b`); this scales both by one factor, so the two octaves keep their
+/// relative speed and direction whatever the player sets. Scaling the
+/// *default* rather than the material's current value is what keeps repeated
+/// applications from compounding — the material is the output here, never the
+/// input.
+///
+/// High tier only, like its two neighbours: the low tier's material is a
+/// different asset, and it reads its speed from the same default, so the two
+/// tiers still agree at `1.0`.
+pub fn apply_water_flow_option(
+    config: Res<ClientConfig>,
+    handle: Option<Res<WaterNormalMaterial>>,
+    mut materials: ResMut<Assets<HighQualityWaterMaterial>>,
+) {
+    let Some(handle) = handle else {
+        return;
+    };
+    let Some(mut material) = materials.get_mut(&handle.0) else {
+        return;
+    };
+    let base = WaterHqSettings::default();
+    let flow = config.graphics.water.flow_speed.max(0.0);
+    let (a, b) = (base.scroll_speed_a * flow, base.scroll_speed_b * flow);
+    // Guarded writes: a material change re-prepares the whole bind group.
+    if material.extension.settings.scroll_speed_a != a {
+        material.extension.settings.scroll_speed_a = a;
+    }
+    if material.extension.settings.scroll_speed_b != b {
+        material.extension.settings.scroll_speed_b = b;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +267,66 @@ mod tests {
             attenuation.is_infinite(),
             "a finite distance keeps bevy's attenuation branch alive"
         );
+    }
+
+    /// The flow knob as a behaviour test: the multiplier must reach both
+    /// scroll vectors, `1.0` must leave the sourced values untouched, `0`
+    /// must freeze the surface, and — the part worth a test — repeating the
+    /// application must not compound, which is why the system scales the
+    /// default rather than what it last wrote.
+    #[test]
+    fn the_flow_knob_scales_both_octaves_without_compounding() {
+        let mut app = App::new();
+        app.insert_resource(test_config())
+            .init_resource::<Assets<HighQualityWaterMaterial>>()
+            .add_systems(Update, apply_water_flow_option);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<HighQualityWaterMaterial>>()
+            .add(HighQualityWaterMaterial {
+                base: StandardMaterial::default(),
+                extension: WaterExtension {
+                    settings: WaterHqSettings::default(),
+                    normal_map: Handle::default(),
+                },
+            });
+        app.insert_resource(WaterNormalMaterial(handle.clone()));
+
+        let read = |app: &App| {
+            let materials = app.world().resource::<Assets<HighQualityWaterMaterial>>();
+            let settings = materials
+                .get(&handle)
+                .expect("the material is there")
+                .extension
+                .settings;
+            (settings.scroll_speed_a, settings.scroll_speed_b)
+        };
+        let base = WaterHqSettings::default();
+
+        // the shipped value is the sourced speed, unscaled
+        app.update();
+        assert_eq!(read(&app), (base.scroll_speed_a, base.scroll_speed_b));
+
+        app.world_mut()
+            .resource_mut::<ClientConfig>()
+            .graphics
+            .water
+            .flow_speed = 0.5;
+        app.update();
+        app.update();
+        assert_eq!(
+            read(&app),
+            (base.scroll_speed_a * 0.5, base.scroll_speed_b * 0.5),
+            "two passes must give the same answer as one"
+        );
+
+        app.world_mut()
+            .resource_mut::<ClientConfig>()
+            .graphics
+            .water
+            .flow_speed = 0.0;
+        app.update();
+        assert_eq!(read(&app), (Vec2::ZERO, Vec2::ZERO));
     }
 
     /// The low water tier control, for the depth keys too: no high-quality
