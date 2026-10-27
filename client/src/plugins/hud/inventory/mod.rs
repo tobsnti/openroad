@@ -3,6 +3,7 @@
 //! drag-and-drop moves confirmed by the server (0x7034/0xB034). Layout
 //! hand-transcribed from resinfo/ifinventory.txt and resinfo/ifequipment.txt.
 
+pub mod avatar;
 pub mod drop_item;
 pub mod model;
 pub mod paperdoll;

@@ -197,7 +197,7 @@ const PAPER_DOLL_RECT: (f32, f32, f32, f32) = (38.0, 16.0, 102.0, 300.0);
 const ROTATE_LEFT_RECT: (f32, f32, f32, f32) = (54.0, 327.0, 28.0, 16.0);
 const ROTATE_RESET_RECT: (f32, f32, f32, f32) = (81.0, 327.0, 16.0, 16.0);
 const ROTATE_RIGHT_RECT: (f32, f32, f32, f32) = (96.0, 327.0, 28.0, 16.0);
-/// GDR_AVATAR_SLOT_01..05 rects (display-only avatar inventory view); the
+/// GDR_AVATAR_SLOT_01..05 rects (the avatar inventory view); the
 /// index is the avatar wire slot. resinfo assigns no art (vanilla does it in
 /// code), so the placeholder stems are picked from the otherwise-unused
 /// equip_slot_* textures: hat/dress/attach/flag/special dress. If an avatar
@@ -283,7 +283,7 @@ pub struct EquipSlotCell {
     pub slot: u8,
 }
 
-/// One display-only avatar slot cell; `slot` indexes the avatar inventory.
+/// One avatar slot cell; `slot` indexes the avatar inventory (not the bag).
 #[derive(Component)]
 pub struct AvatarSlotCell {
     pub slot: u8,
@@ -834,8 +834,10 @@ fn spawn_equipment_panel(
                 });
         }
 
-        // avatar view: 5 display-only slots (hidden until toggled). No count
-        // label: avatar items are cosmetics and never stack.
+        // avatar view: the five costume slots (hidden until toggled). No count
+        // label: avatar items are cosmetics and never stack. The press observer
+        // is `avatar::on_avatar_press` — these cells are a second container
+        // with its own two ops (35/36), not five more equipment slots.
         for (slot, x, y, stem) in AVATAR_SLOTS {
             panel
                 .spawn((
@@ -851,7 +853,10 @@ fn spawn_equipment_panel(
                 .with_children(|cell| {
                     spawn_slot_icon(cell, (EQ_SLOT_SIZE - ICON_SIZE) / 2.0, ICON_SIZE);
                     spawn_slot_icon_effect(cell, (EQ_SLOT_SIZE - ICON_SIZE) / 2.0, ICON_SIZE);
-                });
+                })
+                .observe(tooltip::on_slot_over)
+                .observe(tooltip::on_slot_out)
+                .observe(super::avatar::on_avatar_press);
         }
 
         // equip/avatar view toggle (vanilla shows the *other* view's art)
