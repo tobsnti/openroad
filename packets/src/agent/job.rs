@@ -98,12 +98,12 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// for a meaning that is not there.
 ///
 /// ```text
-///                           total   from the original client
-/// 00 02 00 00 00 00 00 00    41x    40    2^9
-/// 00 00 00 01 00 00 00 00    33x    33    2^24
-/// 00 01 00 00 00 00 00 00    28x    22    2^8
-/// 00 00 20 00 00 00 00 00    11x    11    2^21
-/// 00 00 01 00 00 00 00 00     5x     4    2^16
+///                           frames  independent  original client
+/// 00 02 00 00 00 00 00 00    41x        41            40    2^9
+/// 00 00 00 01 00 00 00 00    33x        33            33    2^24
+/// 00 01 00 00 00 00 00 00    28x        22            22    2^8
+/// 00 00 20 00 00 00 00 00    11x        11            11    2^21
+/// 00 00 01 00 00 00 00 00     5x         3             2    2^16
 /// ```
 ///
 /// Byte 0 is zero in all 118, so no bit below 8 has ever been observed. The
@@ -127,21 +127,25 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// carries 73 of the 118 frames and every frame with bit 24. A census pass had
 /// read it as ours through a path-matching artefact.
 ///
-/// Bit 16 is the one to read carefully, and it took three readings to settle.
-/// Its five frames sit in two proxy directories and one replay set rather than
-/// in a session root named in the census header — which is why a grep over
-/// those `# root` lines reported zero for it. The header names **roots**;
-/// `discover_roots` stops at the topmost directory holding dumps while the
-/// counting itself recurses, so both directories were fully counted and merely
-/// unnamed. Four of the five are the original client's.
+/// Bit 16 is the thin one, and saying so takes a different count than frames.
+/// Its five frames live in two proxy directories and one replay set, and the
+/// two proxy directories hold **the same two frames** — identical timestamps
+/// (`2026-08-21T16:20:54.586Z`, `2026-08-21T20:09:46.361Z`), so one is a copy
+/// of the other. Bit 16 therefore rests on **two independent observations**,
+/// not four, which is the honest number and is thinner than any other bit here.
 ///
-/// The remaining caveat, measured rather than assumed: one of those sets is
-/// `or-loginfilm-dreh/fixtures`, and that harness replays recorded bytes rather
-/// than recording live ones (`lauf.py`: "The peer only replays bytes we
-/// recorded"). Replayed original bytes are still original bytes, but the chain
-/// is a copy of a recording instead of a session documented in
-/// `capture-orig/STATE.md` — so bit 16 rests on a longer chain than the other
-/// four, even though it rests on the original client just the same.
+/// The same test applied to all five is why the table above has an
+/// "independent" column: bit 8 loses 6 of its 28 frames to duplication and bit
+/// 16 loses 2 of 5, while bits 9, 21 and 24 are duplicate-free. Over the whole
+/// opcode that is 110 independent observations out of 118 frames — counting
+/// frames would overstate exactly the bit whose evidence is weakest.
+///
+/// Two reductions apply and they are not the same one. A **duplicate** is the
+/// same frame in two directories (`(timestamp, body)` identical); a **replay**
+/// frame is one our own peer re-sent from a recording, and it has no partner to
+/// match against. Bit 9 keeps all 41 observations but one is a replay, so 40
+/// are the original client's; bit 16 loses two to duplication and one to a
+/// replay, leaving 2. The last column of the table is what survives both.
 ///
 /// Cross-checked the other way as well: a root containing a stub invention of
 /// ours (`"Stub Server"`, `"Sword Slash"`, `"Gilgamesh"`) is demonstrably ours,
@@ -164,8 +168,11 @@ pub struct JobFlagRequest {
 }
 
 impl JobFlagRequest {
-    /// Every bit our captures contain, all five of them with original-client
-    /// frames behind them — 22, 40, 4, 11 and 33 respectively.
+    /// Every bit our captures contain, all five with original-client frames
+    /// behind them. Counted as **independent original-client** observations
+    /// rather than frames — 22, 40, 2, 11 and 33 — because two different
+    /// reductions apply and both matter: duplicates across directories, and
+    /// frames a replay produced. See the type's note; bit 16 is the thin one.
     pub const OBSERVED_BITS: [u32; 5] = [8, 9, 16, 21, 24];
 
     /// The bit this request carries, if it is a single-bit word as every
