@@ -19,10 +19,16 @@
 //!
 //! Sub 0's record is what makes this wireable without a wartime capture: the
 //! arithmetic closes exactly on the captured body,
-//! `1 sub + 1 count + 3 x 28 record + 1 + 4 = 91`. Five fields inside the record
-//! have a verified width but no naming site in the binary, so they are carried
-//! as `unk_*` rather than named — that is the honest half of this decode, and a
-//! wartime capture is what resolves them.
+//! `1 sub + 1 count + 3 x 28 record + 1 + 4 = 91`.
+//!
+//! That arithmetic is a weaker witness than it looks, and this module learnt it
+//! the hard way: it is blind to **labels**. The record's first string was
+//! called the fortress name for as long as nobody held a fortress, because a
+//! peacetime capture is all-empty strings and the widths are identical whatever
+//! the fields mean. The name is now read as the holding guild's, with the
+//! reasons on [`FortressStatus`]. The read order itself is pinned to the
+//! original's own sequence by
+//! `tests::the_record_follows_the_original_read_order`.
 //!
 //! Layouts, VAs and the per-field evidence: `docs/net-siege-0x385F.md`.
 
@@ -44,22 +50,42 @@ pub const SIEGE_SCORE: u8 = 0x11;
 /// One fortress in the sub-0 list. Minimum 28 bytes: `4 + 2 + 4 + 2 + 2 + 4 + 4
 /// + 4 + 1 + 1`, with all three strings empty and both flags clear — which is
 /// exactly the record the peacetime capture carries three times.
+///
+/// **The record carries no fortress name.** This struct called its first string
+/// `name` and the arithmetic never noticed, because both readings have the same
+/// width sequence (`4, 2, 4, 2, 2, 4, 4, 4`) — a wrong label costs nothing until
+/// a guild actually holds a fortress. Two measurements of our own say the label
+/// was wrong: the client loads `%stextdata\siegefortress.txt` and the user's
+/// copy maps exactly the captured ids 1, 3 and 6 to the name keys
+/// `SN_FORTRESS_JANGAN`, `_HOTAN` and `_BIJEOKDAN`, so the name is already on
+/// disk; and in all 117 captured frames — 351 records — **all three** strings
+/// are empty, which a fortress name could not be while a peacetime owner-side
+/// string is exactly that.
+///
+/// The three strings are therefore owner-side. Their individual labels are [S],
+/// from two filled frames of two unrelated private servers (guild, master,
+/// notice); our own capture cannot separate them, because peacetime sends
+/// nothing in any of the three.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FortressStatus {
     /// Capture: 1, 3 and 6 — the same three ids the user's own
-    /// `textdata/siegefortress.txt` lists (Jangan, Hotan, Bijeokdan).
+    /// `textdata/siegefortress.txt` lists (Jangan, Hotan, Bijeokdan). The
+    /// fortress *name* comes from that file, not from this record.
     pub fortress_id: u32,
-    pub name: String,
-    /// [U] — verified `u32` width, no formatting site names it.
-    pub unk_u32_00: u32,
-    /// Rendered next to the fortress name by the original, hence the name; [S].
+    /// [S] — the holding guild. Empty in every captured (peacetime) record.
     pub owning_guild: String,
-    /// [S], same rendering site.
+    /// [S] — read as the guild's number by the filled frames; [U] for us.
+    pub guild_number: u32,
+    /// [S] — the guild master. Empty in every captured record.
     pub owning_guild_master: String,
+    /// [S] — a holder-authored notice. Empty in every captured record, and the
+    /// field this struct had no slot for at all before.
+    pub notice: String,
     /// [U] — verified width only.
     pub unk_u32_01: u32,
-    /// [U] — verified width only.
-    pub unk_u32_02: u32,
+    /// [S] — read as `100 - tax percent` by the filled frames (80 at 20 %);
+    /// [U] for us, since every captured record has it at 0.
+    pub item_price_percent: u32,
     /// [U] — verified width only.
     pub unk_u32_03: u32,
     /// Gates [`Self::flag_a_value`]: the original reads the extra `u32` only
@@ -168,12 +194,12 @@ impl TryFrom<Bytes> for SiegeUpdate {
                     let mut fortresses = Vec::with_capacity(count as usize);
                     for _ in 0..count {
                         let fortress_id = c.u32().ok()?;
-                        let name = c.string().ok()?;
-                        let unk_u32_00 = c.u32().ok()?;
                         let owning_guild = c.string().ok()?;
+                        let guild_number = c.u32().ok()?;
                         let owning_guild_master = c.string().ok()?;
+                        let notice = c.string().ok()?;
                         let unk_u32_01 = c.u32().ok()?;
-                        let unk_u32_02 = c.u32().ok()?;
+                        let item_price_percent = c.u32().ok()?;
                         let unk_u32_03 = c.u32().ok()?;
                         let flag_a = c.u8().ok()?;
                         let flag_a_value = (flag_a == 1).then(|| c.u32().ok()).flatten();
@@ -181,12 +207,12 @@ impl TryFrom<Bytes> for SiegeUpdate {
                         let flag_b_value = (flag_b == 1).then(|| c.u32().ok()).flatten();
                         fortresses.push(FortressStatus {
                             fortress_id,
-                            name,
-                            unk_u32_00,
                             owning_guild,
+                            guild_number,
                             owning_guild_master,
+                            notice,
                             unk_u32_01,
-                            unk_u32_02,
+                            item_price_percent,
                             unk_u32_03,
                             flag_a,
                             flag_a_value,
@@ -260,12 +286,12 @@ impl From<SiegeUpdate> for Bytes {
                 buf.put_u8(fortresses.len() as u8);
                 for f in fortresses {
                     buf.put_u32_le(f.fortress_id);
-                    put_string(&mut buf, &f.name);
-                    buf.put_u32_le(f.unk_u32_00);
                     put_string(&mut buf, &f.owning_guild);
+                    buf.put_u32_le(f.guild_number);
                     put_string(&mut buf, &f.owning_guild_master);
+                    put_string(&mut buf, &f.notice);
                     buf.put_u32_le(f.unk_u32_01);
-                    buf.put_u32_le(f.unk_u32_02);
+                    buf.put_u32_le(f.item_price_percent);
                     buf.put_u32_le(f.unk_u32_03);
                     buf.put_u8(f.flag_a);
                     if let Some(v) = f.flag_a_value {
@@ -343,8 +369,12 @@ mod tests {
             fortresses.iter().map(|f| f.fortress_id).collect::<Vec<_>>(),
             vec![1, 3, 6]
         );
-        assert!(fortresses.iter().all(|f| f.name.is_empty()
-            && f.owning_guild.is_empty()
+        // All three strings empty in all three records — repeated across the
+        // whole capture, which is what rules the first one out as the fortress
+        // name: the names exist, and they are in `siegefortress.txt`.
+        assert!(fortresses.iter().all(|f| f.owning_guild.is_empty()
+            && f.owning_guild_master.is_empty()
+            && f.notice.is_empty()
             && f.flag_a == 0
             && f.flag_a_value.is_none()));
         assert_eq!((*period, *unk_u32_00), (2, 0));
@@ -386,9 +416,10 @@ mod tests {
     fn a_named_fortress_with_both_optional_fields_round_trips() {
         let fortress = FortressStatus {
             fortress_id: 6,
-            name: "Hotan".into(),
             owning_guild: "Wanderers".into(),
+            guild_number: 12,
             owning_guild_master: "Kong".into(),
+            notice: "recruiting".into(),
             flag_a: 1,
             flag_a_value: Some(0xDEAD),
             flag_b: 1,
@@ -503,5 +534,101 @@ mod tests {
             );
             assert_eq!(Bytes::from(parsed), short);
         }
+    }
+
+    /// The record order, nailed to the original's own read sequence so a later
+    /// relabel cannot quietly move a field. `FUN_00895BB0`'s sub-0 arm calls
+    /// the byte reader (`0x004F7220`, with the count pushed) and the
+    /// length-prefixed string reader (`0x004F7A70`) in exactly this order:
+    ///
+    /// ```text
+    /// 00895cb5  PUSH 4 .. CALL 0x4F7220     fortress_id
+    /// 00895cd3  LEA/PUSH .. CALL 0x4F7A70   string 1
+    /// 00895ce2  PUSH 4 .. CALL 0x4F7220     u32
+    /// 00895cf3  LEA/PUSH .. CALL 0x4F7A70   string 2
+    /// 00895d02  LEA/PUSH .. CALL 0x4F7A70   string 3
+    /// 00895d11  PUSH 4 .. CALL 0x4F7220     u32
+    /// 00895d22  PUSH 4 .. CALL 0x4F7220     u32
+    /// 00895d33  PUSH 4 .. CALL 0x4F7220     u32
+    /// 00895d44  PUSH 1 .. CALL 0x4F7220     flag_a
+    /// 00895d7b  CMP BYTE [ESP+0x14], 1 / JNE 0x895d90
+    /// 00895d82  PUSH 4 .. CALL 0x4F7220     flag_a's u32, only when flag == 1
+    /// 00895d90  PUSH 1 .. CALL 0x4F7220     flag_b
+    /// 00895d9e  CMP BYTE [ESP+0x14], 1 / JNE 0x895db3
+    /// 00895da5  PUSH 4 .. CALL 0x4F7220     flag_b's u32, same gate
+    /// ```
+    ///
+    /// Two things follow that the arithmetic alone never showed. The flag gate
+    /// is a comparison against **1**, not "non-zero" — and there is no version
+    /// check anywhere in the loop, so the 2-vs-10 byte tail is this flag pair
+    /// and nothing else.
+    #[test]
+    fn the_record_follows_the_original_read_order() {
+        let fortress = FortressStatus {
+            fortress_id: 3,
+            owning_guild: "G".into(),
+            guild_number: 0x11111111,
+            owning_guild_master: "M".into(),
+            notice: "N".into(),
+            unk_u32_01: 0x22222222,
+            item_price_percent: 80,
+            unk_u32_03: 0x33333333,
+            flag_a: 0,
+            flag_a_value: None,
+            flag_b: 0,
+            flag_b_value: None,
+        };
+        let wire: Bytes = SiegeUpdate::FortressList {
+            fortresses: vec![fortress],
+            period: 0,
+            unk_u32_00: 0,
+        }
+        .into();
+
+        #[rustfmt::skip]
+        let expected: &[u8] = &[
+            0x00, 0x01,                             // sub, count
+            0x03, 0, 0, 0,                          // fortress_id
+            0x01, 0x00, b'G',                       // string 1
+            0x11, 0x11, 0x11, 0x11,                 // u32
+            0x01, 0x00, b'M',                       // string 2
+            0x01, 0x00, b'N',                       // string 3
+            0x22, 0x22, 0x22, 0x22,                 // u32
+            0x50, 0x00, 0x00, 0x00,                 // u32 (80)
+            0x33, 0x33, 0x33, 0x33,                 // u32
+            0x00, 0x00,                             // both flags clear
+            0x00, 0, 0, 0, 0,                       // period, tail u32
+        ];
+        assert_eq!(wire.as_ref(), expected);
+    }
+
+    /// The flag pair is the whole of the record's variable tail: clear is two
+    /// bytes, set is ten (`u8 u32 u8 u32`). Nothing else in the record moves.
+    #[test]
+    fn the_flag_pair_is_two_bytes_clear_and_ten_bytes_set() {
+        let base = FortressStatus {
+            fortress_id: 1,
+            ..Default::default()
+        };
+        let clear: Bytes = SiegeUpdate::FortressList {
+            fortresses: vec![base.clone()],
+            period: 0,
+            unk_u32_00: 0,
+        }
+        .into();
+        let set: Bytes = SiegeUpdate::FortressList {
+            fortresses: vec![FortressStatus {
+                flag_a: 1,
+                flag_a_value: Some(0),
+                flag_b: 1,
+                flag_b_value: Some(0),
+                ..base
+            }],
+            period: 0,
+            unk_u32_00: 0,
+        }
+        .into();
+        assert_eq!(clear.len(), 2 + 28 + 5, "sub, count, record, period, u32");
+        assert_eq!(set.len() - clear.len(), 8);
     }
 }
