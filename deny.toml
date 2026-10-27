@@ -64,6 +64,38 @@ allow-wildcard-paths = true
 
 [advisories]
 yanked = "deny"
+# Unmaintained crates are judged by whether WE chose them. Measured 2026-10-27:
+# 13 unmaintained advisories fire on this tree (ansi_term, atty, encoding,
+# instant, paste, proc-macro-error, rustybuzz, ttf-parser x3, unsafe-libyaml,
+# zbus_names, zvariant, zvariant_derive) and every single one says "No safe
+# upgrade is available!" — they sit under bevy, iced and serde_yaml, not in any
+# Cargo.toml of ours. Denying all of them would mean 13 dated ignore lines that
+# rot, for a tree we cannot change. "workspace" still fails the gate the moment
+# an unmaintained crate becomes a direct dependency, which is the decision this
+# file exists to police. Vulnerabilities stay denied at every depth.
+unmaintained = "workspace"
+ignore = [
+    # ruzstd 0.8.3, decompression bomb (DoS only, no corruption). It arrives
+    # through bevy_image 0.20, which pins `^0.8`, so 0.9.1 is unreachable
+    # without a bevy bump. Exposure here is the KTX2/zstd texture path on
+    # assets the user supplies themselves, not on anything from the network.
+    # REMOVE when bevy_image moves to ruzstd 0.9.
+    "RUSTSEC-2026-0344",
+    # encoding 0.2.33, last released 2016. This one IS ours: bevy_pk2 and the
+    # client depend on it directly for CP949 (WINDOWS_949) and UTF-16 text.
+    # encoding_rs is the replacement and the swap is four files
+    # (bevy_pk2/src/pk2/entry.rs, client/src/assets/textdata/decode.rs,
+    # client/src/util/buf_ext.rs) — a slice of its own, because DecoderTrap has
+    # no one-to-one counterpart. REMOVE with that swap.
+    "RUSTSEC-2021-0153",
+    # proc-macro-error 1.0.4, a direct dependency of sro_macro_derive for
+    # `abort!`. Measured 2026-10-27: the obvious escape, proc-macro-error2, is
+    # itself unmaintained (RUSTSEC-2026-0173) — swapping would be churn, not a
+    # fix. The real move is syn::Error, which changes the signatures of the
+    # three derive builders that currently diverge via `abort!`. REMOVE with
+    # that rewrite.
+    "RUSTSEC-2024-0370",
+]
 
 [sources]
 unknown-registry = "deny"
