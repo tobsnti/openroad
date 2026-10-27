@@ -11,7 +11,7 @@
 //! raw — never a decode failure.
 
 use bevy::prelude::Message;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::agent::character_data::{InventoryItem, ItemClassResolver};
 
@@ -1339,26 +1339,187 @@ pub struct InventoryItemDurabilityUpdate {
     pub durability: u32,
 }
 
-/// 0x3040 — server → client: a delta on one inventory slot, discriminated by
-/// `update_type`. It does **not** re-embed the item block; only the named
-/// field changes.
+/// Largest magic-param list the original accepts, from its own assert:
+/// `m_btMagicParamNum <= MAX_MAGPARAM_PER_ITEM` (`SOItem.cpp:378`, reached
+/// through the `0x20` sub-parser `FUN_008bcdf0`).
+pub const MAX_MAGPARAM_PER_ITEM: usize = 12;
+
+/// 0x3040 — server → client: a delta on one inventory slot. It does **not**
+/// re-embed the item block; only the named fields change.
 ///
-/// xBot's parser decodes two variants — 8 (stack quantity, `0` meaning the
-/// stack was consumed) and 0x40 (COS container state, `SRCoS.State`: 1 never
-/// summoned, 2 summoned, 3 unsummoned, 4 dead) — and falls through its switch
-/// for anything else. Modelled as optional fields rather than an enum so an
-/// unrecognised `update_type` decodes to "no field" instead of failing the
-/// whole packet, matching that fall-through; trailing bytes are ignored.
+/// **The second byte is a bitmask, not a discriminator.** The original client
+/// tests it with eight independent `if ((mask & bit) != 0)` blocks and reads
+/// one block per set bit in a fixed order (handler `FUN_0088bf30`, module
+/// `SOItem.cpp`; see `docs/net-inventory-events-0x3040.md` in the local RE
+/// store). xBot reads it as a `switch` and gets away with it only because the
+/// two cases it handles happen to be single-bit — and this type followed xBot:
+/// a combined push such as `0x18` (durability + quantity) decoded to "unknown
+/// type, no fields" and dropped both. Six of the eight bits were unmodelled,
+/// **durability among them**, so `0x3040` could carry exactly what `0x3052`
+/// carries and we ignored it.
 ///
-/// Layout is xBot-sourced only — there is no `packet_dump/0x3040.log`.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+/// Block order and widths, with the tag each one carries:
+///
+/// | bit | field | width | tag |
+/// |---|---|---|---|
+/// | `0x01` | `unknown01` (`item+0x34`) | u32 | semantics [U] |
+/// | `0x02` | `plus` | u8 | [S] |
+/// | `0x04` | `variance` | u64 | [S] |
+/// | `0x08` | `quantity` | u16 | [V] |
+/// | `0x10` | `durability` | u32 | [V] |
+/// | `0x20` | `magic_options` | u8 count + count × u64 | [V] |
+/// | `0x40` | `cos_state` | u8 | [V] |
+/// | `0x80` | `duration_seconds` | u32 | [V] |
+///
+/// The magic-param records stay `u64`: the original splits each into a lookup
+/// key in the low `u16` and a value, but what the halves *mean* is [U], and a
+/// named struct would be an invention.
+///
+/// A body that stops early is a decode error rather than a silent zero — the
+/// mask says what must follow. Trailing bytes beyond the masked blocks are
+/// ignored, as the original's handler also stops after its eight tests.
+#[derive(Message, Clone, Debug, PartialEq, Default)]
 pub struct InventoryItemUpdate {
     pub slot: u8,
-    pub update_type: u8,
-    #[sro_packet(when = "update_type == 8")]
+    /// The raw mask, kept so a consumer can log a bit we do not read.
+    pub mask: u8,
+    pub unknown01: Option<u32>,
+    pub plus: Option<u8>,
+    pub variance: Option<u64>,
     pub quantity: Option<u16>,
-    #[sro_packet(when = "update_type == 0x40")]
+    pub durability: Option<u32>,
+    pub magic_options: Option<Vec<u64>>,
     pub cos_state: Option<u8>,
+    pub duration_seconds: Option<u32>,
+}
+
+impl InventoryItemUpdate {
+    pub const UNKNOWN01: u8 = 0x01;
+    pub const PLUS: u8 = 0x02;
+    pub const VARIANCE: u8 = 0x04;
+    pub const QUANTITY: u8 = 0x08;
+    pub const DURABILITY: u8 = 0x10;
+    pub const MAGIC_OPTIONS: u8 = 0x20;
+    pub const COS_STATE: u8 = 0x40;
+    pub const DURATION: u8 = 0x80;
+}
+
+impl TryFrom<Bytes> for InventoryItemUpdate {
+    type Error = SerializationError;
+
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        let mut buf = value;
+        let need = |buf: &Bytes, bytes: usize| -> Result<(), SerializationError> {
+            if buf.len() < bytes {
+                return Err(SerializationError::from(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "0x3040: body ends inside a block its mask announced",
+                )));
+            }
+            Ok(())
+        };
+        need(&buf, 2)?;
+        let slot = buf.get_u8();
+        let mask = buf.get_u8();
+        let mut out = InventoryItemUpdate {
+            slot,
+            mask,
+            ..Default::default()
+        };
+        if mask & Self::UNKNOWN01 != 0 {
+            need(&buf, 4)?;
+            out.unknown01 = Some(buf.get_u32_le());
+        }
+        if mask & Self::PLUS != 0 {
+            need(&buf, 1)?;
+            out.plus = Some(buf.get_u8());
+        }
+        if mask & Self::VARIANCE != 0 {
+            need(&buf, 8)?;
+            out.variance = Some(buf.get_u64_le());
+        }
+        if mask & Self::QUANTITY != 0 {
+            need(&buf, 2)?;
+            out.quantity = Some(buf.get_u16_le());
+        }
+        if mask & Self::DURABILITY != 0 {
+            need(&buf, 4)?;
+            out.durability = Some(buf.get_u32_le());
+        }
+        if mask & Self::MAGIC_OPTIONS != 0 {
+            need(&buf, 1)?;
+            let count = buf.get_u8() as usize;
+            if count > MAX_MAGPARAM_PER_ITEM {
+                return Err(SerializationError::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "0x3040: magic-param count above MAX_MAGPARAM_PER_ITEM",
+                )));
+            }
+            need(&buf, count * 8)?;
+            out.magic_options = Some((0..count).map(|_| buf.get_u64_le()).collect());
+        }
+        if mask & Self::COS_STATE != 0 {
+            need(&buf, 1)?;
+            out.cos_state = Some(buf.get_u8());
+        }
+        if mask & Self::DURATION != 0 {
+            need(&buf, 4)?;
+            out.duration_seconds = Some(buf.get_u32_le());
+        }
+        Ok(out)
+    }
+}
+
+impl From<InventoryItemUpdate> for Bytes {
+    fn from(p: InventoryItemUpdate) -> Self {
+        let mut buf = BytesMut::new();
+        buf.put_u8(p.slot);
+        buf.put_u8(p.mask);
+        if let Some(value) = p.unknown01 {
+            buf.put_u32_le(value);
+        }
+        if let Some(value) = p.plus {
+            buf.put_u8(value);
+        }
+        if let Some(value) = p.variance {
+            buf.put_u64_le(value);
+        }
+        if let Some(value) = p.quantity {
+            buf.put_u16_le(value);
+        }
+        if let Some(value) = p.durability {
+            buf.put_u32_le(value);
+        }
+        if let Some(options) = &p.magic_options {
+            buf.put_u8(options.len() as u8);
+            for option in options {
+                buf.put_u64_le(*option);
+            }
+        }
+        if let Some(value) = p.cos_state {
+            buf.put_u8(value);
+        }
+        if let Some(value) = p.duration_seconds {
+            buf.put_u32_le(value);
+        }
+        buf.freeze()
+    }
+}
+
+impl ByteSize for InventoryItemUpdate {
+    fn byte_size(&self) -> usize {
+        2 + self.unknown01.map_or(0, |_| 4)
+            + self.plus.map_or(0, |_| 1)
+            + self.variance.map_or(0, |_| 8)
+            + self.quantity.map_or(0, |_| 2)
+            + self.durability.map_or(0, |_| 4)
+            + self
+                .magic_options
+                .as_ref()
+                .map_or(0, |options| 1 + options.len() * 8)
+            + self.cos_state.map_or(0, |_| 1)
+            + self.duration_seconds.map_or(0, |_| 4)
+    }
 }
 
 /// 0x3092 — server → client: the result of a bag-expansion purchase. The new
@@ -2182,31 +2343,84 @@ mod tests {
         }
     }
 
-    /// 0x3040 is discriminated by `update_type`, and an unrecognised one must
-    /// decode to "no field" rather than fail the packet — the original's
-    /// switch has no `default` arm and simply reads nothing.
+    /// The second byte is a mask, so the single-bit forms must still decode and
+    /// re-encode byte-exactly — including the one real capture of this opcode
+    /// in the workspace, a 3-byte COS push.
     #[test]
-    fn inventory_item_update_tolerates_an_unknown_update_type() {
-        // type 8: quantity u16
+    fn single_bit_masks_round_trip() {
+        // quantity u16 (0x08)
         let bytes = Bytes::from_static(&[0x0D, 0x08, 0x09, 0x00]);
         let decoded = InventoryItemUpdate::try_from(bytes.clone()).unwrap();
         assert_eq!(decoded.slot, 13);
         assert_eq!((decoded.quantity, decoded.cos_state), (Some(9), None));
-        let back: Bytes = decoded.into();
-        assert_eq!(back, bytes);
+        assert_eq!(Bytes::from(decoded), bytes);
 
-        // type 0x40: COS state u8 (2 = summoned)
-        let bytes = Bytes::from_static(&[0x0E, 0x40, 0x02]);
+        // COS state u8 (0x40), 4 = dead — the body of `packet_dump/0x3040.log`
+        let bytes = Bytes::from_static(&[0x17, 0x40, 0x04]);
         let decoded = InventoryItemUpdate::try_from(bytes.clone()).unwrap();
-        assert_eq!((decoded.quantity, decoded.cos_state), (None, Some(2)));
-        let back: Bytes = decoded.into();
-        assert_eq!(back, bytes);
+        assert_eq!((decoded.slot, decoded.cos_state), (0x17, Some(4)));
+        assert_eq!(Bytes::from(decoded), bytes);
+    }
 
-        // unknown type: no fields, no error, trailing bytes ignored
-        let decoded =
-            InventoryItemUpdate::try_from(Bytes::from_static(&[0x0F, 0x77, 0xAB, 0xCD])).unwrap();
-        assert_eq!(decoded.update_type, 0x77);
-        assert_eq!((decoded.quantity, decoded.cos_state), (None, None));
+    /// The reason this type was rewritten: a combined mask used to decode to
+    /// "unknown type, no fields" and drop everything it carried. `0x18` is
+    /// durability **and** quantity, in the original's block order.
+    #[test]
+    fn a_combined_mask_yields_every_block_it_announces() {
+        let bytes = Bytes::from_static(&[
+            0x0D, 0x18, // slot 13, mask = QUANTITY | DURABILITY
+            0x09, 0x00, // quantity 9   (0x08 comes first)
+            0x2E, 0x00, 0x00, 0x00, // durability 46
+        ]);
+        let decoded = InventoryItemUpdate::try_from(bytes.clone()).unwrap();
+        assert_eq!(decoded.quantity, Some(9));
+        assert_eq!(decoded.durability, Some(46));
+        assert_eq!(Bytes::from(decoded), bytes);
+    }
+
+    /// All eight blocks at once, in the order the original reads them. This is
+    /// the test that pins the order: swap any two and the round trip breaks.
+    #[test]
+    fn every_block_in_the_original_s_order() {
+        let bytes = Bytes::from_static(&[
+            0x0D, 0xFF, // every bit
+            0x01, 0x02, 0x03, 0x04, // 0x01 u32
+            0x07, // 0x02 plus
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, // 0x04 variance
+            0x09, 0x00, // 0x08 quantity
+            0x2E, 0x00, 0x00, 0x00, // 0x10 durability
+            0x02, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, // 0x20 count + 2 records
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, //
+            0x02, // 0x40 cos state
+            0x3C, 0x00, 0x00, 0x00, // 0x80 duration seconds
+        ]);
+        let decoded = InventoryItemUpdate::try_from(bytes.clone()).unwrap();
+        assert_eq!(decoded.unknown01, Some(0x04030201));
+        assert_eq!(decoded.plus, Some(7));
+        assert_eq!(decoded.variance, Some(0x1817161514131211));
+        assert_eq!(decoded.quantity, Some(9));
+        assert_eq!(decoded.durability, Some(46));
+        assert_eq!(decoded.magic_options.as_deref().map(<[u64]>::len), Some(2));
+        assert_eq!(decoded.cos_state, Some(2));
+        assert_eq!(decoded.duration_seconds, Some(60));
+        assert_eq!(decoded.byte_size(), bytes.len());
+        assert_eq!(Bytes::from(decoded), bytes);
+    }
+
+    /// A body that stops inside a block the mask announced is an error, not a
+    /// silent zero — and a magic-param count above the original's own assert
+    /// (`m_btMagicParamNum <= MAX_MAGPARAM_PER_ITEM`) is refused.
+    #[test]
+    fn a_truncated_or_overlong_body_is_refused() {
+        // mask says durability, body has two of the four bytes
+        assert!(
+            InventoryItemUpdate::try_from(Bytes::from_static(&[0x0D, 0x10, 0x2E, 0x00])).is_err()
+        );
+        // count 13 > MAX_MAGPARAM_PER_ITEM
+        assert!(InventoryItemUpdate::try_from(Bytes::from_static(&[0x0D, 0x20, 0x0D])).is_err());
+        // mask 0 is a legal "nothing changed" push and keeps the mask readable
+        let decoded = InventoryItemUpdate::try_from(Bytes::from_static(&[0x0F, 0x00])).unwrap();
+        assert_eq!((decoded.slot, decoded.mask), (0x0F, 0));
     }
 
     /// 0x3092 carries the new slot count only on success.

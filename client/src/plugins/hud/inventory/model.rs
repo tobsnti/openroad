@@ -91,31 +91,38 @@ pub fn on_inventory_deltas(
         inventory.set_durability(msg.slot, msg.durability);
     }
     for msg in items.read() {
-        match (msg.update_type, msg.quantity, msg.cos_state) {
-            (_, Some(quantity), _) => {
-                debug!("inventory: slot {} quantity -> {}", msg.slot, quantity);
-                inventory.set_stack_count(msg.slot, quantity);
-            }
-            (_, _, Some(state)) => {
-                debug!("inventory: slot {} cos state -> {}", msg.slot, state);
-                inventory.set_cos_state(msg.slot, state);
-            }
-            // Byte 1 is a BITMASK of eight blocks rather than an enum value
-            // (docs/protocol/opcodes.md), and the wire struct models two of
-            // them — so a push combining quantity with any other block decodes
-            // to no fields at all and lands here.
-            //
-            // `warn!`, not `debug!`: this line is the tripwire for the six
-            // blocks we have never seen a sample of. Ammunition consumption is
-            // suspected to ride one of them (no 0x3040 appears in any capture
-            // to date), and at debug level that evidence reaches nobody.
-            (update_type, None, None) => warn!(
-                "inventory: unhandled 0x3040 update mask {:#04x} on slot {} — \
-                 capture for decode",
-                update_type, msg.slot
-            ),
+        // Every block the mask announced is applied, not just the first one
+        // that matches: the byte is a bitmask, so one push can carry quantity
+        // *and* durability *and* a COS state (see `InventoryItemUpdate`).
+        if let Some(quantity) = msg.quantity {
+            debug!("inventory: slot {} quantity -> {}", msg.slot, quantity);
+            inventory.set_stack_count(msg.slot, quantity);
+        }
+        if let Some(durability) = msg.durability {
+            debug!("inventory: slot {} durability -> {}", msg.slot, durability);
+            inventory.set_durability(msg.slot, durability);
+        }
+        if let Some(state) = msg.cos_state {
+            debug!("inventory: slot {} cos state -> {}", msg.slot, state);
+            inventory.set_cos_state(msg.slot, state);
+        }
+        // The blocks the wire decodes but this component has nowhere to put:
+        // `plus`, `variance`, `magic_options`, `duration_seconds` and the u32
+        // behind bit 0x01, whose semantics are [U]. `warn!`, not `debug!`:
+        // these are the bits no capture has shown us a use for, and ammunition
+        // consumption is still suspected to ride one of them.
+        let unapplied = msg.mask
+            & !(InventoryItemUpdate::QUANTITY
+                | InventoryItemUpdate::DURABILITY
+                | InventoryItemUpdate::COS_STATE);
+        if unapplied != 0 {
+            warn!(
+                "inventory: 0x3040 slot {} carries unapplied blocks {:#04x}                  (mask {:#04x})",
+                msg.slot, unapplied, msg.mask
+            );
         }
     }
+
     for msg in capacity.read() {
         if let Some(new_capacity) = msg.new_capacity {
             debug!("inventory: bag capacity -> {}", new_capacity);
