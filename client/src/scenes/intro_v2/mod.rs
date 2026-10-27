@@ -33,6 +33,7 @@ pub mod chrome;
 pub mod dev_fast_login;
 pub mod error_text;
 pub mod fade;
+pub mod lobby_sit;
 pub mod login_form;
 pub mod net;
 pub mod region_select;
@@ -104,6 +105,10 @@ impl Plugin for IntroV2ScenePlugin {
             // condition reads it. `recut/09` never registered it, which is a
             // parameter-validation panic `make ci` cannot see.
             .init_resource::<server_select::ShardListScroll>()
+            // What the line-up looked like before the last rebuild, so a
+            // reserved deletion can be told from a restored one (see
+            // `lobby_sit`).
+            .init_resource::<lobby_sit::LobbyDeletionMemory>()
             .add_systems(
                 OnEnter(SceneState::IntroV2),
                 (
@@ -197,6 +202,10 @@ impl Plugin for IntroV2ScenePlugin {
                         .run_if(resource_removed::<character_select::SelectedCharacterV2>),
                     character_select::on_character_delete_response,
                     character_select::on_character_join_response,
+                    // A figure whose deletion is reserved sits down, and gets
+                    // up again when the player restores it (see `lobby_sit`).
+                    lobby_sit::begin_lobby_sit,
+                    lobby_sit::drive_lobby_sit,
                 )
                     .run_if(in_state(IntroV2State::CharacterList)),
             )
