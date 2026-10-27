@@ -223,6 +223,56 @@ enum Origin {
     Ours,
 }
 
+/// Which server implementation a root recorded, read from the frame that names
+/// it: `0xA101`'s shard list carries the shard and server names as text, so a
+/// body holding `Skrillax*` proves the peer was skrillax and one holding
+/// `Silkroad_Server`/`Testserver` proves it was the vSRO-shaped one.
+///
+/// This is the second axis [`Origin`] cannot express: our own client can talk to
+/// a third-party server, and then `Ours` is right about the client half and too
+/// coarse about the server's. Measured over 160 roots: 58 skrillax-only, 78
+/// vSRO-shaped-only, **0 mixed**, 4 without a shard list at all.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Server {
+    Skrillax,
+    /// Announces itself as `Silkroad_Server` / `Testserver`.
+    SilkroadShaped,
+    /// Both names in one root. No root does this today; named rather than
+    /// silently resolved so the day it happens is visible.
+    Mixed,
+    /// No `0xA101` in this root — an honest gap, not a guess.
+    Unknown,
+}
+
+/// Read a root's server from its shard lists.
+fn server_of(root: &Path) -> Server {
+    let mut paths = Vec::new();
+    log_files(root, &mut paths);
+    let (mut skrillax, mut silkroad) = (false, false);
+    for path in paths {
+        if opcode_of(&path) != Some(0xA101) {
+            continue;
+        }
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Some(parsed) = parse_line(&line) else {
+                continue;
+            };
+            let body = String::from_utf8_lossy(&parsed.body).to_string();
+            skrillax |= body.contains("Skrillax");
+            silkroad |= body.contains("Silkroad_Server") || body.contains("Testserver");
+        }
+    }
+    match (skrillax, silkroad) {
+        (true, true) => Server::Mixed,
+        (true, false) => Server::Skrillax,
+        (false, true) => Server::SilkroadShaped,
+        (false, false) => Server::Unknown,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Direction {
     /// What the client sent.
@@ -287,6 +337,7 @@ struct Layout {
     /// `--original`). Per-file `proxy*` directories add to this.
     original_session: bool,
     writer: Writer,
+    server: Server,
 }
 
 /// Does this root hold its directions the other way round?
@@ -542,14 +593,16 @@ fn main() {
     // size the default hook would print the same backtrace thousands of times.
     // The count is the finding, not the message.
     std::panic::set_hook(Box::new(|_| {}));
-    let mut tallies: BTreeMap<(u16, Origin, Writer, Direction), Tally> = BTreeMap::new();
+    let mut tallies: BTreeMap<(u16, Origin, Writer, Server, Direction), Tally> = BTreeMap::new();
     let mut files = 0usize;
     let mut unreadable = 0usize;
     let mut redacted = 0usize;
-    let mut per_root: Vec<(PathBuf, usize)> = Vec::new();
+    // Per **directory**, not per root: `discover_roots` stops at the topmost
+    // directory that holds dumps, so a root line cannot answer "is this
+    // directory covered". It invited exactly that check and misled it once.
+    let mut per_dir: BTreeMap<PathBuf, (usize, Server)> = BTreeMap::new();
 
     for root in &options.roots {
-        let frames_before: usize = tallies.values().map(|t| t.frames).sum();
         let mut paths = Vec::new();
         log_files(root, &mut paths);
         // `capture-orig/**` are named sessions of the real client, so the whole
@@ -572,6 +625,7 @@ fn main() {
             } else {
                 Writer::Client
             },
+            server: server_of(root),
         };
         for path in paths {
             let (Some(opcode), Ok(file)) = (opcode_of(&path), File::open(&path)) else {
@@ -581,13 +635,19 @@ fn main() {
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let (origin, direction) = classify(relative, layout);
             let tally = tallies
-                .entry((opcode, origin, layout.writer, direction))
+                .entry((opcode, origin, layout.writer, layout.server, direction))
                 .or_default();
+            let dir = path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.clone());
+            let counted = &mut per_dir.entry(dir).or_insert((0, layout.server)).0;
             for line in BufReader::new(file).lines().map_while(Result::ok) {
                 match parse_line(&line) {
                     Some(parsed) => {
                         let verdict = judge(opcode, &parsed.body);
                         tally.add(&parsed, verdict);
+                        *counted += 1;
                     }
                     None if line.trim().is_empty() => {}
                     // A body someone deliberately withheld: the two login
@@ -599,25 +659,25 @@ fn main() {
                 }
             }
         }
-        let frames_after: usize = tallies.values().map(|t| t.frames).sum();
-        per_root.push((root.clone(), frames_after - frames_before));
     }
 
     println!(
-        "# dump_census: {} roots, {files} files, {} groups, {redacted} redacted bodies, \
+        "# dump_census: {} roots, {} dump directories, {files} files, {} groups, {redacted} redacted bodies, \
          {unreadable} unreadable lines",
         options.roots.len(),
+        per_dir.len(),
         tallies.len()
     );
-    // The root set is part of the result. Two censuses over different sets give
+    // The root set is part of the result, and so is which server each root
+    // recorded — `origin` names the client half only. Two censuses over different sets give
     // different counts for the same opcode — 108 frames against 118 for
     // `0x70EA`, measured — and without this header that difference reads as a
     // contradiction instead of a definition.
-    for (root, frames) in &per_root {
-        println!("# root\t{}\t{frames}", root.display());
+    for (dir, (frames, server)) in &per_dir {
+        println!("# dir\t{}\t{frames}\t{server:?}", dir.display());
     }
     println!(
-        "opcode\torigin\twriter\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tlossy\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
+        "opcode\torigin\twriter\tserver\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tlossy\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
     );
     // Row order: the deterministic key order by default, and for the working
     // list the order that produces work — biggest opcode first, its
@@ -642,10 +702,11 @@ fn main() {
                 tally.bodies.len(),
                 key.2,
                 key.3,
+                key.4,
             )
         });
     }
-    for ((opcode, origin, writer, direction), tally) in rows {
+    for ((opcode, origin, writer, server, direction), tally) in rows {
         if tally.frames < options.min_frames {
             continue;
         }
@@ -657,7 +718,7 @@ fn main() {
             format!("{byte:02x}")
         });
         println!(
-            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
+            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{server:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
             tally.frames,
             tally.bodies.len(),
             tally.empty,
@@ -740,6 +801,7 @@ mod test {
             inverted: false,
             original_session: false,
             writer: Writer::Client,
+            server: Server::Unknown,
         };
         // `proxy/` is a proxy session: the client is the original one, the
         // server is `skrillax` (`capture-orig/STATE.md:2-4`). So its `s2c` half
@@ -774,6 +836,7 @@ mod test {
             inverted: true,
             original_session: true,
             writer: Writer::Stub,
+            server: Server::Unknown,
         };
         assert_eq!(
             classify(Path::new("0x3013.log"), inverted),
