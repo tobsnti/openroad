@@ -377,16 +377,14 @@ impl ClientActionCommands {
 /// in which order, with which string key and icon, plus the division bits the
 /// article-list captions come from.
 ///
-/// **Loaded before its window exists, on purpose.** The mall page itself is
-/// still a port branch; what lands here is the *table*, because two windows
-/// need the same rows and would otherwise transcribe them twice — the tab
-/// strip and the article list (whose caption keys are the division bits,
-/// including the `Recommend` key no `SILKMALL` grep finds). The accessors
-/// below therefore have no caller yet.
+/// **Two windows need the same rows** and would otherwise transcribe them
+/// twice — the tab strip and the article list, whose caption keys are the
+/// division bits (including the `Recommend` key no `SILKMALL` grep finds).
+/// [`Self::tabs`] has its caller since the mall's article page landed; the
+/// division keys still wait for the article list's caption row.
 #[derive(Resource, Default)]
 pub struct ClientMallMenu(Option<MallMenuTable>);
 
-#[allow(dead_code)]
 impl ClientMallMenu {
     /// Test-only: build the resource from transcribed rows, so a caller's tab
     /// logic is pinned against the table instead of against its own output.
@@ -405,7 +403,10 @@ impl ClientMallMenu {
             .unwrap_or_default()
     }
 
-    /// Caption key for a division bit (`8` is `Recommend`).
+    /// Caption key for a division bit (`8` is `Recommend`). Still without a
+    /// caller: the article list's caption row is the next slice, and the key
+    /// stays here rather than being transcribed there.
+    #[allow(dead_code)]
     pub fn division(&self, bit: u32) -> Option<&str> {
         self.0.as_ref().and_then(|table| table.division(bit))
     }
@@ -552,6 +553,12 @@ pub fn plain_text(pml: &str) -> String {
 pub struct ClientShops(Option<ShopTable>);
 
 impl ClientShops {
+    /// Seed the resource directly, bypassing the asset pipeline (tests only).
+    #[cfg(test)]
+    pub(crate) fn from_table(table: ShopTable) -> Self {
+        Self(Some(table))
+    }
+
     /// The denormalized inventory of a shop that has no NPC, by its store
     /// codename — the item mall's five storefronts (`MALL_CONSUME`,
     /// `MALL_AVATAR`, `MALL_PET`, `MALL_PREMIUM`, `MALL_ARCHEMY`), which is
