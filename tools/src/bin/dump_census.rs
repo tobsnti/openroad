@@ -197,14 +197,30 @@ fn judge(opcode: u16, body: &[u8]) -> Verdict {
     }
 }
 
-/// Where a frame came from, which is what decides whether it can prove a form.
+/// Who **spoke** a frame — which is what decides whether it can prove a form.
+///
+/// Read off the session, not guessed from a name: a dump directory whose first
+/// component starts with `proxy`, and every root under `capture-orig/`, is a
+/// recording of the **original** client through our proxy. The chain is written
+/// down in `capture-orig/STATE.md:2-4`:
+/// `sro_client (Win) -> relay -> sro_proxy -> skrillax`, with
+/// `--dump-dir packet_dump/proxy-local`.
+///
+/// That note also forces the three-way split below. In such a session the
+/// client is the original one, but the **server** is `skrillax` — so only the
+/// `c2s` half is original-client evidence, and the `s2c` half proves what *that
+/// server* sends, which is not vanilla vSRO. An earlier version of this file
+/// matched the component `proxy` **exactly** and called `proxy-local` ours; that
+/// mislabelled 45,685 frames and hid original-client evidence for five opcodes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Origin {
-    /// Spoken to or by the **original** client: a `proxy/` session of ours, or
-    /// a root under `capture-orig/` (named sessions of the real client).
-    Original,
-    /// Our own stub, peer or bot: a body here may be invented.
-    Peer,
+    /// Spoken by the **original** client (an original-client session, `c2s`).
+    OrigClient,
+    /// Spoken by the server of an original-client session — `skrillax` in the
+    /// recorded chain, not a vanilla vSRO server.
+    SessionServer,
+    /// Our own client, stub, peer or bot: a body here may be invented.
+    Ours,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -213,6 +229,33 @@ enum Direction {
     C2s,
     /// What arrived at the client.
     S2c,
+}
+
+/// Classify a dump file by its path relative to the root it was found under.
+fn classify(relative: &Path, layout: Layout) -> (Origin, Direction) {
+    let parts: Vec<_> = relative
+        .parent()
+        .map(|dir| {
+            dir.components()
+                .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    let in_c2s_dir = parts.iter().any(|part| part == "c2s");
+    let direction = match (in_c2s_dir, layout.inverted) {
+        (true, false) | (false, true) => Direction::C2s,
+        (false, false) | (true, true) => Direction::S2c,
+    };
+    let original_session = layout.original_session
+        || parts
+            .first()
+            .is_some_and(|first| first.starts_with("proxy"));
+    let origin = match (original_session, direction) {
+        (true, Direction::C2s) => Origin::OrigClient,
+        (true, Direction::S2c) => Origin::SessionServer,
+        (false, _) => Origin::Ours,
+    };
+    (origin, direction)
 }
 
 /// Who recorded a root. Not the same question as [`Direction`]: the direction
@@ -240,31 +283,10 @@ enum Writer {
 struct Layout {
     /// `c2s/` holds *received* frames and the root holds sent ones.
     inverted: bool,
-    origin: Origin,
+    /// The root records an **original-client** session (`capture-orig/`, or
+    /// `--original`). Per-file `proxy*` directories add to this.
+    original_session: bool,
     writer: Writer,
-}
-
-/// Classify a dump file by its path relative to the root it was found under.
-fn classify(relative: &Path, layout: Layout) -> (Origin, Direction) {
-    let parts: Vec<_> = relative
-        .parent()
-        .map(|dir| {
-            dir.components()
-                .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
-                .collect()
-        })
-        .unwrap_or_default();
-    let origin = if parts.first().is_some_and(|first| first == "proxy") {
-        Origin::Original
-    } else {
-        layout.origin
-    };
-    let in_c2s_dir = parts.iter().any(|part| part == "c2s");
-    let direction = match (in_c2s_dir, layout.inverted) {
-        (true, false) | (false, true) => Direction::C2s,
-        (false, false) | (true, true) => Direction::S2c,
-    };
-    (origin, direction)
 }
 
 /// Does this root hold its directions the other way round?
@@ -488,11 +510,7 @@ fn main() {
         let named_capture = root.to_string_lossy().contains("capture-orig");
         let layout = Layout {
             inverted: inverted_root(root).unwrap_or(options.swap),
-            origin: if options.original || named_capture {
-                Origin::Original
-            } else {
-                Origin::Peer
-            },
+            original_session: options.original || named_capture,
             writer: if root.join("session.jsonl").is_file() {
                 Writer::Stub
             } else {
@@ -654,31 +672,41 @@ mod test {
     fn the_path_carries_origin_and_direction() {
         let client = Layout {
             inverted: false,
-            origin: Origin::Peer,
+            original_session: false,
             writer: Writer::Client,
         };
         let cases = [
-            ("proxy/0x3013.log", (Origin::Original, Direction::S2c)),
-            ("proxy/c2s/0x7021.log", (Origin::Original, Direction::C2s)),
-            ("admin6/c2s/0x7021.log", (Origin::Peer, Direction::C2s)),
-            ("0x3013.log", (Origin::Peer, Direction::S2c)),
+            ("proxy/0x3013.log", (Origin::Ours, Direction::S2c)),
+            ("proxy/c2s/0x7021.log", (Origin::OrigClient, Direction::C2s)),
+            ("admin6/c2s/0x7021.log", (Origin::Ours, Direction::C2s)),
+            ("0x3013.log", (Origin::Ours, Direction::S2c)),
         ];
         for (path, want) in cases {
             assert_eq!(classify(Path::new(path), client), want, "{path}");
         }
+        // `proxy-local` is the same chain as `proxy` — matching the component
+        // exactly is what mislabelled 45,685 frames (`capture-orig/STATE.md`).
+        for dir in ["proxy", "proxy-local", "proxy-real3", "proxy-origcrash-d"] {
+            assert_eq!(
+                classify(&Path::new(dir).join("c2s/0x7021.log"), client),
+                (Origin::OrigClient, Direction::C2s),
+                "{dir}"
+            );
+            assert_eq!(
+                classify(&Path::new(dir).join("0x3013.log"), client),
+                (Origin::SessionServer, Direction::S2c),
+                "{dir}"
+            );
+        }
         // An inverted root swaps both sides, and nothing else about it.
         let inverted = Layout {
             inverted: true,
-            origin: Origin::Original,
+            original_session: true,
             writer: Writer::Stub,
         };
         assert_eq!(
             classify(Path::new("0x3013.log"), inverted),
-            (Origin::Original, Direction::C2s)
-        );
-        assert_eq!(
-            classify(Path::new("c2s/0x7021.log"), inverted),
-            (Origin::Original, Direction::S2c)
+            (Origin::OrigClient, Direction::C2s)
         );
     }
 
