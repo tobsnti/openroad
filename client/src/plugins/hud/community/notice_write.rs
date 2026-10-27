@@ -11,14 +11,7 @@
 //! mail, so this module is that module's twin and borrows its plate ring
 //! rather than growing a second one.
 //!
-//! **This slice draws the window; it does not send.** The question a window
-//! answers — does it look like the one the data draws — is decided by a
-//! picture, and the question the wire answers is decided by a frame; they are
-//! split so each can be judged on its own evidence. Completed is drawn (the
-//! data declares it) and warns instead of closing, so nothing typed is lost on
-//! a press that cannot deliver it.
-//!
-//! Unlike mail's Send, this one **can** be wired: `0x70F9 GuildNoticeEditRequest`
+//! Unlike mail's Send, this one **is** wired: `0x70F9 GuildNoticeEditRequest`
 //! carries `{title, message}` with both fields named — no unknown slot — and its
 //! ack `0xB0F9` is already read by `net::guild` (it is the one guild ack whose
 //! *success* the original reports). So the chain is complete here: strip →
@@ -51,7 +44,7 @@ use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::modal_dialog::MODAL_SCRIM;
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::net::character_info::CharacterInfo;
-use crate::plugins::net::guild::GuildRoster;
+use crate::plugins::net::guild::{GuildAction, GuildRoster};
 use crate::plugins::player::Player;
 use crate::plugins::textdata::ClientUiStrings;
 
@@ -130,8 +123,7 @@ pub enum GuildNoticeWriteField {
 /// The modal's two buttons.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GuildNoticeWriteButton {
-    /// `_OK_BTN`, `UIIT_CTL_GUILD_WRITE_END` ("Completed"). Drawn here, wired
-    /// in the sending slice.
+    /// `_OK_BTN`, `UIIT_CTL_GUILD_WRITE_END` ("Completed") — sends 0x70F9.
     Ok,
     /// `_CANCEL_BTN`, `UIIT_CTL_CANCEL`.
     Cancel,
@@ -430,25 +422,38 @@ fn spawn_field(
     }
 }
 
-/// Cancel drops the modal. **Completed does not send yet**: the wire half
-/// (`GuildAction::EditNotice` -> `0x70F9`) is the next slice, so the button is
-/// drawn — the data declares it and leaving it out would make the window the
-/// wrong picture — but it keeps the modal open instead of closing it. Nothing
-/// the player typed is discarded on a press that cannot deliver it.
+/// Completed sends 0x70F9 with what is in the two fields; Cancel drops it.
+/// Both close the modal — the strip itself updates when `0xB0F9` comes back,
+/// not here.
 fn on_notice_write_button(
     activate: On<Activate>,
     buttons: Query<&GuildNoticeWriteButton>,
+    fields: Query<(&GuildNoticeWriteField, &EditableText)>,
     mut write: ResMut<GuildNoticeWrite>,
+    mut actions: MessageWriter<GuildAction>,
 ) {
     let Ok(button) = buttons.get(activate.entity) else {
         return;
     };
-    match button {
-        GuildNoticeWriteButton::Cancel => write.0 = false,
-        GuildNoticeWriteButton::Ok => {
-            warn!("guild notice: Completed is not wired yet, the text stays in the box")
+    if *button == GuildNoticeWriteButton::Ok {
+        actions.write(notice_edit_action(&fields));
+    }
+    write.0 = false;
+}
+
+/// The two fields, read in the request's own order. Split out so the mapping
+/// is testable without a window: a swap here would put the body in the strip
+/// on every other client in the guild.
+fn notice_edit_action(fields: &Query<(&GuildNoticeWriteField, &EditableText)>) -> GuildAction {
+    let mut title = String::new();
+    let mut message = String::new();
+    for (field, editable) in fields.iter() {
+        match field {
+            GuildNoticeWriteField::Subject => title = editable.value().to_string(),
+            GuildNoticeWriteField::Contents => message = editable.value().to_string(),
         }
     }
+    GuildAction::EditNotice { title, message }
 }
 
 /// Leaving the world takes the modal with it — the flag is a resource, so
@@ -540,6 +545,40 @@ mod test {
         assert!(
             source.contains("cleanup_guild_notice_write"),
             "the modal survives leaving the world"
+        );
+    }
+
+    /// The whole chain in one app: two fields with text, and a
+    /// `GuildAction::EditNotice` carrying them in the request's order.
+    #[test]
+    fn completed_sends_the_two_fields_in_the_requests_order() {
+        let mut app = App::new();
+        app.add_message::<GuildAction>()
+            .init_resource::<GuildNoticeWrite>();
+        app.world_mut().spawn((
+            GuildNoticeWriteField::Contents,
+            EditableText::new("Tonight, 8pm."),
+        ));
+        app.world_mut()
+            .spawn((GuildNoticeWriteField::Subject, EditableText::new("Raid")));
+        app.add_systems(
+            Update,
+            |fields: Query<(&GuildNoticeWriteField, &EditableText)>,
+             mut actions: MessageWriter<GuildAction>| {
+                actions.write(notice_edit_action(&fields));
+            },
+        );
+        app.update();
+
+        let messages = app.world().resource::<Messages<GuildAction>>();
+        let sent: Vec<GuildAction> = messages.iter_current_update_messages().cloned().collect();
+        assert_eq!(
+            sent,
+            vec![GuildAction::EditNotice {
+                title: "Raid".into(),
+                message: "Tonight, 8pm.".into(),
+            }],
+            "the strip's subject is the title, the pane's body is the message"
         );
     }
 }
