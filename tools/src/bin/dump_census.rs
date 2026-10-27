@@ -9,8 +9,9 @@
 //! **A leftover is a finding, not an error.** A decoder that reads a prefix of a
 //! body and stops is what an unfinished layout looks like, so the verdicts stay
 //! apart: `exact` (re-encoding reproduces the captured bytes), `short`
-//! (re-encoding is a strict prefix — N bytes were never read), `differs` (not
-//! equal: a lossy or normalising encoder), `error` (the decoder refused) and
+//! (re-encoding is a strict prefix — N bytes never read), `differs`, `error`
+//! (the decoder refused), `panic` (it crashed on a captured body — a finding of
+//! its own), `no_encoder` (two acks deliberately cannot be re-encoded) and
 //! `unwired` (no type bound to this opcode). The last column is the working
 //! list: an opcode with frames and no type is work only nobody has looked at.
 //!
@@ -40,7 +41,13 @@
 //!    case (2,827 and 5,326). File names are lower case in both. So a
 //!    case-sensitive string compare across writers finds nothing — this parser
 //!    reads either.
-//! 4. **`E` does not mean unreadable.** It is the frame's `0x8000` bit, kept for
+//! 4. **Some bodies are withheld on purpose, in three forms** — 181 lines,
+//!    every one a login opcode: an inline `<withheld:credentials>`, a `#`
+//!    comment where the line was removed, and the hex with the secret masked
+//!    in place (`...0400xxxxxxxx0200`). They count as redacted, not as parse
+//!    failures, so the number does not read like a parser bug
+//!    ([`is_redacted`]).
+//! 5. **`E` does not mean unreadable.** It is the frame's `0x8000` bit, kept for
 //!    length ambiguity; the dumped payload is the body the client went on to
 //!    deserialize. Only 8.0% of `E` bodies are a multiple of the blowfish block,
 //!    so they are not stored block-padded. They decode like any other line and
@@ -70,10 +77,19 @@ enum Verdict {
     Exact,
     /// Decoded, and re-encoding is a strict prefix: the tail was never read.
     Short(usize),
-    /// Decoded, but re-encoding differs from the capture.
+    /// Decoded, but re-encoding differs from the capture otherwise.
     Differs,
     /// The decoder refused this body.
     Error,
+    /// The decoder **panicked** on a captured body. Its own verdict rather than
+    /// the end of the census: a frame that crashes our decoder is a crash
+    /// vector, and this is how it gets named.
+    Panic,
+    /// Decoded, but the type cannot be encoded, so the round trip says nothing.
+    /// Deliberate in two cases: the registry binds both directions per opcode,
+    /// so the server→client acks in `agent::alchemy` answer `From<_> for Bytes`
+    /// with `unreachable!`.
+    NoEncoder,
     /// No type is bound to this opcode.
     Unwired,
 }
@@ -114,6 +130,23 @@ fn parse_line(line: &str) -> Option<Line> {
     Some(Line { body, encrypted })
 }
 
+/// Did someone withhold this body on purpose?
+///
+/// Three forms, all measured on this corpus — together 181 lines, every one of
+/// them a login opcode:
+///
+/// * `<withheld:credentials>` where the hex would be (156 lines),
+/// * a `#` comment saying the line was removed because it held a plaintext
+///   password (25),
+/// * the hex with the secret masked in place, keeping the body length
+///   (`...0400xxxxxxxx0200`, 2).
+///
+/// A census that called these parse failures would report a parser bug that
+/// does not exist, which is why they get their own count.
+fn is_redacted(line: &str) -> bool {
+    line.contains("<withheld") || line.trim_start().starts_with('#') || line.contains("xxxx")
+}
+
 /// `0x3013.log` -> `0x3013`. Anything else is not a dump file.
 fn opcode_of(path: &Path) -> Option<u16> {
     let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
@@ -121,21 +154,33 @@ fn opcode_of(path: &Path) -> Option<u16> {
     u16::from_str_radix(digits, 16).ok()
 }
 
-/// Run one body through the client's own registry.
+/// Run one body through the client's own registry and ask how much of the frame
+/// it accounts for.
+///
+/// Both halves run under `catch_unwind`, each for a measured reason: a decoder
+/// panic is a finding we want named rather than fatal, and `into_serialize` is
+/// `unreachable!` for two registered types — a census that ignored that died on
+/// `0xB150` after a 2m42s build.
 fn judge(opcode: u16, body: &[u8]) -> Verdict {
-    match Packet::deserialize(opcode, Bytes::copy_from_slice(body)) {
-        Err(PacketError::UnknownOpcode(_)) => Verdict::Unwired,
-        Err(_) => Verdict::Error,
-        Ok(packet) => {
-            let (_opcode, encoded) = packet.into_serialize();
-            if encoded.as_ref() == body {
-                Verdict::Exact
-            } else if encoded.len() < body.len() && body.starts_with(encoded.as_ref()) {
-                Verdict::Short(body.len() - encoded.len())
-            } else {
-                Verdict::Differs
-            }
-        }
+    let decoded =
+        std::panic::catch_unwind(|| Packet::deserialize(opcode, Bytes::copy_from_slice(body)));
+    let packet = match decoded {
+        Err(_) => return Verdict::Panic,
+        Ok(Err(PacketError::UnknownOpcode(_))) => return Verdict::Unwired,
+        Ok(Err(_)) => return Verdict::Error,
+        Ok(Ok(packet)) => packet,
+    };
+    let encoded =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| packet.into_serialize()));
+    let Ok((_opcode, encoded)) = encoded else {
+        return Verdict::NoEncoder;
+    };
+    if encoded.as_ref() == body {
+        Verdict::Exact
+    } else if encoded.len() < body.len() && body.starts_with(encoded.as_ref()) {
+        Verdict::Short(body.len() - encoded.len())
+    } else {
+        Verdict::Differs
     }
 }
 
@@ -277,6 +322,16 @@ fn field<'a>(line: &'a str, key: &str) -> Option<String> {
 #[derive(Default)]
 struct Tally {
     frames: usize,
+    /// The distinct bodies behind `frames`. Kept whole rather than hashed: the
+    /// corpus is 413,656 frames and most of them are short, so the set costs
+    /// tens of MB and needs no collision argument.
+    ///
+    /// Why it is here at all: **frame count is not evidence width.** `0x3074`
+    /// has 2,328 frames and 371 distinct bodies, none from the original client
+    /// — our own peer repeating itself. `0x6100` has 3,116 frames and **one**
+    /// body, 1,028 of them from the original client — a form that is proven and
+    /// a version dependency that is not measured by a single one of them.
+    bodies: std::collections::BTreeSet<Vec<u8>>,
     empty: usize,
     encrypted: usize,
     unflagged: usize,
@@ -285,6 +340,8 @@ struct Tally {
     short_bytes: usize,
     differs: usize,
     error: usize,
+    panics: usize,
+    no_encoder: usize,
     unwired: usize,
     lengths: BTreeMap<usize, usize>,
     /// First body byte — the discriminator most bodies in this protocol lead
@@ -295,6 +352,7 @@ struct Tally {
 impl Tally {
     fn add(&mut self, line: &Line, verdict: Verdict) {
         self.frames += 1;
+        self.bodies.insert(line.body.clone());
         match line.encrypted {
             Some(true) => self.encrypted += 1,
             Some(false) => {}
@@ -313,6 +371,8 @@ impl Tally {
             }
             Verdict::Differs => self.differs += 1,
             Verdict::Error => self.error += 1,
+            Verdict::Panic => self.panics += 1,
+            Verdict::NoEncoder => self.no_encoder += 1,
             Verdict::Unwired => self.unwired += 1,
         }
     }
@@ -395,9 +455,14 @@ fn options() -> Options {
 
 fn main() {
     let options = options();
+    // Two registered types panic by design (see `judge`); over a corpus this
+    // size the default hook would print the same backtrace thousands of times.
+    // The count is the finding, not the message.
+    std::panic::set_hook(Box::new(|_| {}));
     let mut tallies: BTreeMap<(u16, Origin, Writer, Direction), Tally> = BTreeMap::new();
     let mut files = 0usize;
     let mut unreadable = 0usize;
+    let mut redacted = 0usize;
 
     for root in &options.roots {
         let mut paths = Vec::new();
@@ -436,6 +501,11 @@ fn main() {
                         tally.add(&parsed, verdict);
                     }
                     None if line.trim().is_empty() => {}
+                    // A body someone deliberately withheld: the two login
+                    // opcodes in the proxy roots carry `<withheld:credentials>`
+                    // where the hex would be. Counted as what it is, so nobody
+                    // hunts a parser bug over 181 lines of redaction.
+                    None if is_redacted(&line) => redacted += 1,
                     None => unreadable += 1,
                 }
             }
@@ -443,13 +513,40 @@ fn main() {
     }
 
     println!(
-        "# dump_census: {files} files, {} opcode/origin/direction groups, {unreadable} unreadable lines",
+        "# dump_census: {files} files, {} groups, {redacted} redacted bodies, \
+         {unreadable} unreadable lines",
         tallies.len()
     );
     println!(
-        "opcode\torigin\twriter\tdir\tframes\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tdiffers\terror\tunwired\tlengths\tfirst_bytes"
+        "opcode\torigin\twriter\tdir\tframes\tdistinct\tempty\tenc\tunflagged\texact\tshort\tshort_bytes\tdiffers\terror\tpanic\tno_encoder\tunwired\tlengths\tfirst_bytes"
     );
-    for ((opcode, origin, writer, direction), tally) in &tallies {
+    // Row order: the deterministic key order by default, and for the working
+    // list the order that produces work — biggest opcode first, its
+    // original-client row before the peer's. Sorting by frames alone is what
+    // put `0x3074` (2,328 frames, 371 bodies, no original) above `0x6100`
+    // (3,116 frames, one body, 1,028 of them original) in the first pass.
+    let opcode_frames: BTreeMap<u16, usize> =
+        tallies
+            .iter()
+            .fold(BTreeMap::new(), |mut totals, (key, tally)| {
+                *totals.entry(key.0).or_default() += tally.frames;
+                totals
+            });
+    let mut rows: Vec<_> = tallies.iter().collect();
+    if options.unwired_only {
+        rows.sort_by_key(|(key, tally)| {
+            let total = opcode_frames.get(&key.0).copied().unwrap_or(0);
+            (
+                std::cmp::Reverse(total),
+                key.0,
+                key.1,
+                tally.bodies.len(),
+                key.2,
+                key.3,
+            )
+        });
+    }
+    for ((opcode, origin, writer, direction), tally) in rows {
         if tally.frames < options.min_frames {
             continue;
         }
@@ -461,8 +558,9 @@ fn main() {
             format!("{byte:02x}")
         });
         println!(
-            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
+            "{opcode:#06x}\t{origin:?}\t{writer:?}\t{direction:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{lengths}\t{first_bytes}",
             tally.frames,
+            tally.bodies.len(),
             tally.empty,
             tally.encrypted,
             tally.unflagged,
@@ -471,6 +569,8 @@ fn main() {
             tally.short_bytes,
             tally.differs,
             tally.error,
+            tally.panics,
+            tally.no_encoder,
             tally.unwired,
         );
     }
@@ -502,6 +602,20 @@ mod test {
         for (line, want) in cases {
             assert_eq!(parsed(line).expect("parses"), want, "{line}");
         }
+    }
+
+    /// All three withholding forms, as found in the corpus. A census that read
+    /// them as parse failures would report a parser bug that does not exist.
+    #[test]
+    fn a_withheld_body_is_recognised_in_all_three_forms() {
+        for line in [
+            "2026-10-02T16:10:46.323Z <withheld:credentials> E",
+            "# 1 LoginRequest line(s) removed: they carry the account password in plaintext",
+            "2026-09-24T11:40:52.075Z 1609007465737475736572310400xxxxxxxx0200 P",
+        ] {
+            assert!(is_redacted(line), "{line}");
+        }
+        assert!(!is_redacted("2026-08-20T13:13:17.872Z 01e8 E"));
     }
 
     #[test]
