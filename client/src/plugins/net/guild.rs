@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use crate::net::connection::SilkroadConnection;
 use packets::agent::guild::{
     GuildCreatedData, GuildData, GuildDataBegin, GuildDataBody, GuildDataEnd, GuildInviteAck,
-    GuildKickAck, GuildKickRequest, GuildPermissions,
+    GuildKickAck, GuildKickRequest, GuildNoticeEditRequest, GuildPermissions,
 };
 use packets::agent::ingame::GuildInviteRequest;
 use packets::Packet;
@@ -151,6 +151,10 @@ pub enum GuildAction {
     /// 0x70F4 — expel a member, addressed **by name**: the only membership op
     /// in the family that is not id-addressed.
     Kick(String),
+    /// 0x70F9 — rewrite the guild notice. Both halves are named on the wire,
+    /// so this is the one guild command with no unknown field: `title` is the
+    /// strip, `message` is the pane behind it.
+    EditNotice { title: String, message: String },
 }
 
 /// The intent-to-opcode mapping, split out so it is testable without a live
@@ -162,6 +166,10 @@ pub fn guild_action_packet(action: &GuildAction) -> Packet {
         }),
         GuildAction::Kick(member_name) => Packet::from(GuildKickRequest {
             member_name: member_name.clone(),
+        }),
+        GuildAction::EditNotice { title, message } => Packet::from(GuildNoticeEditRequest {
+            title: title.clone(),
+            message: message.clone(),
         }),
     }
 }
@@ -304,6 +312,17 @@ mod tests {
         let kick = guild_action_packet(&GuildAction::Kick("Grunt".into())).into_serialize();
         assert_eq!(kick.0, 0x70F4);
         assert_eq!(kick.1.as_ref(), b"\x05\x00Grunt");
+
+        // 0x70F9 is the one with two named halves, and their order is the
+        // whole risk: swapped, every other client in the guild reads the body
+        // as the strip.
+        let notice = guild_action_packet(&GuildAction::EditNotice {
+            title: "Raid".into(),
+            message: "8pm".into(),
+        })
+        .into_serialize();
+        assert_eq!(notice.0, 0x70F9);
+        assert_eq!(notice.1.as_ref(), b"\x04\x00Raid\x03\x008pm");
     }
 
     /// Without a connection the queue must drain rather than hold an invite

@@ -409,7 +409,7 @@ fn buttons(window: LetterSubWindow) -> Vec<(LetterSubButton, f32, &'static str, 
 
 /// The 8 `msgbox2_window_` pieces around a `w x h` plate. The insets are the
 /// art's own extents, stated once in [`crate::plugins::hud::modal_dialog`].
-fn plate_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 8] {
+pub(super) fn plate_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 8] {
     let side = MODAL_SIDE;
     let top = MODAL_TOP;
     let bottom = MODAL_BOTTOM;

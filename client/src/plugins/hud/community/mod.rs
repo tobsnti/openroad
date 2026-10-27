@@ -3,6 +3,7 @@ pub mod guild;
 pub mod letter;
 pub mod letter_sub;
 pub mod model;
+pub mod notice_write;
 pub mod ui;
 
 use bevy::prelude::*;
@@ -18,8 +19,21 @@ impl Plugin for CommunityPlugin {
         app.init_resource::<model::CommunityState>()
             .init_resource::<friend::FriendSelection>()
             .init_resource::<guild::GuildNoticeOpen>()
+            .init_resource::<notice_write::GuildNoticeWrite>()
             .add_systems(OnEnter(SceneState::GameWorld), ui::spawn_community_window)
-            .add_systems(OnExit(SceneState::GameWorld), ui::cleanup_community_window)
+            .add_systems(
+                OnExit(SceneState::GameWorld),
+                (
+                    ui::cleanup_community_window,
+                    notice_write::cleanup_guild_notice_write,
+                ),
+            )
+            .add_systems(
+                Update,
+                notice_write::apply_guild_notice_write.run_if(
+                    in_state(SceneState::GameWorld).or_else(in_state(SceneState::UiTesting)),
+                ),
+            )
             .add_systems(
                 Update,
                 letter_sub::apply_letter_sub_window.run_if(

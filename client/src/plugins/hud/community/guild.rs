@@ -190,7 +190,7 @@ fn field_text(field: GuildInfoField, data: Option<&packets::agent::guild::GuildD
 /// pieces around a flat black interior, the same family `letter.rs` uses.
 const MEMBER_PLATE_RECT: (f32, f32, f32, f32) = (14.0, 138.0, 333.0, 166.0);
 const BLACKSQUARE_PIECE: f32 = 4.0;
-const BLACKSQUARE_DIR: &str = "media://interface/ifcommon/com_blacksquare_";
+pub(super) const BLACKSQUARE_DIR: &str = "media://interface/ifcommon/com_blacksquare_";
 /// `GDR_GUILD_USERVIEW_SCROLLMGR:CIFScrollManager` (`:426`, Rect
 /// `17,163,328,139`) — the row area. The manager itself (its pooled rows and
 /// its `CIFVerticalScroll`) is the shared widget of #56 and is **not** built
@@ -344,9 +344,9 @@ const NOTICE_SUBJECT_RECT: (f32, f32, f32, f32) = (15.0, 110.0, 428.0, 28.0);
 /// out just right of the label, on the label's own baseline.
 const NOTICE_SUBJECT_TEXT_RECT: (f32, f32, f32, f32) = (82.0, 117.0, 330.0, 14.0);
 /// `GDR_GUILD_NOTIFY_EDIT_BTN:CIFButton` (`:384`, `417,111,0,0`) — art-sized
-/// `stl_edit_button.ddj`, measured 24x24. Presentational here: the notice
-/// **write** modal (`ifguildnotifywrite.txt` -> `0x70F9`) is a separate child
-/// of #97, so a live button would open nothing.
+/// `stl_edit_button.ddj`, measured 24x24. It opens the notice **write** modal,
+/// which is a separate child of #97 (`ifguildnotifywrite.txt`) and lives in
+/// `notice_write.rs`.
 const NOTICE_EDIT_BTN: (f32, f32, f32, f32) = (417.0, 111.0, 24.0, 24.0);
 const NOTICE_EDIT_BTN_DDJ: &str = "media://interface/stall/stl_edit_button.ddj";
 
@@ -381,7 +381,7 @@ const NOTICE_BG01_RECT: (f32, f32, f32, f32) = (16.0, 140.0, 408.0, 21.0);
 const NOTICE_OK_RECT: (f32, f32, f32, f32) = (182.0, 145.0, 76.0, 24.0);
 const NOTICE_OK_DDJ: &str = "media://interface/ifcommon/com_button.ddj";
 /// `FontColor=255,255,245,218` — the read pane's Confirm caption.
-const NOTICE_OK_COLOR: Color = Color::srgb(1.0, 1.0, 218.0 / 255.0);
+pub(super) const NOTICE_OK_COLOR: Color = Color::srgb(1.0, 1.0, 218.0 / 255.0);
 
 // --- §Command — the action column, `ifguild.txt:477-594` (6 in 5 slots) -----
 
@@ -857,7 +857,14 @@ pub fn spawn_guild_page(
         Pickable::default(),
     ))
     .observe(on_notice_subject);
-    page.spawn(image(NOTICE_EDIT_BTN, NOTICE_EDIT_BTN_DDJ.to_string()));
+    // The edit button now leads somewhere: the write modal is its own child of
+    // #97 (`ifguildnotifywrite.txt`), opened by `notice_write::on_notice_edit`.
+    page.spawn((
+        image(NOTICE_EDIT_BTN, NOTICE_EDIT_BTN_DDJ.to_string()),
+        Button,
+        Hovered::default(),
+    ))
+    .observe(super::notice_write::on_notice_edit);
 
     // --- §NotifyContents — the read pane, hidden until the strip is clicked --
 
@@ -999,7 +1006,7 @@ fn label_static(
 }
 
 /// The six 4px trim pieces of a `com_blacksquare_` plate over a `w x h` box.
-fn blacksquare_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 6] {
+pub(super) fn blacksquare_ring(w: f32, h: f32) -> [((f32, f32, f32, f32), &'static str); 6] {
     let p = BLACKSQUARE_PIECE;
     [
         ((0.0, 0.0, p, p), "left_up"),
