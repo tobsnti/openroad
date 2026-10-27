@@ -15,7 +15,7 @@
 //! | `0xB0E6` | s2c | 2 | `020300`, `020300` |
 //! | `0x70E2` | c2s | 1 | `00000000` |
 //! | `0xB0E2` | s2c | 1 | `020300` |
-//! | `0x70EA` | c2s | 2 | `0000010000000000` (both) |
+//! | `0x70EA` | c2s | 118 | five forms, see [`JobFlagRequest`] |
 //! | `0x34D5` | s2c | 92 | `0040` (all 92, across five sessions) |
 //!
 //! **The pairing is measured, not assumed.** In `admin6/` the ack follows its
@@ -46,8 +46,12 @@
 //!   captured body is a zero gid, and the player's data gives two candidate
 //!   actions (join, withdraw) without binding either to an opcode. Typing them
 //!   would mean naming the action, so they wait for a capture that shows one.
-//! - `0x70EA` is eight bytes, identical on both frames
-//!   (`0000010000000000`). No field split is readable from one constant value.
+//! - `0x70EA` **is now split** — see [`JobFlagRequest`]. The older note here
+//!   ("eight bytes, identical on both frames, no field split readable") was
+//!   true of the two frames it had and false as a statement: a sweep over
+//!   every dump tree found **118** frames in **five** forms, three of them in
+//!   captures of the original client, and the five together make the split
+//!   readable.
 //! - `0x34D5` is 92 frames of one constant `0040`. That it belongs to this
 //!   family at all is somebody else's claim, not a measurement of ours.
 //! - `0x30E0` (specialty price list) and `0x30E6` (job experience) have no
@@ -71,6 +75,58 @@ pub const JOB_RESULT_SUCCESS: u8 = 1;
 ///
 /// Measured on all three job acks we hold (`02 03 00`).
 pub const JOB_RESULT_ERROR: u8 = 2;
+
+/// 0x70EA — client → server, eight bytes written as one blob, carrying a
+/// 32-bit flag word in which exactly one bit is ever set.
+///
+/// Idea of the shape: the sender at `0081eda0` forwards its caller's two
+/// dwords verbatim with a single `FUN_00508fe0(&stack0x00000004, 8)` — one
+/// 8-byte write, so the *grouping* cannot be read off the write sizes the way
+/// it can elsewhere in this family (`0x704F`'s sender writes `1`, which is how
+/// that one-byte action was confirmed). The split here comes from the
+/// variation instead: across 118 frames in 22 dump trees the body takes five
+/// forms, and in every one of them the first `u32` has **exactly one bit set**
+/// while the second is zero.
+///
+/// ```text
+/// 00 02 00 00 00 00 00 00   41x   2^9    original client, our peer, replay
+/// 00 00 00 01 00 00 00 00   33x   2^24   our peer only
+/// 00 01 00 00 00 00 00 00   28x   2^8    original client (four capture sets)
+/// 00 00 20 00 00 00 00 00   11x   2^21   original client, our peer
+/// 00 00 01 00 00 00 00 00    5x   2^16   our peer, replay
+/// ```
+///
+/// Byte 0 is zero in all 118, so no bit below 8 has ever been observed, and
+/// `unk_04` is zero in all 118. Both stay as they are rather than being
+/// narrowed to a `u8`/omitted: a width is only measured where it varied, and
+/// these did not.
+///
+/// **Which bit means what is `[U]`.** The caller decides the mask and the
+/// callers are not in our decompile corpus, so there is nothing to read the
+/// names off. The three bits the original client sends (2^8, 2^9, 2^21) are the
+/// ones a real session uses; the other two come from our own peer and a replay,
+/// so they are *our* behaviour, not evidence about vanilla.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct JobFlagRequest {
+    /// Exactly one bit set in every captured frame; bits 8, 9, 16, 21 and 24
+    /// observed. Modelled as the raw word because a named enum would have to
+    /// name the bits.
+    pub flags: u32,
+    /// Zero in all 118 captured frames.
+    pub unk_04: u32,
+}
+
+impl JobFlagRequest {
+    /// The bits our captures contain, original client and peer together.
+    pub const OBSERVED_BITS: [u32; 5] = [8, 9, 16, 21, 24];
+
+    /// The bit this request carries, if it is a single-bit word as every
+    /// captured frame was. `None` for zero or for more than one bit — both
+    /// unobserved, so neither is rejected, only reported.
+    pub fn single_bit(&self) -> Option<u32> {
+        (self.flags != 0 && self.flags.is_power_of_two()).then(|| self.flags.trailing_zeros())
+    }
+}
 
 /// 0x70E6 — client → server: a job-league request about one NPC.
 ///
@@ -101,6 +157,8 @@ pub struct JobNpcResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use bytes::Bytes;
 
@@ -128,5 +186,50 @@ mod tests {
         let ok = JobNpcResponse::try_from(Bytes::from_static(&[JOB_RESULT_SUCCESS]))
             .expect("success arm");
         assert_eq!(ok.error_code, None);
+    }
+
+    /// The five captured `0x70EA` bodies, and the property that makes the split
+    /// readable: one bit set in the first word, zero in the second. Pinned as a
+    /// decode *and* an encode, because the sender writes the eight bytes as one
+    /// blob and a wrong field order would still be eight bytes.
+    #[test]
+    fn job_flag_request_decodes_every_captured_form() {
+        let captured: [(&[u8], u32); 5] = [
+            (&[0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 9),
+            (&[0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00], 24),
+            (&[0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 8),
+            (&[0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00], 21),
+            (&[0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00], 16),
+        ];
+
+        for (wire, bit) in captured {
+            let mut cursor = Cursor::new(wire);
+            let decoded = JobFlagRequest::read_from(&mut cursor).expect("decodes");
+            assert_eq!(cursor.position() as usize, wire.len());
+            assert_eq!(decoded.byte_size(), wire.len());
+            assert_eq!(decoded.single_bit(), Some(bit), "body {wire:02x?}");
+            assert_eq!(decoded.unk_04, 0);
+            assert!(JobFlagRequest::OBSERVED_BITS.contains(&bit));
+
+            let bytes: Bytes = decoded.into();
+            assert_eq!(bytes.as_ref(), wire, "re-encode must be byte-identical");
+        }
+    }
+
+    /// `single_bit` reports rather than rejects: neither shape below appears in
+    /// any capture, so the type must not pretend to know they are invalid.
+    #[test]
+    fn job_flag_request_reports_unobserved_shapes_instead_of_refusing_them() {
+        let zero = JobFlagRequest {
+            flags: 0,
+            unk_04: 0,
+        };
+        assert_eq!(zero.single_bit(), None);
+        let two_bits = JobFlagRequest {
+            flags: (1 << 8) | (1 << 9),
+            unk_04: 0,
+        };
+        assert_eq!(two_bits.single_bit(), None);
+        assert_eq!(two_bits.byte_size(), 8);
     }
 }

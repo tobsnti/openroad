@@ -25,8 +25,10 @@ routing, is not encoded the way our three-space reading of the numbers suggests.
 
 ### Where to start
 
-19 of the 241 already have captured frames in `packet_dump/`, so they are measurable today
-without a server session:
+18 of the 240 already have captured frames in `packet_dump/`, so they are measurable today
+without a server session. The counts here are what a single tree held when the table was
+written; a sweep over every dump tree can be much larger — `0x70EA` stood at 2 and turned out
+to have 118:
 
 | opcode | dispatched by | captured frames |
 |---|---|---|
@@ -37,7 +39,6 @@ without a server session:
 | `0xB150` | client | 3 |
 | `0x704F` | server | 2 |
 | `0x70E6` | server | 2 |
-| `0x70EA` | server | 2 |
 | `0x74D3` | server | 2 |
 | `0xB0E6` | client | 2 |
 | `0xB50E` | client | 2 |
