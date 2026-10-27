@@ -98,11 +98,12 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// for a meaning that is not there.
 ///
 /// ```text
-/// 00 02 00 00 00 00 00 00   41x   2^9
-/// 00 00 00 01 00 00 00 00   33x   2^24
-/// 00 01 00 00 00 00 00 00   28x   2^8
-/// 00 00 20 00 00 00 00 00   11x   2^21
-/// 00 00 01 00 00 00 00 00    5x   2^16
+///                           total   from the original client
+/// 00 02 00 00 00 00 00 00    41x    40    2^9
+/// 00 00 00 01 00 00 00 00    33x    33    2^24
+/// 00 01 00 00 00 00 00 00    28x    22    2^8
+/// 00 00 20 00 00 00 00 00    11x    11    2^21
+/// 00 00 01 00 00 00 00 00     5x     4    2^16
 /// ```
 ///
 /// Byte 0 is zero in all 118, so no bit below 8 has ever been observed. The
@@ -118,15 +119,37 @@ pub const JOB_RESULT_ERROR: u8 = 2;
 /// which leaves the server handler (`00516870`, answering `0xB0EA`) as the way
 /// to the names.
 ///
-/// The provenance took two corrections and is worth stating once: every root
-/// holding these frames is a recording of the **original** client's own chain
+/// The provenance took three passes and is worth stating once, because two of
+/// them were wrong in opposite directions. Every *session* root holding these
+/// frames records the **original** client's own chain
 /// (`capture-orig/STATE.md:2-4`: `sro_client (Win) -> relay -> sro_proxy ->
-/// skrillax`), including `cap-src/packet_dump/proxy-local`, which carries 73 of
-/// the 118 and the only frames with bit 24. A census pass had read that
-/// directory as ours; it was a path-matching artefact. Cross-checked the other
-/// way too: none of the 22 roots contains a stub invention of ours
-/// (`"Stub Server"`, `"Sword Slash"`, `"Gilgamesh"`), with our own live session
-/// root as the positive control for that search.
+/// skrillax`), `cap-src/packet_dump/proxy-local` included — that directory
+/// carries 73 of the 118 frames and every frame with bit 24. A census pass had
+/// read it as ours through a path-matching artefact.
+///
+/// Bit 16 is the one to read carefully, and it took three readings to settle.
+/// Its five frames sit in two proxy directories and one replay set rather than
+/// in a session root named in the census header — which is why a grep over
+/// those `# root` lines reported zero for it. The header names **roots**;
+/// `discover_roots` stops at the topmost directory holding dumps while the
+/// counting itself recurses, so both directories were fully counted and merely
+/// unnamed. Four of the five are the original client's.
+///
+/// The remaining caveat, measured rather than assumed: one of those sets is
+/// `or-loginfilm-dreh/fixtures`, and that harness replays recorded bytes rather
+/// than recording live ones (`lauf.py`: "The peer only replays bytes we
+/// recorded"). Replayed original bytes are still original bytes, but the chain
+/// is a copy of a recording instead of a session documented in
+/// `capture-orig/STATE.md` — so bit 16 rests on a longer chain than the other
+/// four, even though it rests on the original client just the same.
+///
+/// Cross-checked the other way as well: a root containing a stub invention of
+/// ours (`"Stub Server"`, `"Sword Slash"`, `"Gilgamesh"`) is demonstrably ours,
+/// and none of the 22 roots does — with our own live session root as the
+/// positive control for that search, because the dumps store frames as hex
+/// text and a naive byte search finds nothing in any of them. That test is
+/// one-way: a hit proves ours, a miss proves nothing, so what carries the four
+/// bits is the session note and not the miss.
 ///
 /// The server in those sessions is **skrillax, not vanilla**, so only the
 /// **c2s** half proves anything about the original client. This opcode is c2s;
@@ -141,7 +164,8 @@ pub struct JobFlagRequest {
 }
 
 impl JobFlagRequest {
-    /// Every bit our captures contain, all of them sent by the original client.
+    /// Every bit our captures contain, all five of them with original-client
+    /// frames behind them — 22, 40, 4, 11 and 33 respectively.
     pub const OBSERVED_BITS: [u32; 5] = [8, 9, 16, 21, 24];
 
     /// The bit this request carries, if it is a single-bit word as every
