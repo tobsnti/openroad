@@ -5520,6 +5520,33 @@ mod test {
         assert_eq!(reencoded, body);
     }
 
+    /// A one-byte weather body must FAIL, because the original dies on it.
+    ///
+    /// Measured, both sides. `sro_proxy --replace-s2c 3809:probeB.hex` feeds a
+    /// single `0x01` where the body is two bytes; v1.188 (`sro_client.exe`,
+    /// display "Ver 1.208", Windows 10.0 build 19045) then dies with
+    /// `0xc0000005 ACCESS_VIOLATION`, **writing to `0x00000000`**, at
+    /// `0x00830dda` (`FUN_00830da0+0x3a`) — minidumps `capture-orig/probeA.dmp`
+    /// and `probeA2.dmp`, bit-identical in EIP and access kind, so the probe
+    /// reproduces.
+    ///
+    /// Same shape as the login half (`login::tests::
+    /// a_refusal_without_its_counters_is_refused_not_trusted`, crash at
+    /// `0x004b3bc1`): read a field the body does not carry, write through the
+    /// resulting null. **Stated deviation (ADR-0009):** we refuse the frame.
+    /// The three-byte case is in the same test because the same experiment
+    /// fed it (`probeA.hex` = `01b400`) and a reader that accepts trailing
+    /// garbage is the other half of the same defect.
+    #[test]
+    fn a_short_weather_body_is_refused() {
+        assert!(
+            WeatherUpdate::try_from(Bytes::from_static(&[0x01])).is_err(),
+            "one byte is not a weather body"
+        );
+        // the good case still decodes — the guard costs the live path nothing
+        assert!(WeatherUpdate::try_from(Bytes::from_static(&[0x01, 0xB4])).is_ok());
+    }
+
     #[test]
     fn friend_list_info_decodes_empty_roster() {
         // packet_dump/0x3305.log: 00 (empty roster)

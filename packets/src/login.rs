@@ -333,6 +333,61 @@ mod tests {
         assert_eq!(bytes.as_ref(), &[0x01, 0x00, b'1']);
     }
 
+    /// A refusal whose body ends before its two counters must FAIL the decode.
+    ///
+    /// **This is a deliberate improvement over the original client, and it is
+    /// measured on both sides** (ADR-0009: a stated deviation is legitimate;
+    /// an unexplained one is not).
+    ///
+    /// The original branches on `error_code == 0x01` and then writes the two
+    /// `WrongAttempt` fields without checking that the body carries them. Fed
+    /// a two-byte `0x0201` through `sro_proxy --replace-s2c`, v1.188
+    /// (`sro_client.exe`, display "Ver 1.208", Windows 10.0 build 19045) dies
+    /// with `0xc0000005 ACCESS_VIOLATION`, **writing to `0x00000000`**, at
+    /// `0x004b3bc1` (`FUN_004b3ba0+0x21`) — minidump
+    /// `capture-orig/a102-form-d.dmp`, one minute after the frame at
+    /// 07:43:07 UTC on 2026-09-29.
+    ///
+    /// It is not one bad branch either: the same shape sits behind the weather
+    /// opcode, where a one-byte `0x3809` body kills the same build at
+    /// `0x00830dda` (`FUN_00830da0+0x3a`, also a write to null — minidumps
+    /// `probeA.dmp` / `probeA2.dmp`, bit-identical). See
+    /// `agent::ingame::tests::a_short_weather_body_is_refused` for that half.
+    ///
+    /// A server (or a man in the middle) can therefore crash the original by
+    /// truncating one packet. Our reader refuses the frame instead; refusing
+    /// is what keeps a malformed body from reaching anything that would write.
+    #[test]
+    fn a_refusal_without_its_counters_is_refused_not_trusted() {
+        // the exact body that crashed the original: result 0x02, error 0x01,
+        // and nothing where the two u32 counters belong
+        const TRUNCATED: &[u8] = &[0x02, 0x01];
+        assert!(
+            LoginResponse::try_from(Bytes::from_static(TRUNCATED)).is_err(),
+            "a body that ends before WrongAttempt must not decode"
+        );
+
+        // one byte short of the pair is still short (the `0xA102` form c of
+        // the same experiment: max present, cur missing)
+        const HALF: &[u8] = &[0x02, 0x01, 0x05, 0x00, 0x00, 0x00];
+        assert!(
+            LoginResponse::try_from(Bytes::from_static(HALF)).is_err(),
+            "half of WrongAttempt is not a WrongAttempt"
+        );
+
+        // and the complete body still decodes — the guard must not cost the
+        // good case (this is the native form the gateway really sends)
+        const COMPLETE: &[u8] = &[0x02, 0x01, 0x05, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+        let response = LoginResponse::try_from(Bytes::from_static(COMPLETE)).expect("decodes");
+        assert_eq!(
+            response.login_error.expect("an error body").failure(),
+            LoginFailure::WrongPassword(Some(WrongAttempt {
+                max_attempts: 5,
+                cur_attempts: 1,
+            }))
+        );
+    }
+
     /// A refusal for a wrong password carries the two counters as `max` then
     /// `cur`: a gateway that allows six attempts answers the first wrong one
     /// with `02 01 06 00 00 00 01 00 00 00`.
