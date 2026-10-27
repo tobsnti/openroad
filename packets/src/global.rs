@@ -140,9 +140,21 @@ impl XTrapIdentification {
 /// talking to — see [`PeerKind`].
 ///
 /// The trailing byte is modelled as optional on purpose: the original writes it
-/// on the C→S side, but there is no S→C capture (this packet is exchanged during
-/// connection setup, before the dump-capable receive loop runs), so requiring it
-/// inbound would be an unverified assumption that could reject a real server.
+/// on the C→S side, and the server's reply carries it too.
+///
+/// **S→C captures exist now** — this doc said they did not. Measured with
+/// `dump_census` over 99 dump roots: **419** `0x2001` bodies, 243 of them
+/// server→client and spoken to the *original* client through our proxy:
+///
+/// | frames | body | peer |
+/// |---|---|---|
+/// | 176 | `u16 9` + `SR_Client` + `00` | our own C→S |
+/// | 174 | `u16 13` + `GatewayServer` + `00` | both servers |
+/// | 37 | `u16 11` + `AgentServer` + `00` | the **remote** server |
+/// | 32 | `u16 11` + `AgentServer` + `00` + `a4 3d` | the **local** server |
+///
+/// So one server build appends two more bytes and another does not — which is
+/// why [`Self::extra`] exists and is optional.
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct ModuleIdentification {
     /// The module name. `u16`-length-prefixed, ASCII, no NUL terminator.
@@ -150,6 +162,17 @@ pub struct ModuleIdentification {
     /// One trailing byte, `0` in the original's C→S frame (`004ce8c0:19,26-27`).
     /// Its meaning is `[U]` — the original hardcodes zero and never reads it back.
     pub tail: Option<u8>,
+    /// Two further bytes the **local** server appends to its `AgentServer`
+    /// reply, read because the wire carries them — not because we know what
+    /// they are.
+    ///
+    /// `[S]`: all 32 captured frames read `a4 3d` = 15780, which is also the
+    /// agent port that the same session's `0xA102` announced
+    /// (`...09 00 "127.0.0.1" a4 3d`). But the remote server's session runs on
+    /// port 15884 and its 37 `AgentServer` replies carry **no** such field, so
+    /// this is not generally "the port" — it is one build's addition whose
+    /// meaning stays `[U]`.
+    pub extra: Option<u16>,
 }
 
 /// The peer kinds the original client recognizes by name in the `0x2001` reply
@@ -169,6 +192,7 @@ impl ModuleIdentification {
         ModuleIdentification {
             module: "SR_Client".to_owned(),
             tail: Some(0),
+            extra: None,
         }
     }
 
@@ -200,8 +224,13 @@ impl TryFrom<Bytes> for ModuleIdentification {
             )));
         }
         let module = String::from_utf8(value.split_to(len).to_vec())?;
-        let tail = value.first().copied();
-        Ok(ModuleIdentification { module, tail })
+        let tail = (!value.is_empty()).then(|| value.get_u8());
+        let extra = (value.len() >= 2).then(|| value.get_u16_le());
+        Ok(ModuleIdentification {
+            module,
+            tail,
+            extra,
+        })
     }
 }
 
@@ -212,6 +241,9 @@ impl From<ModuleIdentification> for Bytes {
         buf.put_slice(p.module.as_bytes());
         if let Some(tail) = p.tail {
             buf.put_u8(tail);
+        }
+        if let Some(extra) = p.extra {
+            buf.put_u16_le(extra);
         }
         buf.freeze()
     }
@@ -232,6 +264,40 @@ impl From<XTrapIdentification> for Bytes {
 
 #[cfg(test)]
 mod tests {
+    /// The four captured `0x2001` forms, three of them spoken to the original
+    /// client. The long `AgentServer` reply is the one that used to leave two
+    /// bytes over.
+    #[test]
+    fn the_captured_forms_round_trip() {
+        for (wire, module, tail, extra) in [
+            (&b"\x09\x00SR_Client\x00"[..], "SR_Client", Some(0u8), None),
+            (
+                &b"\x0d\x00GatewayServer\x00"[..],
+                "GatewayServer",
+                Some(0),
+                None,
+            ),
+            (
+                &b"\x0b\x00AgentServer\x00"[..],
+                "AgentServer",
+                Some(0),
+                None,
+            ),
+            (
+                &b"\x0b\x00AgentServer\x00\xa4\x3d"[..],
+                "AgentServer",
+                Some(0),
+                Some(15780u16),
+            ),
+        ] {
+            let bytes = Bytes::from_static(wire);
+            let decoded = ModuleIdentification::try_from(bytes.clone()).expect("decodes");
+            assert_eq!(decoded.module, module, "{wire:?}");
+            assert_eq!((decoded.tail, decoded.extra), (tail, extra), "{wire:?}");
+            assert_eq!(Bytes::from(decoded), bytes, "{wire:?}");
+        }
+    }
+
     use super::*;
 
     /// The reply shape the reference proxy sends: `02 02` + 1024 zeros.
