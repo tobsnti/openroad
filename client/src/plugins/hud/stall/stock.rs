@@ -418,7 +418,7 @@ pub fn sync_stock_modal(
                     // prefilled with the stack and takes focus; the price
                     // opens empty, because the player sets it and the original
                     // prefills nothing it could get wrong.
-                    let mut field =
+                    let field =
                         |rect: (f32, f32, f32, f32), prefill: Option<String>, max: usize| {
                             let mut node = abs_node(rect, s);
                             node.padding = UiRect::top(Val::Px(2.0 * s));

@@ -525,6 +525,7 @@ fn spawn_countdown_overlay(
                 CountdownText,
                 Text::new(text.to_string()),
                 TextFont {
+                    font: font.into(),
                     // 22 px is **ours**. The original ships the sentence
                     // (`UIIT_MSG_LOGOUT_REMAIN_TIME`, "It will take %d seconds
                     // to close the game.") but no control for it: there is no
