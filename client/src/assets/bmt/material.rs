@@ -1,5 +1,6 @@
 // https://github.com/DummkopfOfHachtenduden/SilkroadDoc/wiki/JMXVBMT
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -43,13 +44,20 @@ pub struct SroMaterial {
     /// `0` = a bare file name next to the `.bmt` itself.
     ///
     /// Named `diffuse_map_is_relative` until 2026-10-26, which said the
-    /// opposite of what it holds: a census of the user's own `Data.pk2` finds
-    /// the flag set on **539** materials, **all 539** carrying a separator in
-    /// the path, and clear on **13,946**, **none** of which carry one (424 of
-    /// those are empty). The behaviour was always right — only the name was
-    /// backwards, which is why `bsr2glb/bundle.rs` had to explain it against
-    /// itself. JMX-File-Editor (MIT) calls the same field `isAbsolute`.
+    /// opposite of what it holds. Re-counted 2026-10-28 over the whole corpus
+    /// below: the byte is `1` on **729** materials, **all 729** naming an
+    /// archive-rooted path (726 under `prim\`, 3 under `compound\`), and `0`
+    /// on **15,497**, **none** of which carry a separator (426 of those are
+    /// empty). The behaviour was always right — only the name was backwards,
+    /// which is why `bsr2glb/bundle.rs` had to explain it against itself.
+    /// JMX-File-Editor and SroPk2Studio (both MIT) call the field `isAbsolute`.
     pub diffuse_map_is_absolute: bool,
+    /// The normal map of the extra block a material can carry, as the file
+    /// spells it; `None` when there is no block, which is the usual case even
+    /// among flagged materials (see [`JMXVBMT::from`]). Eight blocks in three
+    /// files of the user's data, read so that those files come out whole —
+    /// nothing samples the map yet.
+    pub normal_map_path: Option<PathBuf>,
 }
 
 /// Fixed part of one material record: four RGBA colors, power, flag, the
@@ -60,9 +68,11 @@ const MATERIAL_FIXED_LEN: usize = 4 * 16 + 4 + 4 + 4 + 3;
 /// A length-prefixed string, refusing a prefix the buffer cannot hold.
 ///
 /// `get_fixed_size_string` slices `chunk()` directly, so a bogus `u32` length
-/// **panics** rather than failing the load — and one file in the user's own
-/// data reaches exactly that (see [`JMXVBMT::from`]). Same guard the `.bms`
-/// header reader grew for the same reason.
+/// **panics** rather than failing the load. Both readings in [`JMXVBMT::from`]
+/// run into exactly that on the user's own data — the plain one on **2** files,
+/// the normal-map one on **30** — and a reading that has to be rejected must
+/// come back, not abort. Same guard the `.bms` header reader grew for the same
+/// reason.
 fn read_string<T: Buf>(value: &mut T) -> Option<String> {
     if value.remaining() < 4 {
         return None;
@@ -74,9 +84,23 @@ fn read_string<T: Buf>(value: &mut T) -> Option<String> {
     Some(value.get_double_len_string())
 }
 
+/// A length-prefixed path with SRO's backslashes rewritten to the host's
+/// separator.
+fn read_path<T: Buf>(value: &mut T) -> Option<PathBuf> {
+    Some(PathBuf::from(
+        read_string(value)?
+            .replace(r"\\", r"\")
+            .replace(r"\", std::path::MAIN_SEPARATOR_STR),
+    ))
+}
+
 impl SroMaterial {
     /// Reads one material, or `None` when the buffer does not hold a whole one.
-    fn read<T: Buf>(value: &mut T) -> Option<Self> {
+    ///
+    /// `normal_map_block` is the array shape being tried: with it, a material
+    /// whose flag carries `0x2000` is followed by one more path and four bytes
+    /// — see [`JMXVBMT::from`], which decides per file which shape fits.
+    fn read<T: Buf>(value: &mut T, normal_map_block: bool) -> Option<Self> {
         let name = read_string(value)?;
         if value.remaining() < 4 * 16 + 4 + 4 + 4 {
             return None;
@@ -87,15 +111,11 @@ impl SroMaterial {
         let emissive = value.get_color_rgba();
         let power = value.get_f32_le();
         let flag = value.get_u32_le();
-        let diffuse_map_path = PathBuf::from(
-            read_string(value)?
-                .replace(r"\\", r"\")
-                .replace(r"\", std::path::MAIN_SEPARATOR_STR),
-        );
+        let diffuse_map_path = read_path(value)?;
         if value.remaining() < 4 + 3 {
             return None;
         }
-        Some(Self {
+        let mut material = Self {
             name,
             diffuse,
             ambient,
@@ -109,28 +129,42 @@ impl SroMaterial {
             diffuse_map_unk1: value.get_u8(),
             diffuse_map_is_absolute: value.get_u8() == 1,
             ..default()
-        })
+        };
+        if normal_map_block && material.has_bump_map() {
+            material.normal_map_path = Some(read_path(value)?);
+            if value.remaining() < 4 {
+                return None;
+            }
+            // four bytes nobody has explained yet; SroPk2Studio (MIT) reads
+            // them as one u32 and calls them `normalMapUnk`
+            value.advance(4);
+        }
+        Some(material)
     }
 }
 
-// PrimMtrlFlag, from a census of the user's own `Data.pk2` (2026-10-26):
-// 14,485 materials in 3,757 of its 3,759 `.bmt` files, counting only files this
-// reader consumes to the last byte. Only **7** of the 32 bits are ever set, in
-// **18** distinct flag words — that is the number worth keeping, because it is
-// what says the other 25 bits need no implementation:
-//   0x0001 bit0  two-sided / no backface cull       3,969  27.4%  is_two_sided
-//   0x0004 bit2  D3D sun specular enable              150   1.0%  is_specular_emphasis
-//   0x0008 bit3  self-illuminated / emissive          129   0.9%  is_emissive
-//   0x0040 bit6  ALWAYS set - mandatory marker     14,485 100.0%  has_color_tint (misnomer)
-//   0x0100 bit8  has diffuse map / texture         14,025  96.8%  has_diffuse_map
-//   0x0200 bit9  has alpha channel                  5,405  37.3%  has_alpha_channel
-//   0x2000 bit13 the wiki's "BumpMap"                 111   0.8%  has_bump_map
+// PrimMtrlFlag, from a census of the user's own extracted `Data.pk2`
+// (2026-10-28): 16,226 materials in all 4,171 of its `.bmt` files, every one
+// signature `JMXVBMT 0102` and every one read to its last byte by the reader
+// below. Only **7** of the 32 bits are ever set, in **19** distinct flag words
+// — that is the number worth keeping, because it is what says the other 25
+// bits need no implementation:
+//   0x0001 bit0  two-sided / no backface cull       4,439  27.4%  is_two_sided
+//   0x0004 bit2  D3D sun specular enable              192   1.2%  is_specular_emphasis
+//   0x0008 bit3  self-illuminated / emissive          158   1.0%  is_emissive
+//   0x0040 bit6  ALWAYS set - mandatory marker     16,226 100.0%  has_color_tint (misnomer)
+//   0x0100 bit8  has diffuse map / texture         15,748  97.1%  has_diffuse_map
+//   0x0200 bit9  has alpha channel                  6,066  37.4%  has_alpha_channel
+//   0x2000 bit13 the wiki's "BumpMap"                 121   0.7%  has_bump_map
 // Bits 1, 4, 5, 7, 10-12 and 14-31 are set nowhere.
 //
-// The block this replaced claimed 12,227 materials (2026-07-09) and that
-// 0x2000 "is never set in this build". The second half was never true, and the
-// first has a date on it for exactly this reason: a census is a measurement,
-// not a fact about the format.
+// Two earlier runs of the same census stood here, at 12,227 materials
+// (2026-07-09) and 14,485 in 3,757 of 3,759 files (2026-10-26). Both
+// enumerated only the lowercase spelling: **412** of the 4,171 files are
+// spelled `.BMT`, and two of those are among the three `JMXVBMT::from` has to
+// read the second way. A census carries its date and its population for
+// exactly that reason — a narrower one reads as a fact about the format.
+
 #[allow(dead_code)]
 impl SroMaterial {
     /// PrimMtrlFlag Bit6 (0x40). The wiki labels this "ColorTint?", but the
@@ -148,18 +182,15 @@ impl SroMaterial {
         self.flag & 0x200 != 0
     }
 
-    /// PrimMtrlFlag Bit13 (0x2000), the wiki's "BumpMap": **111 materials in
-    /// 30 files** carry it (census above), so it is live, not dead.
+    /// PrimMtrlFlag Bit13 (0x2000), the wiki's "BumpMap": **121 materials in
+    /// 34 files** carry it (census above), so it is live, not dead.
     ///
-    /// It also appears to change the record: the two `.bmt` files this reader
-    /// does **not** consume exactly both carry it, and in
-    /// `prim/mtrl/item/etc/avatar_w_ghostcaptain_2.bmt` the first material is
-    /// followed by a second path, `prim\mtrl\item\etc\
-    /// avatar_w_ghost_captain_n.ddj` — a normal map this struct has no field
-    /// for. Counting those two files' materials as well gives 114 in 32 files.
-    /// What decides the extra field is `[U]`: `prim/mtrl/mob/arabia/
-    /// mustafa.bmt` carries the same flag word (`0x2345`) on both materials
-    /// and has no extra path, only two unread bytes at the end.
+    /// What it does **not** do is announce the normal-map block: only **3** of
+    /// those 34 files carry one. `mob/arabia/khulood.bmt` and
+    /// `mob/bossdungeon/khulood_boss_dungeon.BMT` hold the same two material
+    /// names under the same two flag words (`0x2344`, `0x2345`) and disagree
+    /// about the block, so no flag can be the switch — [`JMXVBMT::from`]
+    /// decides per file instead.
     pub fn has_bump_map(&self) -> bool {
         self.flag & 0x2000 != 0
     }
@@ -206,53 +237,114 @@ pub struct JMXVBMT {
     pub diffuse_textures: HashMap<String, Handle<Image>>,
 }
 
+/// One reading of the material array: what came out, and how much of the file
+/// it left unexplained.
+struct Reading {
+    materials: Vec<SroMaterial>,
+    /// Bytes between the last material read and the end of the file.
+    leftover: usize,
+    /// Every material the count claims came out.
+    complete: bool,
+}
+
+impl Reading {
+    /// This reading explains the whole file.
+    fn exact(&self) -> bool {
+        self.complete && self.leftover == 0
+    }
+
+    /// Complete beats cut short, then the smaller tail wins.
+    fn rank(&self) -> (bool, Reverse<usize>) {
+        (self.complete, Reverse(self.leftover))
+    }
+}
+
+/// Reads the material array in one of its two shapes (see [`JMXVBMT::from`]).
+fn read_array(body: &[u8], count: u32, normal_map_block: bool) -> Reading {
+    let mut cursor = Cursor::new(body);
+    // a count is one u32 of a possibly broken file: only trust it as far
+    // as the bytes that are actually there
+    let capacity = count.min((cursor.remaining() / MATERIAL_FIXED_LEN) as u32 + 1);
+    let mut materials = Vec::with_capacity(capacity as usize);
+    while materials.len() < count as usize {
+        let Some(material) = SroMaterial::read(&mut cursor, normal_map_block) else {
+            break;
+        };
+        materials.push(material);
+    }
+    Reading {
+        complete: materials.len() == count as usize,
+        leftover: cursor.remaining(),
+        materials,
+    }
+}
+
 impl JMXVBMT {
-    /// Reads a material set, stopping at the first record the buffer does not
-    /// hold instead of panicking on it.
+    /// Reads a material set from `body` — the file after its 12-byte
+    /// signature, through to its last byte.
     ///
-    /// Why the guard is not defensive dressing: a census of the user's own
-    /// `Data.pk2` (2026-10-26, 3,759 `.bmt`) finds **one** file this reader
-    /// cannot follow, `prim/mtrl/item/etc/avatar_w_ghostcaptain_2.bmt`. Its
-    /// four bump-flagged materials each carry an **extra** length-prefixed
-    /// path — the diffuse name with `_n` appended, a normal map — plus four
-    /// bytes, and with that rule the file consumes exactly (969/969). No other
-    /// file in the corpus does: the other 31 files carrying the same `0x2000`
-    /// flag consume exactly **without** it, and none consumes under both
-    /// rules. So the extra block is not what the flag means; it is one
-    /// repacked file from the same `item/etc` family as the three `.bms` the
-    /// mesh reader cannot follow either. Modelling it from a single sample
-    /// would be inventing a format, so this reads what it can and says what it
-    /// dropped.
+    /// Idea: the material array has two shapes and nothing in the file says
+    /// which one a file is in, so read it both ways and keep the reading that
+    /// explains the file — the one that lands on its last byte. The second
+    /// shape puts one more path (a normal map) plus four bytes after every
+    /// material whose flag carries `0x2000`. The wiki and SroPk2Studio's
+    /// `Bmt.h` (MIT) read that flag as announcing the block; measured over the
+    /// census above it does not, because **30** of the 34 flagged files
+    /// consume exactly *without* it, **3** only *with* it, and none comes out
+    /// even both ways. The shape is decidable — per file, not per flag.
     ///
-    /// (`prim/mtrl/mob/arabia/mustafa.bmt` ends with two bytes nobody reads;
-    /// they are a file tail, not a material field — both rules leave exactly
-    /// those two over.)
-    pub fn from<T: Buf>(value: &mut T, path: PathBuf) -> Self {
-        if value.remaining() < 4 {
+    /// Those three cost real resources, each named by a `.bsr` of the same
+    /// install: without the block `item/etc/avatar_w_ghostcaptain_2.bmt` ends
+    /// after 1 of its 5 materials and `mob/bossdungeon/khulood_boss_dungeon
+    /// .BMT` after 1 of 2 (815 and 237 bytes left). The third,
+    /// `mustafa_boss_dungeon_stone.BMT`, is why the leftover decides and not
+    /// the material count: it reads *complete* with 122 bytes left, its second
+    /// material the first one's normal-map path taken for a name. And one file
+    /// is exact under neither shape — `mob/arabia/mustafa.bmt` leaves two
+    /// bytes without the block and is cut short with it, so the smaller tail
+    /// keeps it; those two bytes are a file tail, not a material field.
+    ///
+    /// SroPk2Studio's `Bmt.cpp` (MIT) reads the array twice for the same
+    /// reason, after the flag desynced it on the mobile remake's
+    /// `karkadann.bmt`; its header claims the block "does not exist at all in
+    /// VSRO 1.188 files", which the three files above refute for this build.
+    /// The method is adopted, that claim is not, and no code was ported.
+    pub fn from(body: &[u8], path: PathBuf) -> Self {
+        let Some((count, body)) = body.split_at_checked(4) else {
             warn!("{}: no material count", path.display());
             return Self {
                 materials: Vec::new(),
                 diffuse_textures: HashMap::new(),
             };
-        }
-        let count = value.get_u32_le();
-        // a count is one u32 of a possibly broken file: only trust it as far
-        // as the bytes that are actually there
-        let capacity = count.min((value.remaining() / MATERIAL_FIXED_LEN) as u32 + 1);
-        let mut materials = Vec::with_capacity(capacity as usize);
-        for index in 0..count {
-            let Some(mut mat) = SroMaterial::read(value) else {
-                warn!(
-                    "{}: stops after {index} of {count} materials - the record does not fit \
-                     what is left",
-                    path.display()
-                );
-                break;
-            };
-            mat.path = path.clone();
-            materials.push(mat);
+        };
+        let count = u32::from_le_bytes([count[0], count[1], count[2], count[3]]);
+
+        let plain = read_array(body, count, false);
+        // Only a file that does not come out even is read a second time: an
+        // exact reading is already the best either shape can do.
+        let reading = if plain.exact() {
+            plain
+        } else {
+            let bumped = read_array(body, count, true);
+            if bumped.rank() > plain.rank() {
+                bumped
+            } else {
+                plain
+            }
+        };
+        if !reading.complete {
+            warn!(
+                "{}: stops after {} of {count} materials - neither shape of the array fits \
+                 what is left",
+                path.display(),
+                reading.materials.len()
+            );
         }
 
+        let mut materials = reading.materials;
+        for material in &mut materials {
+            material.path = path.clone();
+        }
         Self {
             materials,
             diffuse_textures: HashMap::new(),
@@ -446,14 +538,15 @@ impl AssetLoader for BmtLoader {
             .read_to_end(&mut buf)
             .await
             .map_err(|e| BmtLoaderError::IO(e))?;
-        let mut cursor = Cursor::new(&buf);
-        let sig = cursor.get_fixed_size_string(12);
+        let sig = Cursor::new(&buf).get_fixed_size_string(12);
         if sig != "JMXVBMT 0102" {
             return Err(BmtLoaderError::Signature(sig));
         }
         let mut path = load_context.path().path().to_path_buf();
         path.pop();
-        let mut material = JMXVBMT::from(&mut cursor, path);
+        // the signature matched in full, so the 12 bytes are there; the reader
+        // needs the rest as a slice because it reads it twice
+        let mut material = JMXVBMT::from(&buf[12..], path);
 
         let mut diffuse_textures = HashMap::new();
         for mat in &material.materials {
@@ -749,33 +842,122 @@ mod tests {
         }
     }
 
+    /// One material record, in whichever of the two shapes the reader has to
+    /// tell apart: `normal_map` appends the extra path plus its four bytes.
+    fn material_bytes(name: &str, flag: u32, texture: &str, normal_map: Option<&str>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(&[0u8; 4 * 16]); // four RGBA colors
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // power
+        bytes.extend_from_slice(&flag.to_le_bytes());
+        bytes.extend_from_slice(&(texture.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(texture.as_bytes());
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&[32, 8, 0]);
+        if let Some(path) = normal_map {
+            bytes.extend_from_slice(&(path.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(path.as_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// A whole file body (count + records), as [`JMXVBMT::from`] takes it.
+    fn set_bytes(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = (records.len() as u32).to_le_bytes().to_vec();
+        for record in records {
+            bytes.extend_from_slice(record);
+        }
+        bytes
+    }
+
     /// One real material, then a record that is cut short. The reader must
     /// keep the first and stop — before the guard it panicked inside
     /// `get_fixed_size_string`, which is what one file of the user's own data
-    /// (`avatar_w_ghostcaptain_2.bmt`) drives it into.
+    /// (`avatar_w_ghostcaptain_2.bmt`) drives the plain reading into.
     #[test]
     fn a_truncated_record_stops_the_read_instead_of_panicking() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&2u32.to_le_bytes()); // two materials claimed
-        bytes.extend_from_slice(&4u32.to_le_bytes());
-        bytes.extend_from_slice(b"wall");
-        bytes.extend_from_slice(&[0u8; 4 * 16]); // four RGBA colors
-        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // power
-        bytes.extend_from_slice(&0x141u32.to_le_bytes()); // flag
-        bytes.extend_from_slice(&8u32.to_le_bytes());
-        bytes.extend_from_slice(b"wall.ddj");
-        bytes.extend_from_slice(&1.0f32.to_le_bytes());
-        bytes.extend_from_slice(&[32, 8, 0]);
-        // the second record starts with a length prefix nothing can satisfy
+        let mut bytes = set_bytes(&[material_bytes("wall", 0x141, "wall.ddj", None)]);
+        bytes[..4].copy_from_slice(&2u32.to_le_bytes()); // two materials claimed
+                                                         // the second record starts with a length prefix nothing can satisfy
         bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
 
-        let mut cursor = std::io::Cursor::new(bytes);
-        let set = JMXVBMT::from(&mut cursor, PathBuf::from("prim/mtrl/test"));
+        let set = JMXVBMT::from(&bytes, PathBuf::from("prim/mtrl/test"));
 
         assert_eq!(set.materials.len(), 1, "the readable material is kept");
         assert_eq!(set.materials[0].name, "wall");
         assert_eq!(set.materials[0].diffuse_map_path, PathBuf::from("wall.ddj"));
         assert!(!set.materials[0].diffuse_map_is_absolute);
+        assert_eq!(set.materials[0].normal_map_path, None);
+    }
+
+    /// The same flag word, the two shapes it is found in: 30 of the user's 34
+    /// flagged files have no normal-map block, 3 have one. Whichever shape a
+    /// file is in, every material has to come out, and the wrong reading fails
+    /// in both directions — which is why the tail decides and not the material
+    /// count. Read with the block, the first case stops after 1 of 2 the way
+    /// `mob/arabia/karkadann.bmt` does; read without it, the second comes out
+    /// *complete* with a 56-byte tail the way
+    /// `mob/bossdungeon/mustafa_boss_dungeon_stone.BMT` does.
+    #[test]
+    fn a_flagged_file_reads_whole_in_either_shape() {
+        const FLAG: u32 = 0x2345; // the word mustafa.bmt and karkadann.bmt share
+
+        let without = set_bytes(&[
+            material_bytes("mustafa", FLAG, "mustafa.ddj", None),
+            material_bytes("mustafa_01", FLAG, "mustafa_01.ddj", None),
+        ]);
+        let set = JMXVBMT::from(&without, PathBuf::from("prim/mtrl/mob/arabia"));
+        assert_eq!(set.materials.len(), 2);
+        assert!(set.materials.iter().all(|m| m.has_bump_map()));
+        assert!(set.materials.iter().all(|m| m.normal_map_path.is_none()));
+
+        let with = set_bytes(&[
+            material_bytes(
+                "khulood",
+                FLAG,
+                "khulood.ddj",
+                Some(r"prim\mtrl\khulood_n.ddj"),
+            ),
+            material_bytes(
+                "khulood_01",
+                FLAG,
+                "khulood_01.ddj",
+                Some("khulood_01_n.ddj"),
+            ),
+        ]);
+        let set = JMXVBMT::from(&with, PathBuf::from("prim/mtrl/mob/bossdungeon"));
+        assert_eq!(set.materials.len(), 2, "the second material is not lost");
+        assert_eq!(
+            set.materials[0].normal_map_path,
+            Some(PathBuf::from(format!(
+                "prim{sep}mtrl{sep}khulood_n.ddj",
+                sep = std::path::MAIN_SEPARATOR
+            ))),
+            "the normal map path is read, separators and all"
+        );
+        assert_eq!(
+            set.materials[1].normal_map_path,
+            Some(PathBuf::from("khulood_01_n.ddj"))
+        );
+    }
+
+    /// `prim/mtrl/mob/arabia/mustafa.bmt` is exact under neither shape: two
+    /// bytes left without the block, cut short with it. The smaller tail wins,
+    /// so both its materials survive and the tail stays unread.
+    #[test]
+    fn neither_shape_exact_keeps_the_reading_with_the_smaller_tail() {
+        let mut bytes = set_bytes(&[
+            material_bytes("mustafa", 0x2345, "mustafa.ddj", None),
+            material_bytes("mustafa_01", 0x2345, "mustafa_01.ddj", None),
+        ]);
+        bytes.extend_from_slice(&[0, 0]); // the file tail nobody reads
+
+        let set = JMXVBMT::from(&bytes, PathBuf::from("prim/mtrl/mob/arabia"));
+
+        assert_eq!(set.materials.len(), 2);
+        assert!(set.materials.iter().all(|m| m.normal_map_path.is_none()));
     }
 
     /// Meshes may spell a material differently from its set (`Gyo` vs `gyo`),
