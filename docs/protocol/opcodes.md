@@ -139,7 +139,8 @@ followed by payload writes, and `CMP WORD PTR [reg], <opcode>` in a dispatcher.
 | `0x7021` | MovementRequest | C→S | wired |  |
 | `0xB021` | MovementResponse | S→C | wired |  |
 | `0xB023` | MovementPositionUpdate | S→C | wired |  |
-| `0xB024` | MovementAngleResponse | S→C | wired | turn-in-place; C→S half 0x7024 unwired (no builder, no capture) |
+| `0xB024` | MovementAngleResponse | S→C | wired | turn-in-place; layout from the original's parser, still no capture |
+| `0x7024` | MovementAngleRequest | C→S | wired | the heading the client reports **while** turning; bare `u16`, no tail. 80 original-client frames in two sessions, all 2 bytes, 49 distinct values; each of the 24 `0x7021` turn frames there is followed 6-20 ms later by a `0x7024` with the same heading (22 of 24 within two units). Earlier "no builder, no capture" was xBot's `PacketBuilder.cs`, not the original |
 | `0x30D0` | EntitySpeedUpdate | S→C | wired |  |
 | `0x30BF` | EntityStateUpdate | S→C | wired |  |
 | `0x3054` | EntityLevelUp | S→C | wired |  |

@@ -447,15 +447,41 @@ pub struct MovementPositionUpdate {
 /// as in [`MovementPositionUpdate`].
 ///
 /// No capture exists yet (`packet_dump/0xb024.log` is absent), so the layout
-/// rests on the parser alone and the heading mapping is cross-checked only
-/// against our other heading fields — not against live bytes for this opcode.
-///
-/// The C→S half (0x7024 `CLIENT_CHARACTER_MOVEMENT_ANGLE`) is deliberately
-/// **not** modelled: the original has no builder for it and its dispatch arm
-/// is an empty stub, so any body would be invented.
+/// rests on the parser alone. The heading mapping is no longer uncorroborated
+/// though: the C→S half [`MovementAngleRequest`] carries the same encoding and
+/// is capture-verified.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MovementAngleResponse {
     pub unique_id: u32,
+    pub angle: u16,
+}
+
+/// 0x7024 — client → server: the heading the character is **actually** facing
+/// while it turns in place. `0x7021` kind 0 names the *target* of a turn; this
+/// reports the facing itself and keeps coming while the character rotates, so a
+/// peer that reads only `0x7021` sees where a turn ends but not its course.
+///
+/// 80 frames in two original-client sessions (`proxy-local/c2s` 75,
+/// `capture-orig/.../S2-progress/c2s` 5), swept over every dump root this
+/// workspace has. Every one is exactly **two bytes** — no trailing flag, no
+/// timestamp — across 49 distinct values spread over the whole circle. Each of
+/// the 24 `0x7021` turn-in-place frames in those sessions is followed by a
+/// `0x7024` 6–20 ms later (median 13 ms) carrying the *same* heading bytes: 22
+/// of 24 identical or within two units. That pairing, not a guess, is what
+/// fixes the width and the encoding — the same `0..=u16::MAX → 0..2π` heading
+/// as [`MovementRequest::ToAngle`].
+///
+/// This replaces an earlier note here that the original has no builder for
+/// `0x7024` and an empty dispatch stub. That was read in **xBot**
+/// (`PacketBuilder.cs`, `Agent.cs:275-277`) and attributed to the original: the
+/// original client sends it in both captured sessions, and the vSRO GameServer
+/// dispatches it to a real handler (server dispatch table).
+///
+/// `[U]` — *when* the client sends one. One session answers every turn with a
+/// `0x7024` (19 of 19), the other only 5 of 53; the condition is not settled,
+/// so nothing here should be read as "one per turn".
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct MovementAngleRequest {
     pub angle: u16,
 }
 
@@ -4994,6 +5020,29 @@ mod test {
         let decoded: MovementAngleResponse = body.try_into().unwrap();
         assert_eq!(decoded.unique_id, u32::MAX);
         assert_eq!(decoded.angle, 0x1234);
+    }
+
+    /// Four captured 0x7024 bodies, each one paired with the 0x7021 turn that
+    /// preceded it by 6-20 ms — the pairing is why we know the two bytes are
+    /// that turn's heading and not something else.
+    ///
+    /// `f8d8`/`4ac0` are from `proxy-local/c2s`, `d1d0`/`dcce` from the
+    /// 2026-09-29 `S2-progress` capture. Re-encoding has to reproduce them
+    /// byte for byte: a decoder that read one byte, or read big-endian, would
+    /// still "work" on a 2-byte body.
+    #[test]
+    fn movement_angle_request_round_trips_captured_bodies() {
+        for (wire, angle) in [
+            ([0xF8, 0xD8], 0xD8F8u16),
+            ([0x4A, 0xC0], 0xC04A),
+            ([0xD1, 0xD0], 0xD0D1),
+            ([0xDC, 0xCE], 0xCEDC),
+        ] {
+            let body = Bytes::copy_from_slice(&wire);
+            let decoded: MovementAngleRequest = body.clone().try_into().unwrap();
+            assert_eq!(decoded.angle, angle);
+            assert_eq!(Bytes::from(decoded), body);
+        }
     }
 
     /// 0x3080 S->C: `{type, uid}`, plus a party-only `setup` byte. The
