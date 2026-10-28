@@ -38,16 +38,17 @@ impl HeightMap {
     /// This was bilinear before. A bilinear patch is a different, curved
     /// surface: it deviates from the triangulated one by up to `|twist| / 4`,
     /// `twist = h00 + h11 - h10 - h01`, with the maximum at the quad's centre.
-    /// Over the player's own `Map/*/*.m` (1,105,920 quads) that is a median of
-    /// 0.05 units, 1.19 at the 90th percentile and 6.71 at the 99th — a third
-    /// of a body height (~18 units) on broken ground, and it applied to *every*
-    /// quad, because a curved patch meets flat triangles nowhere but their
-    /// shared corners and edges.
+    /// Over the player's own `Map/*/*.m` — all 4,644 readable files, 42,799,104
+    /// quads — that is a median of 0.06 units, 1.20 at the 90th percentile,
+    /// 5.99 at the 99th and 1,518 at worst, and it applied to *every* quad,
+    /// because a curved patch meets flat triangles nowhere but their shared
+    /// corners and edges.
     ///
-    /// Our own terrain mesh still splits every quad along h00-h11
-    /// (`assets::m::block_mesh::BLOCK_INDICES`), so after this the mover stands
-    /// exactly on the drawn surface wherever the parities agree — half the
-    /// quads — and the other half needs the mesh to alternate too.
+    /// Our own terrain mesh splits on the same parity
+    /// (`assets::m::block_mesh::quad_triangles`), so the mover stands exactly
+    /// on the drawn ground on every quad. It did not always: while the mesh
+    /// still split every quad along h00-h11, the two disagreed by up to
+    /// `|twist| / 2` on the half of each region where the parities differ.
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let max_cell = (HEIGHT_MAP_VERTS_PER_SIDE - 2) as f32;
         let fx = (x / HEIGHT_MAP_STEP).clamp(0.0, max_cell + 1.0);
