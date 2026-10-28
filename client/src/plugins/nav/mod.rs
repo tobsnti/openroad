@@ -34,12 +34,6 @@ const HEIGHT_PROBE_RANGE: f32 = 500.0;
 /// from blocking movement on a different stacked level of the same object
 /// (character bodies are ~18 units tall, so 100 clears a storey).
 pub(crate) const OBJECT_BLOCK_Y_BAND: f32 = 100.0;
-/// How far above the mover's feet a walkable surface may sit and still be
-/// stepped onto (see [`pick_step_height`]). Lets a mover climb
-/// stairs/step objects (whose next tread is a little above), while a full
-/// storey up (an overhead bridge deck, ~[`OBJECT_BLOCK_Y_BAND`]) stays out of
-/// reach so the mover keeps to the ground running underneath it.
-const MAX_STEP_UP: f32 = 30.0;
 
 /// The walkable (object-level) nav meshes of a spawned map object. Attached to
 /// the resource root entity by `SpawnResource` (commands/mod.rs) whenever any of
@@ -1099,23 +1093,20 @@ fn edges_coincide(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
 }
 
 /// Is `candidate` a better surface to stand on than `current`, for a mover
-/// whose feet are at `reference_y`?
+/// whose feet are at `reference_y`? The one under the feet: nearest by
+/// |height − y|, the same rule [`NavMeshRaycast::surface_at`] applies across
+/// surfaces, applied here among one object's own stacked triangles.
 ///
-/// Prefers the *highest* surface still within [`MAX_STEP_UP`] of the feet: that
-/// climbs stairs and step objects even where the terrain keeps running
-/// underneath them (whose height stays near the feet and would otherwise always
-/// win), while a full storey up — an overhead bridge deck — stays out of reach
-/// so the mover keeps to the ground below it. With nothing in stepping range
-/// (the mover is below everything) the nearest surface wins.
+/// This used to prefer the *highest* surface within 30 units ("climb the
+/// tread"), falling back to nearest only above that. The two agree whenever
+/// the feet are on a tread; they differ exactly when a higher tread lies
+/// within 30 but farther away than the one under the feet — and there the old
+/// rule moved the feet up by up to 30 on a mover that had not stepped. Stairs
+/// are climbed by walking, i.e. by the XZ moving under the next tread, not by
+/// a height preference; that is what the original's walk does too (no Y gate,
+/// NAVIGATION.md §5.4).
 fn prefer_height(current: f32, candidate: f32, reference_y: f32) -> bool {
-    let reachable = candidate - reference_y <= MAX_STEP_UP;
-    let current_reachable = current - reference_y <= MAX_STEP_UP;
-    match (reachable, current_reachable) {
-        (true, true) => candidate > current,
-        (true, false) => true,
-        (false, true) => false,
-        (false, false) => (candidate - reference_y).abs() < (current - reference_y).abs(),
-    }
+    (candidate - reference_y).abs() < (current - reference_y).abs()
 }
 
 /// [`prefer_height`] folded over an running best.
@@ -2192,6 +2183,56 @@ mod tests {
             }
             other => panic!("expected a plain step on the ground, got {other:?}"),
         }
+    }
+
+    /// One object, two walkable layers under the same spot — a tread 25 units
+    /// above the floor, well inside the old 30-unit "step up" reach. A mover
+    /// standing on the floor must be given the floor, not lifted onto the
+    /// tread it never walked up to: the layer under the feet is the nearest
+    /// one. This is the mutation control for `prefer_height`: "highest wins"
+    /// passes every other test here and fails this one.
+    #[test]
+    fn a_tread_above_the_feet_does_not_lift_a_mover_standing_on_the_floor() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<JMXVNVM>()
+        .init_asset::<JMXVBMS>();
+
+        let mut tread = deck_bms(false);
+        if let Some(nav) = tread.navmesh.as_mut() {
+            for v in &mut nav.vertices {
+                v.position.y = 25.0;
+            }
+            nav.bounds.0.y = 25.0;
+            nav.bounds.1.y = 25.0;
+        }
+        let floor = app
+            .world_mut()
+            .resource_mut::<Assets<JMXVBMS>>()
+            .add(deck_bms(false));
+        let tread = app.world_mut().resource_mut::<Assets<JMXVBMS>>().add(tread);
+        let object = app
+            .world_mut()
+            .spawn((
+                ObjectNavMesh(vec![floor, tread]),
+                GlobalTransform::from(Transform::from_xyz(0.0, 100.0, 0.0)),
+            ))
+            .id();
+
+        let grounded = run_ground(
+            &mut app,
+            Vec2::new(0.0, 0.0),
+            100.0,
+            NavLocation::OnObject { object },
+        );
+        assert_eq!(
+            grounded,
+            Some((100.0, NavLocation::OnObject { object })),
+            "the floor under the feet, not the tread 25 above them"
+        );
     }
 
     /// A building's wall must stop a mover walking on the terrain outside it.
