@@ -57,7 +57,33 @@ yellow-green (189,230,0), unique 12×12 purple (156,0,255), character arrow
 
 The in-game X/Y readout is `world_units / 10`, offset so 0 sits at region
 x=135 / z=92: `disp_x = gx/10 − 135·192`, `disp_y = gz/10 − 92·192` (each
-region is 192 display units wide).
+region is 192 display units wide). Implemented once in
+`client/src/util/region.rs`, which also carries the sources.
+
+The scale is the player's own data (one region = 1920 world units = 192 du on
+the `worldmap_mapinfo.txt` axis). The **origin sector** is the one number no
+data file carries, and the two supports for it are of different strength:
+
+- **Measured, ours:** 37,085 independent movement frames (`0x7021` +
+  `0xB021`, keyed by timestamp and body across 18 `packet_dump/` trees) carry
+  32 distinct region ids, all of which round-trip through
+  `(ySector << 8) | xSector`, and they land in the sectors their zone names
+  say (Jangan `0x61A8` = 168×97). Only **137** of those frames were spoken by
+  the *original* client (`proxy*/c2s`), so the corpus proves our own
+  arithmetic far better than it proves vanilla's.
+- **One named source:** `Silkroad-Developer-Community/OpenSilkroadMap`,
+  `map/src/coord.ts` (MIT) implements the same arithmetic independently.
+  Running it against ours over those 37,085 frames agrees to 3.7e-12 du on
+  37,071; the remaining 14 carry a region-local coordinate outside 0..1920,
+  where their function switches to a different branch. Its published origins
+  read 91 and 127 because its map space puts Y one sector below the game's Z
+  sector — it composes region ids as `((floor(secY) + 1) << 8) | floor(secX)`.
+  In sector terms that is 92 and 128, i.e. ours.
+
+Not supported by either: no captured frame carries a dungeon region — every
+one of the 4,109 `0x7021` bodies is 4 or 9 bytes and a dungeon destination
+would be 15 — so the dungeon branch rests on `textzonename.txt` and
+`worldmap_mapinfo.txt` `#section Dungeonmap` alone.
 
 ## Area names — `server_dep/silkroad/textdata/textzonename.txt`
 

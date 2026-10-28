@@ -326,6 +326,7 @@ impl From<&JMXVMAPM> for Mesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::region::{displayed_coords, region_id, REGION_SIZE};
     use std::path::PathBuf;
 
     /// A water plane under its own block's terrain is invisible, so the mesh
@@ -475,10 +476,10 @@ mod tests {
             }
         }
         // Every region carrying an unverified code, biggest clusters first,
-        // with the SRO in-game coordinate of the region center
-        // (game x = (xSector - 135) * 192, game y = (zSector - 92) * 192) and
-        // the cluster centroid in server-teleport form (region id +
-        // region-local x/y/z — see dev/teleport.rs).
+        // with the region centre as the in-game readout shows it and the
+        // cluster centroid in server-teleport form (region id + region-local
+        // x/y/z — see dev/teleport.rs). Both come from `util::region`, which
+        // carries the origin sector and the grid step with their sources.
         // Per-texture / per-vertex verdict: how many tile ids carry exactly
         // one code, and what the exceptions look like.
         let single: usize = code_by_tile
@@ -521,13 +522,16 @@ mod tests {
         regions_by_count.sort_by_key(|&(_, (count, ..))| std::cmp::Reverse(count));
         println!("regions carrying unverified codes (all, biggest first):");
         for ((code, x, z), (count, sum_x, sum_z, sum_h)) in &regions_by_count {
-            let game_x = (*x as i32 - 135) * 192 + 96;
-            let game_y = (*z as i32 - 92) * 192 + 96;
+            // Sector centre, as the readout shows it.
+            let (game_x, game_y) = displayed_coords(
+                (*x as f32 + 0.5) * REGION_SIZE,
+                (*z as f32 + 0.5) * REGION_SIZE,
+            );
             let n = *count as f64;
             println!(
-                "  code {code}: region {x}x{z} ({count} vertices) ~ in-game ({game_x}, {game_y}) \
+                "  code {code}: region {x}x{z} ({count} vertices) ~ in-game ({game_x:.0}, {game_y:.0}) \
                  teleport: region {} x {:.0} y {:.0} z {:.0}",
-                z * 256 + x,
+                region_id(*x as u8, *z as u8),
                 sum_x / n,
                 sum_h / n,
                 sum_z / n,

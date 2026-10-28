@@ -34,6 +34,7 @@ use crate::plugins::settings::window_positions::WndPosSlot;
 use crate::plugins::textdata::{ClientTextNames, ClientUiStrings, ClientWorldMap, ClientZoneNames};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 use crate::plugins::world_origin::WorldOrigin;
+use crate::util::region::world_to_du;
 
 /// Vanilla window 652x424 minus the mframe chrome.
 const CONTENT_W: f32 = 628.0;
@@ -286,7 +287,8 @@ pub fn sync_world_map_window(
 
                                 // marker layer (party/academy plug in later)
                                 for marker in &markers.0 {
-                                    let px = map.project(marker.gx / 10.0, marker.gz / 10.0) * s;
+                                    let (mx, mz) = world_to_du(marker.gx, marker.gz);
+                                    let px = map.project(mx, mz) * s;
                                     let (sign, sign_rect) = match marker.kind {
                                         MarkerKind::Party => ("wmap_sign_party", None),
                                         // 16x16 single frame in the user's
@@ -854,7 +856,7 @@ pub fn update_world_map_arrow(
         let Some(map) = table.map(state.current_map) else {
             return;
         };
-        let (gx_du, gz_du) = (gx / 10.0, gz / 10.0);
+        let (gx_du, gz_du) = world_to_du(gx, gz);
         let on_map = gx_du >= map.left_du()
             && gx_du <= map.right_du()
             && gz_du >= map.bottom_du()

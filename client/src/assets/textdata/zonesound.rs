@@ -28,11 +28,7 @@
 
 use std::collections::HashMap;
 
-/// Side length of one map sector in SRO units. Deliberately a local copy of
-/// `plugins::map::terrain::REGION_SIZE`: `assets::textdata` is part of the
-/// crate's parser-only lib surface (`client/src/lib.rs`) and must not
-/// reference `plugins`.
-const SECTOR_SIZE: f32 = 1920.0;
+use crate::util::region::REGION_SIZE;
 
 /// `#TOWN` or `#FIELD` — the two block kinds `regioninfo.txt` uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +116,7 @@ impl ZoneSound {
     }
 }
 
-/// Sector-local bounds of a `RECT` claim, in SRO units (0..=[`SECTOR_SIZE`]).
+/// Sector-local bounds of a `RECT` claim, in SRO units (0..=[`REGION_SIZE`]).
 ///
 /// The four columns are two corners: column 2/4 march monotonically upward
 /// across the six RECT rows of sector (49,90), which is what identifies them
@@ -243,7 +239,7 @@ impl ZoneSoundTable {
 
     /// The zone at a position: `RECT` claims win over the `ALL` background of
     /// the same sector (see the module comment). `local_x`/`local_z` are
-    /// sector-local SRO units (0..=[`SECTOR_SIZE`]).
+    /// sector-local SRO units (0..=[`REGION_SIZE`]).
     pub fn zone_at(&self, region_id: u16, local_x: f32, local_z: f32) -> Option<&ZoneSound> {
         let claims = self.sectors.get(&region_id)?;
         let hit = claims
@@ -293,7 +289,7 @@ fn parse_rect(fields: &[&str]) -> Option<SectorRect> {
     };
     if [x_min, z_min, x_max, z_max]
         .iter()
-        .any(|c| !(0.0..=SECTOR_SIZE).contains(c))
+        .any(|c| !(0.0..=REGION_SIZE).contains(c))
     {
         return None;
     }

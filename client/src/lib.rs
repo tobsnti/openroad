@@ -14,6 +14,11 @@ pub mod util {
     pub mod buf_ext;
     pub mod mesh;
     pub mod mips;
+    /// The region grid (ids, sector size, display units). Here because
+    /// `assets::textdata` reads sector-local rects and the world-map du axis
+    /// against it; like the rest of this surface it references nothing but
+    /// `bevy`.
+    pub mod region;
     /// Tween helpers. Only here because `assets::intro_scene` builds its
     /// camera `Sequence` from them; like the rest of this surface the module
     /// references nothing outside `util`.

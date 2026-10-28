@@ -27,13 +27,14 @@ use crate::plugins::map::view_range::TerrainLodLevel;
 use crate::plugins::map::water_hq_material::HighQualityWaterMaterial;
 use crate::plugins::world_origin::WorldOrigin;
 use crate::util::mesh::needs_winding_reversal;
-use crate::util::region::RegionIdExt;
+use crate::util::region::{region_id, RegionIdExt};
 
 pub mod render;
 pub mod rendering;
 
-/// World-space size of one terrain region/tile (matches the .m/.o2/.nvm grid step).
-pub const REGION_SIZE: f32 = 1920.0;
+/// The region grid step, re-exported so terrain's own `REGION_SIZE` users keep
+/// their import; it is defined with the rest of the region arithmetic.
+pub use crate::util::region::REGION_SIZE;
 /// Extra rings of regions kept loaded (but already fully hidden by fog) beyond
 /// the view distance (`graphics.view`, `ViewRange::load_ring`) before actually being
 /// despawned — and, read the other way around, how far ahead of the fully-fogged
@@ -217,10 +218,7 @@ impl UpperHex for TerrainId {
 
 impl TerrainId {
     pub fn from_x_z(x: u8, z: u8) -> Self {
-        let mut region_id = 0_u16;
-        region_id += x as u16;
-        region_id += (z as u16) << 8;
-        TerrainId(region_id)
+        TerrainId(region_id(x, z))
     }
     pub fn to_x_z(&self) -> (u8, u8) {
         self.0.to_x_z()
