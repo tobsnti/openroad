@@ -60,6 +60,10 @@ pub const COORD_ORIGIN_SECTOR: (f32, f32) = (135.0, 92.0);
 /// Compose a region id from its sector pair — the inverse of
 /// [`RegionIdExt::to_x_z`] on an overworld id. Z is masked to 7 bits so a
 /// caller cannot accidentally set the dungeon flag from a sector number.
+///
+/// That mask is why `zonesound::pack_region_id` is the one place that still
+/// shifts by hand: `regioninfo.txt` uses sector Z=128 to *mean* the dungeon
+/// flag, so masking there would lose every dungeon zone.
 pub fn region_id(x: u8, z: u8) -> u16 {
     ((z as u16 & 0x7F) << 8) | x as u16
 }

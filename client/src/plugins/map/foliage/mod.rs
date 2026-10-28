@@ -33,6 +33,7 @@ use crate::plugins::config::ClientConfig;
 use crate::plugins::map::assets::{MapsAssets, TileAssets};
 use crate::plugins::map::terrain::{Terrain, TerrainLightmapData};
 use crate::util::mesh::needs_winding_reversal;
+use crate::util::region::region_id;
 use crate::GameState;
 
 pub mod native;
@@ -495,7 +496,7 @@ fn build_block_foliage_system(
             continue;
         };
         let (rx, rz) = terrain.to_x_z();
-        let region = (rz as u16) << 8 | rx as u16;
+        let region = region_id(rx, rz);
         // the region's baked per-cell light grid (96x96, one byte per
         // scatter cell) darkens grass to match the baked ground shading
         let tile_light = lightmap_data

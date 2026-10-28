@@ -20,11 +20,15 @@
 //!   `RECT` is the specific claim carved out of the `ALL` background. That is
 //!   the resolution order [`ZoneSoundTable::zone_at`] implements.
 //! * The sector-Z column reaches 128, one past the 0..=127 overworld grid.
-//!   Those 17 rows are dungeons: packed the usual way (`z << 8 | x`) they are
+//!   Those 23 rows are dungeons: packed the usual way (`z << 8 | x`) they are
 //!   exactly `0x8000 | id` of `dungeoninfo.txt`, and the names line up
 //!   (x=1 -> `Dunhwang_Cv`, x=2..4 -> `jinsi_floor06..04`, x=10..16 -> the
 //!   Egypt caves). So one packing covers overworld and dungeon zones alike and
-//!   no special case is needed here.
+//!   no special case is needed here. Re-counted 2026-10-28 over the player's
+//!   own `regioninfo.txt`: 23 of its 2,715 sector rows, and all 23 low bytes
+//!   are ids of the 24 `dungeoninfo.txt` rows. The 17 an earlier note gave is
+//!   a different population — the `dungeoninfo.txt` rows whose service flag
+//!   is 1.
 
 use std::collections::HashMap;
 
@@ -270,7 +274,12 @@ fn zone_kind(field: &str) -> Option<ZoneKind> {
     }
 }
 
-/// X in bits 0-7, Z in bits 8-14; Z=128 is the dungeon flag (bit 15).
+/// The one region-id composition in the client that is deliberately **not**
+/// [`crate::util::region::region_id`]: that function masks Z to 7 bits so a
+/// sector number can never set the dungeon flag, and here the flag is exactly
+/// what the data means (module note: Z=128 rows carry a `dungeoninfo.txt` id
+/// in X). Masking would fold `0x8001` back to `0x0001` and lose every dungeon
+/// zone. Z above 128 is still rejected.
 fn pack_region_id(x: u16, z: u16) -> Option<u16> {
     if x > 255 || z > 128 {
         return None;
@@ -374,6 +383,7 @@ fn parse_effectenvsnd(content: &str) -> HashMap<String, ZoneSounds> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::util::region::region_id;
 
     /// Real rows, verbatim from the user's `Media.pk2` (2026-08-16): the
     /// Jangan town block, the Donwhang dungeon `#FIELD` (sector Z=128), and
@@ -409,8 +419,7 @@ mod test {
     #[test]
     fn joins_hangul_zone_name_to_its_bgm_and_ambients() {
         let table = table();
-        // 167 + (97 << 8) — the packing of `overworld_region_id`.
-        let jangan = table.zone_for_region((97 << 8) | 167).unwrap();
+        let jangan = table.zone_for_region(region_id(167, 97)).unwrap();
         assert_eq!(jangan.name, "장안");
         assert_eq!(jangan.kind, ZoneKind::Town);
         assert_eq!(jangan.code, None);
@@ -443,7 +452,7 @@ mod test {
     #[test]
     fn rect_row_is_honoured_and_beats_the_all_claim_of_the_same_sector() {
         let table = table();
-        let jangan_rect = (96 << 8) | 167;
+        let jangan_rect = region_id(167, 96);
         // The Jangan RECT covers z 1600..1920 of sector (167,96) only.
         assert_eq!(
             table.zone_at(jangan_rect, 500.0, 1700.0).unwrap().name,
@@ -452,7 +461,7 @@ mod test {
         assert!(table.zone_at(jangan_rect, 500.0, 100.0).is_none());
 
         // Sector (49,90): Alexandria owns all of it, Delta carves out a RECT.
-        let shared = (90 << 8) | 49;
+        let shared = region_id(49, 90);
         assert_eq!(
             table.zone_at(shared, 100.0, 100.0).unwrap().name,
             "알렉산드리아"
