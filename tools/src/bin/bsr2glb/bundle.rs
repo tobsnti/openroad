@@ -80,8 +80,7 @@ pub fn load(source: &dyn Source, bsr_path: &str, mirror: bool) -> Result<Resourc
             eprintln!("warning: material set {path} not found, skipping");
             continue;
         };
-        let mut cursor = Cursor::new(bytes.as_slice());
-        let sig = cursor.get_fixed_size_string(12);
+        let sig = Cursor::new(bytes.as_slice()).get_fixed_size_string(12);
         if sig != "JMXVBMT 0102" {
             eprintln!("warning: material set {path} has unexpected signature '{sig}', skipping");
             continue;
@@ -91,7 +90,7 @@ pub fn load(source: &dyn Source, bsr_path: &str, mirror: bool) -> Result<Resourc
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
-        let set = JMXVBMT::from(&mut cursor, bmt_dir.clone());
+        let set = JMXVBMT::from(&bytes[12..], bmt_dir.clone());
         for material in set.materials {
             // same texture-path rule as `BmtLoader`: an absolute path is the
             // archive path, anything else sits next to the `.bmt`
