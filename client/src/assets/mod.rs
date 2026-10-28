@@ -50,6 +50,7 @@ pub mod bsk;
 pub mod bsr;
 pub mod char_select_scene;
 pub mod cpd;
+pub mod crb;
 pub mod ddj;
 pub mod dof;
 pub mod efp;
