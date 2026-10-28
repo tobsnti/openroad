@@ -99,6 +99,32 @@ pub struct ServerCordRequestEntry {
 #[derive(Message, Serialize, Deserialize, ByteSize, Debug, Clone)]
 pub struct KeepAlive;
 
+/// 0x4000 — client → server, once, right after the world join: the installation
+/// GUID as a `u16`-length-prefixed ASCII string.
+///
+/// The name is **ours**. Nothing names this opcode: it is in neither of the
+/// original client's three dispatch tables (320 opcodes) nor the vSRO
+/// GameServer's two (172, lowest index `0x005` — and the server masks with
+/// `opcode & 0x7FF`, so `0x4000` would land on the empty slot 0). So the server
+/// this client was recorded against never had a handler for it, and the client
+/// never receives it: it is a fire-and-forget identity line.
+///
+/// Measured over every dump file in this workspace (`find -type f -name
+/// '0x4000.log'`, 88 files): 201 frames, 182 independent observations by
+/// `(timestamp, body)`, **201 of 201 `c2s`**, all 40 bytes, and **one single
+/// body** — `26 00` plus the 38 characters `{58e71415-c76b-11ea-8487-806e6f6e6963}`.
+/// One body across every session because every capture came from the same
+/// Windows installation; the `806e6f6e6963` node is the placeholder Windows
+/// writes when it generates a UUID without a MAC, so this identifies the
+/// install, not the hardware.
+///
+/// It was watched live on 2026-10-28: the original client sends it 0.3–0.5 s
+/// after `0xB001`, before its own `0x3012 GameReady`.
+#[derive(Message, Serialize, Deserialize, ByteSize, Debug, Clone, PartialEq)]
+pub struct ClientIdentity {
+    pub guid: String,
+}
+
 /// 0x2113 — `GLOBAL_XTRAP_IDENTIFICATION`, the anti-cheat challenge/response the
 /// server drives during a live session. One opcode, both directions.
 ///
@@ -285,6 +311,20 @@ impl From<XTrapIdentification> for Bytes {
 
 #[cfg(test)]
 mod tests {
+    /// The one captured `0x4000` body, which every one of the 201 frames in
+    /// this workspace carries. Re-encoding has to reproduce it byte for byte:
+    /// a reader that took the length for a character count, or dropped the
+    /// braces, would still "work" on a 40-byte body.
+    #[test]
+    fn the_captured_client_identity_round_trips() {
+        use bytes::Bytes;
+        let wire = Bytes::from_static(b"\x26\x00{58e71415-c76b-11ea-8487-806e6f6e6963}");
+        let decoded: super::ClientIdentity = wire.clone().try_into().unwrap();
+        assert_eq!(decoded.guid.len(), 38);
+        assert!(decoded.guid.starts_with('{') && decoded.guid.ends_with('}'));
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
     /// The four captured `0x2001` forms, three of them spoken to the original
     /// client. The long `AgentServer` reply is the one that used to leave two
     /// bytes over.

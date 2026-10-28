@@ -199,6 +199,9 @@ packets! {
     // DownloadServer (004ce9d0:62,91,138) -> ModuleIdentification::peer_kind().
     0x2001 => ModuleIdentification,
     0x2002 => KeepAlive,
+    // The client's installation GUID, sent once after the world join. Named by
+    // us; see the type — no dispatch table on either side carries this opcode.
+    0x4000 => ClientIdentity,
     // XTrap anti-cheat challenge/response — one opcode, both directions, 1026
     // bytes each way: u8 kind, u8 sub, u8[0x400] (sro_client.exe 00842ff0:44-89,
     // docs/net-misc-0x2113.md). The original parses that framing inline in its
