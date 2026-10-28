@@ -38,7 +38,7 @@ use crate::plugins::textdata::{ClientWorldMap, ClientZoneNames};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 use crate::plugins::ui_v2::widgets::{image_button, label};
 use crate::plugins::world_origin::WorldOrigin;
-use crate::util::region::{displayed_coords, world_to_du, REGION_SIZE};
+use crate::util::region::{displayed_coords, region_id, world_to_du, REGION_SIZE};
 
 // --- Layout constants (resinfo/ifminimap.txt, window space) -----------------
 
@@ -972,10 +972,15 @@ pub fn update_minimap_area_name(
             let Some((xsec, ysec)) = state.center_region else {
                 return;
             };
-            if !(0..=255).contains(&xsec) || !(0..=255).contains(&ysec) {
+            // Z is 7 bits wide, so 128..=255 is off the overworld grid —
+            // composing it would set the dungeon flag and name this spot
+            // after a dungeon. `update_minimap_tiles` gates on 0..=255
+            // because its *dungeon* tile space is centred on sector 128;
+            // this branch only runs with no dungeon context.
+            if !(0..=255).contains(&xsec) || !(0..=127).contains(&ysec) {
                 return;
             }
-            ((ysec as u16) << 8) | (xsec as u16)
+            region_id(xsec as u8, ysec as u8)
         }
     };
     let name = zone_names.name(region).unwrap_or("");

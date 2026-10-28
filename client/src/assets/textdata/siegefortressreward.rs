@@ -15,7 +15,7 @@
 //! ```
 //!
 //! `RGx`/`RGy` are main-world region cells in the same convention the rest of
-//! our map chain uses (`region = y << 8 | x`), and they agree with the world
+//! our map chain uses ([`crate::util::region::region_id`]), and they agree with the world
 //! map's own table: `worldmap_mapinfo.txt` gives the Jangan city map the region
 //! rect x 166..=170, y 96..=99, and the Jangan crest sits at x 168 — inside
 //! that x range and seven cells south of the city, which is where the fortress
@@ -40,6 +40,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::util::region;
+
 /// One row of `siegefortressreward.txt`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FortressReward {
@@ -60,9 +62,10 @@ pub struct FortressReward {
 }
 
 impl FortressReward {
-    /// `y << 8 | x`, the region id the rest of the map chain uses.
+    /// The region id the rest of the map chain uses. `RGx`/`RGy` are
+    /// main-world cells, so this is the overworld composition.
     pub fn region_id(&self) -> u16 {
-        (self.region_y as u16) << 8 | self.region_x as u16
+        region::region_id(self.region_x, self.region_y)
     }
 }
 
@@ -149,7 +152,7 @@ mod tests {
     fn the_crest_region_agrees_with_the_world_maps_own_city_rects() {
         let table = FortressRewardTable::parse(ROWS);
         let jangan = table.get("FORTRESS_JANGAN").unwrap();
-        assert_eq!(jangan.region_id(), (91 << 8) | 168);
+        assert_eq!(jangan.region_id(), region::region_id(168, 91));
         assert!((166..=170).contains(&jangan.region_x));
         assert!(jangan.region_y < 96, "the fortress is south of the city");
 

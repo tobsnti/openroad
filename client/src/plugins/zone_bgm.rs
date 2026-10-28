@@ -220,6 +220,7 @@ impl Plugin for ZoneBgmPlugin {
 mod test {
     use super::*;
     use crate::assets::textdata::zonesound::ZoneSoundTable;
+    use crate::util::region::region_id;
 
     /// Real rows from the user's `Media.pk2` (2026-08-16): 장안 owns sectors
     /// (167,96) and (167,97), 돈황던젼 is the Z=128 dungeon row, and 보상인던
@@ -250,9 +251,9 @@ mod test {
     #[test]
     fn sector_crossing_inside_a_zone_keeps_the_track_but_a_zone_change_swaps_it() {
         let table = table();
-        let jangan_a = table.zone_for_region((96 << 8) | 167);
-        let jangan_b = table.zone_for_region((97 << 8) | 167);
-        let field = table.zone_for_region((97 << 8) | 168);
+        let jangan_a = table.zone_for_region(region_id(167, 96));
+        let jangan_b = table.zone_for_region(region_id(167, 97));
+        let field = table.zone_for_region(region_id(168, 97));
 
         // entering the world: nothing playing yet -> start Jangan's track
         assert_eq!(
@@ -304,7 +305,7 @@ mod test {
         assert!((z - 0.25 * REGION_SIZE).abs() < 0.5);
         assert_eq!(
             crate::plugins::hud::region_banner::overworld_region_id(-sro.x, sro.z),
-            Some((96 << 8) | 167)
+            Some(region_id(167, 96))
         );
     }
 }

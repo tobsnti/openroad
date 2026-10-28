@@ -37,10 +37,10 @@ use bevy::ui::UiTargetCamera;
 use crate::assets::FontAssets;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::hud::minimap::MinimapDungeonContext;
-use crate::plugins::map::terrain::REGION_SIZE;
 use crate::plugins::player::Player;
 use crate::plugins::textdata::ClientZoneNames;
 use crate::plugins::world_origin::WorldOrigin;
+use crate::util::region::{region_id, REGION_SIZE};
 
 const BANNER_DDJ: &str = "media://interface/game/area_deco.ddj";
 
@@ -84,15 +84,15 @@ pub struct RegionBannerState {
     pub remaining: f32,
 }
 
-/// Overworld region id for an SRO-space position: X sector in bits 0-7, Z in
-/// bits 8-14 (`util::region`). Returns `None` outside the 256x128 sector grid.
+/// Overworld region id for an SRO-space position. The gate is the 256x128
+/// sector grid, so this only ever hands [`region_id`] an overworld pair.
 pub fn overworld_region_id(sro_x: f32, sro_z: f32) -> Option<u16> {
     let xsec = (sro_x / REGION_SIZE).floor();
     let zsec = (sro_z / REGION_SIZE).floor();
     if !(0.0..=255.0).contains(&xsec) || !(0.0..=127.0).contains(&zsec) {
         return None;
     }
-    Some(((zsec as u16) << 8) | (xsec as u16))
+    Some(region_id(xsec as u8, zsec as u8))
 }
 
 /// Detect the region change and spawn / expire the banner.
