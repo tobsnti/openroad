@@ -73,7 +73,7 @@
 
 | Class | Sources | Allowed use |
 |---|---|---|
-| **MIT** | Veykril/pk2 crate, JMX-File-Editor (C# — structures portable), NVMTerrainExtractor, SRO-2DT-Editor, SR_Db2Media (skilldata cipher) | Depend on / port code and structures |
+| **MIT** | Veykril/pk2 crate, JMX-File-Editor (C# — structures portable), NVMTerrainExtractor, SRO-2DT-Editor, SR_Db2Media (skilldata cipher), JellyBitz/SilkroadLauncher (C# — launcher opcode names and download flow) | Depend on / port code and structures |
 | **GPL-3.0 / GPL-3.0-or-later** | lobot (GitLab, vSRO 1.188 bot), Mgunbatti/xSilkroad-blender-plugin | Depend on / port code and structures; name the source and its licence in the PR |
 | **GPL-2.0-only** | *(none catalogued yet)* | Treat as **No license** below: GPL-2.0-only cannot be combined into a GPL-3.0 work, so facts and field layouts only |
 | **DBAD** | florian0/SRO_DevKit, go-sro | Read/reference only for GPL-3.0 purposes |
