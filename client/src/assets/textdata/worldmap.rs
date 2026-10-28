@@ -28,12 +28,17 @@ use std::collections::HashMap;
 
 use bevy::math::Vec2;
 
-/// Display units per region edge (region = 1920 world units, du = 1/10).
-pub const DU_PER_REGION: f32 = 192.0;
+use crate::util::region::{world_to_du, REGION_SIZE, WORLD_UNITS_PER_DU};
+
+/// Display units per region edge, derived from the grid step rather than
+/// written down twice.
+pub const DU_PER_REGION: f32 = REGION_SIZE / WORLD_UNITS_PER_DU;
 
 /// Dungeon interiors live in a local frame centred on region (128,128) —
 /// the `#section Dungeonmap` rects and the `minimap_d` tile names both use
-/// these absolute sector coordinates.
+/// these absolute sector coordinates. OpenSilkroadMap's `coord.ts` (MIT) uses
+/// the same centre, written 128/127 because its map-space Y sits one sector
+/// below the game's Z sector (see `util::region`).
 pub const DUNGEON_CENTER_REGION: f32 = 128.0;
 
 #[derive(Debug, Clone, Default)]
@@ -114,17 +119,18 @@ impl DungeonMapDef {
 /// Raw dungeon-local coordinates as global display units in the 128-centred
 /// dungeon sector space.
 pub fn dungeon_du(raw_x: f32, raw_z: f32) -> Vec2 {
+    let (du_x, du_z) = world_to_du(raw_x, raw_z);
     Vec2::new(
-        DUNGEON_CENTER_REGION * DU_PER_REGION + raw_x / 10.0,
-        DUNGEON_CENTER_REGION * DU_PER_REGION + raw_z / 10.0,
+        DUNGEON_CENTER_REGION * DU_PER_REGION + du_x,
+        DUNGEON_CENTER_REGION * DU_PER_REGION + du_z,
     )
 }
 
 /// The dungeon-space sector holding a raw dungeon-local coordinate pair.
 pub fn dungeon_sector(raw_x: f32, raw_z: f32) -> (i32, i32) {
     (
-        DUNGEON_CENTER_REGION as i32 + (raw_x / 1920.0).floor() as i32,
-        DUNGEON_CENTER_REGION as i32 + (raw_z / 1920.0).floor() as i32,
+        DUNGEON_CENTER_REGION as i32 + (raw_x / REGION_SIZE).floor() as i32,
+        DUNGEON_CENTER_REGION as i32 + (raw_z / REGION_SIZE).floor() as i32,
     )
 }
 

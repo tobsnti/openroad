@@ -69,7 +69,7 @@ use crate::scenes::loading_screen::{spawn_loading_surface, LoadingProgress};
 use crate::scenes::world_scene::{preload_starting_area, set_origin_to_spawn_point, SpawnPoints};
 use crate::scenes::SceneState;
 use crate::util::mesh::{mirrored, needs_winding_reversal};
-use crate::util::region::RegionIdExt;
+use crate::util::region::{region_id, RegionIdExt, REGION_SIZE};
 
 /// How far past the engagement's own reach a server destination may land and
 /// still count as an attack approach — one that gets projected onto our direct
@@ -534,7 +534,11 @@ pub(crate) fn server_position_to_sro(region: u16, x: f32, y: f32, z: f32) -> Vec
         return Vec3::new(-x, y, z);
     }
     let (rx, rz) = region.to_x_z();
-    Vec3::new(-(rx as f32 * 1920.0 + x), y, rz as f32 * 1920.0 + z)
+    Vec3::new(
+        -(rx as f32 * REGION_SIZE + x),
+        y,
+        rz as f32 * REGION_SIZE + z,
+    )
 }
 
 /// Convert an SRO heading to a render-space Y rotation. The heading is a `u16`
@@ -565,11 +569,11 @@ pub(crate) fn render_to_server_position(
 ) -> (u16, f32, f32, f32) {
     let sro = origin.to_sro(render);
     // World X is mirrored, so the region-x axis runs along `-x`.
-    let rx = (-sro.x / 1920.0).floor();
-    let rz = (sro.z / 1920.0).floor();
-    let region = (((rz as i32) << 8) | (rx as i32 & 0xFF)) as u16;
-    let local_x = -sro.x - rx * 1920.0;
-    let local_z = sro.z - rz * 1920.0;
+    let rx = (-sro.x / REGION_SIZE).floor();
+    let rz = (sro.z / REGION_SIZE).floor();
+    let region = region_id(rx as u8, rz as u8);
+    let local_x = -sro.x - rx * REGION_SIZE;
+    let local_z = sro.z - rz * REGION_SIZE;
     (region, local_x, sro.y, local_z)
 }
 

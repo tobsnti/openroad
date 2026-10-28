@@ -32,13 +32,13 @@ use crate::plugins::dungeon::ActiveDungeon;
 use crate::plugins::hud::game_window::scaled;
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::world_map::model::{MapMarkers, MarkerKind};
-use crate::plugins::map::terrain::REGION_SIZE;
 use crate::plugins::net::entities::{DisplayName, RemoteEntity, UniqueMonster};
 use crate::plugins::player::Player;
 use crate::plugins::textdata::{ClientWorldMap, ClientZoneNames};
 use crate::plugins::ui_v2::style::ImageButtonStyle;
 use crate::plugins::ui_v2::widgets::{image_button, label};
 use crate::plugins::world_origin::WorldOrigin;
+use crate::util::region::{displayed_coords, world_to_du, REGION_SIZE};
 
 // --- Layout constants (resinfo/ifminimap.txt, window space) -----------------
 
@@ -210,14 +210,6 @@ const SIGN_POOLS: [SignPool; 2] = [
         arrow_size: QUEST_ARROW_SIZE,
     },
 ];
-
-/// Displayed-coordinate origin: game coords are world units / 10, offset so
-/// that 0 sits at region x 135 / z 92 (the vanilla sector formula).
-///
-/// UNKNOWN (hud-minimap.md §6): the 135/92 offsets are community-sourced —
-/// nothing in the PK2 carries them.
-const COORD_X_OFFSET: f32 = 135.0 * 192.0;
-const COORD_Z_OFFSET: f32 = 92.0 * 192.0;
 
 // --- State ------------------------------------------------------------------
 
@@ -919,8 +911,8 @@ pub fn update_minimap_tiles(
     }
 }
 
-/// The displayed game coordinates: world units / 10, origin at region 135/92
-/// (so Jangan reads ~6400 like the vanilla client).
+/// The displayed game coordinates — see `util::region` for the scale, the
+/// origin sector and what each is sourced from.
 pub fn update_minimap_coords(
     origin: Res<WorldOrigin>,
     dungeon: Option<Res<MinimapDungeonContext>>,
@@ -932,15 +924,14 @@ pub fn update_minimap_coords(
         return;
     };
     let (gx, gz) = player_global_xz(&origin, player_tf);
-    // Dungeon-local coordinates display as-is (no overworld origin offset).
+    // Dungeon-local coordinates display as-is (no overworld origin to count
+    // from, see `displayed_coords`).
     let (disp_x, disp_z) = if dungeon.is_some() {
-        ((gx / 10.0).round() as i32, (gz / 10.0).round() as i32)
+        world_to_du(gx, gz)
     } else {
-        (
-            (gx / 10.0 - COORD_X_OFFSET).round() as i32,
-            (gz / 10.0 - COORD_Z_OFFSET).round() as i32,
-        )
+        displayed_coords(gx, gz)
     };
+    let (disp_x, disp_z) = (disp_x.round() as i32, disp_z.round() as i32);
 
     let set_text = |text: &mut Text, value: String| {
         if text.0 != value {
