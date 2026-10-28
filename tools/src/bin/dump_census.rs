@@ -794,9 +794,16 @@ mod test {
     /// the record saw in one direction only says which subtree that direction
     /// lives in. Here `0x3013` arrived and sits in the root while `0x7021` was
     /// sent and sits in `c2s/`, which is the client's layout.
+    /// The directory name carries the process id because two `make ci` runs in
+    /// two worktrees share one `$TMPDIR`, and this test deletes its own fixture
+    /// at the end: with a fixed name the second run removes the `session.jsonl`
+    /// the first one is still reading, and `inverted_root` answers `None`
+    /// instead of a vote. Every other temp-dir test in the tree already does
+    /// this (`packet_dump.rs:125`, `config/mod.rs:493`).
     #[test]
     fn a_root_with_a_record_file_votes_on_its_own_layout() {
-        let root = std::env::temp_dir().join("dump_census_layout_vote");
+        let root =
+            std::env::temp_dir().join(format!("dump_census_layout_vote-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("c2s")).expect("temp dir");
         std::fs::write(root.join("0x3013.log"), "").expect("write");
