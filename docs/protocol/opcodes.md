@@ -178,6 +178,7 @@ dispatcher.
 | `0xB023` | MovementPositionUpdate | S→C | wired |  |
 | `0xB024` | MovementAngleResponse | S→C | wired | turn-in-place; layout from the original's parser, still no capture |
 | `0x7024` | MovementAngleRequest | C→S | wired | the heading the client reports **while** turning; bare `u16`, no tail. 80 original-client frames in two sessions, all 2 bytes, 49 distinct values; each of the 24 `0x7021` turn frames there is followed 6-20 ms later by a `0x7024` with the same heading (22 of 24 within two units). Earlier "no builder, no capture" was xBot's `PacketBuilder.cs`, not the original |
+| `0x7158` | ClientSettingsSave | C→S | wired | the client's own settings sent back after GameReady, kind-discriminated: **0** = cleared quickslot (`u8 slot`; 81 original frames, every one `00 07`), **1** = quickslot binding (`u8 slot, u8 content_kind, u32 data` — the same triple as the `hotkeys` record in `0x3013`, echoed back; 29 original frames), **2** = the three auto-potion words + delay, carried **raw**: the one original frame (`02 11b2 4a01 4a00 05`) contradicts the documented bit packing on its own HP word, so nothing is decoded past the widths. Measured over every `0x7158.log` in the workspace (39 files): 118 frames, 112 independent, 118 of 118 c2s. Nothing answers it in any session |
 | `0x30D0` | EntitySpeedUpdate | S→C | wired |  |
 | `0x30BF` | EntityStateUpdate | S→C | wired |  |
 | `0x3054` | EntityLevelUp | S→C | wired |  |

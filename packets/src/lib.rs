@@ -269,6 +269,9 @@ packets! {
     // while it turns, measured on 80 original-client frames.
     0xB024 => MovementAngleResponse,
     0x7024 => MovementAngleRequest,
+    // The client's own settings sent back to the server after GameReady —
+    // quickslot bar and auto-potion. Kind-discriminated; kind 2 stays raw.
+    0x7158 => ClientSettingsSave,
     0x30D0 => EntitySpeedUpdate,
     0x30BF => EntityStateUpdate,
     0x3054 => EntityLevelUp,
