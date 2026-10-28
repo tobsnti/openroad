@@ -65,6 +65,15 @@ pub struct PatchResponse {
 /// not in service, `4` abnormal module, `5` patch disabled. Kept a raw `u8` so
 /// a code we have no name for cannot fail deserialization — the same reasoning
 /// as [`crate::login::LoginError`].
+///
+/// Deliberately short of the original: after the version, code `2` carries the
+/// file list for the download chain — entries prefixed by a `1` byte, each
+/// `{u32 id, ascii name, ascii path, u32 size, u8 import_to_pk2}`
+/// (JellyBitz/SilkroadLauncher, MIT, `GatewayModule.Server_PatchResponse`) `[S]`.
+/// No capture has it: all 2,831 `0xA100` frames in 215 dump roots are `0100`,
+/// result 1, up to date. Modelling it would be guessing a length-driving field
+/// from one outside reader, so it stays documented instead of parsed; see
+/// `docs/protocol/opcodes.md`.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PatchError {
     pub error_code: u8,

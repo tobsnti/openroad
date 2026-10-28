@@ -42,6 +42,27 @@ pub struct ServerCordEntry {
     pub state: u32,
 }
 
+/// `0x6005` — the second frame of the global-state exchange, **inbound** despite
+/// its `0x6xxx` number.
+///
+/// Idea: it is the empty counterpart of [`GlobalStateUpdate`] and arrives *after*
+/// it, not instead of it. Measured 2026-10-28 with `dump_census` over every dump
+/// root in this workspace (215 roots, 8,133 files): 3,554 frames, all
+/// server→client, all carrying the single body `0300020002` — `update_flag` 3, so
+/// both sections are present and both lists are terminated at once. Every one of
+/// the 3,554 is preceded by a `0x2005` in the same dump directory (3,550 of them
+/// within 10 ms), none arrives before
+/// the first one, and nothing in the client sends it. The senders are skrillax
+/// and our own peers, never a vanilla server, so the frames prove the shape and
+/// not that vanilla sends it.
+///
+/// The `Request` in the name is ours. The one outside source that names `0x6005`
+/// — JellyBitz/SilkroadLauncher (MIT), `SilkroadLauncher/Network/DownloadModule.cs`
+/// — calls it `SERVER_READY`, but on the **download** session: a second connection
+/// the launcher opens to the host carried by an outdated `0xA100`, whose handler
+/// reads no body at all. (On our side that peer is the one answering
+/// `DownloadServer` to `0x2001` — [`PeerKind::Download`].) Same number, different
+/// packet, so that name does not rename this type.
 #[derive(Message, Serialize, Deserialize, ByteSize, Debug, Clone)]
 pub struct GlobalStateRequest {
     pub update_flag: u8,

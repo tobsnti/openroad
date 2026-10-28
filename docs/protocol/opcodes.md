@@ -52,7 +52,7 @@ same handler there.
 | `0x2001` | ModuleIdentification | both | wired | first packet on every connection; `u16`-length-prefixed module name. C→S `SR_Client` + a trailing zero (static read of the original client); S→C the peer's own name, matched against `GatewayServer`/`AgentServer`/`DownloadServer` by `ModuleIdentification::peer_kind()`. The trailing byte is optional inbound — no S→C capture exists, it is read during connection setup before the dumping receive loop |
 | `0x2002` | KeepAlive | C→S | wired | 5s ping, empty body |
 | `0x2005` | GlobalStateUpdate | S→C | wired |  |
-| `0x6005` | GlobalStateRequest | S→C | wired | **inbound**, against the `0x6xxx` convention: 739 received frames in `packet_dump/0x6005.log` (body `0300020002`), none sent — there is no `packet_dump/c2s/0x6005.log` and no writer in the client, only the reader `on_global_state_request` (`client/src/plugins/net/plugin.rs:462`). The real server wraps it in the massive header `0x600d` (`inner=0x6005`). The `Request` in the name is ours and unverified; renaming it would have to move with `packets/src/lib.rs:147` |
+| `0x6005` | GlobalStateRequest | S→C | wired | **inbound**, against the `0x6xxx` convention: **3,554 received frames in 165 files over every dump root in this workspace** (`dump_census`, 215 roots, 8,133 files, 2026-10-28), every one `S2c`, all of them one single body — `0300020002`, five bytes, `distinct=1` — and **none sent**: no `0x6005.log` under any `c2s/` and no writer in the client, only the reader `on_global_state_request` (`client/src/plugins/net/plugin.rs:466`). What the dumps place it next to: **every** one of the 3,554 is preceded by a `0x2005` in the same directory, 3,550 of them within 10 ms (median 0 ms, max 774 ms), and none arrives before the first `0x2005` — this is the trailing half of the global-state exchange, and `0300020002` is its empty form (`update_flag` 3, both sections present, both lists terminated at once). Per-directory counts are equal in 163 of the 165 files and unequal in the other two (more `0x2005` than `0x6005`), so the measured property is "always preceded", not "always paired". Senders are `SessionServer` (394 — skrillax in the recorded chain) and `Ours` (3,160): no vanilla vSRO server speaks in any dump, so the frames prove the shape, not that vanilla sends it. The real server wraps it in the massive header `0x600d` (`inner=0x6005`). The `Request` in the name is still ours — the one outside source that names `0x6005` calls it `SERVER_READY`, but on the **download** session: a different peer, and a handler that reads no body, so the name does not transfer; see [the download chain](#launcher-the-file-download-chain-measured-not-wired). Renaming would have to move with `packets/src/lib.rs:211` |
 | `0x2113` | XTrapIdentification | both | wired | anti-cheat challenge/response, 1026 bytes both ways (`u8 kind`, `u8 sub`, `u8[0x400]`); the blob stays opaque, the body is kept whole, and nothing sends a reply |
 
 ## Login & gateway
@@ -77,29 +77,65 @@ same handler there.
 
 ## Launcher: the file download chain (measured, not wired)
 
-The original ships two executables that speak the same gateway port, and the
-`0x6004`/`0x1001`/`0xA004` download chain belongs to the **launcher**
-(`silkroad.exe`) rather than the game client — though the client carries the
-same code. OpenRoad implements none of it: its own launcher does an `SV.T`
-preflight. So the rows below are a reading, not a wiring, and the name column
-stays empty on purpose: our own measurement does not name these packets, and
-the one outside document that does is contradicted on `0xA004`.
+The `0x6004`/`0x1001`/`0xA004` chain is the patch download, and it does not run
+on the gateway connection: a `0xA100` that answers "outdated" carries a host and
+a port, and the client opens a **second** session to it — the peer that answers
+`DownloadServer` to `0x2001` (`004ce9d0:62,91,138`, see
+[`PeerKind`](../../packets/src/global.rs)). The chain belongs to the **launcher**
+(`silkroad.exe`), though the game client carries the same code. OpenRoad
+implements none of it: its own launcher does an `SV.T` preflight. So the rows
+below are a reading, not a wiring.
+
+The original's own names for the chain, and the order it runs in, come from
+**JellyBitz/SilkroadLauncher** (MIT — portable; names, field order and control
+flow read, no code copied), `SilkroadLauncher/Network/DownloadModule.cs` and
+`GatewayModule.cs`:
+
+`0x6005 SERVER_READY` → per file `0x6004 CLIENT_FILE_REQUEST` → n×
+`0x1001 SERVER_FILE_CHUNK` → `0xA004 SERVER_FILE_COMPLETED` → next file, or
+done. The order is that project's wiring rather than its prose:
+`Server_PatchResponse` opens the second session and registers exactly `0x6005`,
+`0x1001` and `0xA004` as **receive** handlers, and `Server_Ready` reads no body —
+it allocates the temp directory and sends the first `0x6004`. Each completed file
+calls the same request again, so `0x6004` repeats per file while `0x6005` happens
+once per session. That `0x6005 SERVER_READY` is the **download** peer's packet,
+not the gateway one of the same number — the [`0x6005` row](#handshake--global)
+above says why the name stays there.
+
+The file list arrives before any of it, in the `0xA100` answer's result 2 /
+error 2 branch: `ascii` host, `u16` port, `u32` new version, then entries each
+prefixed by a `1` byte — `{u32 id, ascii name, ascii path, u32 size,
+u8 import_to_pk2}` — until the prefix is not `1`. Our own wired
+[`PatchError`](../../packets/src/gateway.rs) stops after the version: that list
+is `[S]` and uncaptured, so it stays out of the type.
+
+The names stay out of a Name column because `scripts/check_opcode_ledger.py`
+reads column two as a type name and compares it with the `packets!` registry;
+none of the three is wired, so a named row would fail the gate as a ledger entry
+without a type.
 
 The patch and notice pair of the same launcher conversation — `0x6100`,
 `0xA100`, `0x6104`, `0xA104` — *is* wired, and its rows are in
 [Login & gateway](#login--gateway) with their own evidence.
 
-**No capture exists for any of the three below.** Every recorded session was
-already up to date, so the chain never ran; their widths come from the user's
-own binaries alone and their meanings are `[U]`. The two idioms are
-`MOV WORD PTR [reg], <opcode>` into the packet's opcode slot at `+0x1050`
-followed by payload writes, and `CMP WORD PTR [reg], <opcode>` in a dispatcher.
+**No capture exists for any of the three below.** `dump_census` over **215
+dump roots / 8,133 files / 420 opcode-origin groups** (2026-10-28)
+prints **no row at all** for `0x6004`, `0x1001` and `0xA004` — in the same run
+that counts 3,554 frames for `0x6005` and 3,959 for `0x6100`, which is the
+positive control for the search itself. Why they are absent is measured too: all
+**2,831** captured `0xA100` frames carry the body `0100` — result 1, up to date —
+so no recorded session ever had a file to fetch. The widths below therefore come
+from the user's own binaries (read statically, nothing executed) and the meanings
+from the MIT source; each row says which claim rests on which. The two binary
+idioms are `MOV WORD PTR [reg], <opcode>` into the packet's opcode slot at
+`+0x1050` followed by payload writes, and `CMP WORD PTR [reg], <opcode>` in a
+dispatcher.
 
 | Opcode | Direction | Body | Evidence |
 |---|---|---|---|
-| `0x6004` | C→S | two `u32` | built and sent by both binaries: `MOV WORD [EAX], 0x6004` at `0x004D12EB` (client) and `0x0040CF05` (launcher), then two payload writes of four bytes each |
-| `0xA004` | C→S | one `u8`, value `1` at the only site | same shape, `0x004D0C98` (client) / `0x0040CA44` (launcher), handed to the same vtable send slot `+0x50` as `0x6004`. This is where an outside reading says "server → client, `u8 result`" — our binaries build it on the **client** side, so the direction is ours and theirs is not adopted |
-| `0x1001` | S→C `[S]` | `[U]` | the launcher's dispatcher compares it three times (`CMP WORD [EDX], 0x1001` at `0x004148BD`, `0x00415D4F`, `0x00417C10`), which is how it recognises a packet it received. `[U]`: there is also a build site at `0x004152A2`, unexplained |
+| `0x6004` | C→S | `u32` file id, `u32` zero | two witnesses on the width, one on the meaning: both binaries build and send it — `MOV WORD [EAX], 0x6004` at `0x004D12EB` (client) and `0x0040CF05` (launcher), then two payload writes of four bytes each — and `DownloadModule.RequestFileDownload` writes `file.ID` and then a literal `0` `[S]`. The id is the one the `0xA100` file list gave |
+| `0xA004` | C→S / S→C `[U]` | one `u8` | the two witnesses agree on the body and disagree on the direction. Ours: both binaries **build** it client-side with the constant `1` (`0x004D0C98` client / `0x0040CA44` launcher) and hand it to the same vtable send slot `+0x50` as `0x6004`. The MIT launcher **receives** it, reads `u8 result` and answers with nothing but the next `0x6004` (`Server_FileCompleted`) `[S]`. A constant `1` is the shape of an ack, so "both directions, one body" is the hypothesis — `[U]` until a capture of an out-of-date session shows one side, the other, or both |
+| `0x1001` | S→C | the whole body is file bytes | two witnesses, neither of them a capture: the launcher's dispatcher compares it three times (`CMP WORD [EDX], 0x1001` at `0x004148BD`, `0x00415D4F`, `0x00417C10`), which is how it recognises a packet it received, and `Server_FileChunk` appends the entire body to the open file, reading no header, offset or chunk index `[S]`. The assembled file is zlib: four bytes the source itself calls unknown, a two-byte zlib header, then a deflate stream (`DecompressFile`) `[S]`; one with `import_to_pk2` set is inserted into the `*.pk2` named by the first segment of its path. `[U]`: there is also a build site at `0x004152A2`, unexplained |
 
 ## Character select / join
 
