@@ -40,11 +40,6 @@ pub(crate) const OBJECT_BLOCK_Y_BAND: f32 = 100.0;
 /// storey up (an overhead bridge deck, ~[`OBJECT_BLOCK_Y_BAND`]) stays out of
 /// reach so the mover keeps to the ground running underneath it.
 const MAX_STEP_UP: f32 = 30.0;
-/// How close a walkable object surface must be to the mover's feet for the
-/// mover to count as *standing on* that object (see
-/// [`NavMeshRaycast::standing_on_object`]). Tighter than [`MAX_STEP_UP`]: this
-/// answers "what am I on right now", not "what could I step onto".
-const STAND_TOLERANCE: f32 = 20.0;
 
 /// The walkable (object-level) nav meshes of a spawned map object. Attached to
 /// the resource root entity by `SpawnResource` (commands/mod.rs) whenever any of
@@ -231,8 +226,9 @@ impl NavMeshRaycast<'_, '_> {
     }
 
     /// Which surface `position` sits on, decided purely geometrically. Used for
-    /// spawn, teleport, and recovery from a stale location. Prefers an object
-    /// surface within [`STAND_TOLERANCE`] of the position, else terrain.
+    /// spawn, teleport, and recovery from a stale location: the nearest surface
+    /// under (x, z) by |height − y|, terrain winning a tie (the original's rule
+    /// when no owner is held — see [`Self::surface_at`]).
     pub fn resolve_location(&self, position: Vec3) -> NavLocation {
         self.surface_at(position.xz(), position.y, None)
             .map_or(NavLocation::Unresolved, |(_, location)| location)
@@ -247,10 +243,10 @@ impl NavMeshRaycast<'_, '_> {
     /// blocks; it does, however, **re-resolve the surface every call** through
     /// [`Self::surface_at`] — the same helper [`Self::resolve_location`] uses
     /// at spawn. That is what lets a mover walk *onto* an object: stairs, a
-    /// bridge deck, the next `.cpd` part of a compound object. Candidacy is
-    /// bounded by [`best_object_surface`]'s [`STAND_TOLERANCE`] rule, i.e. an
-    /// object only counts when its surface is within a step of the mover's
-    /// feet, so a deck overhead can never capture someone walking underneath.
+    /// bridge deck, the next `.cpd` part of a compound object. An object only
+    /// wins when its surface is nearer the mover's feet than the terrain is, so
+    /// a deck overhead never captures someone walking on the ground beneath it
+    /// — the ground is closer.
     ///
     /// Before that, terrain movers were locked to the heightfield forever
     /// (`Terrain` had no path back to `OnObject`), which sank remote entities —
@@ -568,23 +564,29 @@ impl NavMeshRaycast<'_, '_> {
     /// membership signal: the nav data decides membership by 2D cells and edge
     /// adjacency and keeps height in a separate field.
     ///
-    /// What bounds this is [`best_object_surface`]'s candidacy rule
-    /// ([`STAND_TOLERANCE`]) — an object has to have a surface near the mover's
-    /// feet to be considered at all.
+    /// What bounds this is [`best_object_surface`]'s ranking — an object has
+    /// to be nearer the mover's feet than the terrain is, strictly, to win.
     fn surface_at(
         &self,
         world_xz: Vec2,
         reference_y: f32,
         exited: Option<(Entity, (Vec3, Vec3))>,
     ) -> Option<(f32, NavLocation)> {
-        if let Some(object) = self.best_object_surface(world_xz, reference_y, exited) {
+        // The original's rule for "which surface am I on" when no owner is
+        // held: every candidate under (x, z) — the terrain and each object
+        // triangle — competes on |candidate − y|, the smallest wins, compared
+        // strictly, so the terrain wins a tie. No distance cutoff. We used to
+        // ask the objects first with a 20-unit tolerance and fall back to the
+        // terrain; that put a deck 15 units up ahead of the ground 1 unit down.
+        // Here the terrain sets the bar and an object has to beat it.
+        let terrain = self.surface_height(world_xz);
+        let bar = terrain.map(|h| (h - reference_y).abs());
+        if let Some(object) = self.best_object_surface(world_xz, reference_y, exited, bar) {
             if let Some(height) = self.object_surface_height(object, world_xz, reference_y) {
                 return Some((height, NavLocation::OnObject { object }));
             }
         }
-
-        self.surface_height(world_xz)
-            .map(|height| (height, NavLocation::Terrain))
+        terrain.map(|height| (height, NavLocation::Terrain))
     }
 
     /// What a movement segment does to one object's nav mesh: hits a wall,
@@ -682,9 +684,9 @@ impl NavMeshRaycast<'_, '_> {
     /// This is the counterpart to [`object_crossing`](Self::object_crossing),
     /// which only ever looks at the object the mover already stands on. Entry
     /// used to be decided purely by height proximity
-    /// ([`best_object_surface`](Self::best_object_surface)), which meant any
-    /// deck more than [`STAND_TOLERANCE`] off the mover's feet was invisible —
-    /// movers walked under bridges instead of onto them.
+    /// ([`best_object_surface`](Self::best_object_surface)) with a 20-unit
+    /// tolerance, which meant any deck further off the mover's feet was
+    /// invisible — movers walked under bridges instead of onto them.
     ///
     /// A passable outline crossing alone isn't enough to conclude the mover
     /// went *in*: the same edge is crossed on the way out, and a segment can
@@ -918,7 +920,7 @@ impl NavMeshRaycast<'_, '_> {
 
     /// The object nav mesh the mover is currently standing on, if any: the
     /// object whose walkable surface under `world_xz` sits closest to the
-    /// mover's feet, within [`STAND_TOLERANCE`].
+    /// mover's feet — and closer than the terrain does.
     ///
     /// This is the (stateless) stand-in for tracking a mover's surface: it
     /// answers "am I on a bridge deck right now" so the terrain underneath can
@@ -926,13 +928,17 @@ impl NavMeshRaycast<'_, '_> {
     /// every loaded nav object — acceptable while movement queries are the only
     /// caller, and superseded by a tracked `NavLocation`.
     fn standing_on_object(&self, world_xz: Vec2, reference_y: f32) -> Option<Entity> {
-        self.best_object_surface(world_xz, reference_y, None)
+        let bar = self
+            .surface_height(world_xz)
+            .map(|h| (h - reference_y).abs());
+        self.best_object_surface(world_xz, reference_y, None, bar)
     }
 
     /// The object whose walkable surface under `world_xz` the mover belongs on.
     ///
-    /// Candidates are objects with a surface within [`STAND_TOLERANCE`] of
-    /// `reference_y`. Ranking: an object whose own outline meets the edge just
+    /// Candidates are objects with a surface under `world_xz` nearer to
+    /// `reference_y` than `terrain_gap` (strictly — the terrain wins a tie, as
+    /// in the original). Ranking: an object whose own outline meets the edge just
     /// walked off wins outright — that seam is a definite hand-off, whereas
     /// height proximity is only a guess — and among equals the surface nearest
     /// the mover's feet wins.
@@ -944,8 +950,12 @@ impl NavMeshRaycast<'_, '_> {
         world_xz: Vec2,
         reference_y: f32,
         exited: Option<(Entity, (Vec3, Vec3))>,
+        terrain_gap: Option<f32>,
     ) -> Option<Entity> {
-        let probe_origin = Vec3::new(world_xz.x, reference_y + STAND_TOLERANCE, world_xz.y);
+        // Probe from well above: a candidate is any surface under (x, z), not
+        // only one within a step. `HEIGHT_PROBE_RANGE` is a search reach, not a
+        // decision — the ranking below decides.
+        let probe_origin = Vec3::new(world_xz.x, reference_y + HEIGHT_PROBE_RANGE, world_xz.y);
         // (meets the exited seam, vertical distance from the feet, entity)
         let mut best: Option<(bool, f32, Entity)> = None;
 
@@ -979,7 +989,11 @@ impl NavMeshRaycast<'_, '_> {
                     };
                     let surface_y = transform.transform_point(local_origin + local_dir * t).y;
                     let candidate = (surface_y - reference_y).abs();
-                    if candidate <= STAND_TOLERANCE && gap.is_none_or(|g| candidate < g) {
+                    // Strict: an object has to be nearer than the terrain, a
+                    // tie goes to the ground.
+                    if terrain_gap.is_none_or(|t| candidate < t)
+                        && gap.is_none_or(|g| candidate < g)
+                    {
                         gap = Some(candidate);
                     }
                 }
@@ -1520,19 +1534,22 @@ mod tests {
     }
 
     /// The bound on that: a deck far overhead (a bridge you are walking under)
-    /// must NOT capture the mover. With no terrain region spawned there is no
-    /// surface left to report, which is exactly how we tell "did not board"
-    /// apart from "boarded".
+    /// must NOT capture the mover. Not because of a distance cutoff — there is
+    /// none, as in the original — but because the ground under the feet is
+    /// nearer than the deck 100 units up. This used to be asserted in a world
+    /// with no terrain at all, where "ignored" and "nothing to stand on" read
+    /// the same; with the ground present the two come apart.
     #[test]
     fn ground_does_not_board_a_deck_overhead() {
         let (mut app, _object) = app_with_deck(100.0, 0.0, false);
+        spawn_flat_terrain(&mut app, 0.0);
 
         let grounded = run_ground(&mut app, Vec2::new(0.0, 0.0), 0.0, NavLocation::Terrain);
 
         assert_eq!(
-            grounded, None,
-            "a deck {} units up is out of STAND_TOLERANCE and must be ignored",
-            100
+            grounded,
+            Some((0.0, NavLocation::Terrain)),
+            "the ground 0 units away beats a deck 100 units up"
         );
     }
 
@@ -1708,8 +1725,10 @@ mod tests {
         assert_eq!(step, NavStep::Unknown);
     }
 
-    /// Resolution is geometric: standing at deck height finds the deck, and
-    /// standing far above it finds nothing (there is no terrain here).
+    /// Resolution is geometric and has no reach limit: the nearest surface
+    /// under (x, z) wins however far away it is, so a mover 400 units above
+    /// the only deck in the world still resolves to that deck. `Unresolved` is
+    /// reserved for "nothing loaded here at all".
     #[test]
     fn resolve_location_finds_the_deck_by_height() {
         let (mut app, object) = app_with_deck(100.0, 0.0, false);
@@ -1720,7 +1739,12 @@ mod tests {
         );
         assert_eq!(
             run_resolve(&mut app, Vec3::new(0.0, 500.0, 0.0)),
-            NavLocation::Unresolved
+            NavLocation::OnObject { object }
+        );
+        assert_eq!(
+            run_resolve(&mut app, Vec3::new(900.0, 100.0, 900.0)),
+            NavLocation::Unresolved,
+            "off every surface there is nothing to resolve to"
         );
     }
 
@@ -1756,11 +1780,13 @@ mod tests {
             run_resolve(&mut app, Vec3::new(0.0, 195.0, 0.0)),
             NavLocation::OnObject { object: upper }
         );
-        // Between floors, out of STAND_TOLERANCE of both: no surface claims it.
-        assert_eq!(
+        // Exactly between the floors the gaps tie at 100. There is no terrain
+        // to take the tie, so one of the two floors does — never nowhere. The
+        // rule has no "too far" case; the original's does not either.
+        assert!(matches!(
             run_resolve(&mut app, Vec3::new(0.0, 100.0, 0.0)),
-            NavLocation::Unresolved
-        );
+            NavLocation::OnObject { .. }
+        ));
     }
 
     /// DOF collision circles (`Flag & 2` props) veto a step on any surface:
@@ -2000,24 +2026,22 @@ mod tests {
         ));
     }
 
-    /// An object surface below the terrain captures the mover: the object wins
-    /// whenever one resolves, and the terrain is only the fallback.
+    /// An object surface 15 units below the ground does NOT pull a mover off
+    /// the ground it stands on when no outline is crossed: the stateless
+    /// resolver is nearest-wins, and the ground is 0 away.
     ///
-    /// This test asserted the opposite until the height competition was
-    /// removed. `prefer_height` took the *higher* surface, which meant any
-    /// object authored below the ground it meets was unreachable — bridge decks
-    /// sitting a few units under their own abutment among them, which is the
-    /// bug that forced the change.
-    ///
-    /// The cost is real and deliberate: a tree or building whose nav mesh sits
-    /// under walkable ground now drags a mover down onto it. The only thing
-    /// bounding that is [`STAND_TOLERANCE`] — the object's surface has to be
-    /// within 20 units of the feet to be a candidate at all. If buried meshes
-    /// turn out to capture movers in practice, the fix is a better membership
-    /// signal (cell adjacency), not a height comparison: height cannot tell a
-    /// sunken bridge deck from a buried tree.
+    /// This test has flipped twice. It first asserted Terrain (a height
+    /// competition took the *higher* surface), then OnObject ("the object wins
+    /// whenever one resolves within 20") because sunken bridge decks were
+    /// unreachable. Both were height heuristics for a question the original
+    /// answers with the held owner. The deck case they protected is covered
+    /// where the original covers it — the outline crossing
+    /// (`crossing_an_outline_boards_a_deck_sunk_below_the_terrain`) — and this
+    /// resolver reverts to the original's own rule. The buried-mesh cost the
+    /// old comment paid for is gone with it: a mesh under walkable ground is
+    /// never nearer the feet than that ground.
     #[test]
-    fn an_object_below_the_terrain_captures_the_mover() {
+    fn an_object_below_the_terrain_does_not_capture_a_mover_on_the_ground() {
         let mut app = App::new();
         app.add_plugins((
             bevy::app::TaskPoolPlugin::default(),
@@ -2055,21 +2079,30 @@ mod tests {
             NavLocation::Terrain,
         ) {
             NavStep::Moved { position, location } => {
-                assert_eq!(location, NavLocation::OnObject { object });
+                assert_eq!(
+                    location,
+                    NavLocation::Terrain,
+                    "object {object:?} must not win"
+                );
                 assert!(
-                    (position.y - 85.0).abs() < 1e-3,
-                    "expected to stand on the deck at y=85, got {}",
+                    (position.y - 100.0).abs() < 1e-3,
+                    "expected to stay on the ground at y=100, got {}",
                     position.y
                 );
             }
-            other => panic!("expected to land on the deck, got {other:?}"),
+            other => panic!("expected to keep the ground, got {other:?}"),
         }
     }
 
-    /// The converse: a deck *above* the terrain but within stepping range still
-    /// captures the mover, so ramps and stair treads keep working.
+    /// The converse: a tread 15 units *above* the ground does not capture a
+    /// mover standing on that ground either — nearest wins, and the ground is
+    /// nearer. Stairs still work, because a mover walking onto a staircase
+    /// crosses the first tread's outline, and that hand-off boards it
+    /// (`crossing_an_outline_boards_a_deck_beyond_stand_tolerance`). What this
+    /// pins is that *standing still inside the footprint* no longer teleports
+    /// the feet up by 15.
     #[test]
-    fn a_steppable_object_above_the_terrain_still_captures_the_mover() {
+    fn a_steppable_object_above_the_terrain_does_not_capture_a_mover_on_the_ground() {
         let mut app = App::new();
         app.add_plugins((
             bevy::app::TaskPoolPlugin::default(),
@@ -2106,10 +2139,58 @@ mod tests {
             NavLocation::Terrain,
         ) {
             NavStep::Moved { position, location } => {
-                assert_eq!(location, NavLocation::OnObject { object });
-                assert!((position.y - 110.0).abs() < 1e-3, "got {}", position.y);
+                assert_eq!(
+                    location,
+                    NavLocation::Terrain,
+                    "object {object:?} must not win"
+                );
+                assert!((position.y - 100.0).abs() < 1e-3, "got {}", position.y);
             }
-            other => panic!("expected to step up onto the deck, got {other:?}"),
+            other => panic!("expected to keep the ground, got {other:?}"),
+        }
+    }
+
+    /// The one clause of the rule that is a decision rather than a consequence:
+    /// on an exact tie the terrain wins. A deck flush with the ground (both at
+    /// y = 100) under a mover standing on that ground is 0 away — so is the
+    /// ground — and the comparison is strict, so the mover keeps the ground.
+    /// This is what `<` guards; `<=` would hand every flush deck the mover.
+    #[test]
+    fn a_deck_flush_with_the_ground_loses_the_tie_to_the_terrain() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .init_asset::<JMXVNVM>()
+        .init_asset::<JMXVBMS>();
+        spawn_flat_terrain(&mut app, 100.0);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<JMXVBMS>>()
+            .add(deck_bms(false));
+        let object = app
+            .world_mut()
+            .spawn((
+                ObjectNavMesh(vec![handle]),
+                GlobalTransform::from(Transform::from_xyz(-100.0, 100.0, 100.0)),
+            ))
+            .id();
+
+        match run_step(
+            &mut app,
+            Vec3::new(-100.0, 100.0, 100.0),
+            Vec2::new(-105.0, 100.0),
+            NavLocation::Terrain,
+        ) {
+            NavStep::Moved { location, .. } => {
+                assert_eq!(
+                    location,
+                    NavLocation::Terrain,
+                    "tie must go to the ground, not {object:?}"
+                );
+            }
+            other => panic!("expected a plain step on the ground, got {other:?}"),
         }
     }
 
@@ -2288,7 +2369,7 @@ mod tests {
     }
 
     /// Walking across a deck's outline boards it even when the deck sits
-    /// further above the feet than [`STAND_TOLERANCE`].
+    /// further above the feet than a step.
     ///
     /// The bridge report: entry used to be decided only by height proximity,
     /// so a deck 25 units up was never even a candidate and the mover kept
