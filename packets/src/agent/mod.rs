@@ -35,6 +35,7 @@ pub mod prelude {
     pub use crate::agent::academy::*;
     pub use crate::agent::alchemy::*;
     pub use crate::agent::barena::*;
+    pub use crate::agent::character_data::ClientSettingsSave;
     pub use crate::agent::chat::*;
     pub use crate::agent::exchange::*;
     pub use crate::agent::guild::*;

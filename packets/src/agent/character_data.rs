@@ -32,6 +32,7 @@
 
 use std::io::{Cursor, Read};
 
+use bevy::prelude::Message;
 use byteorder::ReadBytesExt;
 
 use sro_macro::ByteSize;
@@ -533,6 +534,49 @@ pub struct Hotkey {
     pub slot: u8,
     pub kind: u8,
     pub data: u32,
+}
+
+/// 0x7158 — client → server, the per-character client settings the server
+/// keeps for it: the quickslot bar and the auto-potion thresholds. One opcode,
+/// three payloads, discriminated on the leading byte.
+///
+/// Measured over every `0x7158.log` in this workspace (39 files): 118 frames,
+/// 112 independent, **118 of 118 c2s**. From original-client sessions: 81
+/// two-byte frames of kind 0, 29 seven-byte frames of kind 1, one eight-byte
+/// frame of kind 2. Watched live 2026-10-28: the original client sends a burst
+/// of these 80–90 ms after its own `0x3012 GameReady`, and what it sends is
+/// what it was just given — the kind-1 frames echo the `hotkeys` list our
+/// `0x3013` handed it (same `slot`/`kind`/`data` triple as [`Hotkey`], which
+/// is the same record on the wire the other way). Nothing answers it in any
+/// session; the stub logs it as unknown and the client does not mind.
+///
+/// Kind 2 is carried **raw**. The one original frame is
+/// `02 11b2 4a01 4a00 05`, and a documented packing (enable bit, 7-bit field,
+/// two 1-based decimal digits) reads its HP word as both 50 % and 1 % at once
+/// — the two "percent" fields contradict each other on real bytes. So the
+/// three words stay opaque `u16`s and the delay a `u8`; what the bits mean is
+/// `[U]` until a session with a *configured* auto-potion is captured.
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub enum ClientSettingsSave {
+    /// Kind 0: a cleared quickslot. 81 original frames, every one `00 07`.
+    #[sro_packet(value = 0)]
+    ClearSlot { slot: u8 },
+    /// Kind 1: a quickslot binding, the [`Hotkey`] record of 0x3013 sent back.
+    #[sro_packet(value = 1)]
+    Hotkey {
+        slot: u8,
+        content_kind: u8,
+        data: u32,
+    },
+    /// Kind 2: the three auto-potion words (HP, MP, universal) and the delay,
+    /// opaque — see the type doc.
+    #[sro_packet(value = 2)]
+    AutoPotion {
+        hp: u16,
+        mp: u16,
+        universal: u16,
+        delay: u8,
+    },
 }
 
 /// Account/session flags at the end of the record.
@@ -1339,6 +1383,41 @@ fn read_tail_spawn(
 mod test {
     use super::*;
     use std::collections::HashMap;
+
+    /// Captured 0x7158 bodies, one per kind, all spoken by the original
+    /// client: the `00 07` every one of the 81 kind-0 frames carries, a kind-1
+    /// quickslot echo from the 2026-10-28 session, and the single kind-2 frame
+    /// from 2026-09-29. Re-encoding has to reproduce each byte for byte.
+    #[test]
+    fn captured_client_settings_round_trip() {
+        use bytes::Bytes;
+        let cases: [(&[u8], ClientSettingsSave); 3] = [
+            (b"\x00\x07", ClientSettingsSave::ClearSlot { slot: 7 }),
+            (
+                b"\x01\x02\x4a\xf0\x03\x00\x64",
+                ClientSettingsSave::Hotkey {
+                    slot: 2,
+                    content_kind: 0x4a,
+                    data: 0x6400_03f0,
+                },
+            ),
+            (
+                b"\x02\x11\xb2\x4a\x01\x4a\x00\x05",
+                ClientSettingsSave::AutoPotion {
+                    hp: 0xb211,
+                    mp: 0x014a,
+                    universal: 0x004a,
+                    delay: 5,
+                },
+            ),
+        ];
+        for (wire, want) in cases {
+            let body = Bytes::copy_from_slice(wire);
+            let decoded: ClientSettingsSave = body.clone().try_into().unwrap();
+            assert_eq!(decoded, want);
+            assert_eq!(Bytes::from(decoded), body);
+        }
+    }
 
     /// The record's 4-byte head is the packed wall clock, not a counter: the
     /// sample `0xBC82765A` reads as 2026-09-29 04:08:47 through the same bit
