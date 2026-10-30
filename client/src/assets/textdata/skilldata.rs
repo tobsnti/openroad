@@ -341,11 +341,11 @@ impl SkillDataRow {
     /// attack distance, duration, …).
     ///
     /// The stream is a linear list of fourcc tags each followed by a fixed
-    /// argument count, so it is walked left to right: displayed tags emit a
-    /// line, known plumbing tags are consumed silently, and the walk STOPS
-    /// at the first unknown tag — argument counts beyond the corpus-verified
-    /// set are guesses, and a misaligned walk would read arguments as tags
-    /// (e.g. `'da'` rows carry the literal fourcc `'cr'` as an argument).
+    /// argument count, so it is walked left to right: `param_argc` supplies
+    /// the stride, displayed tags emit a line, the rest are consumed
+    /// silently, and the walk STOPS at a tag whose argument count the corpus
+    /// does not pin down — a misaligned walk would read arguments as tags
+    /// (`'getv'` carries the literal fourcc `'MAAT'` as its argument).
     /// Better to drop trailing stats than show wrong ones.
     pub fn stat_lines(&self) -> Vec<String> {
         let Some(params) = self.0.get(SkilldataFields::ParamsStart as usize..) else {
@@ -363,50 +363,38 @@ impl SkillDataRow {
                 i += 1;
                 continue;
             };
+            // unmeasured tag: stop rather than risk a misaligned read
+            let Some(argc) = param_argc(&tag) else { break };
             let arg = |n: usize| vals.get(i + n).copied().unwrap_or(0);
-            // (arg count, emitted line) per corpus-verified tag
-            let (argc, line): (usize, Option<String>) = match tag.as_str() {
+            let line: Option<String> = match tag.as_str() {
                 // 'att' <kind> <pct> <min> <max> <x>
                 "att" => {
                     let (pct, min, max) = (arg(2), arg(3), arg(4));
-                    let line = if min > 0 || max > 0 {
+                    Some(if min > 0 || max > 0 {
                         format!("Attack power {pct}% + {min} ~ {max}")
                     } else {
                         format!("Attack power {pct}%")
-                    };
-                    (5, Some(line))
+                    })
                 }
                 // 'mc' <hits> <x> — chain/combo hit count
-                "mc" => (
-                    2,
-                    (arg(1) > 1).then(|| format!("{} consecutive hits", arg(1))),
-                ),
-                "dura" => (1, Some(format!("Duration: {}s", arg(1) / 1000))),
-                "cr" => (1, Some(format!("Critical +{}", arg(1)))),
-                "ru" => (1, Some(format!("Attack distance +{}", arg(1)))),
-                "heal" => (1, Some(format!("HP recovery +{}", arg(1)))),
-                "defp" => (1, Some(format!("Defense power +{}", arg(1)))),
+                "mc" => (arg(1) > 1).then(|| format!("{} consecutive hits", arg(1))),
+                "dura" => Some(format!("Duration: {}s", arg(1) / 1000)),
+                "cr" => Some(format!("Critical +{}", arg(1))),
+                "ru" => Some(format!("Attack distance +{}", arg(1))),
+                // 'heal' <hp> <hp%> <mp> <mp%> — arg 1 is the HP amount
+                "heal" => Some(format!("HP recovery +{}", arg(1))),
+                // 'defp' <phy> <mag> <x>
+                "defp" => Some(format!("Defense power +{}", arg(1))),
                 // 'hr'/'er' <flat> <pct> — hit/parry rate; exactly one of the
                 // two args is non-zero across the corpus
-                "hr" => (2, Some(rate_line("Hit rate", arg(1), arg(2)))),
-                "er" => (2, Some(rate_line("Parry rate", arg(1), arg(2)))),
-                // 'summ' <lifetime_ms> <10> <3500> <power> <0> — the Hawk
-                // Training attack bird (args 1/2 are corpus-wide constants)
-                "summ" => (
-                    5,
-                    Some(format!("Summons an attack hawk (attack power {})", arg(4))),
-                ),
+                "hr" => Some(rate_line("Hit rate", arg(1), arg(2))),
+                "er" => Some(rate_line("Parry rate", arg(1), arg(2))),
+                // 'summ' <lifetime_ms> <10> <3500> <power> — the Hawk
+                // Training attack bird (args 2/3 are corpus-wide constants)
+                "summ" => Some(format!("Summons an attack hawk (attack power {})", arg(4))),
                 // 'st' <duration_ms> <prob%> <level> (see skills/status.rs)
-                "st" => (3, Some(format!("Stun {}% for {}s", arg(2), arg(1) / 1000))),
-                // plumbing consumed without display: consume cost, area
-                // geometry, value getters, required-item gate
-                "cnsm" => (3, None),
-                "efr" => (6, None),
-                "getv" => (1, None),
-                "MAAT" => (0, None),
-                "reqi" => (2, None),
-                // unknown tag: stop rather than risk a misaligned read
-                _ => break,
+                "st" => Some(format!("Stun {}% for {}s", arg(2), arg(1) / 1000)),
+                _ => None,
             };
             lines.extend(line);
             i += 1 + argc;
@@ -423,6 +411,39 @@ fn rate_line(what: &str, flat: i64, pct: i64) -> String {
     } else {
         format!("{what} +{flat}")
     }
+}
+
+/// Argument count per parameter tag — the stride the `stat_lines` walk needs.
+///
+/// Each count is the one the player's own skilldata corpus admits. Walking all
+/// 30 661 rows of `skilldata_*.txt` with a wrong count derails the walk, so the
+/// counts kept here are those that let the corpus parse to the end of its
+/// authored parameter region; that is what raised the share of rows walking
+/// clean from 46.6 % to 90.4 %. Tag names and the candidate counts come from
+/// VSRO_188_SilkroadSkillParam (MIT, `data/parameters.py`); the corpus
+/// contradicted eleven of them — `atca`, `bbuf`, `cr`, `cshp`, `fitp`, `mpi`,
+/// `my`, `nbuf`, `pmhp`, `setv`, `tant` — and `mwmh`, `nmh` and `reqn` occur in
+/// the data without appearing in that catalogue at all; the measured value wins
+/// in both cases. Tags the corpus does not pin down are deliberately absent, so
+/// the walk stops there rather than guessing. `er` and `MAAT` are carried over
+/// from the earlier table: the corpus does not decide `er`, and never shows
+/// `MAAT` at a tag position — it only ever appears as the argument of `getv`.
+fn param_argc(tag: &str) -> Option<usize> {
+    Some(match tag {
+        "fitp" | "MAAT" | "nbuf" | "nmh" | "reqn" => 0,
+        "cr" | "da" | "dgmp" | "dura" | "getv" | "hste" | "mpi" | "mscc" | "mwdt" | "mwmh"
+        | "puls" | "rcur" | "ru" | "tant" => 1,
+        "apau" | "bgra" | "br" | "dru" | "dtt" | "er" | "fb" | "hr" | "irgc" | "kb" | "ko"
+        | "mc" | "mcap" | "msch" | "my" | "odar" | "pola" | "reqi" | "resu" | "setv" | "tele"
+        | "zb" => 2,
+        "bu" | "cnsm" | "defp" | "es" | "fe" | "ps" | "real" | "rt" | "sl" | "st" => 3,
+        "csit" | "csmd" | "cspd" | "cssr" | "dn" | "ds" | "heal" | "lnks" | "pmhp" | "pw"
+        | "ssou" | "summ" => 4,
+        "att" | "bl" | "cshp" => 5,
+        "bbuf" | "csmp" | "efr" => 6,
+        "atca" => 7,
+        _ => return None,
+    })
 }
 
 /// Decodes a parameter value back into its ASCII fourcc tag (2-4 alphabetic
@@ -629,16 +650,21 @@ mod test {
             vec!["Duration: 390s", "Attack distance +20"]
         );
 
-        // unknown tag ('da') stops the walk — its args carry literal 'cr'
-        // fourccs that a misaligned read would report as bogus crit lines
+        // Sword Down Attack lvl 1 (skilldata_10000.txt:2222): the unmeasured
+        // tag 'reqc' stops the walk, so the trailing 'cr' 5 — which a
+        // misaligned read would report as a crit line — stays dropped
         let mut r = row();
         let stream = [
-            6386804, 6, 100, 5, 9, 100, 25697, 150, 1919250787, 1, 25458, 5,
+            6386804, 5, 121, 636, 777, 121, 25697, 150, 1919250787, 1, 25458, 5, 0, 1734702198,
+            1296122196,
         ];
         for (i, v) in stream.iter().enumerate() {
+            if 69 + i >= r.0.len() {
+                r.0.push(String::new());
+            }
             r.0[69 + i] = v.to_string();
         }
-        assert_eq!(r.stat_lines(), vec!["Attack power 100% + 5 ~ 9"]);
+        assert_eq!(r.stat_lines(), vec!["Attack power 121% + 636 ~ 777"]);
 
         // Hawk Training: White Hawk Summon lvl 1 = 'dura' 345378, 'hr' 9 0
         let mut r = row();
@@ -676,6 +702,64 @@ mod test {
         row.0[40] = String::new();
         row.0[43] = String::new();
         assert_eq!(row.skill_prereq(), Some((175, 3)));
+    }
+
+    #[test]
+    fn param_argc_strides_follow_the_corpus() {
+        // Rows that only parse once the stride of a previously unmeasured tag
+        // is known — each line below sits *behind* such a tag.
+        let case = |stream: &[i64]| {
+            let mut r = row();
+            for (i, v) in stream.iter().enumerate() {
+                if 69 + i >= r.0.len() {
+                    r.0.push(String::new());
+                }
+                r.0[69 + i] = v.to_string();
+            }
+            r.stat_lines()
+        };
+
+        // skilldata_15000.txt:1844 MSKILL_AM_IVY_ATTACK05:
+        // 'dura' 60000, 'dru' 20 0, 'defp' 31 50 — 'dru' used to stop the walk
+        assert_eq!(
+            case(&[1685418593, 60000, 6582901, 20, 0, 1684366960, 31, 50]),
+            vec!["Duration: 60s", "Defense power +31"]
+        );
+
+        // skilldata_15000.txt:1760 SKILL_TC_COPPER_BUFF_01: 'nbuf' takes no
+        // argument at all, so 'hr' 0 10 right behind it is a real tag
+        assert_eq!(case(&[1851946342, 26738, 0, 10]), vec!["Hit rate +10%"]);
+
+        // skilldata_10000.txt:3151 SKILL_EU_WARRIOR_DUALA_TWIST_A_01:
+        // 'bl' 30000 25 1 10 20 — five arguments, and 'st' follows it
+        assert_eq!(
+            case(&[
+                6386804, 5, 131, 34, 42, 0, 28003, 2, 1, 25196, 30000, 25, 1, 10, 20, 29556, 5000,
+                20, 1, 1734702198, 1160921409,
+            ]),
+            vec![
+                "Attack power 131% + 34 ~ 42",
+                "2 consecutive hits",
+                "Stun 20% for 5s"
+            ]
+        );
+    }
+
+    #[test]
+    fn param_argc_keeps_unmeasured_tags_out() {
+        // Counts the corpus corrected against the MIT catalogue and against our
+        // own earlier guesses; they change no visible line today, they keep the
+        // walk aligned for whatever follows.
+        assert_eq!(param_argc("heal"), Some(4));
+        assert_eq!(param_argc("defp"), Some(3));
+        assert_eq!(param_argc("summ"), Some(4));
+        assert_eq!(param_argc("cr"), Some(1));
+
+        // Tags the corpus does not pin down stay absent, so the walk stops
+        // instead of guessing a stride.
+        assert_eq!(param_argc("reqc"), None);
+        assert_eq!(param_argc("fz"), None);
+        assert_eq!(param_argc("nope"), None);
     }
 
     #[test]
