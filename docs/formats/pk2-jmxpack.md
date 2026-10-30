@@ -40,7 +40,7 @@ next block of the same directory; a `NextChain` of 0 ends the chain.
 | 98 | 8 | u64 LE | `ModifyTime` | Windows FILETIME |
 | 106 | 8 | u64 LE | `Position` | file data offset, or child block offset for a directory |
 | 114 | 4 | u32 LE | `Size` | file size in bytes |
-| 122 | 8 | u64 LE | `NextChain` | next block of this directory, 0 = end |
+| 118 | 8 | u64 LE | `NextChain` | next block of this directory, 0 = end |
 | 126 | 2 | u8[2] | `Padding` | keeps the entry a whole number of Blowfish blocks |
 
 Encryption is Blowfish in ECB over 8-byte chunks, keyed by the user-supplied key
@@ -53,8 +53,12 @@ become `Empty`, and directory chains are bounded (`MAX_CHAIN_BLOCKS`) so a cycli
 
 ## Verification + corrections (openroad, 2026-08-12)
 
-Header and entry layout verified byte-exactly against all **5** real archives
-(5.6 GB). Every archive agrees: signature `"JoyMax File Manager!\n"` + 9 NULs,
+The **header** is verified byte-exactly against all **5** real archives (5.6 GB).
+The entry layout is *not* — this section claimed both until 2026-10-29, and the
+`NextChain` offset above was the proof that it was never checked: it said 122,
+which leaves `Size` (114 + 4 = 118) four bytes of nothing in front of it and
+then overruns `Padding` at 126 by four. The reader has always used 118, and
+118 + 8 = 126 closes the entry exactly. Every archive agrees: signature `"JoyMax File Manager!\n"` + 9 NULs,
 `encrypted = 1`, checksum `d8da30` + **13 zero bytes**, `reserved[205]` all zero.
 
 - **Correction — version endianness.** The on-disk bytes at 0x1E are
