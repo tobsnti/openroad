@@ -717,7 +717,7 @@ packets! {
     // split from one constant value, and naming the rest would mean naming an
     // action no capture of ours shows. agent/job.rs lists each with its bodies.
     0x70E6 => JobNpcRequest,
-    0x70EA => JobFlagRequest,
+    0x70EA => GameGuideFlagRequest,
     0xB0E6 => JobNpcResponse,
 
     // Mail/memo + consignment "avatar market" (see agent/mail.rs,
