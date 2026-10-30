@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,6 +26,13 @@ pub struct Archive {
     /// (`read_exact_at`), so concurrent asset loads from one archive don't
     /// serialize on a mutex around a shared file cursor.
     file: Arc<File>,
+    /// The archive's own length, taken once at open. An entry's `size` is a
+    /// `u32` straight out of the index, and the index is untrusted input like
+    /// the rest of the file — without a bound, a corrupt four-byte field turns
+    /// into a four-gigabyte allocation before the read that would have failed.
+    /// Kept here rather than asked of the filesystem per read, so the
+    /// lock-free positioned-read path stays syscall-free.
+    file_len: u64,
     blowfish: Blowfish,
     strip_prefix: OsString,
     pub root: Directory,
@@ -86,6 +93,7 @@ impl Archive {
             .map_err(|_| Error::InvalidHeader("header shorter than 256 bytes"))?;
         let header = Header::from(header_buf);
         header.verify(&blowfish)?;
+        let file_len = file.metadata().map_err(Error::IO)?.len();
         let root = Directory::index(&mut file, &blowfish)?;
         let entries = root
             .get_all_entries()
@@ -94,12 +102,19 @@ impl Archive {
             .collect();
         Ok(Archive {
             file: Arc::new(file),
+            file_len,
             blowfish,
             strip_prefix: "".into(),
             root,
             entries,
         })
     }
+}
+
+/// An entry can only be as large as the archive that holds it. Returns the size
+/// as a buffer length, or `None` when the index claims more.
+fn checked_size(size: u32, file_len: u64) -> Option<usize> {
+    (u64::from(size) <= file_len).then_some(size as usize)
 }
 
 impl Archive {
@@ -165,7 +180,18 @@ impl AssetReader for Archive {
                 // Positioned read straight into the buffer handed to the
                 // reader: no lock (a burst of loads from one archive used to
                 // serialize on it) and no intermediate copy of the bytes.
-                let mut bytes = vec![0u8; entry.size as usize];
+                let size = checked_size(entry.size, self.file_len).ok_or_else(|| {
+                    AssetReaderError::Io(Arc::new(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "{}: entry claims {} bytes, archive holds {}",
+                            stripped_path.display(),
+                            entry.size,
+                            self.file_len
+                        ),
+                    )))
+                })?;
+                let mut bytes = vec![0u8; size];
                 read_exact_at(&self.file, &mut bytes, entry.position)?;
                 // #434 step 1: count what a cache would have served. Inert
                 // unless PK2_READ_STATS is set.
@@ -268,7 +294,7 @@ impl Archive {
         if !entry.is_file() {
             return None;
         }
-        let mut buf = vec![0u8; entry.size as usize];
+        let mut buf = vec![0u8; checked_size(entry.size, self.file_len)?];
         read_exact_at(&self.file, &mut buf, entry.position).ok()?;
         read_stats::record(&normalize(path), entry.size as u64);
         Some(buf)
@@ -278,5 +304,20 @@ impl Archive {
         self.entries.iter().for_each(|(k, _v)| {
             info!("Entry: {}", k.display());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_size;
+
+    /// The index is untrusted input, so an entry that claims more bytes than the
+    /// whole archive holds is refused before anything is allocated for it.
+    #[test]
+    fn an_entry_cannot_be_larger_than_its_archive() {
+        assert_eq!(checked_size(64, 64), Some(64), "exactly the archive fits");
+        assert_eq!(checked_size(0, 64), Some(0), "an empty entry is fine");
+        assert_eq!(checked_size(65, 64), None, "one byte too many");
+        assert_eq!(checked_size(u32::MAX, 64), None, "a corrupt size field");
     }
 }
