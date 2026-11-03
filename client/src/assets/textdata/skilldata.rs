@@ -431,23 +431,24 @@ fn rate_line(what: &str, flat: i64, pct: i64) -> String {
 fn param_argc(tag: &str) -> Option<usize> {
     Some(match tag {
         "fitp" | "MAAT" | "nbuf" | "nmh" | "reqn" => 0,
-        "cr" | "da" | "dgmp" | "dura" | "getv" | "hste" | "mpi" | "mscc" | "mwdt" | "mwmh"
-        | "puls" | "rcur" | "ru" | "tant" => 1,
+        "cr" | "da" | "dgmp" | "dmgt" | "dura" | "getv" | "hst2" | "hste" | "mpi" | "mscc"
+        | "mwdt" | "mwmh" | "pdm2" | "puls" | "rcur" | "reqc" | "ru" | "tant" => 1,
         "apau" | "bgra" | "br" | "dru" | "dtt" | "er" | "fb" | "hr" | "irgc" | "kb" | "ko"
         | "mc" | "mcap" | "msch" | "my" | "odar" | "pola" | "reqi" | "resu" | "setv" | "tele"
-        | "zb" => 2,
-        "bu" | "cnsm" | "defp" | "es" | "fe" | "ps" | "real" | "rt" | "sl" | "st" => 3,
-        "csit" | "csmd" | "cspd" | "cssr" | "dn" | "ds" | "heal" | "lnks" | "pmhp" | "pw"
-        | "ssou" | "summ" => 4,
+        | "tnt2" | "zb" => 2,
+        "bu" | "cnsm" | "defp" | "es" | "fe" | "ps" | "real" | "rt" | "skc" | "sl" | "st" => 3,
+        "csit" | "csmd" | "cspd" | "cssr" | "dn" | "ds" | "heal" | "lnks" | "pdmg" | "pmhp"
+        | "pw" | "ssou" | "summ" => 4,
         "att" | "bl" | "cshp" => 5,
         "bbuf" | "csmp" | "efr" => 6,
         "atca" => 7,
+        "efta" => 12,
         _ => return None,
     })
 }
 
-/// Decodes a parameter value back into its ASCII fourcc tag (2-4 alphabetic
-/// chars); `None` for plain numbers.
+/// Decodes a parameter value back into its ASCII fourcc tag (2-4 chars, the
+/// first a letter and the rest alphanumeric); `None` for plain numbers.
 fn decode_fourcc(value: i64) -> Option<String> {
     if value <= 0 {
         return None;
@@ -458,7 +459,16 @@ fn decode_fourcc(value: i64) -> Option<String> {
         s.insert(0, (x & 0xff) as u8 as char);
         x >>= 8;
     }
-    ((2..=4).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphabetic())).then_some(s)
+    // A tag may carry digits after its first letter: `tnt2` stands at a real
+    // tag position in 340 corpus rows (e.g. `skilldata_10000.txt`,
+    // `SKILL_EU_WARRIOR_FRENZYA_TOUNT_A_01`: `… 'tnt2' 1016 0 'pwtt' 2000`),
+    // and an alphabetic-only rule rejected it, which stopped the walk there.
+    // The first character stays a letter so a plain number cannot pass as a
+    // tag.
+    let mut chars = s.chars();
+    let first_is_alpha = chars.next().is_some_and(|c| c.is_ascii_alphabetic());
+    let rest_is_alnum = chars.all(|c| c.is_ascii_alphanumeric());
+    ((2..=4).contains(&s.len()) && first_is_alpha && rest_is_alnum).then_some(s)
 }
 
 /// Encodes an ASCII tag (`att`, `dura`) as the big-endian integer the
@@ -650,9 +660,11 @@ mod test {
             vec!["Duration: 390s", "Attack distance +20"]
         );
 
-        // Sword Down Attack lvl 1 (skilldata_10000.txt:2222): the unmeasured
-        // tag 'reqc' stops the walk, so the trailing 'cr' 5 — which a
-        // misaligned read would report as a crit line — stays dropped
+        // Sword Down Attack lvl 1 (skilldata_10000.txt:2222). `reqc` used to
+        // be unmeasured and stopped the walk here, dropping the trailing
+        // `'cr' 5`. It is measured now (one argument, ahead by 19 rows), so the
+        // crit line comes through — this row is what the change buys, visible
+        // in a single skill's tooltip.
         let mut r = row();
         let stream = [
             6386804, 5, 121, 636, 777, 121, 25697, 150, 1919250787, 1, 25458, 5, 0, 1734702198,
@@ -664,7 +676,10 @@ mod test {
             }
             r.0[69 + i] = v.to_string();
         }
-        assert_eq!(r.stat_lines(), vec!["Attack power 121% + 636 ~ 777"]);
+        assert_eq!(
+            r.stat_lines(),
+            vec!["Attack power 121% + 636 ~ 777", "Critical +5"]
+        );
 
         // Hawk Training: White Hawk Summon lvl 1 = 'dura' 345378, 'hr' 9 0
         let mut r = row();
@@ -756,10 +771,53 @@ mod test {
         assert_eq!(param_argc("cr"), Some(1));
 
         // Tags the corpus does not pin down stay absent, so the walk stops
-        // instead of guessing a stride.
-        assert_eq!(param_argc("reqc"), None);
+        // instead of guessing a stride. `fz` is the biggest of them: it stops
+        // 1,184 rows, and its best stride beats the runner-up by 7 - under the
+        // ten-row rule the rest of this table follows.
         assert_eq!(param_argc("fz"), None);
+        assert_eq!(param_argc("cbuf"), None);
         assert_eq!(param_argc("nope"), None);
+    }
+
+    /// Strides measured 2026-11-02 with a walk that must hit the described
+    /// range EXACTLY - overshooting counts as failure, because a stride that is
+    /// too large swallows the zero padding and any unknown tag behind it for
+    /// free. Scored over the same 30,661 corpus rows; each is adopted only
+    /// where its best value beats every alternative in 0..=15 by ten rows or
+    /// more.
+    #[test]
+    fn param_argc_strides_measured_with_an_exact_range_walk() {
+        // `tnt2` is the clearest of them: 271 rows separate it from the next
+        // candidate, and the stream reads by eye -
+        // `skilldata_10000.txt`, `SKILL_EU_WARRIOR_FRENZYA_TOUNT_A_01`:
+        // `… 'tnt2' 1016 0 'pwtt' 2000` - two values, then the next tag. It
+        // also explains the name: `tant` (taunt) is already here with one.
+        assert_eq!(param_argc("tnt2"), Some(2));
+        assert_eq!(param_argc("pdm2"), Some(1));
+        assert_eq!(param_argc("pdmg"), Some(4));
+        assert_eq!(param_argc("reqc"), Some(1));
+        assert_eq!(param_argc("skc"), Some(3));
+        assert_eq!(param_argc("hst2"), Some(1));
+        assert_eq!(param_argc("dmgt"), Some(1));
+        // The widest one in the table. Not at the search bound (the scan runs
+        // to 15) and ahead by 19 rows, so it is measured rather than clamped.
+        assert_eq!(param_argc("efta"), Some(12));
+    }
+
+    /// A tag may carry digits after its first letter. Before 2026-11-02
+    /// `decode_fourcc` required every character to be alphabetic, which
+    /// rejected `tnt2` where it really stands at a tag position.
+    #[test]
+    fn decode_fourcc_accepts_a_digit_after_the_first_letter() {
+        let tnt2 = fourcc("tnt2").expect("encodes");
+        assert_eq!(decode_fourcc(tnt2).as_deref(), Some("tnt2"));
+        assert_eq!(
+            decode_fourcc(fourcc("dura").expect("encodes")).as_deref(),
+            Some("dura")
+        );
+        // A leading digit is still not a tag - otherwise a plain number in the
+        // stream could pass as one.
+        assert_eq!(decode_fourcc(fourcc("2tnt").expect("encodes")), None);
     }
 
     #[test]
