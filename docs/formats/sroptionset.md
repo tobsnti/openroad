@@ -57,6 +57,30 @@ Notes / UNKNOWNs:
   real `.dat` — see "Shipped defaults" below.
 - KeyMap VK→Bevy `KeyCode` translation is deferred to the UI layer.
 
+## Measured against a real file (2026-11-02)
+
+An independent parse of a live `SROptionSet.dat` confirms the framing above:
+**105 records, ending exactly at byte 681**, with `Unknown0 == 0` in every one of
+them. The id→width table reproduces the file with no slack, which is what makes
+the framing trustworthy even though the stream is not self-describing.
+
+Two things that are **not** settled, recorded so the next reader does not repeat
+the experiment:
+
+- **The 2-byte Graphic value is not a `(current, max)` pair.** The bytes read
+  `00 01`, `00 02`, `01 02` in a real file, which invites that reading. Writing
+  the low byte up to match the high byte (`00 02` → `02 02`) and restarting the
+  client changed **no** displayed slider: Graphic Quality stayed `Low`,
+  Character Sight Range stayed `1`. The file kept the written bytes afterwards,
+  so the client read them and did not rewrite them. What the two bytes mean is
+  therefore still open.
+- **The file is read at client start and overrides whatever the running client
+  last had.** Measured in the same run: a `View` mode changed through the
+  options UI reverted after restoring an older copy of this file.
+
+`[U]` either way — openroad only imports this file, so neither question blocks
+anything today.
+
 ## Shipped defaults
 
 A real `SROptionSet.dat` is **681 bytes**, **105 records**, with no trailing
