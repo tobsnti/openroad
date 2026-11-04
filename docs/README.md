@@ -36,6 +36,10 @@ evidence — are not published; see [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
 Every other payload layout is documented next to its type in `packets/src/**`.
 
 ## File formats
+- [`original-vertex-shaders.md`](original-vertex-shaders.md) — the v1.188 client ships
+  its vertex shaders as D3D **assembly source**, not compiled blobs: the constant
+  register ABI, the technique/body split and the two-weight skinning path, read
+  straight out of the user's install
 - [`formats/README.md`](formats/README.md) — index of the format notes; each page
   describes what openroad's own parser reads and what was verified against a PK2
   corpus the user supplied
