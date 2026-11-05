@@ -25,6 +25,9 @@ evidence — are not published; see [`../CONTRIBUTING.md`](../CONTRIBUTING.md)
   its consumer without a restart, and the audit of every `ClientConfig` group
 
 ## Network protocol
+- [`protocol/client-send-sites.md`](protocol/client-send-sites.md) — the 157 opcodes
+  `sro_client.exe` can send, found by the gate/build/send shape in `.text`; gives the
+  c2s side a denominator that does not come from our own ledger
 - [`protocol/opcodes.md`](protocol/opcodes.md) — the opcode coverage ledger; CI fails
   if it and the `packets!` macro in `packets/src/lib.rs` disagree
 - [`net-framing.md`](net-framing.md) — the `SilkroadFrame` codec (6-byte header,
