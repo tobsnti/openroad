@@ -55,6 +55,24 @@ Full table with one row per opcode — send-site count, first site VA, containin
 function, and whether we model it or have ever captured it — in
 [`client-send-sites.tsv`](client-send-sites.tsv).
 
+## Source file, where the binary names one
+
+MSVC leaves `__FILE__` strings behind wherever an assert or trace sits. 109 of
+them point at `D:\vss-od\Silkroad\Client\client\*.cpp`, and **7** of the 157
+send sites fall inside a function that references one. Those 7 carry a
+`source_file` column in the TSV; the other 150 are blank, which means *no path
+is referenced there*, not that none exists.
+
+Thin, but two rows earn their keep:
+
+| opcode | file | what it explains |
+|---|---|---|
+| `0x7158` | `NIFUnderMenuBar.cpp` | the bottom menu bar sends it — which is why five frames arrive right after login, as the bar initialises its toggles |
+| `0x7117` | `IFCOSInfo.cpp` | the companion/pet info window |
+
+The remaining five name `GInterfaceSend.cpp` or `InterfaceNetSender.cpp`, both
+generic senders that say nothing about which window pressed the button.
+
 ## What this is not
 
 - **Not a dispatch table.** It says what the client is *capable* of sending from
