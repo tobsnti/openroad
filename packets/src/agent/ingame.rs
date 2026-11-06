@@ -1004,11 +1004,31 @@ pub struct SelectEntityRequest {
 /// After the `result`/`unique_id` header the body depends on the *target's*
 /// type, which is not encoded in the packet — so the tail stays raw and the
 /// consumer interprets it against what it knows the entity to be. Per go-sro's
-/// `select_entity.go` (the reference server; layouts unverified against vSRO):
+/// `select_entity.go`:
 ///   * monster: `u8` (=1), `u32` current HP (go-sro hardcodes 0), `u8`, `u8`
 ///   * player:  `u32`, `u8` trader lvl, `u8` hunter lvl, `u8` thief lvl, `u8`
-///   * NPC:     go-sro never sends the response at all (handler bug) — the
-///     client must treat this packet as optional enrichment, never a gate.
+///   * NPC:     go-sro never sends the response at all (handler bug).
+///
+/// **The monster tail is mandatory, and the original client proves it.** On
+/// 2026-11-06 a stub answered a real selection with just `result` + `unique_id`
+/// — five bytes — and `sro_client.exe` v1.188 asserted one second later:
+///
+/// ```text
+/// MsgStreamBuffer.h:247
+/// MSGID:0xB045,R(5),W(5),T(1)      ("wants to read more than was put in")
+/// ```
+///
+/// Five written, five read, one more wanted. So the header alone is a short
+/// read, and the earlier phrasing — that this packet is "optional enrichment,
+/// never a gate" — holds only for *not sending it at all* (the NPC case), never
+/// for sending a truncated one.
+///
+/// The monster tail's seven bytes are corroborated by traffic: across every
+/// captured `0xB045` in the corpus, **292 frames are 12 bytes** (5 + 7), every
+/// monster one ends `01 05`, and the HP word carries real values — 54, 108,
+/// 249, 2062 — not go-sro's hardcoded zero. What stays `[U]` is the meaning of
+/// the trailing `01 05` pair and the player/NPC tails, none of which any
+/// capture in this project pins down.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct SelectEntityResponse {
     /// 1 = ok, anything else = failure (tail then carries an error byte).
