@@ -251,7 +251,7 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | Opcode | Name | Direction | Status | Notes |
 |---|---|---|---|---|
 | `0x7045` | SelectEntityRequest | C→S | wired |  |
-| `0xB045` | SelectEntityResponse | S→C | wired |  |
+| `0xB045` | SelectEntityResponse | S→C | wired | `u8 result`, `u32 unique_id`, then a **mandatory** type-dependent tail. A five-byte header-only answer makes the v1.188 client assert and die: `MsgStreamBuffer.h:247 MSGID:0xB045,R(5),W(5),T(1)` (measured 2026-11-06). The monster tail is 7 bytes — `01`, `u32` current HP, then `01 05`; 292 captured frames are 12 bytes and every monster one ends `01 05`, with real HP values (54, 108, 249, 2062). The trailing pair's meaning and the player/NPC tails are [U] |
 
 ## Combat & skills
 
