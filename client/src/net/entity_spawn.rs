@@ -546,7 +546,24 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
     // colour. Values beyond 0/1 are UNKNOWN and are carried through unmapped
     // rather than guessed at.
     let rarity = r.u8()?;
-    r.skip(5)?; // drop source (u8) + dropper uid (u32)
+    // The dropper id is CONDITIONAL on the drop source, the same shape the
+    // owner flag has six lines up — not an unconditional u32. The original
+    // client settled it by dying on a record that carried one unasked:
+    //
+    //   MsgStreamBuffer.h:186
+    //   (CPSMission) MSGID:0x3015,R(31),W(36)
+    //
+    // Thirty-six written, thirty-one read. The five bytes it never consumed
+    // were a dropper id (4) and a trailing frame byte (1) behind a drop source
+    // of 0. Reading them unconditionally here costs four bytes of every plain
+    // drop and silently shifts whatever follows in a batch.
+    //
+    // What a NON-zero source means is UNKNOWN — no capture of ours carries one
+    // — so that branch reads the id it implies and nothing more is claimed.
+    let drop_source = r.u8()?;
+    if drop_source != 0 {
+        r.skip(4)?; // dropper uid
+    }
     Some(SpawnedEntity {
         ref_id,
         unique_id,
@@ -786,6 +803,50 @@ mod test {
         assert_eq!(parsed.spawns[0].talk_options, vec![0x01, 0x02, 0x04, 0x20]);
         assert_eq!(parsed.spawns[1].unique_id, 100);
         assert!(parsed.spawns[1].talk_options.is_empty());
+    }
+
+    /// The counterpart of [`parses_gold_drop`]: a drop source of 0 carries NO
+    /// dropper id, and reading one anyway eats the next record.
+    ///
+    /// This is the case the original client settled by dying on it —
+    /// `MSGID:0x3015,R(31),W(36)`, thirty-six written and thirty-one read,
+    /// where the five it never touched were a dropper id behind a source of 0
+    /// plus the frame byte. Two records here, because the damage of an
+    /// unconditional read is not a short parse but a SHIFTED one: the first
+    /// record still looks fine.
+    #[test]
+    fn a_drop_source_of_zero_carries_no_dropper_id() {
+        const GOLD_REF: u32 = 3000;
+        let res = resolver(&[(
+            GOLD_REF,
+            RefType::Item {
+                equipment: false,
+                gold: true,
+            },
+        )]);
+        let mut body = Body::default();
+        for (uid, amount) in [(77u32, 5000u32), (78, 6000)] {
+            body = body
+                .u32(GOLD_REF)
+                .u32(amount)
+                .u32(uid)
+                .u16(0x60A8)
+                .f32(1.0)
+                .f32(2.0)
+                .f32(3.0)
+                .u16(0)
+                .u8(0) // owner flag: none, so no owner id follows
+                .u8(0) // rarity
+                .u8(0); // drop source 0 -> no dropper id
+        }
+        let parsed = parse_group_spawn(&body.0, true, 2, &res);
+        assert_eq!(parsed.spawns.len(), 2, "both records must be consumed");
+        assert_eq!(parsed.spawns[0].unique_id, 77);
+        assert_eq!(parsed.spawns[1].unique_id, 78);
+        assert_eq!(
+            parsed.spawns[1].kind,
+            SpawnKind::Item { amount: Some(6000) }
+        );
     }
 
     #[test]
