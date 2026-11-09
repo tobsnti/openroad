@@ -117,6 +117,8 @@ pub fn run_headless(config: ClientConfig) {
                 netcheck_drive_actions,
                 netcheck_select_target,
                 netcheck_attack_target,
+                netcheck_press_attack,
+                netcheck_pick_up_loot,
                 netcheck_log_action_responses,
                 netcheck_fire_probe,
             ),
@@ -429,6 +431,15 @@ struct ActionDriver {
     /// entity the server just confirmed.
     selected_uid: Option<u32>,
     attack_sent: bool,
+    /// Swings sent so far, and when the next one may go out. The stub refuses a
+    /// second swing inside the server-side cooldown ("basic-attack on cooldown,
+    /// dropping"), so the follow-up swings are paced rather than burst.
+    swings: u8,
+    next_swing_at: Option<f64>,
+    /// Set when a ground drop appears, which only happens on a kill — the
+    /// harness uses the drop itself as the death signal rather than guessing at
+    /// a life-state packet.
+    pickup_sent: bool,
     /// A CHARACTER_DATA body that arrived before the unique id did, kept so the
     /// scan can be retried once `CelestialPosition` names the id (#728).
     pending_body: Option<Bytes>,
@@ -443,13 +454,29 @@ struct ActionDriver {
 struct HeadlessResolver;
 
 impl RefResolver for HeadlessResolver {
-    fn resolve(&self, _ref_id: u32) -> RefType {
+    fn resolve(&self, ref_id: u32) -> RefType {
+        // Ref id 1 is `ITEM_ETC_GOLD_01` in the user's itemdata — the one ref
+        // this harness can name without the tables, because the gold pile is
+        // the only record whose id is a fixed wire constant rather than a row
+        // lookup. Measured 2026-11-09: a kill drops `0x3015` with ref 1, and
+        // reading it as a monster record (what this returned for everything)
+        // consumes the wrong field widths and parses nothing at all, so the
+        // drop was invisible to the driver.
+        if ref_id == GOLD_REF_ID {
+            return RefType::Item {
+                equipment: false,
+                gold: true,
+            };
+        }
         RefType::Monster
     }
     fn item_is_equipment(&self, _ref_id: u32) -> bool {
         false
     }
 }
+
+/// `ITEM_ETC_GOLD_01`; see [`HeadlessResolver::resolve`].
+const GOLD_REF_ID: u32 = 1;
 
 /// Record the local player's in-world id from the celestial-position packet.
 fn netcheck_capture_local_uid(
@@ -714,6 +741,110 @@ fn netcheck_attack_target(
         }
         info!("netcheck: sent attack (0x7074 Execute/Attack) on uid={uid}");
         driver.attack_sent = true;
+        break;
+    }
+}
+
+/// Keep swinging until the target drops something, or the bound is reached.
+///
+/// Idea: one swing proves `0x7074 -> 0xB074` and nothing beyond it. The link
+/// after that — a kill, the ground drop it produces, and the pickup — needs the
+/// target's health to actually reach zero, and a monster does not die to a
+/// single hit. Measured 2026-11-09 against our stub: one swing took 1000 HP to
+/// 853, and a burst of twelve frames landed exactly one ("basic-attack on
+/// cooldown, dropping", eleven times). So the swings are PACED, not batched.
+///
+/// The bound exists because a harness must terminate against a server that
+/// never lets the target die.
+fn netcheck_press_attack(
+    mut driver: ResMut<ActionDriver>,
+    time: Res<Time>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    const MAX_SWINGS: u8 = 20;
+    const SWING_INTERVAL: f64 = 1.2;
+    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+        return;
+    }
+    if driver.swings >= MAX_SWINGS {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    let due = *driver.next_swing_at.get_or_insert(now + SWING_INTERVAL);
+    if now < due {
+        return;
+    }
+    let (Some(uid), Ok(conn)) = (driver.selected_uid, conn.single()) else {
+        return;
+    };
+    let request = ObjectActionRequest::Execute(ActionCommand::Attack(ActionTarget::Entity {
+        unique_id: uid,
+    }));
+    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+        error!("netcheck: failed to send follow-up attack: {}", e.0);
+        return;
+    }
+    driver.swings += 1;
+    driver.next_swing_at = Some(now + SWING_INTERVAL);
+    info!(
+        "netcheck: swing {}/{} on uid={uid}",
+        driver.swings, MAX_SWINGS
+    );
+}
+
+/// Pick up the first ground drop that appears, which is the kill's own receipt.
+///
+/// A drop arrives as a single-record spawn, and picking it up is the same
+/// `0x7074` envelope as the attack with command 2 — no separate opcode and no
+/// separate ack, so the whole chain stays on one pair of packets.
+fn netcheck_pick_up_loot(
+    mut driver: ResMut<ActionDriver>,
+    mut reader: MessageReader<SingleEntitySpawn>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+        return;
+    }
+    let Ok(conn) = conn.single() else {
+        return;
+    };
+    for spawn in reader.read() {
+        let parsed = parse_group_spawn(&spawn.raw, true, 1, &HeadlessResolver);
+        let Some(uid) = parsed
+            .spawns
+            .iter()
+            .map(|entity| entity.unique_id)
+            .find(|&uid| uid != 0 && Some(uid) != driver.selected_uid)
+        else {
+            // Say so instead of skipping quietly. A drop whose ref id this
+            // harness cannot classify parses to nothing, and the uid cannot be
+            // read from the raw bytes either: a gold record carries its amount
+            // between the ref id and the uid, a non-gold record does not, so
+            // without the classification the field is ambiguous. Measured
+            // 2026-11-09 against our stub, which drops rows with ref ids that
+            // exist in no itemdata (`ref=4`) — the silent version of this
+            // branch reads as "the chain completed".
+            warn!(
+                "netcheck: a drop arrived that could not be classified ({} bytes, ref={}); \
+                 no pickup sent",
+                spawn.raw.len(),
+                spawn
+                    .raw
+                    .get(..4)
+                    .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .unwrap_or(0)
+            );
+            continue;
+        };
+        let request = ObjectActionRequest::Execute(ActionCommand::Pickup(ActionTarget::Entity {
+            unique_id: uid,
+        }));
+        if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+            error!("netcheck: failed to send pickup: {}", e.0);
+            return;
+        }
+        info!("netcheck: sent pickup (0x7074 Execute/Pickup) on drop uid={uid}");
+        driver.pickup_sent = true;
         break;
     }
 }
