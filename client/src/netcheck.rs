@@ -416,6 +416,14 @@ struct ActionDriver {
     /// Wall-clock (elapsed secs) at which the next move may be sent; `None`
     /// until the settle delay after position is known has been scheduled.
     next_move_at: Option<f64>,
+    /// Record count from the most recent spawn-kind `GroupEntitySpawnBegin`,
+    /// needed to parse the data packet that follows it.
+    group_count: Option<u16>,
+    /// First selectable entity seen, kept across frames so a spawn batch that
+    /// arrived before the driver was enabled is not lost.
+    pending_target: Option<(u32, u16)>,
+    /// Every selectable entity seen so far: uid, region, x, z.
+    candidates: Vec<(u32, u16, f32, f32)>,
     select_sent: bool,
     /// The uid the select named, kept so the attack step can act on the same
     /// entity the server just confirmed.
@@ -569,38 +577,99 @@ fn netcheck_drive_actions(
 fn netcheck_select_target(
     mut driver: ResMut<ActionDriver>,
     mut reader: MessageReader<SingleEntitySpawn>,
+    mut group_begins: MessageReader<GroupEntitySpawnBegin>,
+    mut group_datas: MessageReader<GroupEntitySpawnData>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if !driver.enabled || driver.select_sent {
+    if driver.select_sent {
         return;
     }
+    // Candidates are collected even before the driver is enabled. The spawn
+    // stream and the join handler land in the SAME frame against our stub
+    // (measured 2026-11-09: 0x3017/0x3019/0x3018 and "local player unique_id"
+    // share a timestamp), and a Bevy message lives two frames — gating the
+    // read on `enabled` dropped the only batch there was. Same race the
+    // `pending_body` field already exists for (#728).
+    //
+    // A server may deliver the initial view either way, and this step used to
+    // read only the single-spawn message. Measured against our own stub on
+    // 2026-11-09: after it moved every spawn onto the group triple, 0x3015
+    // stopped arriving entirely, so the selection step never fired and the
+    // 0x7045 -> 0xB045 -> 0x7074 -> 0xB074 chain this driver exists to prove
+    // was silently skipped — the run still looked clean.
+    //
+    // The begin packet carries the record count; keep the latest so the data
+    // packet that follows can be parsed, and only kind 1 (spawn) is a source of
+    // targets — kind 2 is the despawn batch.
+    for b in group_begins.read() {
+        driver.group_count = (b.kind == 1).then_some(b.count);
+    }
+    let group_spawns: Vec<_> = group_datas
+        .read()
+        .filter_map(|d| {
+            driver
+                .group_count
+                .map(|count| parse_group_spawn(&d.raw, true, count, &HeadlessResolver))
+        })
+        .collect();
+    let single_spawns: Vec<_> = reader
+        .read()
+        .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &HeadlessResolver))
+        .collect();
+    // Remember every candidate; choose when the local position is known.
+    // Measured 2026-11-09: the spawn batch and the join land in the same frame,
+    // and the position arrives after it — so a nearest-pick done at collection
+    // time compares against nothing and degenerates to "first". The first
+    // record of our stub's batch sits 311 units out, and the server refused the
+    // attack with "Basic attack - out of range (311 > 190)": a correct refusal
+    // that left the 0x7074 -> 0xB074 half of the chain unproven.
+    for entity in single_spawns
+        .iter()
+        .chain(group_spawns.iter())
+        .flat_map(|parsed| parsed.spawns.iter())
+        .filter(|entity| entity.unique_id != 0)
+    {
+        driver.candidates.push((
+            entity.unique_id,
+            entity.position.region,
+            entity.position.x,
+            entity.position.z,
+        ));
+    }
+    if !driver.pos_known {
+        return;
+    }
+    let (lx, lz) = (f64::from(driver.base_x), f64::from(driver.base_z));
+    let nearest = driver
+        .candidates
+        .iter()
+        .min_by(|a, b| {
+            let d = |c: &&(u32, u16, f32, f32)| {
+                let (dx, dz) = (f64::from(c.2) - lx, f64::from(c.3) - lz);
+                dx * dx + dz * dz
+            };
+            d(a).total_cmp(&d(b))
+        })
+        .map(|c| (c.0, c.1));
+    if let Some(found) = nearest {
+        driver.pending_target = Some(found);
+    }
+    let (Some((uid, region)), true) = (driver.pending_target, driver.enabled) else {
+        return;
+    };
     let Ok(conn) = conn.single() else {
         return;
     };
-    for spawn in reader.read() {
-        let parsed = parse_group_spawn(&spawn.raw, true, 1, &HeadlessResolver);
-        let Some(entity) = parsed.spawns.first() else {
-            continue;
-        };
-        if entity.unique_id == 0 {
-            continue;
-        }
-        let uid = entity.unique_id;
-        if let Err(e) = conn
-            .get_sender()
-            .send(Packet::from(SelectEntityRequest { unique_id: uid }).into())
-        {
-            error!("netcheck: failed to send SelectEntityRequest: {}", e.0);
-            return;
-        }
-        info!(
-            "netcheck: sent SelectEntityRequest for nearby entity uid={} at region={}",
-            uid, entity.position.region
-        );
-        driver.select_sent = true;
-        driver.selected_uid = Some(uid);
-        break;
+    if let Err(e) = conn
+        .get_sender()
+        .send(Packet::from(SelectEntityRequest { unique_id: uid }).into())
+    {
+        error!("netcheck: failed to send SelectEntityRequest: {}", e.0);
+        return;
     }
+    info!("netcheck: sent SelectEntityRequest for nearby entity uid={uid} at region={region}");
+    driver.select_sent = true;
+    driver.selected_uid = Some(uid);
 }
 
 /// Attack the entity the select just confirmed, once.
