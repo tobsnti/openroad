@@ -2596,20 +2596,22 @@ pub struct TeleportRequest {
     pub destination_id: u32,
 }
 
-/// 0xB05A — server → client ack for [`TeleportRequest`]. Capture-VERIFIED
-/// vSRO 1.188 (2026-08-07, the first successful teleport,
-/// `packet_dump/0xb05a.log`): a TWO-PHASE ack — `02 01 00` (begin, with the
-/// zone-teardown despawns sandwiched after it) then `01` 43 ms later
-/// (committed, right before the 0x34B5 GameReset). The earlier
-/// `stat_ack_wire!` guess read the `02 …` phase as a Failure, which it
-/// plainly is not. Logging-only either way.
+/// 0xB05A — server → client ack for [`TeleportRequest`], read the way the
+/// original client reads it `[V original handler]`: `01` is success and the
+/// client does nothing with it; `02 <u16>` is the error path, whose code the
+/// original shows through its error texts — a code without a text, like 1,
+/// shows nothing.
+///
+/// A session on 2026-08-07 saw `02 01 00` shortly before a successful teleport
+/// (then `01`, then the 0x34B5 reset). That capture is gone and its server is
+/// not recorded, so what a vanilla server sends here is `[U]`; reading the
+/// `02` as "teleport begins" was `[S meaning from timing]`.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum TeleportResponse {
-    /// `02 <code u16>` — teleport accepted, teardown starting (code 1
-    /// observed; error codes may share this shape — unknown until seen).
-    Begin { code: u16 },
-    /// `01` — teleport committed; 0x34B5 GameReset follows.
-    Committed,
+    /// `01`.
+    Success,
+    /// `02 <code u16>`.
+    Error { code: u16 },
     /// Anything else — kept raw, log-only.
     Unknown { result: u8, tail: Bytes },
 }
@@ -2621,8 +2623,8 @@ impl TryFrom<Bytes> for TeleportResponse {
         let result = r.u8()?;
         let parsed = (|| -> Option<TeleportResponse> {
             match result {
-                1 => Some(TeleportResponse::Committed),
-                2 => Some(TeleportResponse::Begin {
+                1 => Some(TeleportResponse::Success),
+                2 => Some(TeleportResponse::Error {
                     code: r.u16().ok()?,
                 }),
                 _ => None,
@@ -2640,11 +2642,11 @@ impl From<TeleportResponse> for Bytes {
     fn from(p: TeleportResponse) -> Self {
         let mut buf = BytesMut::new();
         match p {
-            TeleportResponse::Begin { code } => {
+            TeleportResponse::Success => buf.put_u8(1),
+            TeleportResponse::Error { code } => {
                 buf.put_u8(2);
                 buf.put_u16_le(code);
             }
-            TeleportResponse::Committed => buf.put_u8(1),
             TeleportResponse::Unknown { result, tail } => {
                 buf.put_u8(result);
                 buf.extend_from_slice(&tail);
@@ -4025,22 +4027,22 @@ mod test {
     }
 
     #[test]
-    fn teleport_ack_and_game_reset_decode_captured_lines() {
-        // real packet_dump/0xb05a.log lines (first successful teleport,
-        // 2026-08-07): phase 1 `02 01 00`, phase 2 `01`
-        let begin = Bytes::from_static(&[0x02, 0x01, 0x00]);
-        let decoded: TeleportResponse = begin.clone().try_into().unwrap();
-        assert_eq!(decoded, TeleportResponse::Begin { code: 1 });
+    fn teleport_ack_and_game_reset_decode() {
+        // `02 01 00` is the error path with code 1, as the original's handler
+        // reads it — not a "teleport begins" phase
+        let error = Bytes::from_static(&[0x02, 0x01, 0x00]);
+        let decoded: TeleportResponse = error.clone().try_into().unwrap();
+        assert_eq!(decoded, TeleportResponse::Error { code: 1 });
         let back: Bytes = decoded.into();
-        assert_eq!(back, begin);
+        assert_eq!(back, error);
 
-        let committed = Bytes::from_static(&[0x01]);
-        let decoded: TeleportResponse = committed.clone().try_into().unwrap();
-        assert_eq!(decoded, TeleportResponse::Committed);
+        let success = Bytes::from_static(&[0x01]);
+        let decoded: TeleportResponse = success.clone().try_into().unwrap();
+        assert_eq!(decoded, TeleportResponse::Success);
         let back: Bytes = decoded.into();
-        assert_eq!(back, committed);
+        assert_eq!(back, success);
 
-        // real packet_dump/0x34b5.log line: destination region 0x61A7
+        // destination region, from the 2026-08-07 session (that capture is gone)
         let reset = Bytes::from_static(&[0xa7, 0x61]);
         let decoded: GameReset = reset.try_into().unwrap();
         assert_eq!(decoded.region, 0x61A7);

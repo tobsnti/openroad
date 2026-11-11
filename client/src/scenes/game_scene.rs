@@ -1046,22 +1046,16 @@ fn apply_pending_character_data(
     local.pending_character_data = None;
 }
 
-/// `TeleportResponse` (0xB05A): two-phase teleport ack. The success path
-/// needs no action here — the world reset arrives as 0x34B5 and the arrival
-/// position inside the CHARACTER_DATA replay (byte-identical for dungeon
-/// destinations). Surfacing the phases and any unknown/error shape is the
-/// point: an error code would otherwise strand the player in a silent
-/// pre-teleport state.
+/// `TeleportResponse` (0xB05A). Success needs no action here — the world reset
+/// arrives as 0x34B5 and the arrival position inside the CHARACTER_DATA replay
+/// (byte-identical for dungeon destinations). The original shows an error code
+/// as text where it has one (none for code 1); until those texts are wired,
+/// the code is logged so a refusal does not pass unseen.
 fn on_teleport_response(mut reader: MessageReader<TeleportResponse>) {
     for response in reader.read() {
         match response {
-            TeleportResponse::Begin { code: 1 } => {
-                info!("network: teleport accepted, zone teardown starting")
-            }
-            TeleportResponse::Begin { code } => {
-                warn!("network: teleport begin with unexpected code {code} — possibly refused")
-            }
-            TeleportResponse::Committed => info!("network: teleport committed, expecting 0x34B5"),
+            TeleportResponse::Success => info!("network: teleport acknowledged, expecting 0x34B5"),
+            TeleportResponse::Error { code } => info!("network: teleport error code {code:#06X}"),
             TeleportResponse::Unknown { result, tail } => warn!(
                 "network: unknown 0xB05A teleport response {result:#04x} tail {:?}",
                 tail
