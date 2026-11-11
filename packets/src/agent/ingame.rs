@@ -3490,19 +3490,21 @@ pub struct AcademyInviteRequest {
     pub unique_id: u32,
 }
 
-/// 0xB081 — inviter-side ack that the exchange petition was raised.
+/// 0xB081 — the inviter's answer to [`ExchangeInviteRequest`].
+///
+/// `01 <u32 uid>` means the target accepted and the trade is open: a vSRO
+/// server tells the inviter this way and never with 0x3085, which only the
+/// target gets — five accepted trades, 2026-08-19 to 2026-09-18, each with the
+/// inviter's `0xB081 01 <target>` and the target's `0x3085 <inviter>` within
+/// 4 ms `[V capture, peer vSRO]`. Before the answer the inviter hears nothing.
 ///
 /// The tail is **selected by the result byte**, which is why this is not a
-/// plain derive: `result == 1` carries the target's `u32 uniqueID`, anything
-/// else carries a `u16` error code (`docs/re/notes/stall-exchange-storage.md`
-/// L173, matching xBot `PacketParser.cs:1213-1221` via
-/// `docs/net-invite-0x3080.md` §4). Reading both as one fixed 5-byte body made
-/// every *refused* invite fail to decode — a 3-byte body is short, not
-/// malformed.
+/// plain derive: `result == 1` carries the uid, anything else a `u16` error
+/// code. Reading both as one fixed 5-byte body made every *refused* invite fail
+/// to decode — a 3-byte body is short, not malformed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ExchangeInviteResponse {
-    /// The petition reached the target; the window opens on the following
-    /// 0x3085.
+    /// The target accepted; the trade window opens on this, not on 0x3085.
     Accepted { unique_id: u32 },
     /// The server refused. The code is carried verbatim: no source names its
     /// value space, so interpreting it here would be an invented table.
