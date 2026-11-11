@@ -5,6 +5,7 @@ use bevy::prelude::{
     Resource, Time, Timer, TimerMode, Update, With,
 };
 use bytes::{Bytes, BytesMut};
+use std::collections::HashSet;
 use std::io::Write;
 use std::io::{ErrorKind, Read};
 use std::sync::{Arc, RwLock};
@@ -135,11 +136,21 @@ pub struct GatewayServiceDisconnected;
 /// showing up as an unhandled opcode forever (#261).
 const KNOWN_IGNORED_OPCODES: &[u16] = &[0x2110, 0x3C81];
 
-/// Emit a decoded packet, or log an undecodable one. Opcodes we don't handle
-/// yet (buffs, inventory, chat, ...) are expected — surface them as network
-/// debug logs, not errors, so genuine decode failures stand out.
-fn dispatch_packet(result: Result<Packet, PacketError>, packets: &mut MessageWriter<Packet>) {
-    match result {
+/// Decode and emit one received packet, or log why it could not be.
+///
+/// An opcode without a decoder drops its whole message and nothing else
+/// reports it, so a run can look clean while data is lost. The first sighting
+/// of each such opcode therefore warns, with the body length; repeats drop to
+/// debug so a chatty opcode cannot flood the log. [`KNOWN_IGNORED_OPCODES`]
+/// are discarded on purpose and stay silent.
+fn dispatch_packet(
+    opcode: u16,
+    data: Bytes,
+    reported: &mut HashSet<u16>,
+    packets: &mut MessageWriter<Packet>,
+) {
+    let len = data.len();
+    match Packet::deserialize(opcode, data) {
         Ok(packet) => {
             packets.write(packet);
         }
@@ -147,10 +158,14 @@ fn dispatch_packet(result: Result<Packet, PacketError>, packets: &mut MessageWri
             trace!("network: ignoring opcode {opcode:#06X} (known-and-ignored)");
         }
         Err(PacketError::UnknownOpcode(opcode)) => {
-            debug!("network: unhandled opcode {opcode:#06X}");
+            if reported.insert(opcode) {
+                warn!("network: unhandled opcode {opcode:#06X} ({len} bytes) — no decoder, message dropped; repeats log at debug");
+            } else {
+                debug!("network: unhandled opcode {opcode:#06X} ({len} bytes)");
+            }
         }
         Err(e) => {
-            error!("network: failed to deserialize packet: {}", e);
+            error!("network: failed to deserialize packet {opcode:#06X} ({len} bytes): {e}");
         }
     }
 }
@@ -262,6 +277,7 @@ fn receive_packets(
     mut commands: Commands,
     mut packets: MessageWriter<Packet>,
     mut dump: Option<ResMut<PacketDump>>,
+    mut reported: Local<HashSet<u16>>,
 ) {
     for (entity, mut conn) in query.iter_mut() {
         let stream = conn.stream.clone();
@@ -291,7 +307,7 @@ fn receive_packets(
                             if let Some(dump) = dump.as_mut() {
                                 dump.dump(opcode, &data, encrypted);
                             }
-                            dispatch_packet(Packet::deserialize(opcode, data), &mut packets);
+                            dispatch_packet(opcode, data, &mut reported, &mut packets);
                             consumed += n;
                         }
                         FrameStep::Skip { consumed: n } => consumed += n,
