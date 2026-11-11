@@ -381,8 +381,8 @@ fn send_packets(
     mut dump: Option<ResMut<PacketDump>>,
     encrypt_outbound: Option<Res<OutboundEncryption>>,
 ) {
-    for (entity, conn) in query.iter_mut() {
-        if conn.o_receiver.is_empty() {
+    for (entity, mut conn) in query.iter_mut() {
+        if conn.o_receiver.is_empty() && conn.write_buf.is_empty() {
             continue;
         }
 
@@ -391,7 +391,8 @@ fn send_packets(
             continue;
         };
         let security = conn.get_security();
-        for mut frame in conn.o_receiver.try_iter() {
+        let outbound = conn.o_receiver.clone();
+        for mut frame in outbound.try_iter() {
             // Full outbound-frame dump for the headless net-check client.
             trace!(target: "packets_out", "send {}", outbound_trace_line(&frame));
             // Mirror of the inbound dump, taken before `serialize` so the
@@ -412,18 +413,52 @@ fn send_packets(
             let output = frame
                 .serialize(security.clone())
                 .expect("failed to serialize frame");
-            if let Err(err) = stream.write(&output) {
-                if err.kind() != ErrorKind::WouldBlock {
-                    error!("stop handling outgoing packets because of: {}", err);
-                    conn.dc_sender
-                        .send(())
-                        .expect("failed to send disconnected msg");
-                    // Should we rather despawn? Currently the connection exists in its own entity
-                    commands.entity(entity).remove::<SilkroadConnection>();
-                }
-            }
+            conn.write_buf.extend_from_slice(&output);
+        }
+        if let Err(err) = flush_pending(&mut *stream, &mut conn.write_buf) {
+            error!("stop handling outgoing packets because of: {}", err);
+            conn.dc_sender
+                .send(())
+                .expect("failed to send disconnected msg");
+            // Should we rather despawn? Currently the connection exists in its own entity
+            commands.entity(entity).remove::<SilkroadConnection>();
         }
     }
+}
+
+/// Outbound bytes a connection may hold before it is closed. Far above any
+/// burst of ours — the largest frame we send is ~1 KB — so only a server that
+/// stopped reading gets there, and then the disconnect says so instead of the
+/// buffer growing without bound.
+const WRITE_BUF_LIMIT: usize = 1 << 20;
+
+/// Write as much of `pending` as the socket takes now and drop what it took.
+///
+/// A non-blocking write may take part of a frame, or nothing (`WouldBlock`).
+/// The rest stays queued for the next frame: dropping it, as a bare `write`
+/// did, cuts a frame short, and the server — which splits the stream by length
+/// prefix — reads every later frame from the wrong offset. Retrying the frame
+/// instead is no option either: serializing consumes the security sequence
+/// byte, so each frame is serialized once and its bytes are what waits here.
+fn flush_pending(stream: &mut impl Write, pending: &mut Vec<u8>) -> std::io::Result<()> {
+    while !pending.is_empty() {
+        match stream.write(pending) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                pending.drain(..n);
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
+        }
+    }
+    if pending.len() > WRITE_BUF_LIMIT {
+        return Err(std::io::Error::other(format!(
+            "{} bytes the server has not taken — it stopped reading",
+            pending.len()
+        )));
+    }
+    Ok(())
 }
 
 fn fetch_disconnects(
@@ -711,6 +746,68 @@ mod tests {
             }
             _ => panic!("expected a ready frame"),
         }
+    }
+
+    /// A non-blocking socket whose send buffer holds `room` more bytes: it
+    /// takes up to that much, then reports `WouldBlock`.
+    struct FullSocket {
+        taken: Vec<u8>,
+        room: usize,
+    }
+
+    impl Write for FullSocket {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.room == 0 {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            let n = buf.len().min(self.room);
+            self.taken.extend_from_slice(&buf[..n]);
+            self.room -= n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A write the socket takes only in part used to lose the rest, and the
+    /// server then read every later frame from the wrong offset. What it does
+    /// not take now waits for the next frame, in order.
+    #[test]
+    fn bytes_the_socket_did_not_take_wait_for_the_next_frame() {
+        let frames = [
+            packet_frame(0x7021, &[1, 2, 3]),
+            packet_frame(0x7045, &[4, 5, 6, 7]),
+        ]
+        .concat();
+        let mut pending = frames.clone();
+        let mut socket = FullSocket {
+            taken: Vec::new(),
+            room: 5,
+        };
+
+        flush_pending(&mut socket, &mut pending).expect("WouldBlock is not an error");
+        assert_eq!(socket.taken.len(), 5);
+        assert_eq!(pending.len(), frames.len() - 5);
+
+        socket.room = usize::MAX;
+        flush_pending(&mut socket, &mut pending).expect("flush");
+        assert!(pending.is_empty());
+        assert_eq!(socket.taken, frames);
+    }
+
+    /// A server that stops reading must end the connection visibly rather
+    /// than let the queue grow without bound.
+    #[test]
+    fn a_server_that_stops_reading_is_disconnected() {
+        let mut socket = FullSocket {
+            taken: Vec::new(),
+            room: 0,
+        };
+        let mut pending = vec![0u8; WRITE_BUF_LIMIT];
+        assert!(flush_pending(&mut socket, &mut pending).is_ok());
+        pending.push(0);
+        assert!(flush_pending(&mut socket, &mut pending).is_err());
     }
 
     #[test]
