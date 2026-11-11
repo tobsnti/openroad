@@ -307,9 +307,9 @@ pub fn on_exchange_canceled(
     mut reader: MessageReader<ExchangeCanceled>,
     mut state: ResMut<ExchangeState>,
 ) {
-    for _ in reader.read() {
+    for msg in reader.read() {
         if state.session.take().is_some() {
-            info!("exchange: cancelled (0x3088)");
+            info!("exchange: cancelled (0x3088, reason {:?})", msg.code);
         }
     }
 }
