@@ -23,6 +23,13 @@ fn main() {
         if dirty { "1" } else { "0" }
     );
 
+    // A target dir shared by several worktrees keeps ONE copy of this
+    // script's output, and the files watched below are those of whichever
+    // worktree ran it last; built from another worktree, the binary would
+    // carry that worktree's commit. The directory cargo was started from tells
+    // them apart, so a change of it re-runs the script.
+    println!("cargo:rerun-if-env-changed=PWD");
+
     // Rebuild when the checked-out commit changes. In this project most work
     // happens in `git worktree` checkouts, where `.git` is a FILE pointing at
     // the real git directory — watching `.git/HEAD` blindly would watch a path

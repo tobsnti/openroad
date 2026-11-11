@@ -57,6 +57,7 @@ use crate::net::connection::SilkroadConnection;
 use crate::net::frame::SilkroadFrame;
 use crate::plugins::config::division::DivisionInfo;
 use crate::plugins::config::ClientConfig;
+use crate::plugins::dev::build_info::build_label;
 use crate::plugins::net::agent::{AgentConnection, AgentConnectionBundle};
 use crate::plugins::net::gateway::shard_list::{
     on_shardlist_ping_response, on_shardlist_response, ShardList,
@@ -84,6 +85,7 @@ pub fn run_headless(config: ClientConfig) {
         })
         .insert_resource(OpcodeProbe::from_env())
         .add_plugins(NetworkCorePlugin)
+        .add_systems(Startup, log_build)
         // Kick off the (asynchronous) gateway connect. `poll_gateway_connection`
         // delivers the established connection and fires the shard-list ping, so
         // `netcheck_login` (which already waits for both the shard list and the
@@ -125,6 +127,12 @@ pub fn run_headless(config: ClientConfig) {
             ),
         )
         .run();
+}
+
+/// Name the build in the run's own log: a bench result can only be tied to a
+/// commit by the binary that produced it, not by the path it was started from.
+fn log_build() {
+    info!("netcheck: client build {}", build_label());
 }
 
 /// Once the shard list and gateway connection are ready, send the login request

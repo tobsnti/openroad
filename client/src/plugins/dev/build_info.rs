@@ -38,18 +38,29 @@ pub fn build_info_value(commit: &str, dirty: bool, profile: &str) -> Value {
     })
 }
 
+fn profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
 /// `openroad/build_info`: the commit, whether the tree was dirty, and which
 /// profile. Takes no parameters.
 pub fn brp_build_info(In(_params): In<Option<Value>>) -> BrpResult {
     Ok(build_info_value(
         BUILD_COMMIT,
         BUILD_DIRTY == "1",
-        if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        },
+        profile(),
     ))
+}
+
+/// The same answer as one log word: the commit, `+dirty` when tracked files
+/// differed from it, and the profile.
+pub fn build_label() -> String {
+    let dirty = if BUILD_DIRTY == "1" { "+dirty" } else { "" };
+    format!("{BUILD_COMMIT}{dirty} ({})", profile())
 }
 
 #[cfg(test)]
