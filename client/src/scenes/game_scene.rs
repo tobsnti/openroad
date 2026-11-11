@@ -1048,14 +1048,19 @@ fn apply_pending_character_data(
 
 /// `TeleportResponse` (0xB05A). Success needs no action here — the world reset
 /// arrives as 0x34B5 and the arrival position inside the CHARACTER_DATA replay
-/// (byte-identical for dungeon destinations). The original shows an error code
-/// as text where it has one (none for code 1); until those texts are wired,
-/// the code is logged so a refusal does not pass unseen.
+/// (byte-identical for dungeon destinations). Status 1 comes with a successful
+/// teleport; any other status is a refusal, which the original shows as text —
+/// until those texts are wired, its code is logged so it does not pass unseen.
 fn on_teleport_response(mut reader: MessageReader<TeleportResponse>) {
     for response in reader.read() {
         match response {
             TeleportResponse::Success => info!("network: teleport acknowledged, expecting 0x34B5"),
-            TeleportResponse::Error { code } => info!("network: teleport error code {code:#06X}"),
+            TeleportResponse::Status { code: 1 } => {
+                info!("network: teleport status 1, the one that comes with success")
+            }
+            TeleportResponse::Status { code } => {
+                info!("network: teleport refused, code {code:#06X}")
+            }
             TeleportResponse::Unknown { result, tail } => warn!(
                 "network: unknown 0xB05A teleport response {result:#04x} tail {:?}",
                 tail

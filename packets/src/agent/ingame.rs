@@ -2596,22 +2596,21 @@ pub struct TeleportRequest {
     pub destination_id: u32,
 }
 
-/// 0xB05A — server → client ack for [`TeleportRequest`], read the way the
-/// original client reads it `[V original handler]`: `01` is success and the
-/// client does nothing with it; `02 <u16>` is the error path, whose code the
-/// original shows through its error texts — a code without a text, like 1,
-/// shows nothing.
+/// 0xB05A — server → client ack for [`TeleportRequest`]. `01` is success; the
+/// original client does nothing with it `[V original handler]`.
 ///
-/// A session on 2026-08-07 saw `02 01 00` shortly before a successful teleport
-/// (then `01`, then the 0x34B5 reset). That capture is gone and its server is
-/// not recorded, so what a vanilla server sends here is `[U]`; reading the
-/// `02` as "teleport begins" was `[S meaning from timing]`.
+/// `02 <u16>` is a status, not only a refusal: the original server ends its
+/// 0x705A handler with it on the success path too, so `02 01 00` accompanies a
+/// successful teleport — seen 2026-08-07, then `01` and the 0x34B5 reset
+/// `[V capture, peer vSRO]` — and every other code is a refusal. The original
+/// client shows a code through its error texts where it has one, and has none
+/// for 1 `[V original handler]`.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum TeleportResponse {
     /// `01`.
     Success,
-    /// `02 <code u16>`.
-    Error { code: u16 },
+    /// `02 <code u16>`: 1 accompanies success, any other code refuses.
+    Status { code: u16 },
     /// Anything else — kept raw, log-only.
     Unknown { result: u8, tail: Bytes },
 }
@@ -2624,7 +2623,7 @@ impl TryFrom<Bytes> for TeleportResponse {
         let parsed = (|| -> Option<TeleportResponse> {
             match result {
                 1 => Some(TeleportResponse::Success),
-                2 => Some(TeleportResponse::Error {
+                2 => Some(TeleportResponse::Status {
                     code: r.u16().ok()?,
                 }),
                 _ => None,
@@ -2643,7 +2642,7 @@ impl From<TeleportResponse> for Bytes {
         let mut buf = BytesMut::new();
         match p {
             TeleportResponse::Success => buf.put_u8(1),
-            TeleportResponse::Error { code } => {
+            TeleportResponse::Status { code } => {
                 buf.put_u8(2);
                 buf.put_u16_le(code);
             }
@@ -4028,13 +4027,12 @@ mod test {
 
     #[test]
     fn teleport_ack_and_game_reset_decode() {
-        // `02 01 00` is the error path with code 1, as the original's handler
-        // reads it — not a "teleport begins" phase
-        let error = Bytes::from_static(&[0x02, 0x01, 0x00]);
-        let decoded: TeleportResponse = error.clone().try_into().unwrap();
-        assert_eq!(decoded, TeleportResponse::Error { code: 1 });
+        // `02 01 00`: status 1, the one that accompanies a successful teleport
+        let status = Bytes::from_static(&[0x02, 0x01, 0x00]);
+        let decoded: TeleportResponse = status.clone().try_into().unwrap();
+        assert_eq!(decoded, TeleportResponse::Status { code: 1 });
         let back: Bytes = decoded.into();
-        assert_eq!(back, error);
+        assert_eq!(back, status);
 
         let success = Bytes::from_static(&[0x01]);
         let decoded: TeleportResponse = success.clone().try_into().unwrap();
