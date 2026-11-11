@@ -820,10 +820,17 @@ fn netcheck_pick_up_loot(
             // harness cannot classify parses to nothing, and the uid cannot be
             // read from the raw bytes either: a gold record carries its amount
             // between the ref id and the uid, a non-gold record does not, so
-            // without the classification the field is ambiguous. Measured
-            // 2026-11-09 against our stub, which drops rows with ref ids that
-            // exist in no itemdata (`ref=4`) — the silent version of this
-            // branch reads as "the chain completed".
+            // without the classification the field is ambiguous.
+            //
+            // The limit is OURS, not the server's. Headless runs load no
+            // itemdata, so `HeadlessResolver` knows exactly one id — gold —
+            // and reports every other drop here. Measured 2026-11-09: a stub
+            // dropped `ref=4`, which is the real `ITEM_ETC_HP_POTION_01` row;
+            // the first version of this comment called that an invented id and
+            // sent me looking for a server defect that was not there.
+            //
+            // The silent version of this branch reads as "the chain
+            // completed".
             warn!(
                 "netcheck: a drop arrived that could not be classified ({} bytes, ref={}); \
                  no pickup sent",
