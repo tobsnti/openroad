@@ -11,6 +11,7 @@ use std::io::{ErrorKind, Read};
 use std::sync::{Arc, RwLock};
 
 use packets::global::{GlobalStateRequest, GlobalStateUpdate, KeepAlive};
+use packets::judge::{judge_decoded, Verdict};
 use packets::{NetworkExt, Packet, PacketError};
 
 use crate::net::connection::SilkroadConnection;
@@ -143,6 +144,12 @@ const KNOWN_IGNORED_OPCODES: &[u16] = &[0x2110, 0x3C81];
 /// of each such opcode therefore warns, with the body length; repeats drop to
 /// debug so a chatty opcode cannot flood the log. [`KNOWN_IGNORED_OPCODES`]
 /// are discarded on purpose and stay silent.
+///
+/// A decoder that stops short fails nothing either: the packet dispatches and
+/// the rest of the frame goes unread, which is how a wrong form stayed
+/// invisible while a test pinned it. Reading stays lenient — the client
+/// survives where the original would not — but the first short read of each
+/// opcode warns with both lengths ([`judge_decoded`]).
 fn dispatch_packet(
     opcode: u16,
     data: Bytes,
@@ -150,8 +157,19 @@ fn dispatch_packet(
     packets: &mut MessageWriter<Packet>,
 ) {
     let len = data.len();
+    let body = data.clone();
     match Packet::deserialize(opcode, data) {
         Ok(packet) => {
+            if !reported.contains(&opcode) {
+                if let Verdict::Short(rest) = judge_decoded(opcode, packet.clone(), &body) {
+                    reported.insert(opcode);
+                    warn!(
+                        "network: {opcode:#06X} decoded {} of {len} bytes, {rest} unread — \
+                         the decoder's form is shorter than the frame; reported once",
+                        len - rest
+                    );
+                }
+            }
             packets.write(packet);
         }
         Err(PacketError::UnknownOpcode(opcode)) if KNOWN_IGNORED_OPCODES.contains(&opcode) => {

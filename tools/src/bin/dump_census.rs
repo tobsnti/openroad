@@ -64,44 +64,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use bytes::Bytes;
-use packets::{Packet, PacketError};
+use packets::judge::Verdict;
 
 /// Default dump root, the one the client writes (`packet_dump.rs`).
 const DEFAULT_ROOT: &str = "packet_dump";
 /// Histogram entries printed per cell unless `--hist` says otherwise.
 const DEFAULT_HIST: usize = 4;
-
-/// What our decoder made of one body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Verdict {
-    /// Decoded, and re-encoding reproduces the captured bytes.
-    Exact,
-    /// Decoded, and re-encoding is a strict prefix: the tail was never read.
-    Short(usize),
-    /// Decoded, and re-encoding is **shorter** than the capture without being a
-    /// prefix of it: the decoder read a tail it does not keep, and the encoder
-    /// writes the flag that says the tail is absent. `MovementResponse`
-    /// (`0xB021`) does exactly that by design, which is 28,328 of this corpus'
-    /// 28,609 non-exact round trips — a documented decision, not a defect.
-    Lossy,
-    /// Decoded, and re-encoding has the same length or is longer, but differs:
-    /// the bytes themselves disagree. This is the shape that needs a look.
-    Differs,
-    /// The decoder refused this body.
-    Error,
-    /// The decoder **panicked** on a captured body. Its own verdict rather than
-    /// the end of the census: a frame that crashes our decoder is a crash
-    /// vector, and this is how it gets named.
-    Panic,
-    /// Decoded, but the type cannot be encoded, so the round trip says nothing.
-    /// Deliberate in two cases: the registry binds both directions per opcode,
-    /// so the server→client acks in `agent::alchemy` answer `From<_> for Bytes`
-    /// with `unreachable!`.
-    NoEncoder,
-    /// No type is bound to this opcode.
-    Unwired,
-}
 
 /// One captured line, as the dump writes it.
 #[derive(PartialEq, Eq, Debug)]
@@ -164,37 +132,11 @@ fn opcode_of(path: &Path) -> Option<u16> {
 }
 
 /// Run one body through the client's own registry and ask how much of the frame
-/// it accounts for.
-///
-/// Both halves run under `catch_unwind`, each for a measured reason: a decoder
-/// panic is a finding we want named rather than fatal, and `into_serialize` is
-/// `unreachable!` for two registered types — a census that ignored that died on
-/// `0xB150` after a 2m42s build.
-fn judge(opcode: u16, body: &[u8]) -> Verdict {
-    let decoded =
-        std::panic::catch_unwind(|| Packet::deserialize(opcode, Bytes::copy_from_slice(body)));
-    let packet = match decoded {
-        Err(_) => return Verdict::Panic,
-        Ok(Err(PacketError::UnknownOpcode(_))) => return Verdict::Unwired,
-        Ok(Err(_)) => return Verdict::Error,
-        Ok(Ok(packet)) => packet,
-    };
-    let encoded =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| packet.into_serialize()));
-    let Ok((_opcode, encoded)) = encoded else {
-        return Verdict::NoEncoder;
-    };
-    if encoded.as_ref() == body {
-        Verdict::Exact
-    } else if encoded.len() < body.len() {
-        if body.starts_with(encoded.as_ref()) {
-            Verdict::Short(body.len() - encoded.len())
-        } else {
-            Verdict::Lossy
-        }
-    } else {
-        Verdict::Differs
-    }
+/// it accounts for ([`packets::judge`]). `None` is a decoder that **panicked**
+/// on a captured body: a finding of its own rather than the end of the census,
+/// because a frame that crashes our decoder is a crash vector.
+fn judge(opcode: u16, body: &[u8]) -> Option<Verdict> {
+    std::panic::catch_unwind(|| packets::judge::judge(opcode, body)).ok()
 }
 
 /// Who **spoke** a frame — which is what decides whether it can prove a form.
@@ -386,7 +328,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, line: &Line, verdict: Verdict) {
+    fn add(&mut self, line: &Line, verdict: Option<Verdict>) {
         self.frames += 1;
         self.bodies.insert(line.body.clone());
         match line.encrypted {
@@ -400,17 +342,17 @@ impl Tally {
             None => self.empty += 1,
         }
         match verdict {
-            Verdict::Exact => self.exact += 1,
-            Verdict::Short(tail) => {
+            Some(Verdict::Exact) => self.exact += 1,
+            Some(Verdict::Short(tail)) => {
                 self.short += 1;
                 self.short_bytes += tail;
             }
-            Verdict::Lossy => self.lossy += 1,
-            Verdict::Differs => self.differs += 1,
-            Verdict::Error => self.error += 1,
-            Verdict::Panic => self.panics += 1,
-            Verdict::NoEncoder => self.no_encoder += 1,
-            Verdict::Unwired => self.unwired += 1,
+            Some(Verdict::Lossy) => self.lossy += 1,
+            Some(Verdict::Differs) => self.differs += 1,
+            Some(Verdict::Error) => self.error += 1,
+            Some(Verdict::NoEncoder) => self.no_encoder += 1,
+            Some(Verdict::Unwired) => self.unwired += 1,
+            None => self.panics += 1,
         }
     }
 }

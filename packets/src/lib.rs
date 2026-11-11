@@ -16,6 +16,7 @@ use crate::login::*;
 pub mod agent;
 pub mod gateway;
 pub mod global;
+pub mod judge;
 pub mod login;
 
 #[derive(Error, Debug)]
@@ -54,7 +55,7 @@ macro_rules! packets_impl {
         decode: [ $($de_opcode:literal => $de_name:ident),* $(,)? ],
         encode: [ $($en_opcode:literal => $en_name:ident),* $(,)? ]
     ) => {
-        #[derive(Message)]
+        #[derive(Message, Clone)]
         pub enum Packet {
             $($name($name)),*
         }
