@@ -190,7 +190,8 @@ pub fn on_partner_items(
     }
 }
 
-/// 0x3089 — the partner's staged gold.
+/// 0x3089 — the partner's staged gold. Its item form changes nothing here:
+/// the partner's pane is replaced wholesale by 0x308C.
 pub fn on_partner_gold(
     mut reader: MessageReader<ExchangeGoldUpdate>,
     mut state: ResMut<ExchangeState>,
@@ -200,11 +201,13 @@ pub fn on_partner_gold(
             warn!("exchange: 0x3089 with no open trade — ignored");
             continue;
         };
-        debug!(
-            "exchange: partner staged {} gold (unk byte {})",
-            msg.gold, msg.unk_byte01
-        );
-        session.partner_gold = msg.gold;
+        match msg {
+            ExchangeGoldUpdate::Gold(gold) => {
+                debug!("exchange: partner staged {gold} gold");
+                session.partner_gold = *gold;
+            }
+            other => debug!("exchange: 0x3089 {other:?} — no gold"),
+        }
     }
 }
 

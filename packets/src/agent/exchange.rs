@@ -70,12 +70,60 @@ impl From<ExchangeCanceled> for Bytes {
     }
 }
 
-/// 0x3089 — server → client: the gold the *partner* has staged.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
-pub struct ExchangeGoldUpdate {
-    /// [U] — semantics unknown; resolving capture `packet_dump/0x3089.log`.
-    pub unk_byte01: u8,
-    pub gold: u64,
+/// 0x3089 — server → client: a change to what the *partner* has staged.
+///
+/// The leading byte selects the body `[V original handler]`: `2` is staged
+/// gold (`u64`), `1` a staged item (`u8` slot + the item record, kept raw like
+/// 0x308C's, because its width needs itemdata), and anything else carries
+/// nothing. Read as one fixed `{u8, u64}`, an item update became garbage gold.
+/// vSRO sent gold as `02 8813000000000000`, 5000 (packet_dump/admin6,
+/// 2026-08-20) `[V capture, peer vSRO]`.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum ExchangeGoldUpdate {
+    Gold(u64),
+    Item { slot: u8, record: Bytes },
+    Other(u8),
+}
+
+impl TryFrom<Bytes> for ExchangeGoldUpdate {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        let short = || {
+            SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "0x3089 body too short",
+            ))
+        };
+        Ok(match *value.first().ok_or_else(short)? {
+            1 => Self::Item {
+                slot: *value.get(1).ok_or_else(short)?,
+                record: value.slice(2..),
+            },
+            2 => Self::Gold(u64::from_le_bytes(
+                value.get(1..9).ok_or_else(short)?.try_into().unwrap(),
+            )),
+            other => Self::Other(other),
+        })
+    }
+}
+
+impl From<ExchangeGoldUpdate> for Bytes {
+    fn from(p: ExchangeGoldUpdate) -> Self {
+        let mut buf = bytes::BytesMut::new();
+        match p {
+            ExchangeGoldUpdate::Gold(gold) => {
+                bytes::BufMut::put_u8(&mut buf, 2);
+                bytes::BufMut::put_u64_le(&mut buf, gold);
+            }
+            ExchangeGoldUpdate::Item { slot, record } => {
+                bytes::BufMut::put_u8(&mut buf, 1);
+                bytes::BufMut::put_u8(&mut buf, slot);
+                buf.extend_from_slice(&record);
+            }
+            ExchangeGoldUpdate::Other(selector) => bytes::BufMut::put_u8(&mut buf, selector),
+        }
+        buf.freeze()
+    }
 }
 
 /// 0x308C — server → client: the items the *partner* has staged.
@@ -236,10 +284,26 @@ mod tests {
         assert_eq!(decoded.partner_unique_id, 0x1AB80);
         assert_eq!(Bytes::from(decoded), wire);
 
-        // unk byte then u64 gold
-        let wire = Bytes::from_static(&[0x01, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        // vSRO's gold update, packet_dump/admin6/0x3089.log 2026-08-20T13:14:01Z
+        let wire = Bytes::from_static(&[0x02, 0x88, 0x13, 0, 0, 0, 0, 0, 0]);
         let decoded = ExchangeGoldUpdate::try_from(wire.clone()).unwrap();
-        assert_eq!((decoded.unk_byte01, decoded.gold), (1, 1000));
+        assert_eq!(decoded, ExchangeGoldUpdate::Gold(5000));
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// Selector 1 is an item, not gold: the old `{u8, u64}` read its slot and
+    /// record bytes as an amount.
+    #[test]
+    fn a_staged_item_is_not_read_as_gold() {
+        let wire = Bytes::from_static(&[0x01, 0x03, 0xAA, 0xBB, 0xCC]);
+        let decoded = ExchangeGoldUpdate::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            ExchangeGoldUpdate::Item {
+                slot: 3,
+                record: Bytes::from_static(&[0xAA, 0xBB, 0xCC]),
+            }
+        );
         assert_eq!(Bytes::from(decoded), wire);
     }
 
