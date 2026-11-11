@@ -119,6 +119,7 @@ pub fn run_headless(config: ClientConfig) {
                 netcheck_attack_target,
                 netcheck_press_attack,
                 netcheck_pick_up_loot,
+                netcheck_finish_pickup,
                 netcheck_log_action_responses,
                 netcheck_fire_probe,
             ),
@@ -440,6 +441,9 @@ struct ActionDriver {
     /// harness uses the drop itself as the death signal rather than guessing at
     /// a life-state packet.
     pickup_sent: bool,
+    /// Drop we walked towards; the pickup goes out once we have arrived.
+    pending_pickup: Option<u32>,
+    pickup_due_at: Option<f64>,
     /// A CHARACTER_DATA body that arrived before the unique id did, kept so the
     /// scan can be retried once `CelestialPosition` names the id (#728).
     pending_body: Option<Bytes>,
@@ -843,17 +847,71 @@ fn netcheck_pick_up_loot(
             );
             continue;
         };
-        let request = ObjectActionRequest::Execute(ActionCommand::Pickup(ActionTarget::Entity {
-            unique_id: uid,
-        }));
-        if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
-            error!("netcheck: failed to send pickup: {}", e.0);
+        // Walk onto the pile first. The server gates an explicit pickup on a
+        // radius (80 units in our stub), and the driver's movement square
+        // leaves the player ~150 away from where the mob died — so the pickup
+        // was refused with `picked=false` and the chain proved only that the
+        // request arrives, not that it works.
+        let Some(drop_pos) = parsed
+            .spawns
+            .iter()
+            .find(|e| e.unique_id == uid)
+            .map(|e| e.position.clone())
+        else {
+            continue;
+        };
+        if let Err(e) = conn.get_sender().send(
+            Packet::from(MovementRequest::ToLocation {
+                region: drop_pos.region,
+                x: drop_pos.x as i32,
+                y: drop_pos.y as i32,
+                z: drop_pos.z as i32,
+            })
+            .into(),
+        ) {
+            error!("netcheck: failed to walk to the drop: {}", e.0);
             return;
         }
-        info!("netcheck: sent pickup (0x7074 Execute/Pickup) on drop uid={uid}");
-        driver.pickup_sent = true;
+        info!("netcheck: walking onto drop uid={uid} before picking it up");
+        driver.pending_pickup = Some(uid);
         break;
     }
+}
+
+/// Send the explicit pickup once we have had time to arrive at the pile.
+///
+/// A short wall-clock wait rather than a movement ack: the ack says the server
+/// accepted the destination, not that the walk finished, and the driver only
+/// needs to be inside the server's pickup radius.
+fn netcheck_finish_pickup(
+    mut driver: ResMut<ActionDriver>,
+    time: Res<Time>,
+    conn: Query<&SilkroadConnection, With<AgentConnection>>,
+) {
+    const WALK_ALLOWANCE: f64 = 3.0;
+    if !driver.enabled || driver.pickup_sent {
+        return;
+    }
+    let Some(uid) = driver.pending_pickup else {
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    let due = *driver.pickup_due_at.get_or_insert(now + WALK_ALLOWANCE);
+    if now < due {
+        return;
+    }
+    let Ok(conn) = conn.single() else {
+        return;
+    };
+    let request = ObjectActionRequest::Execute(ActionCommand::Pickup(ActionTarget::Entity {
+        unique_id: uid,
+    }));
+    if let Err(e) = conn.get_sender().send(Packet::from(request).into()) {
+        error!("netcheck: failed to send pickup: {}", e.0);
+        return;
+    }
+    info!("netcheck: sent pickup (0x7074 Execute/Pickup) on drop uid={uid}");
+    driver.pickup_sent = true;
 }
 
 /// Surface the action responses explicitly (they are also in the raw frame
