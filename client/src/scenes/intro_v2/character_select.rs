@@ -1371,6 +1371,7 @@ pub fn on_character_join_response(
     start_buttons: Query<Entity, (With<StartButton>, With<InteractionDisabled>)>,
     assets: Res<IntroV2Assets>,
     options: Res<GameOptions>,
+    ui_strings: Res<ClientUiStrings>,
     mut commands: Commands,
 ) {
     for res in reader.read() {
@@ -1382,10 +1383,11 @@ pub fn on_character_join_response(
         } else {
             let code = res.error.unwrap_or_default();
             error!("[CharacterJoin] failed with error {}", code);
-            info_text_writer.write(InfoTextV2Update(format!(
-                "Failed to join the world (error {}).",
-                code
-            )));
+            // The original reads a refused join through the same error table
+            // as the lobby's create/delete/restore acks `[V original handler]`.
+            if let Some(line) = lobby_failure_line(&ui_strings, code) {
+                info_text_writer.write(InfoTextV2Update(line));
+            }
             for entity in overlay_query.iter() {
                 commands.entity(entity).despawn();
             }
