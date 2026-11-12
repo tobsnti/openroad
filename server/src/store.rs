@@ -22,11 +22,29 @@ pub struct Character {
     pub scale: u8,
     pub level: u8,
     pub exp: u64,
+    pub skill_exp: u32,
+    pub gold: u64,
+    pub skill_points: u32,
     pub strength: u16,
     pub intellect: u16,
     pub stat_points: u16,
     pub hp: u32,
     pub mp: u32,
+    /// Slots in the inventory.
+    pub inventory_size: u8,
+    /// Mastery id and level.
+    pub masteries: Vec<(u32, u8)>,
+    pub position: Position,
+}
+
+/// Where a character stands: region, coordinates within it, and heading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Position {
+    pub region: u16,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub heading: u16,
 }
 
 pub trait Store {

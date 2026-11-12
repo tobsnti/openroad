@@ -15,6 +15,7 @@ use rand_core::{OsRng, RngCore};
 
 use crate::inbound::{decode_exact, Rejected};
 use crate::outbox::{Frame, Outbox};
+use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::store::{AccountId, Store};
 use crate::wirelog::{Dir, WireLog};
@@ -48,6 +49,8 @@ pub enum Event {
     Closed(SessionId),
     /// The session fell too far behind and was cut off.
     Overflowed(SessionId),
+    /// A character's model has no reference-data row; its join was refused.
+    NoRefData { session: SessionId, ref_id: u32 },
 }
 
 /// Where a session stands.
@@ -57,6 +60,10 @@ pub enum Phase {
     Title,
     /// Logged in, choosing a character.
     Lobby(AccountId),
+    /// The character record is sent; the client is loading the world.
+    Joining { account: AccountId, uid: u32 },
+    /// In the world as the entity `uid`.
+    Game { account: AccountId, uid: u32 },
     /// Closed by the server; nothing more is acted on.
     Closed,
 }
@@ -75,20 +82,24 @@ struct Session {
 
 pub struct World {
     store: Box<dyn Store>,
+    refdata: RefData,
     sessions: BTreeMap<SessionId, Session>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
+    last_uid: u32,
     step: u64,
     events: Vec<Event>,
 }
 
 impl World {
-    pub fn new(store: impl Store + 'static) -> World {
+    pub fn new(store: impl Store + 'static, refdata: RefData) -> World {
         World {
             store: Box::new(store),
+            refdata,
             sessions: BTreeMap::new(),
             tickets: HashMap::new(),
             last_session: 0,
+            last_uid: 0,
             step: 0,
             events: Vec::new(),
         }
@@ -212,6 +223,25 @@ impl World {
 
     pub(crate) fn store(&self) -> &dyn Store {
         self.store.as_ref()
+    }
+
+    pub(crate) fn refdata(&self) -> &RefData {
+        &self.refdata
+    }
+
+    /// Steps since the world started.
+    pub(crate) fn steps(&self) -> u64 {
+        self.step
+    }
+
+    /// A unique id for a new entity.
+    pub(crate) fn next_uid(&mut self) -> u32 {
+        self.last_uid += 1;
+        self.last_uid
+    }
+
+    pub(crate) fn report(&mut self, event: Event) {
+        self.events.push(event);
     }
 }
 

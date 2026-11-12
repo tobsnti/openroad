@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use server::outbox::CAPACITY;
+use server::refdata::RefData;
 use server::store::MemoryStore;
 use server::world::{Event, Reason, World};
 
@@ -9,7 +10,7 @@ use server::world::{Event, Reason, World};
 /// gets exactly one — also when its body does not decode.
 #[test]
 fn a_talk_is_answered_exactly_once_even_when_it_does_not_decode() {
-    let mut world = World::new(MemoryStore::default());
+    let mut world = World::new(MemoryStore::default(), RefData::default());
     let s = world.connect();
     world.receive(
         s,
@@ -36,7 +37,7 @@ fn a_talk_is_answered_exactly_once_even_when_it_does_not_decode() {
 
 #[test]
 fn a_keep_alive_is_taken_without_an_answer() {
-    let mut world = World::new(MemoryStore::default());
+    let mut world = World::new(MemoryStore::default(), RefData::default());
     let s = world.connect();
     world.receive(s, 0x2002, Bytes::new());
     assert!(world.take_frames(s).is_empty());
@@ -46,7 +47,7 @@ fn a_keep_alive_is_taken_without_an_answer() {
 /// A longer body is not read as its prefix.
 #[test]
 fn a_frame_with_extra_bytes_is_rejected_not_truncated() {
-    let mut world = World::new(MemoryStore::default());
+    let mut world = World::new(MemoryStore::default(), RefData::default());
     let s = world.connect();
     world.receive(s, 0x2002, Bytes::from_static(&[0x00]));
     let rejected = Event::Rejected {
@@ -60,7 +61,7 @@ fn a_frame_with_extra_bytes_is_rejected_not_truncated() {
 
 #[test]
 fn a_request_without_a_handler_is_reported_not_answered() {
-    let mut world = World::new(MemoryStore::default());
+    let mut world = World::new(MemoryStore::default(), RefData::default());
     let s = world.connect();
     // 0x7021 go to (region 25000; 969, 0, 1419) — decodes, nothing handles it yet.
     let walk = Bytes::from_static(&[0x01, 0xA8, 0x61, 0xC9, 0x03, 0x00, 0x00, 0x8B, 0x05]);
@@ -77,7 +78,7 @@ fn a_request_without_a_handler_is_reported_not_answered() {
 
 #[test]
 fn a_session_that_stops_reading_is_cut_off() {
-    let mut world = World::new(MemoryStore::default());
+    let mut world = World::new(MemoryStore::default(), RefData::default());
     let s = world.connect();
     for _ in 0..=CAPACITY {
         world.receive(
