@@ -51,6 +51,7 @@ unidecode = "0.3.0"
 wgpu = { version = "30.0", default-features = false }
 palette = "0.7.2"
 packets = { path = "../packets" }
+sro_net = { path = "../sro_net" }
 bevy_pk2 = { path = "../bevy_pk2" }
 crossbeam = "0.8"
 serde = { version = "1", features = ["derive"] }

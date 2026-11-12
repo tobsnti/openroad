@@ -2847,6 +2847,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "serde_yaml",
+ "sro_net",
  "thiserror 1.0.69",
  "unidecode",
  "uuid",
@@ -8648,6 +8649,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sro_net"
+version = "0.1.7"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "packets",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

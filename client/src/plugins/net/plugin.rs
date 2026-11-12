@@ -14,13 +14,13 @@ use packets::global::{GlobalStateRequest, GlobalStateUpdate, KeepAlive};
 use packets::{NetworkExt, Packet, PacketError};
 
 use crate::net::connection::SilkroadConnection;
-use crate::net::frame::SilkroadFrame;
-use crate::net::security::SilkroadSecurityState;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::gateway::plugin::GatewayPlugin;
 use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::packet_dump::PacketDump;
+use sro_net::frame::SilkroadFrame;
+use sro_net::security::SilkroadSecurityState;
 
 #[derive(Resource)]
 pub struct KeepAliveTimer {
@@ -579,8 +579,8 @@ fn on_gateway_disconnected(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::blowfish::Blowfish;
-    use crate::net::security::{SilkroadSecurity, SilkroadSecurityState};
+    use sro_net::blowfish::Blowfish;
+    use sro_net::security::{SilkroadSecurity, SilkroadSecurityState};
 
     fn security() -> Arc<RwLock<SilkroadSecurityState>> {
         // `new()` leaves the state uninitialized, so `parse` takes the

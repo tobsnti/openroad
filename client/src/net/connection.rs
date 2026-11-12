@@ -8,9 +8,9 @@ use bevy::prelude::Component;
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use packets::global::ModuleIdentification;
 
-use crate::net::frame::SilkroadFrame;
-use crate::net::security::SilkroadSecurityState;
 use crate::net::{handshake, module_identification_frame};
+use sro_net::frame::SilkroadFrame;
+use sro_net::security::SilkroadSecurityState;
 
 /// Initial capacity for the inbound accumulator: a few 4 KB reads' worth, so
 /// the common post-join burst is buffered without reallocating.
