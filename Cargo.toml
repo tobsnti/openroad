@@ -8,7 +8,7 @@ members = [
     "packets",
     "tools",
     "bevy_pk2"
-, "launcher", "sro_net"]
+, "launcher", "sro_net", "sro_textdata"]
 
 [workspace.package]
 version = "0.1.7"

@@ -2848,6 +2848,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sro_net",
+ "sro_textdata",
  "thiserror 1.0.69",
  "unidecode",
  "uuid",
@@ -8660,6 +8661,14 @@ dependencies = [
  "packets",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "sro_textdata"
+version = "0.1.7"
+dependencies = [
+ "bevy",
+ "packets",
 ]
 
 [[package]]
