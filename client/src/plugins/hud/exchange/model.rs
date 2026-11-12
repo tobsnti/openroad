@@ -67,8 +67,8 @@ pub struct ExchangeState {
 /// One trade. Everything here is server-pushed; nothing is predicted.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExchangeSession {
-    /// The partner's spawn unique id (0x3085), used to reject a 0x308C that
-    /// describes somebody else.
+    /// The partner's spawn unique id (0x3085, or 0xB081 on the inviter's
+    /// side), used to reject a 0x308C that describes somebody else.
     pub partner_unique_id: u32,
     /// Replaced wholesale on every 0x308C — the original mirrors the peer's
     /// pane rather than diffing it.
@@ -120,7 +120,16 @@ impl ExchangeSession {
     }
 }
 
-/// 0x3085 — the server opened a trade window against `partner_unique_id`.
+/// Open the trade against `partner`, unless it is already open: a server may
+/// announce one trade on both 0xB081 and 0x3085 (ours did), and the second
+/// must not wipe what the first opened.
+fn open_trade(state: &mut ExchangeState, partner: u32) {
+    if state.session.as_ref().map(|s| s.partner_unique_id) != Some(partner) {
+        state.session = Some(ExchangeSession::new(partner));
+    }
+}
+
+/// 0x3085 — the trade opened against `partner_unique_id` (the target's side).
 pub fn on_exchange_started(
     mut reader: MessageReader<ExchangeStarted>,
     mut state: ResMut<ExchangeState>,
@@ -130,7 +139,7 @@ pub fn on_exchange_started(
             "exchange: started with partner {} (0x3085)",
             msg.partner_unique_id
         );
-        state.session = Some(ExchangeSession::new(msg.partner_unique_id));
+        open_trade(&mut state, msg.partner_unique_id);
     }
 }
 
@@ -181,7 +190,8 @@ pub fn on_partner_items(
     }
 }
 
-/// 0x3089 — the partner's staged gold.
+/// 0x3089 — the partner's staged gold. Its item form changes nothing here:
+/// the partner's pane is replaced wholesale by 0x308C.
 pub fn on_partner_gold(
     mut reader: MessageReader<ExchangeGoldUpdate>,
     mut state: ResMut<ExchangeState>,
@@ -191,11 +201,13 @@ pub fn on_partner_gold(
             warn!("exchange: 0x3089 with no open trade — ignored");
             continue;
         };
-        debug!(
-            "exchange: partner staged {} gold (unk byte {})",
-            msg.gold, msg.unk_byte01
-        );
-        session.partner_gold = msg.gold;
+        match msg {
+            ExchangeGoldUpdate::Gold(gold) => {
+                debug!("exchange: partner staged {gold} gold");
+                session.partner_gold = *gold;
+            }
+            other => debug!("exchange: 0x3089 {other:?} — no gold"),
+        }
     }
 }
 
@@ -298,9 +310,9 @@ pub fn on_exchange_canceled(
     mut reader: MessageReader<ExchangeCanceled>,
     mut state: ResMut<ExchangeState>,
 ) {
-    for _ in reader.read() {
+    for msg in reader.read() {
         if state.session.take().is_some() {
-            info!("exchange: cancelled (0x3088)");
+            info!("exchange: cancelled (0x3088, reason {:?})", msg.code);
         }
     }
 }
@@ -339,9 +351,8 @@ fn send(conn: &Query<&SilkroadConnection, With<AgentConnection>>, packet: Packet
 }
 
 /// 0x7081 — ask `unique_id` to trade. The server raises the 0x3080 petition on
-/// them and answers us with 0xB081; the window itself opens on the following
-/// 0x3085, never here, so nothing is predicted (`docs/net-invite-0x3080.md`
-/// §4).
+/// them; we hear back only with 0xB081 — its error at once, or the open trade
+/// once they accept — so nothing is predicted here.
 pub fn send_invite(conn: &Query<&SilkroadConnection, With<AgentConnection>>, unique_id: u32) {
     send(
         conn,
@@ -350,20 +361,22 @@ pub fn send_invite(conn: &Query<&SilkroadConnection, With<AgentConnection>>, uni
     );
 }
 
-/// 0xB081 — the inviter-side ack for our own 0x7081.
+/// 0xB081 — the inviter's side of our own 0x7081.
 ///
-/// A raised petition is only an ack: the trade starts with 0x3085. A refusal
-/// carries a `u16` code whose value space no source names, so it is reported
-/// verbatim rather than translated into an invented sentence — the same rule
-/// the stall buyer flow follows for its error codes.
+/// `Accepted` opens the trade: a vSRO server sends the inviter no 0x3085 (see
+/// [`ExchangeInviteResponse`]). A refusal carries a `u16` code, reported
+/// verbatim until the error texts are wired rather than translated into an
+/// invented sentence — the same rule the stall buyer flow follows.
 pub fn on_invite_response(
     mut reader: MessageReader<ExchangeInviteResponse>,
+    mut state: ResMut<ExchangeState>,
     mut history: ResMut<ChatHistory>,
 ) {
     for msg in reader.read() {
         match msg {
             ExchangeInviteResponse::Accepted { unique_id } => {
-                info!("exchange: invite raised on {unique_id} (0xB081)");
+                info!("exchange: {unique_id} accepted, trade open (0xB081)");
+                open_trade(&mut state, *unique_id);
             }
             ExchangeInviteResponse::Refused { error } => {
                 warn!("exchange: invite refused (0xB081 code {error:#06x})");
@@ -407,6 +420,41 @@ mod test {
                 mag_params: vec![],
             },
         }
+    }
+
+    /// A vSRO server opens the inviter's trade with 0xB081 alone — openroad
+    /// waited for a 0x3085 that never came. Our stub announced the trade on
+    /// both, so the second announcement must keep what the first opened.
+    #[test]
+    fn the_inviters_trade_opens_on_0xb081_and_a_repeat_keeps_it() {
+        let mut app = App::new();
+        app.init_resource::<ExchangeState>()
+            .init_resource::<ChatHistory>()
+            .add_message::<ExchangeInviteResponse>()
+            .add_message::<ExchangeStarted>()
+            .add_systems(Update, (on_invite_response, on_exchange_started));
+
+        app.world_mut()
+            .write_message(ExchangeInviteResponse::Accepted { unique_id: 7 });
+        app.update();
+        let state = app.world_mut().resource_mut::<ExchangeState>();
+        let session = state
+            .into_inner()
+            .session
+            .as_mut()
+            .expect("no trade opened");
+        assert_eq!(session.partner_unique_id, 7);
+        session.own_confirmed = true;
+
+        app.world_mut().write_message(ExchangeStarted {
+            partner_unique_id: 7,
+        });
+        app.update();
+        let session = app.world().resource::<ExchangeState>().session.clone();
+        assert!(
+            session.expect("the trade closed").own_confirmed,
+            "0x3085 reset the open trade"
+        );
     }
 
     /// The anti-scam gate is the whole point of the two-stage lock: approve

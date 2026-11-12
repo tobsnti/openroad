@@ -55,6 +55,7 @@ use bevy::prelude::*;
 use bevy::ui::UiTargetCamera;
 use bevy::ui_widgets::{Activate, Button};
 
+use packets::agent::exchange::ExchangeCanceled;
 use packets::agent::ingame::{
     GameInvite, InvitePetition, InviteResponse, PETITION_ACADEMY, PETITION_EXCHANGE,
     PETITION_GUILD, PETITION_PARTY_CREATION, PETITION_PARTY_INVITATION, PETITION_RESURRECTION,
@@ -542,6 +543,23 @@ pub fn petition_response(petition: u8, accept: bool) -> GameInvite {
     })
 }
 
+/// 0x3088 calls a trade off for both parties, also one still waiting in the
+/// target's box — captured when the inviter logged off and when nobody
+/// answered `[V capture, peer vSRO]`. The original's handler appears to close
+/// its message boxes on it `[S]`; an answer from a box left open would go to a
+/// petition the server already dropped.
+pub fn close_exchange_petition(
+    mut cancels: MessageReader<ExchangeCanceled>,
+    mut pending: ResMut<PendingPetition>,
+) {
+    if cancels.read().count() == 0 {
+        return;
+    }
+    if pending.0.as_ref().map(|p| p.petition) == Some(PETITION_EXCHANGE) {
+        pending.0 = None;
+    }
+}
+
 /// Leaving the world drops any open petition: the answer correlates by
 /// session, so a box that outlived its session could only answer the wrong one.
 pub fn cleanup_petitions(
@@ -566,7 +584,11 @@ impl Plugin for PetitionPlugin {
             .add_systems(OnExit(SceneState::GameWorld), cleanup_petitions)
             .add_systems(
                 Update,
-                (on_game_invite, sync_petition_dialog)
+                (
+                    on_game_invite,
+                    close_exchange_petition,
+                    sync_petition_dialog,
+                )
                     .chain()
                     .run_if(in_state(SceneState::GameWorld)),
             );
@@ -867,7 +889,16 @@ mod test {
             nine: Handle::default(),
         })
         .add_message::<GameInvite>()
-        .add_systems(Update, (on_game_invite, sync_petition_dialog).chain());
+        .add_message::<ExchangeCanceled>()
+        .add_systems(
+            Update,
+            (
+                on_game_invite,
+                close_exchange_petition,
+                sync_petition_dialog,
+            )
+                .chain(),
+        );
         app.world_mut().spawn(Camera2d);
         app
     }
@@ -922,6 +953,37 @@ mod test {
             "the answer must clear the pending petition"
         );
         assert_eq!(open_dialogs(&mut app), 0, "the box stayed open after Yes");
+    }
+
+    /// A trade called off while its petition still waits takes the box with
+    /// it; a party petition is not the trade's to close.
+    #[test]
+    fn a_called_off_trade_closes_its_waiting_petition() {
+        let mut app = petition_app();
+        app.world_mut()
+            .write_message(GameInvite::Petition(petition(PETITION_EXCHANGE, None)));
+        app.update();
+        assert_eq!(open_dialogs(&mut app), 1, "no box opened");
+
+        app.world_mut()
+            .write_message(ExchangeCanceled { code: Some(0x1826) });
+        app.update();
+        assert!(app.world().resource::<PendingPetition>().0.is_none());
+        assert_eq!(open_dialogs(&mut app), 0, "the box outlived the trade");
+
+        app.world_mut().write_message(GameInvite::Petition(petition(
+            PETITION_PARTY_INVITATION,
+            Some(0),
+        )));
+        app.update();
+        app.world_mut()
+            .write_message(ExchangeCanceled { code: Some(0x1826) });
+        app.update();
+        assert_eq!(
+            open_dialogs(&mut app),
+            1,
+            "a trade's cancel closed a party box"
+        );
     }
 
     /// The `setup` byte must reach the UI (§8 fidelity checklist): it is the

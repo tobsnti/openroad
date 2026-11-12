@@ -644,7 +644,7 @@ still missing from `InventoryOperationRequest`.
 | `0x3086` | ExchangePlayerConfirmed | S→C | experimental | empty body |
 | `0x3087` | ExchangeCompleted | S→C | experimental | empty body |
 | `0x3088` | ExchangeCanceled | S→C | wired | **fixed 2 bytes, not empty**: `u16 reason` — the original *does* read it and renders it as an exchange-failed message; the server writes exactly one field. A lost field, not a decode failure. [V] |
-| `0x3089` | ExchangeGoldUpdate | S→C | wired | the leading byte is a **mode discriminator**, not an unknown: `1` = a staged **item** (`u8 slot` + the shared item block), `2` = staged **gold** (`u64`); other modes read nothing . Decoding a mode-1 body with the current `{u8, u64}` struct yields garbage gold. [V] |
+| `0x3089` | ExchangeGoldUpdate | S→C | wired | the leading byte is a **mode discriminator**, not an unknown: `1` = a staged **item** (`u8 slot` + the shared item block), `2` = staged **gold** (`u64`); other modes read nothing; decoded per mode (`Gold`, `Item`, `Other`). [V] |
 | `0x308C` | ExchangeItemsUpdate | S→C | experimental | partner's staged items; raw tail, resolver-decoded |
 | `0x7082` | ExchangeConfirmRequest | C→S | experimental | empty body |
 | `0x7083` | ExchangeApproveRequest | C→S | experimental | empty body |
