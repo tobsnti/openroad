@@ -284,58 +284,82 @@ fn receive_packets(
         let Ok(mut stream) = stream.lock() else {
             continue;
         };
-        let mut scratch = [0u8; 4096];
-        match stream.read(&mut scratch) {
-            Ok(read_bytes) => {
-                // Append this read to the accumulator, then drain every complete
-                // frame off the front. The server packs the post-join burst
-                // (character-data begin/body/end, celestial, ...) back-to-back
-                // and a single read can end mid-frame; carrying the unparsed
-                // tail across reads is what keeps a split frame — and every
-                // frame after it — from being dropped.
-                conn.read_buf.extend_from_slice(&scratch[..read_bytes]);
-                let security = conn.get_security();
-                let mut consumed = 0;
-                loop {
-                    match next_packet(&mut conn.read_buf[consumed..], &security) {
-                        FrameStep::Ready {
-                            opcode,
-                            data,
-                            consumed: n,
-                            encrypted,
-                        } => {
-                            if let Some(dump) = dump.as_mut() {
-                                dump.dump(opcode, &data, encrypted);
-                            }
-                            dispatch_packet(opcode, data, &mut reported, &mut packets);
-                            consumed += n;
-                        }
-                        FrameStep::Skip { consumed: n } => consumed += n,
-                        FrameStep::Incomplete => break,
-                        FrameStep::Corrupt => {
-                            warn!(
-                                "network: desynchronised inbound stream, dropping {} buffered bytes",
-                                conn.read_buf.len() - consumed
-                            );
-                            consumed = conn.read_buf.len();
-                            break;
-                        }
+        // Everything the socket holds is taken first and dispatched before a
+        // close or an error is acted on: frames the server sent right before
+        // closing still count.
+        let read = read_available(&mut *stream, &mut conn.read_buf);
+        // Drain every complete frame off the front of the accumulator. The
+        // server packs the post-join burst (character-data begin/body/end,
+        // celestial, ...) back-to-back and a read can end mid-frame; carrying
+        // the unparsed tail across reads is what keeps a split frame — and
+        // every frame after it — from being dropped.
+        let security = conn.get_security();
+        let mut consumed = 0;
+        loop {
+            match next_packet(&mut conn.read_buf[consumed..], &security) {
+                FrameStep::Ready {
+                    opcode,
+                    data,
+                    consumed: n,
+                    encrypted,
+                } => {
+                    if let Some(dump) = dump.as_mut() {
+                        dump.dump(opcode, &data, encrypted);
                     }
+                    dispatch_packet(opcode, data, &mut reported, &mut packets);
+                    consumed += n;
                 }
-                if consumed > 0 {
-                    conn.read_buf.drain(..consumed);
+                FrameStep::Skip { consumed: n } => consumed += n,
+                FrameStep::Incomplete => break,
+                FrameStep::Corrupt => {
+                    warn!(
+                        "network: desynchronised inbound stream, dropping {} buffered bytes",
+                        conn.read_buf.len() - consumed
+                    );
+                    consumed = conn.read_buf.len();
+                    break;
                 }
             }
-            Err(err) => {
-                if err.kind() != ErrorKind::WouldBlock {
-                    error!("stop handling incoming packets because of: {}", err);
-                    conn.dc_sender
-                        .send(())
-                        .expect("failed to send disconnected msg");
-                    // Should we rather despawn? Currently the connection exists in its own entity
-                    commands.entity(entity).remove::<SilkroadConnection>();
-                }
-            }
+        }
+        if consumed > 0 {
+            conn.read_buf.drain(..consumed);
+        }
+        match read {
+            Ok(ReadEnd::Drained) => continue,
+            Ok(ReadEnd::Closed) => warn!("network: the server closed the connection"),
+            Err(err) => error!("stop handling incoming packets because of: {}", err),
+        }
+        conn.dc_sender
+            .send(())
+            .expect("failed to send disconnected msg");
+        // Should we rather despawn? Currently the connection exists in its own entity
+        commands.entity(entity).remove::<SilkroadConnection>();
+    }
+}
+
+/// How a pass over the socket ended.
+enum ReadEnd {
+    /// Nothing more to read right now (`WouldBlock`).
+    Drained,
+    /// The server closed the connection (`Ok(0)`).
+    Closed,
+}
+
+/// Append everything the non-blocking socket holds to `buf`.
+///
+/// One 4 KiB read per frame left a burst queued in the kernel for many frames
+/// — the post-join stream, or a thousand small frames a server packs into a
+/// few milliseconds — and a read of zero bytes, the peer closing, went
+/// unnoticed while the connection looked alive.
+fn read_available(stream: &mut impl Read, buf: &mut Vec<u8>) -> std::io::Result<ReadEnd> {
+    let mut scratch = [0u8; 4096];
+    loop {
+        match stream.read(&mut scratch) {
+            Ok(0) => return Ok(ReadEnd::Closed),
+            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(ReadEnd::Drained),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -381,8 +405,8 @@ fn send_packets(
     mut dump: Option<ResMut<PacketDump>>,
     encrypt_outbound: Option<Res<OutboundEncryption>>,
 ) {
-    for (entity, conn) in query.iter_mut() {
-        if conn.o_receiver.is_empty() {
+    for (entity, mut conn) in query.iter_mut() {
+        if conn.o_receiver.is_empty() && conn.write_buf.is_empty() {
             continue;
         }
 
@@ -391,7 +415,8 @@ fn send_packets(
             continue;
         };
         let security = conn.get_security();
-        for mut frame in conn.o_receiver.try_iter() {
+        let outbound = conn.o_receiver.clone();
+        for mut frame in outbound.try_iter() {
             // Full outbound-frame dump for the headless net-check client.
             trace!(target: "packets_out", "send {}", outbound_trace_line(&frame));
             // Mirror of the inbound dump, taken before `serialize` so the
@@ -412,18 +437,52 @@ fn send_packets(
             let output = frame
                 .serialize(security.clone())
                 .expect("failed to serialize frame");
-            if let Err(err) = stream.write(&output) {
-                if err.kind() != ErrorKind::WouldBlock {
-                    error!("stop handling outgoing packets because of: {}", err);
-                    conn.dc_sender
-                        .send(())
-                        .expect("failed to send disconnected msg");
-                    // Should we rather despawn? Currently the connection exists in its own entity
-                    commands.entity(entity).remove::<SilkroadConnection>();
-                }
-            }
+            conn.write_buf.extend_from_slice(&output);
+        }
+        if let Err(err) = flush_pending(&mut *stream, &mut conn.write_buf) {
+            error!("stop handling outgoing packets because of: {}", err);
+            conn.dc_sender
+                .send(())
+                .expect("failed to send disconnected msg");
+            // Should we rather despawn? Currently the connection exists in its own entity
+            commands.entity(entity).remove::<SilkroadConnection>();
         }
     }
+}
+
+/// Outbound bytes a connection may hold before it is closed. Far above any
+/// burst of ours — the largest frame we send is ~1 KB — so only a server that
+/// stopped reading gets there, and then the disconnect says so instead of the
+/// buffer growing without bound.
+const WRITE_BUF_LIMIT: usize = 1 << 20;
+
+/// Write as much of `pending` as the socket takes now and drop what it took.
+///
+/// A non-blocking write may take part of a frame, or nothing (`WouldBlock`).
+/// The rest stays queued for the next frame: dropping it, as a bare `write`
+/// did, cuts a frame short, and the server — which splits the stream by length
+/// prefix — reads every later frame from the wrong offset. Retrying the frame
+/// instead is no option either: serializing consumes the security sequence
+/// byte, so each frame is serialized once and its bytes are what waits here.
+fn flush_pending(stream: &mut impl Write, pending: &mut Vec<u8>) -> std::io::Result<()> {
+    while !pending.is_empty() {
+        match stream.write(pending) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                pending.drain(..n);
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
+        }
+    }
+    if pending.len() > WRITE_BUF_LIMIT {
+        return Err(std::io::Error::other(format!(
+            "{} bytes the server has not taken — it stopped reading",
+            pending.len()
+        )));
+    }
+    Ok(())
 }
 
 fn fetch_disconnects(
@@ -711,6 +770,138 @@ mod tests {
             }
             _ => panic!("expected a ready frame"),
         }
+    }
+
+    /// A non-blocking socket whose send buffer holds `room` more bytes: it
+    /// takes up to that much, then reports `WouldBlock`.
+    struct FullSocket {
+        taken: Vec<u8>,
+        room: usize,
+    }
+
+    impl Write for FullSocket {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.room == 0 {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            let n = buf.len().min(self.room);
+            self.taken.extend_from_slice(&buf[..n]);
+            self.room -= n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A write the socket takes only in part used to lose the rest, and the
+    /// server then read every later frame from the wrong offset. What it does
+    /// not take now waits for the next frame, in order.
+    #[test]
+    fn bytes_the_socket_did_not_take_wait_for_the_next_frame() {
+        let frames = [
+            packet_frame(0x7021, &[1, 2, 3]),
+            packet_frame(0x7045, &[4, 5, 6, 7]),
+        ]
+        .concat();
+        let mut pending = frames.clone();
+        let mut socket = FullSocket {
+            taken: Vec::new(),
+            room: 5,
+        };
+
+        flush_pending(&mut socket, &mut pending).expect("WouldBlock is not an error");
+        assert_eq!(socket.taken.len(), 5);
+        assert_eq!(pending.len(), frames.len() - 5);
+
+        socket.room = usize::MAX;
+        flush_pending(&mut socket, &mut pending).expect("flush");
+        assert!(pending.is_empty());
+        assert_eq!(socket.taken, frames);
+    }
+
+    /// A server that stops reading must end the connection visibly rather
+    /// than let the queue grow without bound.
+    #[test]
+    fn a_server_that_stops_reading_is_disconnected() {
+        let mut socket = FullSocket {
+            taken: Vec::new(),
+            room: 0,
+        };
+        let mut pending = vec![0u8; WRITE_BUF_LIMIT];
+        assert!(flush_pending(&mut socket, &mut pending).is_ok());
+        pending.push(0);
+        assert!(flush_pending(&mut socket, &mut pending).is_err());
+    }
+
+    /// A non-blocking socket holding `data`: it hands it out in reads of at
+    /// most `chunk` bytes, then reports `WouldBlock` — or the end of the
+    /// stream once the peer has `closed` it.
+    struct HeldSocket {
+        data: Vec<u8>,
+        at: usize,
+        chunk: usize,
+        closed: bool,
+    }
+
+    impl Read for HeldSocket {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.at == self.data.len() {
+                return if self.closed {
+                    Ok(0)
+                } else {
+                    Err(ErrorKind::WouldBlock.into())
+                };
+            }
+            let n = out.len().min(self.chunk).min(self.data.len() - self.at);
+            out[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    /// A thousand small frames a server packs into a few milliseconds are read
+    /// in one pass, not one 4 KiB read per frame.
+    #[test]
+    fn a_burst_is_read_in_one_pass() {
+        let burst: Vec<u8> = (0..1032u16)
+            .flat_map(|i| packet_frame(0x3016, &i.to_le_bytes()))
+            .collect();
+        let mut socket = HeldSocket {
+            data: burst.clone(),
+            at: 0,
+            chunk: 4096,
+            closed: false,
+        };
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_available(&mut socket, &mut buf),
+            Ok(ReadEnd::Drained)
+        ));
+        assert_eq!(buf, burst);
+        assert_eq!(drain(&mut buf, &security()).len(), 1032);
+    }
+
+    /// A read of zero bytes is the server closing; what it sent before is
+    /// still there to dispatch.
+    #[test]
+    fn frames_sent_before_a_close_are_kept() {
+        let frames = [packet_frame(0x3013, &[1, 2]), packet_frame(0xB070, &[3])].concat();
+        let mut socket = HeldSocket {
+            data: frames,
+            at: 0,
+            chunk: 4096,
+            closed: true,
+        };
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_available(&mut socket, &mut buf),
+            Ok(ReadEnd::Closed)
+        ));
+        assert_eq!(
+            drain(&mut buf, &security()),
+            vec![(0x3013, vec![1, 2]), (0xB070, vec![3])]
+        );
     }
 
     #[test]
