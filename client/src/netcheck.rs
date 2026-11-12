@@ -439,9 +439,6 @@ struct ActionDriver {
     /// Record count from the most recent spawn-kind `GroupEntitySpawnBegin`,
     /// needed to parse the data packet that follows it.
     group_count: Option<u16>,
-    /// First selectable entity seen, kept across frames so a spawn batch that
-    /// arrived before the driver was enabled is not lost.
-    pending_target: Option<(u32, u16)>,
     /// Every selectable entity seen so far: uid, region, x, z.
     candidates: Vec<(u32, u16, f32, f32)>,
     select_sent: bool,
@@ -739,7 +736,7 @@ fn netcheck_drive_actions(
     driver.next_move_at = Some(now + 1.5);
 }
 
-/// Select the first parseable nearby entity from a single-entity spawn, once.
+/// Select the nearest monster from the spawns seen so far, once.
 fn netcheck_select_target(
     mut driver: ResMut<ActionDriver>,
     mut reader: MessageReader<SingleEntitySpawn>,
@@ -748,16 +745,9 @@ fn netcheck_select_target(
     game_data: Res<GameData>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if driver.select_sent {
+    if !driver.enabled || driver.select_sent {
         return;
     }
-    // Candidates are collected even before the driver is enabled. The spawn
-    // stream and the join handler land in the SAME frame against our stub
-    // (measured 2026-11-09: 0x3017/0x3019/0x3018 and "local player unique_id"
-    // share a timestamp), and a Bevy message lives two frames — gating the
-    // read on `enabled` dropped the only batch there was. Same race the
-    // `pending_body` field already exists for (#728).
-    //
     // A server may deliver the initial view either way, and this step used to
     // read only the single-spawn message. Measured against our own stub on
     // 2026-11-09: after it moved every spawn onto the group triple, 0x3015
@@ -820,10 +810,7 @@ fn netcheck_select_target(
             d(a).total_cmp(&d(b))
         })
         .map(|c| (c.0, c.1));
-    if let Some(found) = nearest {
-        driver.pending_target = Some(found);
-    }
-    let (Some((uid, region)), true) = (driver.pending_target, driver.enabled) else {
+    let Some((uid, region)) = nearest else {
         return;
     };
     let Ok(conn) = conn.single() else {
@@ -904,8 +891,16 @@ fn netcheck_press_attack(
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     const MAX_SWINGS: u8 = 20;
+    /// Our stub's basic-attack cooldown is 1 s (30 ticks); 0.2 s over it, a
+    /// paced swing never lands on the cooldown.
     const SWING_INTERVAL: f64 = 1.2;
-    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+    // Stop once a drop is being walked to: the target is dead, and every
+    // swing after that hits a corpse.
+    if !driver.enabled
+        || !driver.attack_sent
+        || driver.pickup_sent
+        || driver.pending_pickup.is_some()
+    {
         return;
     }
     if driver.swings >= MAX_SWINGS {
@@ -945,7 +940,11 @@ fn netcheck_pick_up_loot(
     game_data: Res<GameData>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+    if !driver.enabled
+        || !driver.attack_sent
+        || driver.pickup_sent
+        || driver.pending_pickup.is_some()
+    {
         return;
     }
     let Ok(conn) = conn.single() else {
@@ -1019,6 +1018,9 @@ fn netcheck_finish_pickup(
     time: Res<Time>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
+    /// The movement square leaves the player about 150 units from where the
+    /// mob died (measured 2026-11-09); running, that is well under 3 s, and
+    /// the pickup then lands inside the server's 80-unit radius.
     const WALK_ALLOWANCE: f64 = 3.0;
     if !driver.enabled || driver.pickup_sent {
         return;
