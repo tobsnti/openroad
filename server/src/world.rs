@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use bytes::Bytes;
 use packets::agent::prelude::TalkResponse;
+use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
-use crate::inbound::{decode_exact, Rejected};
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
@@ -28,7 +28,8 @@ pub struct SessionId(pub u32);
 pub enum Reason {
     /// No packet type exists for the opcode.
     UnknownOpcode,
-    /// The body is not exactly one packet of its opcode ([`crate::inbound`]).
+    /// The body is not exactly one packet of its opcode: it does not decode,
+    /// or it does not encode back to the same bytes (`packets::judge`).
     DecodeError,
     /// The packet is understood, but the server does not act on it in the
     /// session's phase.
@@ -245,10 +246,10 @@ impl World {
     }
 }
 
-fn reason_of(rejected: Rejected) -> Reason {
-    match rejected {
-        Rejected::UnknownOpcode => Reason::UnknownOpcode,
-        Rejected::Undecodable | Rejected::NotExact => Reason::DecodeError,
+fn reason_of(verdict: Verdict) -> Reason {
+    match verdict {
+        Verdict::Unwired => Reason::UnknownOpcode,
+        _ => Reason::DecodeError,
     }
 }
 
