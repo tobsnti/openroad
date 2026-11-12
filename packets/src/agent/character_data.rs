@@ -1,4 +1,5 @@
-//! The CHARACTER_DATA (0x3013) body: wire structs and the staged parser.
+//! The CHARACTER_DATA (0x3013) body: wire structs, the staged parser and its
+//! writer.
 //!
 //! Idea: the blob is one large record whose layout is transcribed from the
 //! go-sro server's write calls (`char_selection_join_handler.go`,
@@ -34,6 +35,7 @@ use std::io::{Cursor, Read};
 
 use bevy::prelude::Message;
 use byteorder::ReadBytesExt;
+use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;
@@ -628,10 +630,18 @@ pub struct ParsedCharacterInfo {
     pub inventory_size: Option<u8>,
     pub inventory: Option<Vec<InventoryItem>>,
     pub avatar_items: Option<Vec<InventoryItem>>,
+    /// Slot capacity of the avatar section (its `size` byte).
+    pub avatar_inventory_size: Option<u8>,
     pub masteries: Option<Vec<Mastery>>,
     pub skills: Option<Vec<KnownSkill>>,
+    /// The byte before the mastery list and the byte before the skill list.
+    /// Their meaning is unknown; they are kept so the record can be written
+    /// back as it was read.
+    pub mastery_skill_unknown: Option<[u8; 2]>,
     pub completed_quests: Option<Vec<u32>>,
     pub active_quests: Option<Vec<ActiveQuest>>,
+    /// The collection-book head; a record with a started theme does not parse.
+    pub collection: Option<CollectionBook>,
     pub spawn: Option<ParsedCharacterData>,
     pub movement: Option<EntityMovement>,
     pub state: Option<EntityState>,
@@ -1141,6 +1151,7 @@ fn forward_parse(
         "avatar inventory",
         read_item_section(cursor, resolver, &mut info.item_trace, unknown_body)
     );
+    info.avatar_inventory_size = Some(avatar.size);
     info.avatar_items = Some(avatar.items);
     if let Some(stop) = avatar.stopped_at {
         info.item_stop = Some(stop);
@@ -1151,6 +1162,7 @@ fn forward_parse(
     let mastery_skills = stage!("masteries", MasterySkillSection::read_from(cursor));
     info.masteries = Some(mastery_skills.masteries);
     info.skills = Some(mastery_skills.skills);
+    info.mastery_skill_unknown = Some([mastery_skills.unk_begin, mastery_skills.unk_mid]);
 
     let quests = stage!("quests", QuestSection::read_from(cursor));
     info.completed_quests = Some(quests.completed);
@@ -1163,6 +1175,7 @@ fn forward_parse(
         "collection book",
         nonzero_guard(collection.started_theme_count)
     );
+    info.collection = Some(collection);
 
     let ref_id = info.stats.as_ref().map(|s| s.ref_id).unwrap_or(0);
     info.spawn = Some(stage!("spawn position", read_tail_spawn(cursor, ref_id)));
@@ -1383,6 +1396,245 @@ fn read_tail_spawn(
         z: pos.z,
         heading: pos.heading,
     })
+}
+
+/// A section [`write_character_info`] cannot write: absent, or not what the
+/// reader reads (an item whose data does not fit its class, a record whose
+/// width the reader only recovered). Named like the reader's stage, so a read
+/// and a write failure say the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingSection(pub &'static str);
+
+impl std::fmt::Display for MissingSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "character record without a writable {} section", self.0)
+    }
+}
+
+impl std::error::Error for MissingSection {}
+
+/// The CHARACTER_DATA body for `info`: [`parse_character_info`] run backwards.
+///
+/// Idea: one model for both directions. Each section is written from the
+/// field the forward pass fills, in the same order, so a body the reader
+/// parsed fully comes back byte for byte. Nothing is defaulted: a section the
+/// reader did not fill is an error. An item body depends on the item's class
+/// exactly as in the reader, so the writer takes the same resolver. The
+/// diagnostic fields are not part of the record.
+pub fn write_character_info(
+    info: &ParsedCharacterInfo,
+    resolver: &impl ItemClassResolver,
+) -> Result<Bytes, MissingSection> {
+    fn need<'a, T>(field: &'a Option<T>, stage: &'static str) -> Result<&'a T, MissingSection> {
+        field.as_ref().ok_or(MissingSection(stage))
+    }
+    let mut buf = BytesMut::new();
+    need(&info.stats, "stats")?.serialize_to(&mut buf);
+    for (stage, size, items) in [
+        ("inventory", &info.inventory_size, &info.inventory),
+        (
+            "avatar inventory",
+            &info.avatar_inventory_size,
+            &info.avatar_items,
+        ),
+    ] {
+        let items = need(items, stage)?;
+        buf.put_u8(*need(size, stage)?);
+        buf.put_u8(count(items.len()));
+        for item in items {
+            buf.put_u8(item.slot);
+            item.rent.serialize_to(&mut buf);
+            buf.put_u32_le(item.ref_id);
+            let class = resolver.item_class(item.ref_id);
+            item.data
+                .write_body(&mut buf, class)
+                .ok_or(MissingSection(stage))?;
+        }
+    }
+    let [unk_begin, unk_mid] = *need(&info.mastery_skill_unknown, "masteries")?;
+    MasterySkillSection {
+        unk_begin,
+        masteries: need(&info.masteries, "masteries")?.clone(),
+        unk_mid,
+        skills: need(&info.skills, "masteries")?.clone(),
+    }
+    .serialize_to(&mut buf);
+    let completed = need(&info.completed_quests, "quests")?;
+    let active = need(&info.active_quests, "active quests")?;
+    QuestSection {
+        completed_count: u16::try_from(completed.len()).expect("the record counts quests in a u16"),
+        completed: completed.clone(),
+        active_count: count(active.len()),
+    }
+    .serialize_to(&mut buf);
+    for quest in active {
+        quest
+            .write_to(&mut buf)
+            .ok_or(MissingSection("active quests"))?;
+    }
+    need(&info.collection, "collection book")?.serialize_to(&mut buf);
+    let spawn = need(&info.spawn, "spawn position")?;
+    buf.put_u32_le(spawn.unique_id);
+    SpawnPosition {
+        region: spawn.region,
+        x: spawn.x,
+        y: spawn.y,
+        z: spawn.z,
+        heading: spawn.heading,
+    }
+    .serialize_to(&mut buf);
+    need(&info.movement, "movement")?
+        .write_with_region(&mut buf, spawn.region)
+        .ok_or(MissingSection("movement"))?;
+    need(&info.state, "state")?.serialize_to(&mut buf);
+    write_string(&mut buf, need(&info.name, "name")?);
+    need(&info.job, "job")?.serialize_to(&mut buf);
+    need(&info.extras, "extras")?.serialize_to(&mut buf);
+    Ok(buf.freeze())
+}
+
+/// A list length as the record's one-byte count.
+fn count(len: usize) -> u8 {
+    u8::try_from(len).expect("the record counts this list in one byte")
+}
+
+fn write_string(buf: &mut BytesMut, s: &str) {
+    buf.put_u16_le(u16::try_from(s.len()).expect("the record prefixes strings with a u16"));
+    buf.put_slice(s.as_bytes());
+}
+
+impl ItemTypeData {
+    /// The body as [`Self::read_body`] reads it for `class`; `None` when the
+    /// data is not what that class reads.
+    fn write_body(&self, buf: &mut BytesMut, class: ItemClass) -> Option<()> {
+        match (class, self) {
+            (ItemClass::Equipment, ItemTypeData::Equipment(data)) => data.serialize_to(buf),
+            (
+                ItemClass::Container { tid3: 1, tid4 },
+                ItemTypeData::CosPet {
+                    state,
+                    cos_ref_id,
+                    name,
+                    rent_seconds,
+                    unk,
+                },
+            ) => {
+                let summoned = *state != COS_STATE_NEVER_SUMMONED;
+                let consistent = summoned == cos_ref_id.is_some()
+                    && summoned == name.is_some()
+                    && summoned == unk.is_some()
+                    && (summoned && tid4 == 2) == rent_seconds.is_some();
+                if !consistent {
+                    return None;
+                }
+                buf.put_u8(*state);
+                cos_ref_id.inspect(|id| buf.put_u32_le(*id));
+                if let Some(name) = name {
+                    write_string(buf, name);
+                }
+                rent_seconds.inspect(|seconds| buf.put_u32_le(*seconds));
+                unk.inspect(|unk| buf.put_u8(*unk));
+            }
+            (
+                ItemClass::Container { tid3: 2, .. },
+                ItemTypeData::TransformScroll { mask_ref_id },
+            ) => buf.put_u32_le(*mask_ref_id),
+            (ItemClass::Container { tid3: 3, .. }, ItemTypeData::MagicCube { elixir_count }) => {
+                buf.put_u32_le(*elixir_count)
+            }
+            // The other containers carry no body at all.
+            (ItemClass::Container { tid3, .. }, ItemTypeData::Unknown)
+                if !(1..=3).contains(&tid3) => {}
+            (
+                ItemClass::Expendable { tid3, tid4 },
+                ItemTypeData::Expendable {
+                    stack_count,
+                    assimilation_prob,
+                    mag_params,
+                },
+            ) => {
+                let assimilates = tid3 == 11 && (tid4 == 1 || tid4 == 2);
+                if assimilates != assimilation_prob.is_some()
+                    || (tid3 != 14 && !mag_params.is_empty())
+                {
+                    return None;
+                }
+                buf.put_u16_le(*stack_count);
+                assimilation_prob.inspect(|prob| buf.put_u8(*prob));
+                if tid3 == 14 {
+                    buf.put_u8(count(mag_params.len()));
+                    mag_params.iter().for_each(|param| param.serialize_to(buf));
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+}
+
+impl ActiveQuest {
+    /// The record as `read_active_quests` reads it; `None` when a block does
+    /// not match its bit in `quest_type`.
+    fn write_to(&self, buf: &mut BytesMut) -> Option<()> {
+        let has = |bit: u8| self.quest_type & bit != 0;
+        let consistent = has(QUEST_HAS_TIME) == self.time_remain.is_some()
+            && has(QUEST_HAS_STATE) == self.state.is_some()
+            && (has(QUEST_HAS_OBJECTIVES) || self.objectives.is_empty())
+            && (has(QUEST_HAS_NPCS) || self.target_npcs.is_empty());
+        if !consistent {
+            return None;
+        }
+        buf.put_u32_le(self.ref_id);
+        buf.put_u8(self.achievements);
+        buf.put_u8(self.auto_share_required);
+        buf.put_u8(self.quest_type);
+        self.time_remain.inspect(|time| buf.put_u32_le(*time));
+        self.state.inspect(|state| buf.put_u8(*state));
+        if has(QUEST_HAS_OBJECTIVES) {
+            buf.put_u8(count(self.objectives.len()));
+            for objective in &self.objectives {
+                buf.put_u8(objective.id);
+                buf.put_u8(u8::from(objective.enabled));
+                write_string(buf, &objective.name);
+                buf.put_u8(count(objective.tasks.len()));
+                objective
+                    .tasks
+                    .iter()
+                    .for_each(|task| buf.put_u32_le(*task));
+            }
+        }
+        if has(QUEST_HAS_NPCS) {
+            buf.put_u8(count(self.target_npcs.len()));
+            self.target_npcs.iter().for_each(|npc| buf.put_u32_le(*npc));
+        }
+        Some(())
+    }
+}
+
+impl EntityMovement {
+    /// The block as [`Self::read_with_region`] reads it; `None` when a field
+    /// the flags call for is missing.
+    pub fn write_with_region(&self, buf: &mut BytesMut, current_region: u16) -> Option<()> {
+        buf.put_u8(u8::from(self.has_destination));
+        buf.put_u8(self.move_type);
+        if self.has_destination {
+            let region = self.dest_region?;
+            buf.put_u16_le(region);
+            if region > 0 {
+                for coord in [self.dest_x?, self.dest_y?, self.dest_z?] {
+                    if super::ingame::is_dungeon(current_region) {
+                        buf.put_i32_le(coord);
+                    } else {
+                        buf.put_u16_le(coord as u16);
+                    }
+                }
+            }
+        } else {
+            buf.put_u8(self.source?);
+            buf.put_u16_le(self.angle?);
+        }
+        Some(())
+    }
 }
 
 #[cfg(test)]
@@ -2729,5 +2981,76 @@ mod test {
         assert_eq!(info.spawn, plain.spawn);
         assert_eq!(info.name, plain.name);
         assert_eq!(info.extras, plain.extras);
+    }
+
+    /// A full record with every item body the mock resolver routes: equipment,
+    /// a pills stack, an MP potion, a gacha card with its magic parameter, a
+    /// summoned rentable pet scroll and a never-summoned growth one.
+    fn full_body_with_every_item() -> Vec<u8> {
+        let inventory = equipment_record(stats_block(Body::default()).u8(45).u8(6))
+            .u8(13)
+            .u32(0)
+            .u32(PILLS)
+            .u16(50)
+            .u8(14)
+            .u32(0)
+            .u32(MP_POTION)
+            .u16(7)
+            .u8(15)
+            .u32(0)
+            .u32(GACHA_CARD)
+            .u16(1)
+            .u8(1)
+            .u32(5)
+            .u32(6)
+            .u8(20)
+            .u32(0)
+            .u32(PET_SCROLL_RENTABLE)
+            .u8(COS_STATE_SUMMONED)
+            .u32(REF_ID)
+            .string("Pet")
+            .u32(3600)
+            .u8(0)
+            .u8(21)
+            .u32(0)
+            .u32(PET_SCROLL_GROWTH)
+            .u8(COS_STATE_NEVER_SUMMONED);
+        body_after_inventory(inventory, 0, 0, 0, 0).0
+    }
+
+    #[test]
+    fn a_fully_read_record_is_written_back_byte_for_byte() {
+        let bodies = [
+            full_body(),
+            full_body_with_autopotion(250, 300, 0, 2),
+            full_body_with_active_quests(),
+            full_body_with_every_item(),
+        ];
+        for raw in bodies {
+            let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+            assert!(info.fully_parsed, "failed at {:?}", info.failed_stage);
+            let written = write_character_info(&info, &resolver()).expect("a fully read record");
+            assert_eq!(written.as_ref(), raw.as_slice());
+        }
+    }
+
+    #[test]
+    fn a_section_the_reader_did_not_fill_is_not_written() {
+        let mut info = parse_character_info(&full_body(), Some(UNIQUE_ID), &resolver());
+        info.collection = None;
+        let refused = write_character_info(&info, &resolver());
+        assert_eq!(refused, Err(MissingSection("collection book")));
+    }
+
+    #[test]
+    fn a_record_whose_width_was_only_recovered_is_not_written() {
+        let raw = full_body_with_unroutable(50);
+        let info = parse_character_info(&raw, Some(UNIQUE_ID), &resolver());
+        assert!(
+            info.recovered_body.is_some(),
+            "the resync recovered the width"
+        );
+        let refused = write_character_info(&info, &resolver());
+        assert_eq!(refused, Err(MissingSection("inventory")));
     }
 }
