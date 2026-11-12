@@ -14,3 +14,4 @@ argon2 = { version = "0.5", features = ["std"] }
 bytes = { workspace = true }
 packets = { path = "../packets" }
 rand_core = { version = "0.6", features = ["getrandom"] }
+sro_textdata = { path = "../sro_textdata" }
