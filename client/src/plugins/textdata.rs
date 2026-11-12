@@ -49,10 +49,9 @@ struct TextdataHandles(Vec<Handle<Textdata>>);
 pub struct ClientCharacterData(Option<CharacterData>);
 
 impl ClientCharacterData {
-    /// Test-only constructor: builds the resource straight from a table so
-    /// data-shape regressions (e.g. #643, a race silently missing from the
-    /// race board) can be pinned to real characterdata rows in a unit test.
-    #[cfg(test)]
+    /// Builds the resource straight from a table, bypassing the asset
+    /// pipeline: the headless net check reads the archive itself, and tests
+    /// pin data-shape regressions (e.g. #643) to real rows.
     pub(crate) fn from_table(data: CharacterData) -> Self {
         Self(Some(data))
     }
@@ -96,8 +95,8 @@ impl ClientCharacterData {
 pub struct ClientItemData(Option<ItemData>);
 
 impl ClientItemData {
-    /// Seed the resource directly, bypassing the asset pipeline (tests only).
-    #[cfg(test)]
+    /// Seed the resource directly, bypassing the asset pipeline (the headless
+    /// net check and tests).
     pub(crate) fn from_data(data: ItemData) -> Self {
         Self(Some(data))
     }
@@ -695,6 +694,11 @@ impl ClientDungeonInfo {
 pub struct ClientTeleport(Option<TeleportTable>);
 
 impl ClientTeleport {
+    /// The resource from a parsed table, for the headless net check.
+    pub(crate) fn from_table(table: TeleportTable) -> Self {
+        Self(Some(table))
+    }
+
     /// The teleporter id + outgoing links of the teleporter owned by an NPC/
     /// building characterdata ref id.
     pub fn destinations(&self, owner_ref: i32) -> Option<(u32, &[TeleportLink])> {

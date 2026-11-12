@@ -17,18 +17,34 @@ use crate::plugins::assets::fallback_reader::FallbackAssetReader;
 #[derive(Resource, Clone)]
 pub struct MediaArchive(pub Archive);
 
+/// Where the user's PK2 archives are: `SRO_PK2_PATH`, else `SRO_PATH`, else
+/// `./assets`. Everything that opens one resolves it here.
+pub fn pk2_dir() -> PathBuf {
+    env::var_os("SRO_PK2_PATH")
+        .or_else(|| env::var_os("SRO_PATH"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut working_dir = env::current_dir().unwrap_or_default();
+            working_dir.push("assets");
+            working_dir
+        })
+}
+
+/// Media.pk2 opened with the user's key, for readers outside the asset server
+/// (the division info before the window exists, the headless net check). A
+/// missing archive or key is an `Err` for the caller to report, not a panic.
+pub fn open_media_pk2() -> Result<(PathBuf, Archive), String> {
+    let path = pk2_dir().join("Media.pk2");
+    let key = Pk2Key::resolve().map_err(|e| e.to_string())?;
+    let archive = Archive::open(&path, &key).map_err(|e| format!("{}: {e:?}", path.display()))?;
+    Ok((path, archive))
+}
+
 pub struct SroAssetPlugin;
 
 impl Plugin for SroAssetPlugin {
     fn build(&self, app: &mut App) {
-        let sro_path = env::var_os("SRO_PK2_PATH")
-            .or_else(|| env::var_os("SRO_PATH"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let mut working_dir = env::current_dir().unwrap();
-                working_dir.push("assets");
-                working_dir
-            });
+        let sro_path = pk2_dir();
         println!("PK2 directory: {}", sro_path.display());
 
         let media_path = sro_path.join("Media.pk2");

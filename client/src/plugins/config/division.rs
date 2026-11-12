@@ -7,18 +7,18 @@
 //!   the division list, each division naming its gateway hosts.
 //! * `gateport.txt` — the gateway port as NUL-padded ASCII decimal.
 //!
-//! These are read synchronously through [`Archive::read_file_bytes`] rather
+//! These are read synchronously through `Archive::read_file_bytes` rather
 //! than the asset server, because the gateway connect happens on the first
 //! frame (`OnEnter(SceneState::Loading)`) and the headless net-check path never
 //! builds an asset server at all. Both are optional: a missing or malformed
 //! file falls back to [`DivisionInfo::FALLBACK_CONTENT_ID`] and leaves the
 //! gateway to `config.yaml`, so a tree without PK2s keeps working.
 
-use std::panic::{self, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bevy::prelude::{warn, Resource};
-use bevy_pk2::prelude::{Archive, Pk2Key};
+
+use crate::plugins::assets::sro::open_media_pk2;
 
 /// One division and the gateway hosts that serve it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,24 +71,15 @@ impl DivisionInfo {
     }
 
     fn load_from_pk2() -> Option<Self> {
-        let media = media_pk2_path();
-        // `open_or_panic` panics rather than returning an error, and this runs
-        // before the asset plugin would have reported a missing archive.
-        // A missing key is the same class of "no archive to read" as a missing
-        // file here, so it takes the same silent fallback rather than aborting
-        // startup — the asset plugin reports it properly a moment later.
-        let key = Pk2Key::resolve().ok()?;
-        panic::catch_unwind(AssertUnwindSafe(|| {
-            let archive = Archive::open_or_panic(&media, &key);
-            let mut info = Self::parse(&archive.read_file_bytes(Path::new("divisioninfo.txt"))?)?;
-            info.gateway_port = archive
-                .read_file_bytes(Path::new("gateport.txt"))
-                .as_deref()
-                .and_then(parse_gateport);
-            Some(info)
-        }))
-        .ok()
-        .flatten()
+        // A missing archive or key is "no archive to read" here and takes the
+        // silent fallback; the asset plugin reports either a moment later.
+        let (_, archive) = open_media_pk2().ok()?;
+        let mut info = Self::parse(&archive.read_file_bytes(Path::new("divisioninfo.txt"))?)?;
+        info.gateway_port = archive
+            .read_file_bytes(Path::new("gateport.txt"))
+            .as_deref()
+            .and_then(parse_gateport);
+        Some(info)
     }
 
     /// Parses `divisioninfo.txt`:
@@ -154,19 +145,6 @@ fn parse_gateport(bytes: &[u8]) -> Option<u16> {
         .map(|b| *b as char)
         .collect();
     digits.parse().ok()
-}
-
-/// The same resolution order `SroAssetPlugin` uses, so both read one archive.
-fn media_pk2_path() -> PathBuf {
-    std::env::var_os("SRO_PK2_PATH")
-        .or_else(|| std::env::var_os("SRO_PATH"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let mut dir = std::env::current_dir().unwrap_or_default();
-            dir.push("assets");
-            dir
-        })
-        .join("Media.pk2")
 }
 
 #[cfg(test)]

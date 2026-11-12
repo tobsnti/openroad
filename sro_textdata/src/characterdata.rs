@@ -17,6 +17,22 @@ pub struct CharacterDataRow(pub Vec<String>);
 #[derive(Debug, Clone)]
 pub struct CharacterData(pub HashMap<i32, CharacterDataRow>);
 
+impl CharacterData {
+    /// One `characterdata_*.txt` shard: tab-separated rows keyed by their id
+    /// column. Shorter rows are headers or blanks, and a row whose id does not
+    /// parse is skipped rather than taking the whole table down.
+    pub fn parse_shard(content: &str) -> Self {
+        Self(
+            content
+                .lines()
+                .map(|l| l.split('\t').map(String::from).collect::<Vec<String>>())
+                .filter(|l| l.len() > 10)
+                .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, CharacterDataRow(l))))
+                .collect(),
+        )
+    }
+}
+
 /// Ceiling on a knockdown's prone dwell, in seconds.
 ///
 /// Not a gameplay value — a **sanity clamp** on an `[U]` column. If
