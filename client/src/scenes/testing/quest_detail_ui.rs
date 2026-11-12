@@ -8,7 +8,7 @@
 //! (`packet_dump/proxy/0x3013.log`, frame 2).
 
 use bevy::prelude::*;
-use packets::agent::character_data::{ActiveQuest, QuestObjective, QUEST_TYPE_NPC_LIST};
+use packets::agent::character_data::{ActiveQuest, QuestObjective};
 
 use crate::plugins::hud::quest_detail::{spawn_quest_detail, QuestDetailState};
 use crate::plugins::net::character_info::CharacterInfo;
@@ -32,14 +32,14 @@ fn captured_quests() -> Vec<ActiveQuest> {
         auto_share_required: 0,
         quest_type,
         time_remain: None,
-        state: 1,
+        state: Some(1),
         objectives,
         target_npcs,
     };
     vec![
         record(
             3,
-            QUEST_TYPE_NPC_LIST,
+            88,
             vec![objective("SN_CON_QTUTORIAL2_CH_1", false, vec![1])],
             vec![2037],
         ),

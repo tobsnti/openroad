@@ -268,8 +268,8 @@ mod test {
     use super::*;
 
     /// A record with nothing but its id: `shown_quests` keys on `ref_id` alone,
-    /// and `quest_type` 0 is the plain form that carries neither a remaining
-    /// time nor an NPC list (`character_data::QUEST_TYPE_*`).
+    /// and `quest_type` 0 sets none of the block bits
+    /// (`character_data::QUEST_HAS_*`).
     fn quest(ref_id: u32) -> ActiveQuest {
         ActiveQuest {
             ref_id,
@@ -277,7 +277,7 @@ mod test {
             auto_share_required: 0,
             quest_type: 0,
             time_remain: None,
-            state: 1,
+            state: Some(1),
             objectives: Vec::new(),
             target_npcs: Vec::new(),
         }

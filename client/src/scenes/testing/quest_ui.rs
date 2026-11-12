@@ -63,7 +63,7 @@ fn seed_quest_record(mut commands: Commands, fresh: Query<Entity, Added<Player>>
             auto_share_required: 0,
             quest_type: 0,
             time_remain: None,
-            state: 1,
+            state: Some(1),
             objectives: vec![],
             target_npcs: vec![],
         })
