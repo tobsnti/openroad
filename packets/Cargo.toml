@@ -12,7 +12,12 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = { workspace = true }
+# Not the workspace's bevy: that one carries the client's features (render,
+# windowing, audio). The packet types need the ECS, the app and logging only,
+# and a server or tool that builds `packets` alone should not compile a
+# renderer. In the client's build Cargo unifies the features, so nothing
+# changes there.
+bevy = { version = "0.20", default-features = false, features = ["bevy_log"] }
 bytes = { workspace = true }
 byteorder = { workspace = true }
 thiserror = { workspace = true }
