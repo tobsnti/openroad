@@ -103,7 +103,7 @@ pub fn action_refusal_text(code: u16) -> Option<UiText> {
 
 /// Say why the server refused the action instead of leaving the player with a
 /// dead button: the auto-trace action (`hud/action.rs`, `CommandID` 1003)
-/// sends `0x7074`, the server answers `03 <code> 05 40` while a transport is
+/// sends `0x7074`, the server answers `03 <n> 05 40` while a transport is
 /// out, and today that refusal reaches a `warn!` nobody sees.
 pub fn report_action_refusals(
     mut reader: MessageReader<ObjectActionResponse>,
@@ -112,7 +112,7 @@ pub fn report_action_refusals(
 ) {
     let default_strings = ClientUiStrings::default();
     for msg in reader.read() {
-        let ObjectActionResponse::Failed { code, error } = msg else {
+        let ObjectActionResponse::Failed { queue_len, error } = msg else {
             continue;
         };
         let strings = strings.as_deref().unwrap_or(&default_strings);
@@ -131,7 +131,7 @@ pub fn report_action_refusals(
             // stay. An unknown code has no arm in the router either. Do not
             // "repair" this into a message.
             None => debug!(
-                "cos: 0xB074 refusal code {code} error {error:#06x} — the original shows no message"
+                "cos: 0xB074 refusal (queue {queue_len}) error {error:#06x} — the original shows no message"
             ),
         }
     }
@@ -189,18 +189,18 @@ mod tests {
     fn the_transport_follow_ban_reaches_the_chat_and_the_silent_code_does_not() {
         let mut app = app();
         app.world_mut().write_message(ObjectActionResponse::Failed {
-            code: 0,
+            queue_len: 0,
             error: ACTION_REFUSAL_TRANSPORT_FOLLOW_BAN,
         });
         app.update();
         assert_eq!(lines(&app), vec![BAN_FOLLOW_TEXT.1.to_string()]);
 
         app.world_mut().write_message(ObjectActionResponse::Failed {
-            code: 0,
+            queue_len: 0,
             error: ACTION_REFUSAL_SILENT_B,
         });
         app.world_mut()
-            .write_message(ObjectActionResponse::Started { code: 1 });
+            .write_message(ObjectActionResponse::Started { queue_len: 1 });
         app.update();
         assert_eq!(lines(&app).len(), 1);
     }

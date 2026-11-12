@@ -465,24 +465,22 @@ fn clear_attack_on_target_gone(mut active: ResMut<ActiveAttack>, entities: Query
     }
 }
 
-/// Log the 0xB074 ack (capture-verified 2-byte `phase code` shape). A
-/// rejection refuses the NEWEST 0x7074 while the currently running action
-/// keeps going (the dumps show the auto-attack stream continuing right
-/// through them), so the engagement state stays untouched here —
-/// [`action_slot::apply_action_acks`] is what re-parks a refused request and
-/// re-fires it once the running action ends.
+/// Log the 0xB074 ack. Its second byte is the server's action-queue length;
+/// the slot state it implies is [`action_slot::apply_action_acks`]'s job.
 fn on_object_action_response(mut reader: MessageReader<ObjectActionResponse>) {
     for msg in reader.read() {
         match msg {
-            ObjectActionResponse::Started { code } if msg.is_rejected() => {
-                info!("combat: action rejected — server action slot busy (code {code})");
+            ObjectActionResponse::Started { .. } if msg.is_queued() => {
+                info!("combat: action queued behind the running one")
             }
-            ObjectActionResponse::Started { code } => {
-                debug!("combat: action started (code {code})")
+            ObjectActionResponse::Started { queue_len } => {
+                debug!("combat: action started ({queue_len} in the queue)")
             }
-            ObjectActionResponse::Ended { code } => debug!("combat: action ended (code {code})"),
-            ObjectActionResponse::Failed { code, error } => {
-                warn!("combat: action refused (code {code}, error {error:#06x})")
+            ObjectActionResponse::Ended { queue_len } => {
+                debug!("combat: action ended ({queue_len} left)")
+            }
+            ObjectActionResponse::Failed { queue_len, error } => {
+                warn!("combat: action refused (error {error:#06x}, {queue_len} in the queue)")
             }
             ObjectActionResponse::Unknown { result, tail } => warn!(
                 "combat: unknown 0xB074 shape (result {result} tail {}) — capture for decode",
