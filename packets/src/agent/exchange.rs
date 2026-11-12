@@ -15,7 +15,7 @@
 //!   [`InventoryOperationRequest`](crate::agent::inventory::InventoryOperationRequest).
 //!   A working trade window needs both halves; this issue is the exchange half.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::Bytes;
 
 use crate::agent::character_data::{InventoryItem, ItemClassResolver};

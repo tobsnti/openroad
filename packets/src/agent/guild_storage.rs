@@ -19,7 +19,7 @@
 //! exists for any of the seven opcodes, so nothing here is capture-verified —
 //! which is why every decoder degrades instead of erroring where it can.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 use std::io::Cursor;
 

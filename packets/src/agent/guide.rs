@@ -10,7 +10,7 @@
 //! the older name `JobFlagRequest` is gone: nothing in this binary or in our
 //! captures ever tied it to the job system.
 
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

@@ -23,7 +23,7 @@
 //! 0x7005/0xB005/0x7006/0xB006/0x300A) driving the Esc system window's
 //! Quit/Restart buttons.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;

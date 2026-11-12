@@ -24,7 +24,7 @@
 //! on for all 47). That is what identifies the leading field as a **mark
 //! handle** and `0x30D7` as "drop that mark".
 
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

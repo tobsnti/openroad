@@ -23,7 +23,7 @@ pub mod siege;
 pub mod stall;
 pub mod storage;
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;

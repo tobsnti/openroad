@@ -1,4 +1,4 @@
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::*;
 use sro_macro_derive::*;

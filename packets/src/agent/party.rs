@@ -50,7 +50,7 @@
 
 use std::io::Cursor;
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::agent::character_data::{ItemClass, ItemClassResolver};

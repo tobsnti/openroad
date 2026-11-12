@@ -1,4 +1,4 @@
-use bevy::prelude::Message;
+use crate::Message;
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;
 use sro_macro::SerializationError;

@@ -17,9 +17,15 @@ license.workspace = true
 # and a server or tool that builds `packets` alone should not compile a
 # renderer. In the client's build Cargo unifies the features, so nothing
 # changes there.
-bevy = { version = "0.20", default-features = false, features = ["bevy_log"] }
+bevy = { version = "0.20", default-features = false, features = ["bevy_log"], optional = true }
 bytes = { workspace = true }
 byteorder = { workspace = true }
 thiserror = { workspace = true }
 sro_macro = { path = "../sro_macro" }
 sro_macro_derive = { path = "../sro_macro_derive" }
+
+[features]
+# On by default: every packet type is then a bevy `Message` and `NetworkExt`
+# wires them into an `App`. Off, the same types build without bevy at all.
+default = ["bevy"]
+bevy = ["dep:bevy"]

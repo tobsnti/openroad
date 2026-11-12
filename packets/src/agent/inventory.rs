@@ -10,7 +10,7 @@
 //! accessors until live captures pin it. Unknown op bytes are preserved
 //! raw — never a decode failure.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::agent::character_data::{InventoryItem, ItemClassResolver};

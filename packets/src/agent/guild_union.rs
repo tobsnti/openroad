@@ -13,7 +13,7 @@
 //! the misattribution corrected there. No `packet_dump/*.log` exists for any of
 //! these opcodes.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{Bytes, BytesMut};
 
 use crate::agent::guild::guild_op_ack;

@@ -32,7 +32,7 @@
 //!
 //! Layouts, VAs and the per-field evidence: `docs/net-siege-0x385F.md`.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::SerializationError;

@@ -10,7 +10,7 @@
 //!
 //! Layouts and evidence: `docs/net-guild-war.md`.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::agent::cursor::{put_string, Cursor};
