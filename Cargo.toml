@@ -8,7 +8,7 @@ members = [
     "packets",
     "tools",
     "bevy_pk2"
-, "launcher"]
+, "launcher", "server"]
 
 [workspace.package]
 version = "0.1.7"

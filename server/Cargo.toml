@@ -1,0 +1,14 @@
+[package]
+name = "server"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The OpenRoad game server: one simulation thread owns the world."
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+packets = { path = "../packets" }
