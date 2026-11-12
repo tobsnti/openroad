@@ -1,5 +1,5 @@
 use std::io::ErrorKind::InvalidData;
-use std::io::{Error, Read, Write};
+use std::io::{Error, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -97,7 +97,10 @@ impl SilkroadConnection {
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
 
         Self::do_handshake(&security, &mut stream)?;
-        Self::send_module_identification(&security, &mut stream)?;
+        // Whatever the server sent right behind its module identification is
+        // the start of the stream the receive loop reads.
+        let mut read_buf = Vec::with_capacity(READ_BUF_CAPACITY);
+        Self::send_module_identification(&security, &mut stream, &mut read_buf)?;
 
         // The receive/send loop expects WouldBlock instead of blocking reads.
         stream.set_nonblocking(true)?;
@@ -107,7 +110,7 @@ impl SilkroadConnection {
         let (dc_sender, dc_receiver) = crossbeam::channel::bounded(1);
 
         Ok(Self {
-            read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
+            read_buf,
             write_buf: Vec::new(),
             security,
             dc_sender,
@@ -144,9 +147,13 @@ impl SilkroadConnection {
         Ok(())
     }
 
+    /// Exchange module identities. The answer is read as one whole frame, as
+    /// the handshake's are: a single read failed the login when TCP split it,
+    /// and dropped whatever arrived behind it. Those bytes stay in `carry`.
     fn send_module_identification(
         security: &Arc<RwLock<SilkroadSecurityState>>,
         stream: &mut TcpStream,
+        carry: &mut Vec<u8>,
     ) -> Result<(), Error> {
         let frame = module_identification_frame();
         let buf = frame.serialize(Arc::clone(security)).map_err(|_| {
@@ -157,10 +164,13 @@ impl SilkroadConnection {
         })?;
         stream.write_all(&buf)?;
 
-        let mut buf = [0; 4096];
-        let read_bytes = stream.read(&mut buf)?;
-        let (_, frame) = SilkroadFrame::parse(&mut buf[..read_bytes], Arc::clone(security))
-            .map_err(|_| Error::new(InvalidData, "failed to parse module identification packet"))?;
+        let frame =
+            handshake::read_frame_into(stream, Arc::clone(security), carry).map_err(|e| {
+                Error::new(
+                    InvalidData,
+                    format!("failed to read the module identification: {e}"),
+                )
+            })?;
         match frame {
             SilkroadFrame::Packet { opcode, data, .. } => {
                 if opcode != 0x2001 {

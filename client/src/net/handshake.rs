@@ -128,41 +128,59 @@ const FRAME_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Reads one whole frame, carrying a frame that TCP split across segments.
 ///
-/// `SilkroadFrame::parse` answers `Incomplete` while a frame's bytes are still
-/// on their way. The in-game loop replies to that by keeping the tail and
-/// reading again (`plugins/net/plugin.rs`, `FrameStep::Incomplete => break`);
-/// the handshake was the only reader that gave up instead, so a split 43-byte
-/// setup frame failed the login. Re-parsing the growing buffer is sound here
-/// because a handshake frame is never encrypted: `parse` only inspects these
-/// bytes, it does not decrypt them in place.
+/// The in-game loop keeps a frame's tail and reads again
+/// (`plugins/net/plugin.rs`, `FrameStep::Incomplete => break`); the connect
+/// phase does the same here, so a split 43-byte setup frame or a split module
+/// identification no longer fails the login. Re-parsing the growing buffer is
+/// sound because the frame's length comes from its unencrypted size prefix.
 ///
 /// Reading until the peer is done would be the next defect, so three bounds end
-/// the loop: end of stream, a frame that does not fit the buffer (ours, not the
-/// protocol's), and [`FRAME_COMPLETION_TIMEOUT`] on the continuation reads. The first read keeps
-/// the socket's own blocking behaviour, as before. A read that carries more
-/// than this frame still drops the surplus, also as before — the handshake is
-/// strictly one request per response.
+/// the loop: end of stream, a frame that does not fit [`CONNECT_FRAME_MAX`]
+/// (ours, not the protocol's), and [`FRAME_COMPLETION_TIMEOUT`] on the
+/// continuation reads. The first read keeps the socket's own blocking
+/// behaviour.
 fn read_frame(
     stream: &mut TcpStream,
     security: Arc<RwLock<SilkroadSecurityState>>,
 ) -> Result<SilkroadFrame, HandshakeError> {
-    let mut buf = [0; 4096];
-    let mut filled = stream.read(&mut buf)?;
+    // The handshake is strictly one request per response: whatever a read
+    // carries behind its frame is not ours to keep.
+    read_frame_into(stream, security, &mut Vec::new())
+}
+
+/// Largest frame the connect phase accepts; the handshake and the module
+/// identification are a few dozen bytes.
+const CONNECT_FRAME_MAX: usize = 4096;
+
+/// [`read_frame`], but `carry` holds the bytes already read and keeps the ones
+/// that arrived behind the frame — the start of what the caller reads next.
+pub(crate) fn read_frame_into(
+    stream: &mut TcpStream,
+    security: Arc<RwLock<SilkroadSecurityState>>,
+    carry: &mut Vec<u8>,
+) -> Result<SilkroadFrame, HandshakeError> {
+    let mut chunk = [0; CONNECT_FRAME_MAX];
+    if carry.is_empty() {
+        let read = stream.read(&mut chunk)?;
+        carry.extend_from_slice(&chunk[..read]);
+    }
     loop {
-        match SilkroadFrame::parse(&mut buf[..filled], security.clone()) {
-            Ok((_, frame)) => return Ok(frame),
-            Err(SilkroadFrameError::Incomplete) => {
-                if filled == buf.len() {
-                    return Err(HandshakeError::FrameTooLarge(buf.len()));
-                }
+        match SilkroadFrame::wire_len(carry) {
+            Some(len) if len > CONNECT_FRAME_MAX => {
+                return Err(HandshakeError::FrameTooLarge(CONNECT_FRAME_MAX))
             }
-            Err(e) => return Err(e.into()),
+            Some(len) if len <= carry.len() => {
+                let (_, frame) = SilkroadFrame::parse(&mut carry[..len], security.clone())?;
+                carry.drain(..len);
+                return Ok(frame);
+            }
+            _ => {}
         }
-        let read = read_continuation(stream, &mut buf[filled..])?;
+        let read = read_continuation(stream, &mut chunk)?;
         if read == 0 {
             return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
         }
-        filled += read;
+        carry.extend_from_slice(&chunk[..read]);
     }
 }
 
@@ -783,6 +801,48 @@ mod test {
         let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
         let state = initialize(&mut stream, security).expect("a split setup frame initializes");
         assert!(matches!(state.state, SilkroadSecurity::Initialized));
+        peer.join().expect("listener thread");
+    }
+
+    /// The module identification after the handshake, split by TCP and
+    /// followed in the same segment by the server's next frame: the frame is
+    /// read whole, and the bytes behind it are kept for the receive loop
+    /// instead of being dropped. A single read failed the login here.
+    #[test]
+    fn a_split_frame_is_read_whole_and_what_follows_is_kept() {
+        // 0x2001 "AgentServer" + 0, unencrypted: size, opcode, count, crc, body
+        let mut body = 11u16.to_le_bytes().to_vec();
+        body.extend_from_slice(b"AgentServer");
+        body.push(0);
+        let mut frame = (body.len() as u16).to_le_bytes().to_vec();
+        frame.extend_from_slice(&0x2001u16.to_le_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&body);
+        let next = [0x02u8, 0x00, 0x05, 0x20, 0x00, 0x00, 0x01, 0x02];
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("listener address");
+        let (head, tail) = frame.split_at(5);
+        let (head, tail) = (head.to_vec(), [tail, &next[..]].concat());
+        let peer = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().expect("accept the client");
+            peer.write_all(&head).expect("write the first segment");
+            std::thread::sleep(Duration::from_millis(20));
+            peer.write_all(&tail)
+                .expect("write the rest and the next frame");
+        });
+
+        let mut stream = TcpStream::connect(addr).expect("connect to the listener");
+        let security = Arc::new(RwLock::new(SilkroadSecurityState::new()));
+        let mut carry = Vec::new();
+        let SilkroadFrame::Packet { opcode, data, .. } =
+            read_frame_into(&mut stream, security, &mut carry).expect("the split frame is read")
+        else {
+            panic!("a packet frame");
+        };
+        assert_eq!(opcode, 0x2001);
+        assert_eq!(&data[..], &body[..]);
+        assert_eq!(carry, next, "the bytes behind the frame are kept");
         peer.join().expect("listener thread");
     }
 
