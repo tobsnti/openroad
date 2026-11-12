@@ -2249,10 +2249,9 @@ impl From<NoticeUpdate> for Bytes {
 
 // --- Mastery / skill level-DOWN (0x7202/0x7203, 0xB202/0xB203) --------------
 //
-// The mirror of the level-UP flow above. Both responses are [V] — read statically
-// from the original's parsers — but neither *request* has a builder there, so their
-// bodies are spec-derived from the level-UP siblings and stay [U] until a capture
-// lands. See docs/net-mastery-teleport-0x7202.md.
+// Both responses are [V] — read statically from the original's parsers — and so
+// are both requests: the original builds them when a reset item is used, and they
+// are not the level-UP siblings' shapes (see each request).
 //
 // The response enums reuse the level-UP shapes verbatim, including the
 // `pos == len` guard. That guard matters more here than it does above: the
@@ -2261,14 +2260,15 @@ impl From<NoticeUpdate> for Bytes {
 // because a shape that does not consume the body exactly falls through to
 // `Unknown` raw instead of being misread.
 
-/// 0x7202 — client → server "lower this skill by one level".
-///
-/// **[U] body.** The original has no builder for this opcode; the single `u32` is
-/// mirrored from the level-UP sibling [`SkillLearnRequest`]. Confirm with
-/// `packet_dump/0x7202.log` before anything sends it.
+/// 0x7202 — client → server "lower this skill", sent when a skill-reset item is
+/// used: the item's ref id, the skill, and the level it drops to (its current
+/// level minus the levels chosen) `[V original builder]`. It used to be a lone
+/// skill id mirrored from [`SkillLearnRequest`], five bytes short.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct SkillLevelDownRequest {
+    pub ref_item_id: u32,
     pub ref_skill_id: u32,
+    pub new_level: u8,
 }
 
 /// 0xB202 — server → client ack for [`SkillLevelDownRequest`].
@@ -2327,16 +2327,14 @@ impl From<MasterySkillLevelDownResponse> for Bytes {
     }
 }
 
-/// 0x7203 — client → server "lower this mastery by one level".
-///
-/// **[U] body.** No builder in the original. The level-UP sibling
-/// [`MasteryLearnRequest`] carries a trailing `amount: u8`; whether the DOWN
-/// request does too is unresolved, so it is **not** included here — the doc's build
-/// plan defers that byte to a capture rather than assuming it. Resolve with
-/// `packet_dump/0x7203.log`.
+/// 0x7203 — client → server "lower this mastery", the same shape as
+/// [`SkillLevelDownRequest`]: the reset item's ref id, the mastery, and its new
+/// level `[V original builder]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct MasteryLevelDownRequest {
+    pub ref_item_id: u32,
     pub mastery_id: u32,
+    pub new_level: u8,
 }
 
 /// 0xB203 — server → client ack for [`MasteryLevelDownRequest`].
@@ -5841,25 +5839,29 @@ mod test {
 
     // --- Mastery/skill level-down + teleport recall (#260) -------------------
 
+    /// Both level-down requests are nine bytes in the order the original
+    /// writes them: reset item, skill or mastery, new level.
     #[test]
-    fn skill_level_down_request_is_a_lone_skill_id() {
+    fn level_down_requests_carry_item_target_and_new_level() {
         let req = SkillLevelDownRequest {
+            ref_item_id: 0x0A0B_0C0D,
             ref_skill_id: 0x0102_0304,
+            new_level: 3,
         };
         let wire: Bytes = req.clone().into();
-
-        assert_eq!(&wire[..], &0x0102_0304u32.to_le_bytes());
+        assert_eq!(
+            &wire[..],
+            &[0x0D, 0x0C, 0x0B, 0x0A, 0x04, 0x03, 0x02, 0x01, 3]
+        );
         assert_eq!(SkillLevelDownRequest::try_from(wire).unwrap(), req);
-    }
 
-    /// The trailing `amount` byte the level-UP sibling carries is deliberately NOT
-    /// mirrored onto the DOWN request — it is unresolved, so the body is 4 bytes.
-    #[test]
-    fn mastery_level_down_request_omits_the_unresolved_amount_byte() {
-        let req = MasteryLevelDownRequest { mastery_id: 257 };
+        let req = MasteryLevelDownRequest {
+            ref_item_id: 9,
+            mastery_id: 257,
+            new_level: 12,
+        };
         let wire: Bytes = req.clone().into();
-
-        assert_eq!(wire.len(), 4);
+        assert_eq!(&wire[..], &[9, 0, 0, 0, 0x01, 0x01, 0, 0, 12]);
         assert_eq!(MasteryLevelDownRequest::try_from(wire).unwrap(), req);
     }
 
