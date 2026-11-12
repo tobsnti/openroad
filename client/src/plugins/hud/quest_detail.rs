@@ -386,7 +386,7 @@ mod test {
             auto_share_required: 0,
             quest_type: 24,
             time_remain: None,
-            state: 1,
+            state: Some(1),
             objectives,
             target_npcs: Vec::new(),
         }
