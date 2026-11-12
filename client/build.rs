@@ -50,11 +50,20 @@ fn main() {
 /// `(short commit, dirty)`. `dirty` counts **tracked** changes only: untracked
 /// files are usually assets or scratch output and would mark almost every
 /// developer build dirty, which would make the flag meaningless.
+///
+/// `--no-optional-locks`: a plain `git status` refreshes the index's stat data
+/// and writes the index back — the very file this script watches, so every
+/// build re-ran the script and recompiled the client (245 s, nothing changed).
 fn git_state() -> (String, bool) {
     let commit = run(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
-    let dirty = run(&["status", "--porcelain", "--untracked-files=no"])
-        .map(|out| !out.is_empty())
-        .unwrap_or(false);
+    let dirty = run(&[
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ])
+    .map(|out| !out.is_empty())
+    .unwrap_or(false);
     (commit, dirty)
 }
 
