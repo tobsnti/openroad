@@ -11,6 +11,7 @@
 
 pub mod clock;
 pub mod inbound;
+mod join;
 mod lobby;
 pub mod outbox;
 pub mod refdata;
