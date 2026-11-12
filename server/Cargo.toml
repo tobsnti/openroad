@@ -10,5 +10,7 @@ description = "The OpenRoad game server: one simulation thread owns the world."
 license.workspace = true
 
 [dependencies]
+argon2 = { version = "0.5", features = ["std"] }
 bytes = { workspace = true }
 packets = { path = "../packets" }
+rand_core = { version = "0.6", features = ["getrandom"] }

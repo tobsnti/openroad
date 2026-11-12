@@ -12,6 +12,7 @@
 pub mod inbound;
 pub mod outbox;
 pub mod registry;
+pub mod store;
 pub mod tick;
 pub mod wirelog;
 pub mod world;
