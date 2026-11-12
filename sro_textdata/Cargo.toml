@@ -1,0 +1,18 @@
+[package]
+name = "sro_textdata"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Row types of the game's reference tables, shared by client and server."
+license.workspace = true
+
+[features]
+# The client loads the tables as Bevy assets; nothing else needs Bevy here.
+bevy = ["dep:bevy"]
+
+[dependencies]
+bevy = { workspace = true, optional = true }
+packets = { path = "../packets" }

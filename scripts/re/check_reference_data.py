@@ -39,11 +39,11 @@ RUST_VARIANT = re.compile(r"^\s*(\w+)\s*(?:=\s*(\d+))?\s*,\s*$")
 # `StatRange::Durability => (63, 64),`
 STAT_RANGE_ARM = re.compile(r"StatRange::(\w+)\s*=>\s*\((\d+)\s*,\s*(\d+)\)")
 
-# Our enum name -> (file, table it describes).
+# Our enum name -> (source file, table it describes).
 OUR_ENUMS = [
-    ("ItemdataFields", "itemdata.rs", "itemdata"),
-    ("ChardataFields", "characterdata.rs", "characterdata"),
-    ("SkilldataFields", "skilldata.rs", "skilldata"),
+    ("ItemdataFields", TEXTDATA / "itemdata.rs", "itemdata"),
+    ("ChardataFields", ROOT / "sro_textdata" / "src" / "characterdata.rs", "characterdata"),
+    ("SkilldataFields", TEXTDATA / "skilldata.rs", "skilldata"),
 ]
 
 # Renames that no mechanical rule derives. Keys and values are already
@@ -275,8 +275,8 @@ def main() -> int:
     unchecked: list[str] = []
     checked = 0
 
-    for enum_name, filename, table in OUR_ENUMS:
-        source = (TEXTDATA / filename).read_text(encoding="utf-8")
+    for enum_name, path, table in OUR_ENUMS:
+        source = path.read_text(encoding="utf-8")
         ours = rust_enum(source, enum_name)
         if table not in tables:
             # Not merely unasserted: the export we derive authority from no

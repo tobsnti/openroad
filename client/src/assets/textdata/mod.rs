@@ -34,7 +34,7 @@ use crate::assets::textdata::zonenames::ZoneNames;
 use crate::assets::textdata::zonesound::ZoneSoundTable;
 
 pub mod actionwnddata;
-pub mod characterdata;
+pub use sro_textdata::characterdata;
 pub mod collectionbook;
 pub mod decode;
 pub mod dungeoninfo;
