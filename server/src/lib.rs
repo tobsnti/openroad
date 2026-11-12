@@ -9,9 +9,11 @@
 //! drive the same world in-process, without sockets, one step at a time
 //! ([`tick`]).
 
+pub mod clock;
 pub mod inbound;
 mod lobby;
 pub mod outbox;
+pub mod refdata;
 pub mod registry;
 pub mod store;
 pub mod tick;
