@@ -7,5 +7,6 @@ pub mod blowfish;
 pub mod codec;
 pub mod crc;
 pub mod frame;
+pub mod key_exchange;
 pub mod security;
 pub mod sequence;
