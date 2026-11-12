@@ -9,7 +9,7 @@
 const ZERO_SEED_SUBSTITUTE: u32 = 0x9ABF_B3B6;
 
 #[derive(Copy, Clone)]
-pub(crate) struct Sequence {
+pub struct Sequence {
     b0: u8,
     b1: u8,
     b2: u8,
@@ -58,7 +58,7 @@ impl Sequence {
     /// count byte at all when the setup negotiated EDC (`004b0da4`); our
     /// `frame.rs` stamps unconditionally, so this state is what keeps those
     /// frames at 0.
-    pub(crate) fn unseeded() -> Self {
+    pub fn unseeded() -> Self {
         Self {
             b0: 0,
             b1: 0,
@@ -66,7 +66,7 @@ impl Sequence {
         }
     }
 
-    pub(crate) fn next(&mut self) -> u8 {
+    pub fn next(&mut self) -> u8 {
         let result = (self.b2 as u32 * ((!self.b0) as u32 + self.b1 as u32) as u32) as u8;
         let result = (result ^ (result >> 4)) as u8;
         self.b0 = result;
@@ -147,7 +147,7 @@ mod tests {
     /// reads 0xA6.
     #[test]
     fn the_pre_handshake_security_state_emits_zero() {
-        let mut state = crate::net::security::SilkroadSecurityData::new().sequence;
+        let mut state = crate::security::SilkroadSecurityData::new().sequence;
         assert_eq!(
             (0..16).map(|_| state.next()).collect::<Vec<_>>(),
             vec![0; 16]

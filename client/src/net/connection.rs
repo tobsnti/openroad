@@ -8,9 +8,9 @@ use bevy::prelude::Component;
 use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use packets::global::ModuleIdentification;
 
-use crate::net::frame::SilkroadFrame;
-use crate::net::security::SilkroadSecurityState;
 use crate::net::{handshake, module_identification_frame};
+use sro_net::frame::SilkroadFrame;
+use sro_net::security::SilkroadSecurityState;
 
 /// Initial capacity for the inbound accumulator: a few 4 KB reads' worth, so
 /// the common post-join burst is buffered without reallocating.
@@ -31,6 +31,9 @@ pub struct SilkroadConnection {
     /// frames are drained off the front; a frame split across reads keeps its
     /// tail buffered instead of being discarded.
     pub read_buf: Vec<u8>,
+    /// Outbound bytes the socket has not taken yet — the mirror of `read_buf`
+    /// for a non-blocking write that takes only part of a frame.
+    pub write_buf: Vec<u8>,
 }
 
 impl SilkroadConnection {
@@ -105,6 +108,7 @@ impl SilkroadConnection {
 
         Ok(Self {
             read_buf: Vec::with_capacity(READ_BUF_CAPACITY),
+            write_buf: Vec::new(),
             security,
             dc_sender,
             dc_receiver,

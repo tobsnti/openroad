@@ -92,23 +92,27 @@ pub struct CharacterStats {
     pub free_pvp: u8,
 }
 
-/// Item rent info: a type selector and its type-dependent fields (go-sro
-/// `WriteRentInfo`).
+/// Item rent info. The type is a bit field, read the way the original reads it
+/// `[V original handler]`: either bit adds `can_delete`, bit 1 the period
+/// (begin, end), bit 2 `can_recharge` and a `u32`. Type 3 is therefore
+/// `u16, u32, u32, u16, u32`; go-sro's `WriteRentInfo`, which this followed,
+/// writes it `u16, u16, u32, u32, u32` — same length, swapped values. Types 1
+/// and 2 read the same either way. The bit-2 `u32` is go-sro's meter rate for
+/// type 2 and its packing time for type 3; the original reads both into one
+/// place.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct RentInfo {
     pub rent_type: u32,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 2 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 3 != 0")]
     pub can_delete: Option<u16>,
-    #[sro_packet(when = "rent_type == 2 || rent_type == 3")]
-    pub can_recharge: Option<u16>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_begin: Option<u32>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_end: Option<u32>,
-    #[sro_packet(when = "rent_type == 2")]
+    #[sro_packet(when = "rent_type & 2 != 0")]
+    pub can_recharge: Option<u16>,
+    #[sro_packet(when = "rent_type & 2 != 0")]
     pub meter_rate: Option<u32>,
-    #[sro_packet(when = "rent_type == 3")]
-    pub packing_time: Option<u32>,
 }
 
 /// A magic ("blue") parameter on an item.
@@ -377,17 +381,18 @@ pub struct QuestSection {
     pub active_count: u8,
 }
 
-/// A quest type whose record carries a remaining-time field. Not exercised by
-/// any captured body — [U], field layout from
-/// `silkroad-docs/docs/messages/3013_SERVER_CHARACTER_DATA.md:108` (a reference
-/// repository outside this workspace, not a file here).
-pub const QUEST_TYPE_TIMED: u8 = 28;
-/// A quest type whose record has no objective list. Not exercised by any
-/// captured body — [U], same source as [`QUEST_TYPE_TIMED`].
-pub const QUEST_TYPE_NO_OBJECTIVES: u8 = 8;
-/// A quest type whose record is trailed by its target NPCs. Measured: 170 of
-/// the 765 captured records, and all 170 carry exactly one NPC id.
-pub const QUEST_TYPE_NPC_LIST: u8 = 88;
+/// An active quest's `quest_type` is a bit field, one block of the record per
+/// bit `[V original handler]`. Captured records carry 24 (state + objectives,
+/// 595 of 765) and 88 (the same plus the NPC list, 170, each with one NPC).
+///
+/// `u32` remaining time, read before the state.
+pub const QUEST_HAS_TIME: u8 = 0x04;
+/// `u8` state.
+pub const QUEST_HAS_STATE: u8 = 0x08;
+/// The objective list.
+pub const QUEST_HAS_OBJECTIVES: u8 = 0x10;
+/// The count-prefixed target-NPC ref ids, last.
+pub const QUEST_HAS_NPCS: u8 = 0x40;
 
 /// One objective line of an active quest.
 #[derive(Debug, Clone, PartialEq)]
@@ -407,12 +412,10 @@ pub struct ActiveQuest {
     pub ref_id: u32,
     pub achievements: u8,
     pub auto_share_required: u8,
-    /// Selects the two conditional blocks: [`QUEST_TYPE_TIMED`] prefixes
-    /// `time_remain`, [`QUEST_TYPE_NO_OBJECTIVES`] drops the objective list,
-    /// [`QUEST_TYPE_NPC_LIST`] appends `target_npcs`.
+    /// Which blocks follow, one bit each ([`QUEST_HAS_TIME`] and its siblings).
     pub quest_type: u8,
     pub time_remain: Option<u32>,
-    pub state: u8,
+    pub state: Option<u8>,
     pub objectives: Vec<QuestObjective>,
     pub target_npcs: Vec<u32>,
 }
@@ -1176,8 +1179,9 @@ fn forward_parse(
 
 /// Read the `count` active-quest records that follow the completed-quest ids.
 ///
-/// Idea: the record is three conditional blocks hung off `quest_type`, which
-/// the derive cannot express, so it is read by hand like the movement block.
+/// Idea: the record is four conditional blocks hung off the bits of
+/// `quest_type`, which the derive cannot express, so it is read by hand like
+/// the movement block.
 /// The layout is the one
 /// `silkroad-docs/docs/messages/3013_SERVER_CHARACTER_DATA.md:94-133` describes
 /// (a reference repository outside this workspace, not a file here), verified
@@ -1186,10 +1190,8 @@ fn forward_parse(
 /// and the expected tail unique id begin in all 85. Measured field values:
 /// `achievements` 16 and `auto_share_required` 0 in all 765 records,
 /// `quest_type` 24 (595) or 88 (170), `state` 1/7/8, 1 or 3 objectives each,
-/// `task_count` 1 throughout. The `quest_type` 8 and 28 branches are [U] — no
-/// captured body takes them; a wrong guess there costs the tail check, not a
-/// silent desync, because the forward pass is only trusted when it consumes
-/// the blob and the tail id matches.
+/// `task_count` 1 throughout. The time block (bit 0x04) is in no captured
+/// body.
 fn read_active_quests<T: Read + ReadBytesExt>(
     reader: &mut T,
     count: u8,
@@ -1200,14 +1202,18 @@ fn read_active_quests<T: Read + ReadBytesExt>(
         let achievements = u8::read_from(reader)?;
         let auto_share_required = u8::read_from(reader)?;
         let quest_type = u8::read_from(reader)?;
-        let time_remain = if quest_type == QUEST_TYPE_TIMED {
+        let time_remain = if quest_type & QUEST_HAS_TIME != 0 {
             Some(u32::read_from(reader)?)
         } else {
             None
         };
-        let state = u8::read_from(reader)?;
+        let state = if quest_type & QUEST_HAS_STATE != 0 {
+            Some(u8::read_from(reader)?)
+        } else {
+            None
+        };
         let mut objectives = Vec::new();
-        if quest_type != QUEST_TYPE_NO_OBJECTIVES {
+        if quest_type & QUEST_HAS_OBJECTIVES != 0 {
             let objective_count = u8::read_from(reader)?;
             objectives.reserve(objective_count as usize);
             for _ in 0..objective_count {
@@ -1228,7 +1234,7 @@ fn read_active_quests<T: Read + ReadBytesExt>(
             }
         }
         let mut target_npcs = Vec::new();
-        if quest_type == QUEST_TYPE_NPC_LIST {
+        if quest_type & QUEST_HAS_NPCS != 0 {
             let npc_count = u8::read_from(reader)?;
             target_npcs.reserve(npc_count as usize);
             for _ in 0..npc_count {
@@ -1383,6 +1389,26 @@ fn read_tail_spawn(
 mod test {
     use super::*;
     use std::collections::HashMap;
+
+    /// Rent type 3 carries both bit blocks, period first:
+    /// `can_delete u16, begin u32, end u32, can_recharge u16, u32`.
+    #[test]
+    fn rent_type_3_reads_the_period_before_the_recharge_block() {
+        use bytes::Bytes;
+        let mut wire = 3u32.to_le_bytes().to_vec();
+        wire.extend(1u16.to_le_bytes());
+        wire.extend(0x1111_1111u32.to_le_bytes());
+        wire.extend(0x2222_2222u32.to_le_bytes());
+        wire.extend(1u16.to_le_bytes());
+        wire.extend(0x3333_3333u32.to_le_bytes());
+
+        let rent = RentInfo::try_from(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(rent.period_begin, Some(0x1111_1111));
+        assert_eq!(rent.period_end, Some(0x2222_2222));
+        assert_eq!(rent.can_recharge, Some(1));
+        assert_eq!(rent.meter_rate, Some(0x3333_3333));
+        assert_eq!(Bytes::from(rent), Bytes::from(wire));
+    }
 
     /// Captured 0x7158 bodies, one per kind, all spoken by the original
     /// client: the `00 07` every one of the 81 kind-0 frames carries, a kind-1
@@ -2635,6 +2661,32 @@ mod test {
         .0
     }
 
+    /// Each bit of `quest_type` adds its block: objectives without a state
+    /// byte (0x10), then a state with nothing else (0x08). Read by equality,
+    /// the first record took its objective count for a state and every byte
+    /// after it shifted.
+    #[test]
+    fn quest_blocks_follow_the_type_bits() {
+        let mut raw = Vec::new();
+        raw.extend(5u32.to_le_bytes());
+        raw.extend([16, 0, QUEST_HAS_OBJECTIVES]);
+        raw.extend([1, 1, 1]); // one objective: id 1, enabled
+        raw.extend(4u16.to_le_bytes());
+        raw.extend(b"SN_X");
+        raw.push(1); // one task
+        raw.extend(0u32.to_le_bytes());
+        raw.extend(6u32.to_le_bytes());
+        raw.extend([16, 0, QUEST_HAS_STATE, 7]);
+
+        let quests = read_active_quests(&mut std::io::Cursor::new(&raw[..]), 2).unwrap();
+        assert_eq!(quests[0].state, None);
+        assert_eq!(quests[0].objectives.len(), 1);
+        assert_eq!(quests[0].objectives[0].name, "SN_X");
+        assert_eq!(quests[1].ref_id, 6);
+        assert_eq!(quests[1].state, Some(7));
+        assert!(quests[1].objectives.is_empty());
+    }
+
     #[test]
     fn active_quests_no_longer_end_the_forward_pass() {
         // Before: `nonzero_guard` refused any active quest, so a body carrying
@@ -2653,7 +2705,7 @@ mod test {
         assert_eq!(quests.len(), 2);
         assert_eq!(quests[0].ref_id, 57);
         assert_eq!(quests[0].quest_type, 24);
-        assert_eq!(quests[0].state, 1);
+        assert_eq!(quests[0].state, Some(1));
         assert_eq!(quests[0].time_remain, None);
         assert_eq!(quests[0].objectives.len(), 3);
         assert_eq!(quests[0].objectives[1].id, 2);
@@ -2666,8 +2718,8 @@ mod test {
         );
 
         assert_eq!(quests[1].ref_id, 3);
-        assert_eq!(quests[1].quest_type, QUEST_TYPE_NPC_LIST);
-        assert_eq!(quests[1].state, 7);
+        assert_eq!(quests[1].quest_type, 88);
+        assert_eq!(quests[1].state, Some(7));
         assert_eq!(quests[1].objectives.len(), 1);
         assert_eq!(quests[1].target_npcs, vec![2037]);
 

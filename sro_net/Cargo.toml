@@ -1,0 +1,17 @@
+[package]
+name = "sro_net"
+version.workspace = true
+publish = false
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The Silkroad wire codec: frames, Blowfish, CRC, sequence and the security state, shared by client and server."
+license.workspace = true
+
+[dependencies]
+byteorder = { workspace = true }
+bytes = { workspace = true }
+packets = { path = "../packets" }
+thiserror = { workspace = true }
+tracing = "0.1"
