@@ -92,23 +92,27 @@ pub struct CharacterStats {
     pub free_pvp: u8,
 }
 
-/// Item rent info: a type selector and its type-dependent fields (go-sro
-/// `WriteRentInfo`).
+/// Item rent info. The type is a bit field, read the way the original reads it
+/// `[V original handler]`: either bit adds `can_delete`, bit 1 the period
+/// (begin, end), bit 2 `can_recharge` and a `u32`. Type 3 is therefore
+/// `u16, u32, u32, u16, u32`; go-sro's `WriteRentInfo`, which this followed,
+/// writes it `u16, u16, u32, u32, u32` — same length, swapped values. Types 1
+/// and 2 read the same either way. The bit-2 `u32` is go-sro's meter rate for
+/// type 2 and its packing time for type 3; the original reads both into one
+/// place.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct RentInfo {
     pub rent_type: u32,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 2 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 3 != 0")]
     pub can_delete: Option<u16>,
-    #[sro_packet(when = "rent_type == 2 || rent_type == 3")]
-    pub can_recharge: Option<u16>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_begin: Option<u32>,
-    #[sro_packet(when = "rent_type == 1 || rent_type == 3")]
+    #[sro_packet(when = "rent_type & 1 != 0")]
     pub period_end: Option<u32>,
-    #[sro_packet(when = "rent_type == 2")]
+    #[sro_packet(when = "rent_type & 2 != 0")]
+    pub can_recharge: Option<u16>,
+    #[sro_packet(when = "rent_type & 2 != 0")]
     pub meter_rate: Option<u32>,
-    #[sro_packet(when = "rent_type == 3")]
-    pub packing_time: Option<u32>,
 }
 
 /// A magic ("blue") parameter on an item.
@@ -1383,6 +1387,26 @@ fn read_tail_spawn(
 mod test {
     use super::*;
     use std::collections::HashMap;
+
+    /// Rent type 3 carries both bit blocks, period first:
+    /// `can_delete u16, begin u32, end u32, can_recharge u16, u32`.
+    #[test]
+    fn rent_type_3_reads_the_period_before_the_recharge_block() {
+        use bytes::Bytes;
+        let mut wire = 3u32.to_le_bytes().to_vec();
+        wire.extend(1u16.to_le_bytes());
+        wire.extend(0x1111_1111u32.to_le_bytes());
+        wire.extend(0x2222_2222u32.to_le_bytes());
+        wire.extend(1u16.to_le_bytes());
+        wire.extend(0x3333_3333u32.to_le_bytes());
+
+        let rent = RentInfo::try_from(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(rent.period_begin, Some(0x1111_1111));
+        assert_eq!(rent.period_end, Some(0x2222_2222));
+        assert_eq!(rent.can_recharge, Some(1));
+        assert_eq!(rent.meter_rate, Some(0x3333_3333));
+        assert_eq!(Bytes::from(rent), Bytes::from(wire));
+    }
 
     /// Captured 0x7158 bodies, one per kind, all spoken by the original
     /// client: the `00 07` every one of the 81 kind-0 frames carries, a kind-1
