@@ -1,8 +1,8 @@
 use bevy::app::{App, Plugin, PostUpdate, PreUpdate};
 use bevy::log::{debug, error, info, trace};
 use bevy::prelude::{
-    warn, Commands, Entity, Local, Message, MessageReader, MessageWriter, Query, Res, ResMut,
-    Resource, Time, Timer, TimerMode, Update, With,
+    warn, Added, Commands, Entity, Local, Message, MessageReader, MessageWriter, Query, Res,
+    ResMut, Resource, Time, Timer, TimerMode, Update, With,
 };
 use bytes::Bytes;
 use std::collections::HashSet;
@@ -79,7 +79,10 @@ impl Plugin for NetworkCorePlugin {
             .init_resource::<crate::plugins::net::gateway::GatewayConnectionStatus>()
             .add_message::<GatewayServiceDisconnected>()
             .add_message::<AgentConnectionDisconnected>()
-            .add_systems(PreUpdate, (receive_packets, fetch_disconnects))
+            .add_systems(
+                PreUpdate,
+                (record_sessions, receive_packets, fetch_disconnects),
+            )
             .add_systems(
                 Update,
                 (
@@ -182,6 +185,19 @@ fn dispatch_packet(
         Err(e) => {
             error!("network: failed to deserialize packet {opcode:#06X} ({len} bytes): {e}");
         }
+    }
+}
+
+/// One `packet_dump/sessions.log` line per new connection, naming its peer.
+fn record_sessions(
+    connections: Query<&SilkroadConnection, Added<SilkroadConnection>>,
+    mut dump: Option<ResMut<PacketDump>>,
+) {
+    let Some(dump) = dump.as_mut() else {
+        return;
+    };
+    for conn in &connections {
+        dump.session(&conn.peer);
     }
 }
 

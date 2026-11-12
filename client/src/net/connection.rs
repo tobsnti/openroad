@@ -34,6 +34,8 @@ pub struct SilkroadConnection {
     /// Outbound bytes the socket has not taken yet — the mirror of `read_buf`
     /// for a non-blocking write that takes only part of a frame.
     pub write_buf: Vec<u8>,
+    /// `peer=<addr> module=<announced name>`, for the dump's session line.
+    pub peer: String,
 }
 
 impl SilkroadConnection {
@@ -100,7 +102,7 @@ impl SilkroadConnection {
         // Whatever the server sent right behind its module identification is
         // the start of the stream the receive loop reads.
         let mut read_buf = Vec::with_capacity(READ_BUF_CAPACITY);
-        Self::send_module_identification(&security, &mut stream, &mut read_buf)?;
+        let module = Self::send_module_identification(&security, &mut stream, &mut read_buf)?;
 
         // The receive/send loop expects WouldBlock instead of blocking reads.
         stream.set_nonblocking(true)?;
@@ -112,6 +114,7 @@ impl SilkroadConnection {
         Ok(Self {
             read_buf,
             write_buf: Vec::new(),
+            peer: format!("peer={addr} module={module}"),
             security,
             dc_sender,
             dc_receiver,
@@ -147,14 +150,15 @@ impl SilkroadConnection {
         Ok(())
     }
 
-    /// Exchange module identities. The answer is read as one whole frame, as
-    /// the handshake's are: a single read failed the login when TCP split it,
-    /// and dropped whatever arrived behind it. Those bytes stay in `carry`.
+    /// Exchange module identities and return the name the peer announced. The
+    /// answer is read as one whole frame, as the handshake's are: a single read
+    /// failed the login when TCP split it, and dropped whatever arrived behind
+    /// it. Those bytes stay in `carry`.
     fn send_module_identification(
         security: &Arc<RwLock<SilkroadSecurityState>>,
         stream: &mut TcpStream,
         carry: &mut Vec<u8>,
-    ) -> Result<(), Error> {
+    ) -> Result<String, Error> {
         let frame = module_identification_frame();
         let buf = frame.serialize(Arc::clone(security)).map_err(|_| {
             Error::new(
@@ -192,7 +196,7 @@ impl SilkroadConnection {
                     ident.module,
                     ident.peer_kind()
                 );
-                Ok(())
+                Ok(ident.module)
             }
             _ => Err(Error::new(
                 InvalidData,
