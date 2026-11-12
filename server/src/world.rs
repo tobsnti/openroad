@@ -19,12 +19,14 @@ use crate::wirelog::{Dir, WireLog};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u32);
 
-/// Why a client frame was not acted on, as the bench contract names it
-/// (`tools/pruefstand/VERTRAG.md` §3, `c2s.rejected`).
+/// Why a client frame was not acted on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// No packet type exists for the opcode.
     UnknownOpcode,
+    /// The body is not exactly one packet of its opcode ([`crate::inbound`]).
     DecodeError,
+    /// The packet is understood, but the server does not act on it.
     NotHandled,
 }
 
@@ -64,7 +66,7 @@ impl World {
         let id = SessionId(self.last_session);
         let session = Session {
             outbox: Outbox::default(),
-            log: WireLog::open(id.0),
+            log: WireLog::open("agent"),
         };
         self.sessions.insert(id, session);
         id
