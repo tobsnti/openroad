@@ -47,6 +47,8 @@ use crate::plugins::dynamic_resource_loader::{
 };
 use crate::plugins::effects::{rare, EffectCommandsExt};
 use crate::plugins::environment::TimeOfDay;
+use crate::plugins::error_text::{self, error_line};
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::map::terrain::{Terrain, TerrainLoadState};
 use crate::plugins::nav::NavLocation;
 use crate::plugins::net::agent::AgentConnection;
@@ -61,7 +63,7 @@ use crate::plugins::player::{
 };
 use crate::plugins::skills::EquippedWeapon;
 use crate::plugins::textdata::{
-    ClientCharacterData, ClientItemData, ClientRareEffects, ClientTextNames,
+    ClientCharacterData, ClientItemData, ClientRareEffects, ClientTextNames, ClientUiStrings,
 };
 use crate::plugins::world_origin::{set_dungeon_origin, set_world_origin, WorldOrigin};
 use crate::scenes::intro_v2::character_select::{JoiningCharacter, PendingWorldJoin};
@@ -1049,9 +1051,13 @@ fn apply_pending_character_data(
 /// `TeleportResponse` (0xB05A). Success needs no action here — the world reset
 /// arrives as 0x34B5 and the arrival position inside the CHARACTER_DATA replay
 /// (byte-identical for dungeon destinations). Status 1 comes with a successful
-/// teleport; any other status is a refusal, which the original shows as text —
-/// until those texts are wired, its code is logged so it does not pass unseen.
-fn on_teleport_response(mut reader: MessageReader<TeleportResponse>) {
+/// teleport; any other status is a refusal, shown as the original shows it
+/// (category 13) or, for a code the original has no text for, only logged.
+fn on_teleport_response(
+    mut reader: MessageReader<TeleportResponse>,
+    ui: Option<Res<ClientUiStrings>>,
+    mut history: Option<ResMut<ChatHistory>>,
+) {
     for response in reader.read() {
         match response {
             TeleportResponse::Success => info!("network: teleport acknowledged, expecting 0x34B5"),
@@ -1059,7 +1065,15 @@ fn on_teleport_response(mut reader: MessageReader<TeleportResponse>) {
                 info!("network: teleport status 1, the one that comes with success")
             }
             TeleportResponse::Status { code } => {
-                info!("network: teleport refused, code {code:#06X}")
+                info!("network: teleport refused, code {code:#06X}");
+                let default_ui = ClientUiStrings::default();
+                let ui = ui.as_deref().unwrap_or(&default_ui);
+                if let (Some(line), Some(history)) = (
+                    error_line(error_text::INTERACTION, *code, ui),
+                    history.as_mut(),
+                ) {
+                    history.push(ChatLine::system(line));
+                }
             }
             TeleportResponse::Unknown { result, tail } => warn!(
                 "network: unknown 0xB05A teleport response {result:#04x} tail {:?}",
