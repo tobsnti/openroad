@@ -54,7 +54,6 @@ use packets::login::{
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
-use crate::net::frame::SilkroadFrame;
 use crate::plugins::config::division::DivisionInfo;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::dev::build_info::build_label;
@@ -66,6 +65,7 @@ use crate::plugins::net::gateway::systems::{init_gateway_service, poll_gateway_c
 use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::plugin::{NetworkCorePlugin, NetworkState};
 use packets::hexdump;
+use sro_net::frame::SilkroadFrame;
 
 /// Build and run the headless net-check app. Blocks until the process is killed.
 pub fn run_headless(config: ClientConfig) {

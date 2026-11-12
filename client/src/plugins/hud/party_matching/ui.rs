@@ -44,9 +44,9 @@ use bytes::Bytes;
 
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
-use crate::net::frame::SilkroadFrame;
 use crate::plugins::hud::game_window::{self, abs_node};
 use bevy::log::warn_once;
+use sro_net::frame::SilkroadFrame;
 
 use crate::plugins::config::chat::parse_argb;
 use crate::plugins::config::ClientConfig;

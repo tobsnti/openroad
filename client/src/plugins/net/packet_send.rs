@@ -17,9 +17,9 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 
 use crate::net::connection::SilkroadConnection;
-use crate::net::frame::SilkroadFrame;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::plugin::carries_credentials;
+use sro_net::frame::SilkroadFrame;
 
 /// The longest body this accepts. A frame's length field is 16 bits, and a
 /// bigger body would be refused by the serialiser after the request looked

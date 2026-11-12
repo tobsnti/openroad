@@ -124,14 +124,14 @@ impl CRC {
     /// the split because `From<u32>` cannot tell a wire seed of 0 from this
     /// state, and `frame.rs` stamps a CRC byte on every frame, negotiated EDC or
     /// not.
-    pub(crate) fn unseeded() -> Self {
+    pub fn unseeded() -> Self {
         Self {
             seed: 0,
             table: gen_table(),
         }
     }
 
-    pub(crate) fn calculate(&self, buf: &[u8]) -> u8 {
+    pub fn calculate(&self, buf: &[u8]) -> u8 {
         let mut checksum = 0xFFFFFFFF_u32;
         for x in 0..buf.len() {
             checksum = (checksum >> 8)
@@ -263,9 +263,6 @@ mod tests {
     /// exists.
     #[test]
     fn the_pre_handshake_security_state_is_unseeded() {
-        assert_eq!(
-            crate::net::security::SilkroadSecurityData::new().crc.seed,
-            0
-        );
+        assert_eq!(crate::security::SilkroadSecurityData::new().crc.seed, 0);
     }
 }

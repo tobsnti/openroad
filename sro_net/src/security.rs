@@ -9,9 +9,9 @@
 // this file is written from the *described behaviour* and from our own capture
 // corpus; no code is copied from any of them. What forces the behaviour is wire
 // compatibility with a real vSRO server, which is not negotiable.
-use crate::net::blowfish::Blowfish;
-use crate::net::crc::CRC;
-use crate::net::sequence::Sequence;
+use crate::blowfish::Blowfish;
+use crate::crc::CRC;
+use crate::sequence::Sequence;
 
 #[derive(Clone)]
 pub enum SilkroadSecurity {
@@ -22,8 +22,8 @@ pub enum SilkroadSecurity {
 
 #[derive(Clone)]
 pub struct SilkroadSecurityState {
-    pub(crate) state: SilkroadSecurity,
-    pub(crate) context: SilkroadSecurityData,
+    pub state: SilkroadSecurity,
+    pub context: SilkroadSecurityData,
 }
 
 impl SilkroadSecurityState {
@@ -40,20 +40,20 @@ pub struct SilkroadSecurityData {
     /// The flag byte of the phase-1 `0x5000`. The original keeps the same
     /// accumulator (`004b1da0:120,162`) and gates the final handshake message
     /// on it; see `handshake::check_body`.
-    pub(crate) setup_flags: u8,
-    pub(crate) sequence_seed: u32,
-    pub(crate) crc_seed: u32,
-    pub(crate) local_public: u32,
-    pub(crate) local_challenge: u64,
-    pub(crate) remote_public: u32,
-    pub(crate) common_secret: u32,
-    pub(crate) handshake_key: u64,
-    pub(crate) generator: u32,
-    pub(crate) prime: u32,
-    pub(crate) blowfish: Option<Blowfish>,
-    pub(crate) sequence: Sequence,
+    pub setup_flags: u8,
+    pub sequence_seed: u32,
+    pub crc_seed: u32,
+    pub local_public: u32,
+    pub local_challenge: u64,
+    pub remote_public: u32,
+    pub common_secret: u32,
+    pub handshake_key: u64,
+    pub generator: u32,
+    pub prime: u32,
+    pub blowfish: Option<Blowfish>,
+    pub sequence: Sequence,
     // must be boxed because of stack-size issues on Windows
-    pub(crate) crc: Box<CRC>,
+    pub crc: Box<CRC>,
 }
 
 impl SilkroadSecurityData {

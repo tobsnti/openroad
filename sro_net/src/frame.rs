@@ -1,16 +1,16 @@
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
 
-use bevy::log::debug;
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use packets::Packet;
 use thiserror::Error;
+use tracing::debug;
 
-use crate::net::frame::SilkroadFrameError::{
+use crate::frame::SilkroadFrameError::{
     EncryptionBufferInvalidSize, Incomplete, InvalidMassiveHeaderFlag, TruncatedMassiveFrame,
 };
-use crate::net::security::{SilkroadSecurity, SilkroadSecurityState};
+use crate::security::{SilkroadSecurity, SilkroadSecurityState};
 
 const BLOWFISH_BLOCK_SIZE: usize = 8;
 
@@ -388,7 +388,7 @@ impl SilkroadFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::blowfish::Blowfish;
+    use crate::blowfish::Blowfish;
 
     fn security(with_key: bool) -> Arc<RwLock<SilkroadSecurityState>> {
         let mut state = SilkroadSecurityState::new();
