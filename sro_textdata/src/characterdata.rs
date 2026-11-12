@@ -1,4 +1,6 @@
+#[cfg(feature = "bevy")]
 use bevy::asset::Asset;
+#[cfg(feature = "bevy")]
 use bevy::prelude::TypePath;
 use packets::agent::pet::CosKind;
 use std::collections::HashMap;
@@ -9,9 +11,10 @@ use std::ops::{Deref, Index};
 //  Only thing that's different are number and order of fields.
 //  Should also be made immutably readable so that we can prevent cloning / copying of data.
 #[derive(Debug, Clone)]
-pub struct CharacterDataRow(pub(crate) Vec<String>);
+pub struct CharacterDataRow(pub Vec<String>);
 
-#[derive(Asset, TypePath, Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(Asset, TypePath))]
+#[derive(Debug, Clone)]
 pub struct CharacterData(pub HashMap<i32, CharacterDataRow>);
 
 /// Ceiling on a knockdown's prone dwell, in seconds.
@@ -183,7 +186,7 @@ impl CharacterDataRow {
     /// The object's own UI icon as an asset path (`media://icon/...`), or
     /// `None` when the column is blank or a placeholder.
     ///
-    /// Same shape as [`ItemDataRow::icon_path`](crate::assets::textdata::itemdata::ItemDataRow::icon_path)
+    /// Same shape as the client's `ItemDataRow::icon_path`
     /// — both columns hold a backslashed, mixed-case path under `icon/`, and
     /// `bevy_pk2` is case-insensitive, so lowercasing is only for consistency.
     pub fn icon_path(&self) -> Option<String> {
