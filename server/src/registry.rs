@@ -2,28 +2,32 @@
 //!
 //! Three kinds, because the original client treats requests differently. Two
 //! of them lock their group in the client until the answer arrives — talking
-//! to an NPC (0x7046) and leaving a stall (0x70B5) [V original handler; re-team
-//! 2026-11-11] — so a `Locked` handler RETURNS its answer: the type allows
-//! exactly one, and a body that does not decode still gets the refusal. An
-//! `Answer` handler sends any number of frames; `Silent` sends none by design.
-//! An opcode without an entry is reported, not answered.
+//! to an NPC (0x7046) and leaving a stall (0x70B5) [V original handler] — so a
+//! `Locked` handler RETURNS its answer: the type allows exactly one, and a
+//! body that does not decode still gets the refusal. An `Answer` handler sends
+//! any number of frames, or reports why it did not act; `Silent` sends none by
+//! design. An opcode without an entry is reported, not answered.
 
 use packets::Packet;
 
-use crate::world::{self, SessionId, World};
+use crate::lobby;
+use crate::world::{self, Reason, SessionId, World};
 
 pub enum Handling {
     Locked {
         answer: fn(&mut World, SessionId, Packet) -> Packet,
         refusal: fn() -> Packet,
     },
-    Answer(fn(&mut World, SessionId, Packet)),
+    Answer(fn(&mut World, SessionId, Packet) -> Result<(), Reason>),
     Silent,
 }
 
 pub fn handling(opcode: u16) -> Option<Handling> {
     Some(match opcode {
+        0x2001 => Handling::Answer(lobby::identify),
         0x2002 => Handling::Silent,
+        0x6103 => Handling::Answer(lobby::login),
+        0x7007 => Handling::Answer(lobby::lobby),
         0x7046 => Handling::Locked {
             answer: world::talk,
             refusal: world::talk_refusal,
