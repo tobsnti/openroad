@@ -10,6 +10,7 @@
 //! ([`tick`]).
 
 pub mod inbound;
+mod lobby;
 pub mod outbox;
 pub mod registry;
 pub mod store;
