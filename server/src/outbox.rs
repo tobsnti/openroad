@@ -3,8 +3,7 @@
 //! Bounded because a peer that stops reading must not make the server hold its
 //! backlog forever: a session that falls [`CAPACITY`] frames behind is cut off.
 //! The bound is sized from the largest burst measured from a vSRO server,
-//! 1,032 despawns within 13 ms [V capture, peer vSRO; decision 0009], with
-//! fourfold headroom.
+//! 1,032 despawns within 13 ms [V capture, peer vSRO], with fourfold headroom.
 
 use std::collections::VecDeque;
 

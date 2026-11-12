@@ -1,12 +1,14 @@
-//! The session log a test writes for the client's reading contract
-//! (decision 0011, session log v1): with `OPENROAD_WIRE_LOG=<dir>`, every frame
-//! a session receives or sends becomes a line `seq<TAB>c2s|s2c<TAB>0xOPCODE<TAB>hex`
-//! in `<dir>/session-<id>.sitzung`, in the order the session saw them, below a
-//! header naming the format and the connection.
+//! The session log for the client's reading contract (session log v1): with
+//! `OPENROAD_WIRE_LOG=<dir>`, every frame a session receives or sends becomes a
+//! line `seq<TAB>c2s|s2c<TAB>0xOPCODE<TAB>hex` in a file of its own under
+//! `<dir>`, in the order the session saw them, below a header naming the
+//! format, the server build and the connection (`agent` or `gateway`). The
+//! frames are the logical packets; the transport's framing is not in it.
 
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy)]
 pub enum Dir {
@@ -19,18 +21,26 @@ pub struct WireLog {
     seq: u64,
 }
 
+/// Logs opened by this process, so that two worlds in one test run never
+/// write the same file.
+static OPENED: AtomicU64 = AtomicU64::new(0);
+
 impl WireLog {
-    /// The log for agent session `id`; a no-op unless `OPENROAD_WIRE_LOG` is set.
-    pub fn open(id: u32) -> WireLog {
+    /// The log of one `connection`; a no-op unless `OPENROAD_WIRE_LOG` is set.
+    pub fn open(connection: &str) -> WireLog {
         let file = std::env::var_os("OPENROAD_WIRE_LOG").map(|dir| {
-            let dir = PathBuf::from(dir);
-            std::fs::create_dir_all(&dir).expect("OPENROAD_WIRE_LOG is not a writable directory");
-            let mut file = File::create(dir.join(format!("session-{id}.sitzung")))
-                .expect("OPENROAD_WIRE_LOG is not a writable directory");
+            let n = OPENED.fetch_add(1, Ordering::Relaxed) + 1;
+            let name = format!("{connection}-{}-{n}.sitzung", std::process::id());
+            let path = PathBuf::from(dir).join(name);
+            let mut file =
+                std::fs::create_dir_all(path.parent().expect("a log file has a directory"))
+                    .and_then(|_| File::create(&path))
+                    .expect("OPENROAD_WIRE_LOG is not a writable directory");
             writeln!(
                 file,
-                "# sitzung v1\n# server: openroad server {}\n# verbindung: agent",
-                env!("CARGO_PKG_VERSION")
+                "# sitzung v1\n# server: openroad server {} {}\n# verbindung: {connection}",
+                env!("CARGO_PKG_VERSION"),
+                env!("OPENROAD_BUILD_COMMIT"),
             )
             .expect("wire log write failed");
             file

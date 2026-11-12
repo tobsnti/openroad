@@ -1,10 +1,10 @@
 //! Simulation time in whole steps of 1/30 s.
 //!
 //! The original server advances its world on a 1/30 s grid and runs AI and
-//! movement on a 300 ms timer [V original server; re-team 2026-11-12]. Its
-//! timers add milliseconds truncated per step, which stretches 300 ms to about
-//! 307. Ours count steps instead — 300 ms is exactly 9 — so a mob covers
-//! exactly its nominal speed; a deliberate deviation (decision 0009, A.4).
+//! movement on a 300 ms timer [V original server]. Its timers add milliseconds
+//! truncated per step, which stretches 300 ms to about 307. Ours count steps
+//! instead — 300 ms is exactly 9 — so a mob covers exactly its nominal speed;
+//! a deliberate deviation (ADR 0013 §6).
 
 use std::time::Duration;
 

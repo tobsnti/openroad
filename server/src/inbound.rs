@@ -1,4 +1,4 @@
-//! Strict reading of client frames (decision 0008).
+//! Strict reading of client frames (ADR 0013 §5).
 //!
 //! A frame is accepted only when it decodes into a packet that encodes back to
 //! the very same bytes. A shorter, longer or otherwise different body is
