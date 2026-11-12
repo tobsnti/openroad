@@ -40,21 +40,90 @@ pub struct ExchangePlayerConfirmed;
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ExchangeCompleted;
 
-/// 0x3088 — server → client: the trade was called off. Empty body.
+/// 0x3088 — server → client: the trade was called off, for both parties.
 ///
-/// The original's parser reads nothing here, but a trailing `u16` reason code
-/// may exist — [U], resolving capture `packet_dump/0x3088.log`. Decoding
-/// tolerates one (trailing bytes are ignored) but does not surface it; adding
-/// the field is a one-line change once a capture shows it is really there.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
-pub struct ExchangeCanceled;
+/// The body is a `u16` reason: the original shows it through its error texts
+/// and then "exchange failed" `[V original handler]`. vSRO sent `0x1826` (the
+/// original's timeout text) for an unanswered petition, `0x0004` (no text of
+/// its own) for traders too far apart, and `0x1828`, `0x182B`, `0x182C` when
+/// the target declined, the inviter logged off, or a trader left
+/// `[V capture, peer vSRO]` — those three meanings `[S meaning from timing]`.
+/// Read leniently: a body without the reason still decodes, as `None`.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct ExchangeCanceled {
+    pub code: Option<u16>,
+}
 
-/// 0x3089 — server → client: the gold the *partner* has staged.
-#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
-pub struct ExchangeGoldUpdate {
-    /// [U] — semantics unknown; resolving capture `packet_dump/0x3089.log`.
-    pub unk_byte01: u8,
-    pub gold: u64,
+impl TryFrom<Bytes> for ExchangeCanceled {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        let code = value.get(..2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+        Ok(Self { code })
+    }
+}
+
+impl From<ExchangeCanceled> for Bytes {
+    fn from(p: ExchangeCanceled) -> Self {
+        p.code
+            .map(|code| Bytes::copy_from_slice(&code.to_le_bytes()))
+            .unwrap_or_default()
+    }
+}
+
+/// 0x3089 — server → client: a change to what the *partner* has staged.
+///
+/// The leading byte selects the body `[V original handler]`: `2` is staged
+/// gold (`u64`), `1` a staged item (`u8` slot + the item record, kept raw like
+/// 0x308C's, because its width needs itemdata), and anything else carries
+/// nothing. Read as one fixed `{u8, u64}`, an item update became garbage gold.
+/// vSRO sent gold as `02 8813000000000000`, 5000 (packet_dump/admin6,
+/// 2026-08-20) `[V capture, peer vSRO]`.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub enum ExchangeGoldUpdate {
+    Gold(u64),
+    Item { slot: u8, record: Bytes },
+    Other(u8),
+}
+
+impl TryFrom<Bytes> for ExchangeGoldUpdate {
+    type Error = SerializationError;
+    fn try_from(value: Bytes) -> Result<Self, SerializationError> {
+        let short = || {
+            SerializationError::IoError(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "0x3089 body too short",
+            ))
+        };
+        Ok(match *value.first().ok_or_else(short)? {
+            1 => Self::Item {
+                slot: *value.get(1).ok_or_else(short)?,
+                record: value.slice(2..),
+            },
+            2 => Self::Gold(u64::from_le_bytes(
+                value.get(1..9).ok_or_else(short)?.try_into().unwrap(),
+            )),
+            other => Self::Other(other),
+        })
+    }
+}
+
+impl From<ExchangeGoldUpdate> for Bytes {
+    fn from(p: ExchangeGoldUpdate) -> Self {
+        let mut buf = bytes::BytesMut::new();
+        match p {
+            ExchangeGoldUpdate::Gold(gold) => {
+                bytes::BufMut::put_u8(&mut buf, 2);
+                bytes::BufMut::put_u64_le(&mut buf, gold);
+            }
+            ExchangeGoldUpdate::Item { slot, record } => {
+                bytes::BufMut::put_u8(&mut buf, 1);
+                bytes::BufMut::put_u8(&mut buf, slot);
+                buf.extend_from_slice(&record);
+            }
+            ExchangeGoldUpdate::Other(selector) => bytes::BufMut::put_u8(&mut buf, selector),
+        }
+        buf.freeze()
+    }
 }
 
 /// 0x308C — server → client: the items the *partner* has staged.
@@ -199,11 +268,13 @@ mod tests {
         );
     }
 
-    /// 0x3088 may carry a trailing u16 reason ([U]). Decoding must tolerate one
-    /// rather than failing the packet, even though the field is not surfaced.
+    /// 0x3088 carries a u16 reason — `26 18` for a petition nobody answered.
     #[test]
-    fn a_cancel_with_a_trailing_reason_still_decodes() {
-        assert!(ExchangeCanceled::try_from(Bytes::from_static(&[0x07, 0x00])).is_ok());
+    fn a_cancel_carries_its_reason() {
+        let wire = Bytes::from_static(&[0x26, 0x18]);
+        let decoded = ExchangeCanceled::try_from(wire.clone()).unwrap();
+        assert_eq!(decoded.code, Some(0x1826));
+        assert_eq!(Bytes::from(decoded), wire);
     }
 
     #[test]
@@ -213,10 +284,26 @@ mod tests {
         assert_eq!(decoded.partner_unique_id, 0x1AB80);
         assert_eq!(Bytes::from(decoded), wire);
 
-        // unk byte then u64 gold
-        let wire = Bytes::from_static(&[0x01, 0xE8, 0x03, 0, 0, 0, 0, 0, 0]);
+        // vSRO's gold update, packet_dump/admin6/0x3089.log 2026-08-20T13:14:01Z
+        let wire = Bytes::from_static(&[0x02, 0x88, 0x13, 0, 0, 0, 0, 0, 0]);
         let decoded = ExchangeGoldUpdate::try_from(wire.clone()).unwrap();
-        assert_eq!((decoded.unk_byte01, decoded.gold), (1, 1000));
+        assert_eq!(decoded, ExchangeGoldUpdate::Gold(5000));
+        assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// Selector 1 is an item, not gold: the old `{u8, u64}` read its slot and
+    /// record bytes as an amount.
+    #[test]
+    fn a_staged_item_is_not_read_as_gold() {
+        let wire = Bytes::from_static(&[0x01, 0x03, 0xAA, 0xBB, 0xCC]);
+        let decoded = ExchangeGoldUpdate::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            ExchangeGoldUpdate::Item {
+                slot: 3,
+                record: Bytes::from_static(&[0xAA, 0xBB, 0xCC]),
+            }
+        );
         assert_eq!(Bytes::from(decoded), wire);
     }
 
