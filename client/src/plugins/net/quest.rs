@@ -30,8 +30,9 @@ pub struct QuestMarkTarget {
     pub y: u32,
     pub z: u32,
     /// The target entity's unique id, the key
-    /// [`NetworkEntities`](super::entities::NetworkEntities) indexes spawns by.
-    pub target_unique_id: u32,
+    /// [`NetworkEntities`](super::entities::NetworkEntities) indexes spawns by;
+    /// `None` when the mark names none.
+    pub target_unique_id: Option<u32>,
 }
 
 /// The marks the server currently has placed, keyed by mark handle.
@@ -90,13 +91,13 @@ mod tests {
     fn captured_add() -> QuestMarkAdd {
         QuestMarkAdd {
             mark_id: 0x52e647e8,
-            unknown0: 0x82,
+            flags: 0x82,
             mark: QUEST_MARK_NEW,
             region: 25000,
             x: 1584,
             y: 0,
             z: 1407,
-            target_unique_id: 243,
+            target_unique_id: Some(243),
         }
     }
 
@@ -121,7 +122,7 @@ mod tests {
                 x: 1584,
                 y: 0,
                 z: 1407,
-                target_unique_id: 243,
+                target_unique_id: Some(243),
             })
         );
 
