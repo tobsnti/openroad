@@ -65,10 +65,15 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     let mut row = vec![String::from("0"); 48];
     (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
     std::fs::write(textdata.join("characterdata_test.txt"), row.join("\t")).unwrap();
+    let character = |name: &str| {
+        json!({"name": name, "ref": 1907, "level": 10, "exp": 0, "gold": 100, "hp": 1000,
+            "mp": 1000, "str": 20, "int": 20, "statuspunkte": 0})
+    };
     let fixture = json!({
         "konto": {"name": "test", "passwort": "test"},
-        "charakter": {"name": "Gilgamesh", "ref": 1907, "level": 10, "exp": 0, "gold": 100,
-            "hp": 1000, "mp": 1000, "str": 20, "int": 20, "statuspunkte": 0},
+        "charakter": character("Gilgamesh"),
+        "konto_b": {"name": "test2", "passwort": "test2"},
+        "charakter_b": character("Enkidu"),
     });
     std::fs::write(dir.join("startwelt.json"), fixture.to_string()).unwrap();
     let (events, socket) = (dir.join("events.jsonl"), dir.join("admin.sock"));
@@ -87,33 +92,9 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     let ready = event(&events, "ready");
     let address = |key: &str| ready[key].as_str().unwrap().parse().unwrap();
 
-    let mut gateway = Wire::connect(address("gateway"));
-    let login = LoginRequest {
-        content_id: 22,
-        username: "test".to_owned(),
-        password: "test".to_owned(),
-        shard_id: 64,
-    };
-    gateway.send(0x6102, &bytes(Packet::LoginRequest(login)), true);
-    let (opcode, body) = gateway.recv();
-    let Ok(Packet::LoginResponse(LoginResponse {
-        login_info: Some(agent),
-        ..
-    })) = Packet::deserialize(opcode, body)
-    else {
-        panic!("the fixture's account logs in");
-    };
+    let agent = token(address("gateway"), "test");
 
-    let mut client = Wire::connect(address("agent"));
-    let login = AgentLoginRequest {
-        token: agent.agent_token,
-        username: "test".to_owned(),
-        password: "test".to_owned(),
-        content_id: 22,
-        mac_address: [0; 6],
-    };
-    client.send(0x6103, &bytes(Packet::AgentLoginRequest(login)), true);
-    assert_eq!(client.recv(), (0xA103, Bytes::from_static(&[0x01])));
+    let mut client = enter_agent(address("agent"), agent, "test");
     let join = CharacterJoinRequest {
         character_name: "Gilgamesh".to_owned(),
     };
@@ -139,5 +120,59 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     let expected = json!({"uid": joined["uid"], "op": "0x7021", "len": 9, "reason": "not_handled"});
     let fields = ["uid", "op", "len", "reason"].map(|k| (k, rejected[k].clone()));
     assert_eq!(Value::from_iter(fields), expected);
+
+    // The second account, for the bench's second client, has its own character.
+    let token_b = token(address("gateway"), "test2");
+    let mut client_b = enter_agent(address("agent"), token_b, "test2");
+    client_b.send(0x7007, &[0x02], false);
+    let (opcode, body) = client_b.recv();
+    let Ok(Packet::CharacterSelectionActionResponse(list)) = Packet::deserialize(opcode, body)
+    else {
+        panic!("0xB007 decodes");
+    };
+    let names: Vec<String> = list
+        .characters
+        .unwrap()
+        .characters
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(names, ["Enkidu"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Logs `user` in at the gateway (password = user name, as in the fixture
+/// above); the token for the agent.
+fn token(gateway: std::net::SocketAddr, user: &str) -> u32 {
+    let mut gateway = Wire::connect(gateway);
+    let login = LoginRequest {
+        content_id: 22,
+        username: user.to_owned(),
+        password: user.to_owned(),
+        shard_id: 64,
+    };
+    gateway.send(0x6102, &bytes(Packet::LoginRequest(login)), true);
+    let (opcode, body) = gateway.recv();
+    let Ok(Packet::LoginResponse(LoginResponse {
+        login_info: Some(agent),
+        ..
+    })) = Packet::deserialize(opcode, body)
+    else {
+        panic!("the fixture's account {user} logs in");
+    };
+    agent.agent_token
+}
+
+fn enter_agent(agent: std::net::SocketAddr, token: u32, user: &str) -> Wire {
+    let mut client = Wire::connect(agent);
+    let login = AgentLoginRequest {
+        token,
+        username: user.to_owned(),
+        password: user.to_owned(),
+        content_id: 22,
+        mac_address: [0; 6],
+    };
+    client.send(0x6103, &bytes(Packet::AgentLoginRequest(login)), true);
+    assert_eq!(client.recv(), (0xA103, Bytes::from_static(&[0x01])));
+    client
 }
