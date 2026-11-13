@@ -1,8 +1,8 @@
 use std::io::Error;
 use std::string::{FromUtf16Error, FromUtf8Error};
 
-use bevy::log::trace;
-use bevy::prelude::{Commands, Message, MessageReader, PreUpdate};
+#[cfg(feature = "bevy")]
+use bevy::prelude::{Commands, MessageReader, PreUpdate};
 use bytes::Bytes;
 use thiserror::Error;
 
@@ -18,6 +18,22 @@ pub mod gateway;
 pub mod global;
 pub mod judge;
 pub mod login;
+
+/// The derive every packet type carries. With the `bevy` feature (the default,
+/// what the client builds) it is bevy's `Message`, so each type is an ECS
+/// message; without it, a derive that emits nothing — a server or a tool gets
+/// the same types without pulling in bevy.
+#[cfg(feature = "bevy")]
+pub use bevy::prelude::Message;
+#[cfg(not(feature = "bevy"))]
+pub use sro_macro_derive::NoMessage as Message;
+
+#[cfg(feature = "bevy")]
+use bevy::log::trace;
+#[cfg(not(feature = "bevy"))]
+macro_rules! trace {
+    ($($arg:tt)*) => {};
+}
 
 #[derive(Error, Debug)]
 pub enum PacketError {
@@ -86,6 +102,7 @@ macro_rules! packets_impl {
             }
         )*
 
+        #[cfg(feature = "bevy")]
         /// Re-sends every received [`Packet`] as its own typed message, the
         /// one handlers read. A single system for all opcodes: one per opcode
         /// (~250) each re-read the whole packet stream every frame, ~0.4 ms
@@ -102,10 +119,12 @@ macro_rules! packets_impl {
             }
         }
 
+        #[cfg(feature = "bevy")]
         pub trait NetworkExt {
             fn add_network_events(&mut self) -> &mut Self;
         }
 
+        #[cfg(feature = "bevy")]
         impl NetworkExt for bevy::app::App {
             fn add_network_events(&mut self) -> &mut Self {
                 self.add_message::<Packet>();

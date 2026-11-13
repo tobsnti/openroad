@@ -1,4 +1,4 @@
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;

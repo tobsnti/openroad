@@ -16,7 +16,7 @@
 //!
 //! Layouts and evidence: `docs/net-guild-leadership.md`.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::agent::guild::guild_op_ack;

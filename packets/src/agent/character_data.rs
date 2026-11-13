@@ -33,7 +33,7 @@
 
 use std::io::{Cursor, Read};
 
-use bevy::prelude::Message;
+use crate::Message;
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, Bytes, BytesMut};
 

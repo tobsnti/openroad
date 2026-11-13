@@ -15,7 +15,7 @@
 //!     chat types fail decode with `UnknownVariation` and are logged/dropped
 //!     by the receive pipeline.
 
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

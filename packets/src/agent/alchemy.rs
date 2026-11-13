@@ -21,7 +21,7 @@
 //! blob, and every `0xB15x` ack re-emits the mutated item
 //! (`alchemy.md:135-137`) — reuse that type rather than adding a second one.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::agent::character_data::{InventoryItem, ItemClassResolver};

@@ -56,7 +56,7 @@
 //! - `0x30E0` (specialty price list) and `0x30E6` (job experience) have no
 //!   frame in any of our dumps; in this repo they exist only as comments.
 
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

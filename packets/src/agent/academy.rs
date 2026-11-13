@@ -21,7 +21,7 @@
 //!
 //! Layouts: `docs/net-academy-0x3C81.md`.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;

@@ -14,7 +14,7 @@
 //! it on the end marker). The concatenated body is an ordinary item section,
 //! so it goes through the same resolver-driven parser as CHARACTER_DATA.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 use std::io::Cursor;
 

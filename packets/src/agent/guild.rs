@@ -18,7 +18,7 @@
 //! Guild storage (0x7250/0xB250), guild chat and alliance/union live in their
 //! own docs and are not here.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::ByteSize;

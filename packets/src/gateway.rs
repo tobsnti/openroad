@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use bevy::prelude::Message;
+use crate::Message;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

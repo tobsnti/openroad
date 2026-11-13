@@ -34,6 +34,13 @@ pub(crate) struct PacketArgs {
     size: Option<usize>,
 }
 
+/// A derive that emits nothing: `packets` stands it in for bevy's `Message`
+/// when it is built without bevy, so every `#[derive(Message)]` stays as is.
+#[proc_macro_derive(NoMessage)]
+pub fn derive_no_message(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
 #[proc_macro_error]
 #[proc_macro_derive(Serialize, attributes(sro_packet))]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {

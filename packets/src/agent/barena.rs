@@ -18,7 +18,7 @@
 //! and field layouts only, no code or text copied) and are therefore decoded
 //! tolerantly: a short or surprising body yields `None`, never an error.
 
-use bevy::prelude::Message;
+use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use sro_macro::SerializationError;
