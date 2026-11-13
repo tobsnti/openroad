@@ -1350,51 +1350,41 @@ impl From<GmResponse> for Bytes {
     }
 }
 
-/// 0xB074 — server → client ack for [`ObjectActionRequest`].
+/// 0xB074 — server → client ack for [`ObjectActionRequest`], three bodies by
+/// the leading byte. The second byte is the length of the server's action
+/// queue, not a code `[V original server]`: the server runs one action per
+/// character and keeps at most one waiting behind it, a newer request
+/// replacing the waiting one.
+/// - `01 <n>` — the request was accepted: with `n` 1 it runs now, with `n` 2
+///   it waits behind the running action, and the server starts it itself.
+/// - `02 <n>` — an action ended or was cancelled, `n` left: `02 01` means the
+///   waiting action has just started.
+/// - `03 <n> <error u16>` — refused with a message; the original client shows
+///   `error` through its message box.
 ///
-/// Capture-VERIFIED vSRO 1.188 (2026-08-06, the whole `packet_dump/0xb074.log`
-/// corpus: `01 01`×703, `02 00`×693, `01 02`×150, `02 01`×134, `01 00`×6,
-/// `03 xx 04 40`×20). The shape is two bytes, `phase code`:
-/// - `01 <code>` — action start ack: code 0 = skill cast accepted (every
-///   `01 00` is followed <60 ms by a successful kind-None 0xB070), code 1 =
-///   attack accepted, code 2 = **rejected** (server action slot busy — a cast
-///   sent mid-auto-attack; no 0xB070 ever follows).
-/// - `02 <code>` — the running action ended (0/1 observed; meaning of the
-///   code not yet pinned).
-/// - `03 <code> <error u16>` — the request was **refused with a message**: the
-///   handler reads the same `code` byte, then a `u16` it hands to the
-///   message-box helper (`FUN_00880b60:12-14`). Captured seven times as
-///   `03 00 04 40`, i.e. code 0, error `0x4004` (#232).
+/// Over `packet_dump/0xb074.log` (2026-08-06): `01 01`×703, `02 00`×693,
+/// `01 02`×150, `02 01`×134, `01 00`×6, `03 xx 04 40`×20. Reading `01 02` as a
+/// refusal made the client send a queued action again once the running one
+/// ended — when the server had just started it.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ObjectActionResponse {
-    /// `01 <code>` — start ack; see [`Self::is_rejected`].
-    Started { code: u8 },
-    /// `02 <code>` — the server-side action loop ended.
-    Ended { code: u8 },
-    /// `03 <code> <error u16>` — refused with a message box; `error` is the
+    /// `01 <n>` — accepted; see [`Self::is_queued`].
+    Started { queue_len: u8 },
+    /// `02 <n>` — an action ended; `queue_len` are left.
+    Ended { queue_len: u8 },
+    /// `03 <n> <error u16>` — refused with a message box; `error` is the
     /// original's notice id, not a small ordinal (see `ACTION_ERROR_*`).
-    Failed { code: u8, error: u16 },
+    Failed { queue_len: u8, error: u16 },
     /// Anything else — kept raw, log-only.
     Unknown { result: u8, tail: Bytes },
 }
 
-/// [`ObjectActionResponse::Started`] code: skill cast accepted.
-pub const ACTION_START_CAST: u8 = 0;
-/// [`ObjectActionResponse::Started`] code: attack accepted.
-pub const ACTION_START_ATTACK: u8 = 1;
-/// [`ObjectActionResponse::Started`] code: rejected — another action owns the
-/// server's action slot.
-pub const ACTION_START_REJECTED: u8 = 2;
-
 impl ObjectActionResponse {
-    /// A start ack that refused the request (nothing will follow on 0xB070).
-    pub fn is_rejected(&self) -> bool {
-        matches!(
-            self,
-            ObjectActionResponse::Started {
-                code: ACTION_START_REJECTED
-            }
-        )
+    /// An accepted request that waits behind the running action. The server
+    /// starts it when that one ends and says so with `02 <n>` — sending it
+    /// again would run it twice.
+    pub fn is_queued(&self) -> bool {
+        matches!(self, ObjectActionResponse::Started { queue_len } if *queue_len >= 2)
     }
 }
 
@@ -1405,10 +1395,14 @@ impl TryFrom<Bytes> for ObjectActionResponse {
         let result = r.u8()?;
         let parsed = (|| -> Option<ObjectActionResponse> {
             match result {
-                1 => Some(ObjectActionResponse::Started { code: r.u8().ok()? }),
-                2 => Some(ObjectActionResponse::Ended { code: r.u8().ok()? }),
+                1 => Some(ObjectActionResponse::Started {
+                    queue_len: r.u8().ok()?,
+                }),
+                2 => Some(ObjectActionResponse::Ended {
+                    queue_len: r.u8().ok()?,
+                }),
                 3 => Some(ObjectActionResponse::Failed {
-                    code: r.u8().ok()?,
+                    queue_len: r.u8().ok()?,
                     error: r.u16().ok()?,
                 }),
                 _ => None,
@@ -1428,17 +1422,17 @@ impl From<ObjectActionResponse> for Bytes {
     fn from(p: ObjectActionResponse) -> Self {
         let mut buf = BytesMut::new();
         match p {
-            ObjectActionResponse::Started { code } => {
+            ObjectActionResponse::Started { queue_len } => {
                 buf.put_u8(1);
-                buf.put_u8(code);
+                buf.put_u8(queue_len);
             }
-            ObjectActionResponse::Ended { code } => {
+            ObjectActionResponse::Ended { queue_len } => {
                 buf.put_u8(2);
-                buf.put_u8(code);
+                buf.put_u8(queue_len);
             }
-            ObjectActionResponse::Failed { code, error } => {
+            ObjectActionResponse::Failed { queue_len, error } => {
                 buf.put_u8(3);
-                buf.put_u8(code);
+                buf.put_u8(queue_len);
                 buf.put_u16_le(error);
             }
             ObjectActionResponse::Unknown { result, tail } => {
@@ -3955,37 +3949,32 @@ mod test {
 
     #[test]
     fn object_action_response_decodes_captured_shapes() {
-        // the four 2-byte bodies that make up 99% of packet_dump/0xb074.log
+        // the 2-byte bodies that make up 99% of packet_dump/0xb074.log; only
+        // `01 02` is a request waiting behind the running action
         for (wire, expected) in [
             (
                 Bytes::from_static(&[1, 0]),
-                ObjectActionResponse::Started {
-                    code: ACTION_START_CAST,
-                },
+                ObjectActionResponse::Started { queue_len: 0 },
             ),
             (
                 Bytes::from_static(&[1, 1]),
-                ObjectActionResponse::Started {
-                    code: ACTION_START_ATTACK,
-                },
+                ObjectActionResponse::Started { queue_len: 1 },
             ),
             (
                 Bytes::from_static(&[1, 2]),
-                ObjectActionResponse::Started {
-                    code: ACTION_START_REJECTED,
-                },
+                ObjectActionResponse::Started { queue_len: 2 },
             ),
             (
                 Bytes::from_static(&[2, 0]),
-                ObjectActionResponse::Ended { code: 0 },
+                ObjectActionResponse::Ended { queue_len: 0 },
             ),
         ] {
             let decoded: ObjectActionResponse = wire.clone().try_into().unwrap();
             assert_eq!(decoded, expected);
             assert_eq!(
-                decoded.is_rejected(),
+                decoded.is_queued(),
                 wire.as_ref() == [1, 2],
-                "{wire:?} rejection flag"
+                "{wire:?} queued flag"
             );
             let back: Bytes = decoded.into();
             assert_eq!(back, wire);
@@ -3996,8 +3985,8 @@ mod test {
     fn object_action_response_unknown_shapes_keep_raw_tail() {
         // over-long or unrecognized phases must land in Unknown and roundtrip
         // untouched. `03 xx 04 40` is no longer among them: #232 decoded it
-        // from the handler as `Failed { code, error }`, which is why `03 09 04
-        // 40` is asserted below to be typed, not raw.
+        // from the handler as `Failed { queue_len, error }`, which is why
+        // `03 09 04 40` is asserted below to be typed, not raw.
         for wire in [
             Bytes::from_static(&[2, 0x04, 0x30]),
             Bytes::from_static(&[1]),
@@ -4012,14 +4001,14 @@ mod test {
             assert_eq!(back, wire);
         }
 
-        // the `03` family varies only in its code byte (`03 xx 04 40` ×20 in
-        // the 2026-08-06 corpus), and every one of them is now typed
+        // the `03` family varies only in its queue-length byte (`03 xx 04 40`
+        // ×20 in the 2026-08-06 corpus), and every one of them is typed
         let decoded: ObjectActionResponse =
             Bytes::from_static(&[3, 9, 4, 0x40]).try_into().unwrap();
         assert_eq!(
             decoded,
             ObjectActionResponse::Failed {
-                code: 9,
+                queue_len: 9,
                 error: 0x4004
             }
         );
@@ -4565,10 +4554,9 @@ mod test {
         ));
     }
 
-    /// #232: `0xB074 result=3` is `code u8 + error u16` — the handler reads the
-    /// same code byte as results 1/2 and then a `u16` for its message box
-    /// (`FUN_00880b60:12-14`). Fixture: the seven identical captured lines in
-    /// `packet_dump/0xb074.log` (2026-08-12).
+    /// #232: `0xB074 result=3` is the queue-length byte plus an `error u16` for
+    /// the original's message box. Fixture: the seven identical captured lines
+    /// in `packet_dump/0xb074.log` (2026-08-12).
     #[test]
     fn object_action_response_decodes_the_captured_refusal() {
         let wire = Bytes::from_static(&[0x03, 0x00, 0x04, 0x40]);
@@ -4576,7 +4564,7 @@ mod test {
         assert_eq!(
             decoded,
             ObjectActionResponse::Failed {
-                code: 0,
+                queue_len: 0,
                 error: 0x4004
             }
         );
@@ -4585,9 +4573,9 @@ mod test {
 
         // the two shapes that were already modelled still decode
         let started: ObjectActionResponse = Bytes::from_static(&[1, 1]).try_into().unwrap();
-        assert_eq!(started, ObjectActionResponse::Started { code: 1 });
+        assert_eq!(started, ObjectActionResponse::Started { queue_len: 1 });
         let ended: ObjectActionResponse = Bytes::from_static(&[2, 0]).try_into().unwrap();
-        assert_eq!(ended, ObjectActionResponse::Ended { code: 0 });
+        assert_eq!(ended, ObjectActionResponse::Ended { queue_len: 0 });
 
         // a result=3 body of the wrong length stays raw
         let short: ObjectActionResponse = Bytes::from_static(&[3, 0, 4]).try_into().unwrap();

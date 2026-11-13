@@ -1,23 +1,25 @@
 //! The one owner of the server's action slot.
 //!
-//! Idea: vSRO gives a character **one** action slot. A `0x7074` sent while
-//! another action runs is refused with a `01 02` start-rejected ack and
-//! nothing else. Four call sites used to write to that slot independently —
+//! Idea: vSRO runs one action per character and keeps at most one waiting
+//! behind it; a newer request replaces the waiting one, and the server starts
+//! it itself when the running action ends (`0xB074`'s second byte is that
+//! queue's length, [`ObjectActionResponse`]). Four call sites used to write to
+//! that slot independently —
 //! the skill cast, the auto-attack order, the pickup order and the cast
 //! retry — so nothing arbitrated between them and every keypress went
 //! straight onto the wire. In a fight the player mashes hotkeys, and the
 //! captures show what that costs: of 463 requests in `packet_dump/c2s/
-//! 0x7074.log`, **178 (38%) are answered by a slot-busy rejection**, and the
-//! log holds 29 runs of three-or-more byte-identical sends less than 600 ms
-//! apart — the worst being 14 identical `CastSkill` requests over 2.2 s.
+//! 0x7074.log`, **178 (38%) landed in the server's queue** (`01 02`), where
+//! the next one replaced them, and the log holds 29 runs of three-or-more
+//! byte-identical sends less than 600 ms apart — the worst being 14 identical
+//! `CastSkill` requests over 2.2 s.
 //!
 //! So every producer now hands its intent here instead of sending, and this
 //! module owns the wire. At most **one** intent is held: a newer press
 //! replaces the one waiting, because the thing the player pressed last is the
 //! thing they want. Mashing one skill therefore collapses to a single
 //! request, and pressing B then C casts C. Replaying the capture through this
-//! policy turns those 463 requests into 361, folding 99 presses that today
-//! become rejections the player experiences as "nothing happened".
+//! policy turns those 463 requests into 361.
 //!
 //! It is the same shape [`PlayerCommands::move_to`](crate::plugins::player::PlayerCommands)
 //! already uses for the movement lane: a new order replaces the queued one
@@ -26,8 +28,8 @@
 //! **Stated deviation (ADR 0009).** No capture of the *original* client's
 //! outbound traffic exists in this repository and no note records what it does
 //! with a re-press, so this policy is ours, not vanilla's. Its rationale is
-//! the paragraph above: fewer refused requests against someone else's server,
-//! and the player's latest intent winning instead of being silently dropped.
+//! the paragraph above: fewer requests against someone else's server, and the
+//! player's latest intent winning.
 //! The one duration it needs is sourced rather than invented — see
 //! [`CombatSettings::action_buffer_seconds`](crate::plugins::config::combat::CombatSettings).
 //!
@@ -75,12 +77,10 @@ impl Action {
 /// can retract whatever it optimistically played for it — the skills plugin
 /// reads this to drop a click-predicted swing.
 ///
-/// This is the *only* honest way to attribute a refusal. The ack's `code` byte
-/// cannot do it: correlating `packet_dump/c2s/0x7074.log` against
-/// `packet_dump/0xb074.log` shows `Failed { code: 1 }` answering a **cast** 45
-/// times and `Started { code: 1 }` answering a cast 138 times, so the byte is
-/// not the action type. Because this module keeps at most one request in
-/// flight, the refused action is simply known.
+/// This is the *only* honest way to attribute a refusal. The ack's second byte
+/// cannot do it — it is the server's queue length, not the action type.
+/// Because this module keeps at most one request in flight, the refused
+/// action is simply known.
 #[derive(Message)]
 pub struct ActionRefused(pub Action);
 
@@ -88,11 +88,6 @@ pub struct ActionRefused(pub Action);
 struct InFlight {
     action: Action,
     sent_at: f64,
-    /// Attempts already spent on this action (1 = the original send). A
-    /// re-parked action that is refused a second time is dropped instead of
-    /// bouncing between here and [`ActionSlot::next`] forever — the bound the
-    /// old `CastRetry::just_retried` provided.
-    attempts: u8,
 }
 
 /// The intent waiting for the slot to free.
@@ -100,7 +95,6 @@ struct Pending {
     action: Action,
     /// When the player asked for it, so a stale one can be dropped.
     at: f64,
-    attempts: u8,
 }
 
 /// How long a request may wait for its FIRST ack before we stop counting the
@@ -111,15 +105,6 @@ struct Pending {
 /// seconds is ~9× that p90 — long enough that a live round trip never trips
 /// it, short enough that an ack the server never sends cannot park the slot.
 const ACK_TIMEOUT_SECS: f64 = 2.0;
-
-/// How many times one intent may be sent before it is abandoned.
-///
-/// Two — the original press plus one re-try after a slot-busy refusal. The
-/// slot frees within one action window (median 1.38 s in
-/// `packet_dump/0xb074.log`), so a request refused on both attempts is being
-/// refused for a reason we do not model, and a third try would only earn the
-/// same answer.
-const MAX_ATTEMPTS: u8 = 2;
 
 /// How long the client believes a `Started` it was never told the end of.
 ///
@@ -157,11 +142,7 @@ impl ActionSlot {
     /// Ask the slot to do `action`. Replaces whatever was waiting — the newest
     /// press wins.
     pub fn request(&mut self, action: Action, now: f64) {
-        if let Some(displaced) = self.next.replace(Pending {
-            action,
-            at: now,
-            attempts: 0,
-        }) {
+        if let Some(displaced) = self.next.replace(Pending { action, at: now }) {
             debug!(
                 "action slot: {:?} replaces the waiting {:?}",
                 action, displaced.action
@@ -193,30 +174,6 @@ impl ActionSlot {
                 dropped.action
             );
         }
-    }
-
-    /// The in-flight request was refused because the slot was already taken.
-    /// Puts it back to wait for the running action to end and returns it, so
-    /// the caller can announce the refusal.
-    ///
-    /// Bounded: a request refused on every attempt must not bounce between the
-    /// wire and the buffer forever — the job the old `CastRetry::just_retried`
-    /// did.
-    fn reject_in_flight(&mut self, now: f64) -> Option<Action> {
-        let flight = self.in_flight.take()?;
-        if flight.attempts >= MAX_ATTEMPTS {
-            info!(
-                "action slot: {:?} refused every try — giving up",
-                flight.action
-            );
-        } else {
-            self.next = Some(Pending {
-                action: flight.action,
-                at: now,
-                attempts: flight.attempts,
-            });
-        }
-        Some(flight.action)
     }
 
     /// Stop counting a request as ours once its ack window has passed, so an
@@ -308,13 +265,12 @@ impl ActionSlot {
         self.in_flight = Some(InFlight {
             action: pending.action,
             sent_at: now,
-            attempts: pending.attempts + 1,
         });
     }
 }
 
-/// Fold the `0xB074` acks into the slot's state, re-parking a refused request
-/// and announcing every refusal as an [`ActionRefused`].
+/// Fold the `0xB074` acks into the slot's state and announce every refusal as
+/// an [`ActionRefused`].
 pub fn apply_action_acks(
     time: Res<Time>,
     mut acks: MessageReader<ObjectActionResponse>,
@@ -324,30 +280,26 @@ pub fn apply_action_acks(
     let now = time.elapsed_secs_f64();
     for ack in acks.read() {
         match ack {
-            // Refused: the slot was already taken by something else, which is
-            // still running — so `server_busy` is deliberately left alone.
-            // The request itself goes back to the front of the queue and is
-            // re-sent once the running action ends.
-            ObjectActionResponse::Started { .. } if ack.is_rejected() => {
-                // `None` = an ack for something we did not send.
-                if let Some(refused) = slot.reject_in_flight(now) {
-                    refusals.write(ActionRefused(refused));
-                }
-            }
+            // Accepted — running now, or waiting behind the running action
+            // (`01 02`). A waiting one is the server's to start: it says so
+            // with `02 01`, and sending it again would run it twice. Either
+            // way the server's slot is taken.
             ObjectActionResponse::Started { .. } => {
                 slot.in_flight = None;
                 slot.server_busy = true;
                 slot.busy_since = Some(now);
             }
-            ObjectActionResponse::Ended { .. } => {
-                slot.server_busy = false;
-                slot.busy_since = None;
+            // An action ended with `queue_len` left: one left means the
+            // waiting action has just started, so the slot stays taken.
+            ObjectActionResponse::Ended { queue_len } => {
+                slot.server_busy = *queue_len > 0;
+                slot.busy_since = slot.server_busy.then_some(now);
             }
             // A refusal on the request's own merits (a cooldown the client's
             // execution-time mirror never saw start, a precondition we do not
             // model). It ends nothing and starts nothing, so `server_busy` is
-            // untouched — but the request will never execute, so it is NOT
-            // re-parked, and whatever was played for it has to come back off.
+            // untouched — but the request will never execute, and whatever was
+            // played for it has to come back off.
             ObjectActionResponse::Failed { .. } => {
                 if let Some(flight) = slot.in_flight.take() {
                     info!("action slot: {:?} refused by the server", flight.action);
@@ -489,7 +441,6 @@ mod tests {
         slot.in_flight = Some(InFlight {
             action: cast(1),
             sent_at: 0.0,
-            attempts: 1,
         });
         assert!(slot.occupied(), "a sent request still owns the slot");
     }
@@ -580,7 +531,6 @@ mod tests {
             &Pending {
                 action: cast(7185),
                 at: 0.0,
-                attempts: 0,
             },
             0.0,
         );
@@ -593,71 +543,78 @@ mod tests {
         assert!(!slot.occupied());
     }
 
-    /// The two refusal shapes differ in one thing only: whether the request
-    /// still has a chance. A slot-busy rejection means something else was
-    /// running, so the request goes back to wait for it; a `Failed` means the
-    /// server declined it on its merits, so re-firing would earn the same
-    /// answer. Both announce the refusal, since either way the presentation
-    /// layer may have played something for it.
-    #[test]
-    fn a_busy_slot_re_parks_the_request_but_a_refusal_does_not() {
-        use packets::agent::prelude::ACTION_START_REJECTED;
-
-        fn answer(ack: ObjectActionResponse) -> (bool, usize) {
-            let mut app = App::new();
-            app.init_resource::<Time>()
-                .init_resource::<ActionSlot>()
-                .add_message::<ObjectActionResponse>()
-                .add_message::<ActionRefused>()
-                .add_systems(Update, apply_action_acks);
-            app.world_mut().resource_mut::<ActionSlot>().mark_sent(
-                &Pending {
-                    action: cast(7185),
-                    at: 0.0,
-                    attempts: 0,
-                },
-                0.0,
-            );
-            app.world_mut().write_message(ack);
-            app.update();
-            let re_parked = app.world().resource::<ActionSlot>().next.is_some();
-            let refusals = app
-                .world_mut()
-                .resource_mut::<bevy::ecs::message::Messages<ActionRefused>>()
-                .drain()
-                .count();
-            (re_parked, refusals)
-        }
-
-        assert_eq!(
-            answer(ObjectActionResponse::Started {
-                code: ACTION_START_REJECTED
-            }),
-            (true, 1),
-            "a busy slot parks the request to try again"
+    /// Feed one ack to a slot whose request is in flight; returns whether the
+    /// request is held to be sent again, the refusals announced, and whether
+    /// the server's slot counts as taken.
+    fn answer(ack: ObjectActionResponse) -> (bool, usize, bool) {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ActionSlot>()
+            .add_message::<ObjectActionResponse>()
+            .add_message::<ActionRefused>()
+            .add_systems(Update, apply_action_acks);
+        app.world_mut().resource_mut::<ActionSlot>().mark_sent(
+            &Pending {
+                action: cast(7185),
+                at: 0.0,
+            },
+            0.0,
         );
+        app.world_mut().write_message(ack);
+        app.update();
+        let slot = app.world().resource::<ActionSlot>();
+        let (held, busy) = (slot.next.is_some(), slot.server_busy);
+        let refusals = app
+            .world_mut()
+            .resource_mut::<bevy::ecs::message::Messages<ActionRefused>>()
+            .drain()
+            .count();
+        (held, refusals, busy)
+    }
+
+    /// `01 02` is not a refusal: the server queued the request behind the
+    /// running action and will start it itself. It used to be re-parked and
+    /// sent again once the running action ended — the moment the server had
+    /// just started it, so it ran twice.
+    #[test]
+    fn a_queued_request_is_not_sent_again() {
         assert_eq!(
-            answer(ObjectActionResponse::Failed {
-                code: 0,
-                error: 0x4004
-            }),
-            (false, 1),
-            "a refusal on the merits is announced but never retried"
+            answer(ObjectActionResponse::Started { queue_len: 2 }),
+            (false, 0, true)
         );
     }
 
-    /// A request that is refused every time it is tried must not bounce
-    /// between the wire and the buffer forever.
+    /// A refusal on the merits is announced and never retried.
     #[test]
-    fn a_twice_refused_request_gives_up() {
-        let mut slot = ActionSlot::default();
-        slot.in_flight = Some(InFlight {
-            action: cast(7185),
-            sent_at: 0.0,
-            attempts: 2,
-        });
-        slot.reject_in_flight(1.0);
-        assert!(slot.next.is_none(), "it stops being re-parked");
+    fn a_refusal_is_announced_but_not_retried() {
+        assert_eq!(
+            answer(ObjectActionResponse::Failed {
+                queue_len: 0,
+                error: 0x4004
+            }),
+            (false, 1, false)
+        );
+    }
+
+    /// `02 01`: the running action ended and the waiting one started, so the
+    /// slot stays taken until the `02 00` that ends it.
+    #[test]
+    fn the_waiting_action_starting_keeps_the_slot_taken() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<ActionSlot>()
+            .add_message::<ObjectActionResponse>()
+            .add_message::<ActionRefused>()
+            .add_systems(Update, apply_action_acks);
+        app.world_mut().resource_mut::<ActionSlot>().server_busy = true;
+        app.world_mut()
+            .write_message(ObjectActionResponse::Ended { queue_len: 1 });
+        app.update();
+        assert!(app.world().resource::<ActionSlot>().occupied());
+        app.world_mut()
+            .write_message(ObjectActionResponse::Ended { queue_len: 0 });
+        app.update();
+        assert!(!app.world().resource::<ActionSlot>().occupied());
     }
 
     /// The reported defect: a press held against a busy slot must not go out
