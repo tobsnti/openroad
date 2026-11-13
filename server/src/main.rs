@@ -69,6 +69,8 @@ fn run() -> Result<(), String> {
         gateway_idle: GATEWAY_IDLE,
     };
     let world = World::new(store.clone(), refdata);
+    let (placed, skipped) = (world.npcs().count(), world.skipped_npc_rows());
+    eprintln!("npcpos.txt: {placed} NPCs placed, {skipped} rows skipped (no NPC model in the client's data)");
     let reporter = events.clone();
     let running = runtime::start(config, world, store, move |world, event| {
         reporter.report(world, event)

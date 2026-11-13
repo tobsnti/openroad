@@ -1,7 +1,15 @@
-//! NPCs stand where the user's data puts them: the server places one per row
-//! of `npcpos.txt` when it starts. The vSRO server does the same; every NPC
+//! NPCs stand where the user's data puts them: the server places one per NPC
+//! row of `npcpos.txt` when it starts. The vSRO server does the same; every NPC
 //! measured in its captures stands at its `npcpos.txt` row
 //! [V capture, peer vSRO: 0x3019, refs 2003-2014 in region 25000].
+//!
+//! The file places more than NPCs: of its 12,367 rows in the user's data,
+//! 12,110 are monsters and 12 name models that are not in the client's data
+//! (the user's characterdata). The original client reads a monster's record
+//! with more bytes [V original handler], and what is not in the client's data
+//! is not sent to it. So only NPC models (`RefData::is_npc`) are placed; the
+//! other rows are counted and skipped, and monsters come with their own
+//! system.
 
 use bytes::{BufMut, Bytes, BytesMut};
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
