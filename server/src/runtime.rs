@@ -305,7 +305,8 @@ fn serve_gateway(
         let mut wire = inbound.reply;
         for (opcode, body) in inbound.frames {
             match connection.receive(gateway, &mut shard, opcode, body) {
-                Ok(answer) => wire.extend(frame(answer.opcode, &answer.body)),
+                Ok(Some(answer)) => wire.extend(frame(answer.opcode, &answer.body)),
+                Ok(None) => {}
                 Err(_) => break,
             }
             if connection.closed() {

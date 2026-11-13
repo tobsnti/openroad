@@ -263,20 +263,16 @@ fn the_speeds_come_from_the_users_table() {
     assert_eq!((speeds.walk_speed, speeds.run_speed), (16.0, 50.0));
 }
 
-/// Every phase answers a heartbeat with an empty one: before the login, in
-/// the lobby and in the game.
+/// Every phase takes a heartbeat and stays silent: before the login, in the
+/// lobby and in the game. Nothing is answered, and nothing is reported as
+/// rejected.
 #[test]
-fn a_heartbeat_is_answered_in_every_phase() {
+fn a_heartbeat_is_taken_and_left_unanswered_in_every_phase() {
     let (mut world, ticket) = admitted();
     let s = world.connect();
     let beat = |world: &mut World| {
         send(world, s, Packet::KeepAlive(KeepAlive));
-        assert_eq!(
-            frames(world, s),
-            [(0x2002, Vec::new())],
-            "{:?}",
-            world.phase(s)
-        );
+        assert!(frames(world, s).is_empty(), "{:?}", world.phase(s));
     };
     beat(&mut world);
     log_in(&mut world, s, ticket, "admin");
