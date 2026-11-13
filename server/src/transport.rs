@@ -61,7 +61,15 @@ pub struct Transport {
 impl Transport {
     /// A new connection, and the bytes to send first: the opening handshake.
     pub fn open() -> (Transport, Vec<u8>) {
-        let (handshake, opening) = Handshake::open();
+        Self::start(Handshake::open())
+    }
+
+    /// [`Self::open`] with the handshake's seeds given ([`Handshake::seeded`]).
+    pub fn seeded(sequence_seed: u8, crc_seed: u8) -> (Transport, Vec<u8>) {
+        Self::start(Handshake::seeded(sequence_seed, crc_seed))
+    }
+
+    fn start((handshake, opening): (Handshake, Bytes)) -> (Transport, Vec<u8>) {
         let (sequence_seed, crc_seed) = handshake.seeds();
         let transport = Transport {
             handshake: Some(handshake),
