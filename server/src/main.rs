@@ -139,6 +139,17 @@ fn answer(command: &str, running: &Running) -> Value {
             });
             json!({"ok": true, "players": players.unwrap_or_default()})
         }
+        Some("npcs") => {
+            let npcs = running.query(|world| {
+                let row = |(uid, n): (u32, &server::npc::Npc)| {
+                    let at = n.position;
+                    json!({"uid": uid, "ref": n.ref_id, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z})
+                };
+                world.npcs().map(row).collect::<Vec<_>>()
+            });
+            json!({"ok": true, "npcs": npcs.unwrap_or_default()})
+        }
         Some("loot" | "grant-exp") => json!({"ok": false, "error": "not yet"}),
         _ => json!({"ok": false, "error": "unknown command"}),
     }

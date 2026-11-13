@@ -10,12 +10,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::prelude::{SingleEntityDespawn, TalkResponse};
+use packets::agent::ingame::{GROUP_DESPAWN, GROUP_SPAWN};
+use packets::agent::prelude::{
+    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, SingleEntityDespawn,
+    TalkResponse,
+};
 use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
 use crate::movement;
+use crate::npc::Npc;
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
@@ -139,6 +144,10 @@ pub struct World {
     sessions: BTreeMap<SessionId, Session>,
     /// Characters by unique id, from the join on.
     players: BTreeMap<u32, Player>,
+    /// NPCs by unique id, placed from the reference data at the start.
+    npcs: BTreeMap<u32, Npc>,
+    /// The NPCs of each region, for sight.
+    npcs_in: HashMap<u16, Vec<u32>>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -148,17 +157,49 @@ pub struct World {
 
 impl World {
     pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
-        World {
+        let placed = refdata.npcs().to_vec();
+        let mut world = World {
             store,
             refdata,
             sessions: BTreeMap::new(),
             players: BTreeMap::new(),
+            npcs: BTreeMap::new(),
+            npcs_in: HashMap::new(),
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
             step: 0,
             events: Vec::new(),
+        };
+        for row in placed {
+            let Ok(ref_id) = u32::try_from(row.ref_id) else {
+                continue;
+            };
+            let position = Position {
+                region: row.region,
+                x: row.x,
+                y: row.y,
+                z: row.z,
+                heading: 0,
+            };
+            let uid = world.next_uid();
+            world.npcs_in.entry(row.region).or_default().push(uid);
+            world.npcs.insert(uid, Npc { ref_id, position });
         }
+        world
+    }
+
+    pub fn npc(&self, uid: u32) -> Option<&Npc> {
+        self.npcs.get(&uid)
+    }
+
+    pub fn npcs(&self) -> impl Iterator<Item = (u32, &Npc)> {
+        self.npcs.iter().map(|(uid, npc)| (*uid, npc))
+    }
+
+    /// The NPCs standing in `region`.
+    pub(crate) fn npcs_in(&self, region: u16) -> &[u32] {
+        self.npcs_in.get(&region).map_or(&[], Vec::as_slice)
     }
 
     /// Let `account` in after the gateway checked its password: the returned
@@ -285,6 +326,54 @@ impl World {
         if s.known.insert(uid) {
             self.send(session, spawn);
         }
+    }
+
+    /// Shows `session` the entities of `records` (uid and spawn record) that
+    /// its client does not know yet, as one group (0x3017, 0x3019, 0x3018).
+    pub(crate) fn show_group(&mut self, session: SessionId, records: Vec<(u32, Bytes)>) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let new: Vec<Bytes> = records
+            .into_iter()
+            .filter(|(uid, _)| s.known.insert(*uid))
+            .map(|(_, record)| record)
+            .collect();
+        self.group(session, GROUP_SPAWN, new.len(), new.concat());
+    }
+
+    /// Takes the entities `uids` back from `session`, those it was shown, as
+    /// one group.
+    pub(crate) fn hide_group(&mut self, session: SessionId, uids: Vec<u32>) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let gone: Vec<u32> = uids.into_iter().filter(|uid| s.known.remove(uid)).collect();
+        let raw: Vec<u8> = gone.iter().flat_map(|uid| uid.to_le_bytes()).collect();
+        self.group(session, GROUP_DESPAWN, gone.len(), raw);
+    }
+
+    fn group(&mut self, session: SessionId, kind: u8, count: usize, raw: Vec<u8>) {
+        if count == 0 {
+            return;
+        }
+        let count = u16::try_from(count).expect("a group counts in u16");
+        let begin = GroupEntitySpawnBegin { kind, count };
+        self.send(session, Packet::GroupEntitySpawnBegin(begin));
+        let data = GroupEntitySpawnData { raw: raw.into() };
+        self.send(session, Packet::GroupEntitySpawnData(data));
+        self.send(session, Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
+    }
+
+    /// The entities `session`'s client was shown that are NPCs.
+    pub(crate) fn shown_npcs(&self, session: SessionId) -> Vec<u32> {
+        self.sessions.get(&session).map_or(Vec::new(), |s| {
+            s.known
+                .iter()
+                .filter(|uid| self.npcs.contains_key(uid))
+                .copied()
+                .collect()
+        })
     }
 
     /// Whether `session`'s client was shown the character `uid`.

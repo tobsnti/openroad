@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use sro_textdata::characterdata::CharacterDataRow;
+use sro_textdata::npcpos::{self, NpcPos};
 
 /// What the server takes from a characterdata row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,10 +21,11 @@ pub struct CharacterRef {
 #[derive(Default)]
 pub struct RefData {
     characters: HashMap<u32, CharacterDataRow>,
+    npcs: Vec<NpcPos>,
 }
 
 impl RefData {
-    /// Every `characterdata*.txt` under `textdata`.
+    /// Every `characterdata*.txt` under `textdata`, and `npcpos.txt`.
     pub fn load(textdata: &Path) -> std::io::Result<RefData> {
         let mut data = RefData::default();
         for entry in std::fs::read_dir(textdata)? {
@@ -35,6 +37,8 @@ impl RefData {
             let name = name.to_ascii_lowercase();
             if name.starts_with("characterdata") && name.ends_with(".txt") {
                 data.add_characters(&text(&std::fs::read(&path)?));
+            } else if name == "npcpos.txt" {
+                data.add_npcs(&text(&std::fs::read(&path)?));
             }
         }
         Ok(data)
@@ -51,6 +55,15 @@ impl RefData {
                 self.characters.insert(id, CharacterDataRow(cols));
             }
         }
+    }
+
+    /// The rows of `npcpos.txt`: where the data puts its NPCs.
+    pub fn add_npcs(&mut self, table: &str) {
+        self.npcs.extend(npcpos::parse(table));
+    }
+
+    pub fn npcs(&self) -> &[NpcPos] {
+        &self.npcs
     }
 
     /// The characterdata row `ref_id`, as far as the server uses it.

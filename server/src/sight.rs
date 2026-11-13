@@ -1,22 +1,25 @@
 //! Who sees whom. The original takes a leaving character back from the
 //! observers of its block and of the neighbouring blocks [V original server];
 //! how large a block is is open [U]. This server takes a region for a block,
-//! so a character sees the others in its region and the eight around it; in
-//! a dungeon, in its region.
+//! so a character sees the others and the NPCs in its region and the eight
+//! around it; in a dungeon, in its region.
 //!
 //! The original client asserts on the spawn of an id it knows and on any
 //! other frame about an id it does not [V original handler], so the world
 //! keeps, per session, the ids its client was shown ([`World::show`]), and
 //! takes them back with 0x3016 when the character leaves its sight.
 
-use bytes::{BufMut, BytesMut};
+use std::collections::BTreeSet;
+
+use bytes::{BufMut, Bytes, BytesMut};
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
 use packets::agent::prelude::SingleEntitySpawn;
-use packets::region::{is_dungeon, sector};
+use packets::region::{is_dungeon, region_id, sector};
 use packets::Packet;
 use sro_macro::Serialize;
 
 use crate::movement::in_region;
+use crate::npc;
 use crate::world::{Player, World};
 
 /// Brings who sees the character `uid`, and whom it sees, in line with where
@@ -48,16 +51,45 @@ pub(crate) fn update(world: &mut World, uid: u32) {
             world.hide(player.session, uid);
         }
     }
+    // NPCs only are seen, and come and go in groups, as the vSRO server
+    // sends them [V capture, peer vSRO: every NPC record in 0x3019].
+    let near: BTreeSet<u32> = around(me.position.region)
+        .into_iter()
+        .flat_map(|region| world.npcs_in(region).to_vec())
+        .collect();
+    let gone: Vec<u32> = world
+        .shown_npcs(me.session)
+        .into_iter()
+        .filter(|uid| !near.contains(uid))
+        .collect();
+    world.hide_group(me.session, gone);
+    let new: Vec<(u32, Bytes)> = near
+        .into_iter()
+        .filter(|uid| !world.knows(me.session, *uid))
+        .filter_map(|uid| world.npc(uid).map(|n| (uid, npc::record(uid, n))))
+        .collect();
+    world.show_group(me.session, new);
 }
 
-/// Whether a character in region `a` sees one in region `b`: the same
-/// region, or in the overworld one of the eight around it.
-fn in_sight(a: u16, b: u16) -> bool {
-    if is_dungeon(a) || is_dungeon(b) {
-        return a == b;
+/// The regions a character in `region` sees: its own and, in the overworld,
+/// the eight around it.
+fn around(region: u16) -> Vec<u16> {
+    if is_dungeon(region) {
+        return vec![region];
     }
-    let ((ax, az), (bx, bz)) = (sector(a), sector(b));
-    ax.abs_diff(bx) <= 1 && az.abs_diff(bz) <= 1
+    let (x, z) = sector(region);
+    let mut regions = Vec::with_capacity(9);
+    for nz in z.saturating_sub(1)..=(z + 1).min(0x7F) {
+        for nx in x.saturating_sub(1)..=x.saturating_add(1) {
+            regions.push(region_id(nx, nz));
+        }
+    }
+    regions
+}
+
+/// Whether a character in region `a` sees one in region `b`.
+fn in_sight(a: u16, b: u16) -> bool {
+    around(a).contains(&b)
 }
 
 /// The single spawn (0x3015) of a character, in the order the original

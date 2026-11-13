@@ -16,6 +16,7 @@ pub mod handshake;
 mod join;
 mod lobby;
 mod movement;
+pub mod npc;
 pub mod outbox;
 pub mod refdata;
 pub mod registry;
