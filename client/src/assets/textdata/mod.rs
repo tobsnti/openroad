@@ -6,12 +6,12 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::assets::textdata::actionwnddata::ActionWndData;
-use crate::assets::textdata::characterdata::{CharacterData, CharacterDataRow};
+use crate::assets::textdata::characterdata::CharacterData;
 use crate::assets::textdata::collectionbook::CollectionBookTable;
 use crate::assets::textdata::dungeoninfo::DungeonInfo;
 use crate::assets::textdata::effectsound::EffectSoundTable;
 use crate::assets::textdata::gameguide::GuideIndex;
-use crate::assets::textdata::itemdata::{ItemData, ItemDataRow};
+use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::leveldata::LevelData;
 use crate::assets::textdata::magicoption::{MagicOptionData, MagicOptionInfo};
 use crate::assets::textdata::magicoptionassign::MagicOptionAssign;
@@ -249,13 +249,9 @@ impl AssetLoader for TextdataLoader {
                 }
                 Ok(Textdata::CharacterData(CharacterData(data)))
             } else {
-                let data = content
-                    .lines()
-                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
-                    .filter(|l| l.len() > 10)
-                    .map(|l| (l[1].parse::<i32>().unwrap(), CharacterDataRow(l)))
-                    .collect::<HashMap<_, _>>();
-                Ok(Textdata::CharacterData(CharacterData(data)))
+                Ok(Textdata::CharacterData(CharacterData::parse_shard(
+                    &content,
+                )))
             }
         } else if file_stem.starts_with("collectionbook_theme") {
             // the theme file is the entry point: its item sibling never loads
@@ -515,13 +511,7 @@ impl AssetLoader for TextdataLoader {
                 }
                 Ok(Textdata::ItemData(ItemData(data)))
             } else {
-                let data = content
-                    .lines()
-                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
-                    .filter(|l| l.len() > 10)
-                    .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, ItemDataRow(l))))
-                    .collect::<HashMap<_, _>>();
-                Ok(Textdata::ItemData(ItemData(data)))
+                Ok(Textdata::ItemData(ItemData::parse_shard(&content)))
             }
         }
     }

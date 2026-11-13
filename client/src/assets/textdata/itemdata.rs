@@ -11,6 +11,21 @@ pub struct ItemDataRow(pub(crate) Vec<String>);
 #[derive(Asset, TypePath, Debug, Clone)]
 pub struct ItemData(pub HashMap<i32, ItemDataRow>);
 
+impl ItemData {
+    /// One `itemdata_*.txt` shard, read like a characterdata shard (see
+    /// `CharacterData::parse_shard`).
+    pub fn parse_shard(content: &str) -> Self {
+        Self(
+            content
+                .lines()
+                .map(|l| l.split('\t').map(String::from).collect::<Vec<String>>())
+                .filter(|l| l.len() > 10)
+                .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, ItemDataRow(l))))
+                .collect(),
+        )
+    }
+}
+
 #[repr(usize)]
 enum ItemdataFields {
     CodeName = 2,

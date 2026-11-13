@@ -46,7 +46,13 @@ use packets::agent::prelude::{
     SelectEntityResponse, SingleEntitySpawn,
 };
 
-use crate::net::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
+use crate::assets::textdata::characterdata::CharacterData;
+use crate::assets::textdata::decode::decode_textdata;
+use crate::assets::textdata::itemdata::ItemData;
+use crate::assets::textdata::teleport::TeleportTable;
+use crate::net::entity_spawn::{
+    parse_group_spawn, RefResolver, RefType, SpawnKind, TextdataResolver,
+};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -54,6 +60,7 @@ use packets::login::{
 use packets::Packet;
 
 use crate::net::connection::SilkroadConnection;
+use crate::plugins::assets::sro::open_media_pk2;
 use crate::plugins::config::division::DivisionInfo;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::dev::build_info::build_label;
@@ -64,6 +71,7 @@ use crate::plugins::net::gateway::shard_list::{
 use crate::plugins::net::gateway::systems::{init_gateway_service, poll_gateway_connection};
 use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::plugin::{NetworkCorePlugin, NetworkState};
+use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientTeleport};
 use packets::hexdump;
 use sro_net::frame::SilkroadFrame;
 
@@ -79,6 +87,7 @@ pub fn run_headless(config: ClientConfig) {
         })
         .insert_resource(config)
         .insert_resource(DivisionInfo::load_or_fallback())
+        .insert_resource(GameData::load())
         .insert_resource(ActionDriver {
             enabled: env::var("NETCHECK_ACTIONS").is_ok(),
             ..default()
@@ -430,9 +439,6 @@ struct ActionDriver {
     /// Record count from the most recent spawn-kind `GroupEntitySpawnBegin`,
     /// needed to parse the data packet that follows it.
     group_count: Option<u16>,
-    /// First selectable entity seen, kept across frames so a spawn batch that
-    /// arrived before the driver was enabled is not lost.
-    pending_target: Option<(u32, u16)>,
     /// Every selectable entity seen so far: uid, region, x, z.
     candidates: Vec<(u32, u16, f32, f32)>,
     select_sent: bool,
@@ -457,7 +463,124 @@ struct ActionDriver {
     pending_body: Option<Bytes>,
 }
 
-/// Minimal [`RefResolver`] for headless spawn parsing. Without characterdata it
+/// The user's own characterdata, itemdata and teleport tables, read straight
+/// out of their Media.pk2 when there is one (decision 0007): spawn records then
+/// resolve through the same [`TextdataResolver`] the game uses, so NPCs,
+/// players and every drop read as they do on screen. Without data the harness
+/// falls back to [`HeadlessResolver`].
+#[derive(Resource, Default)]
+struct GameData(Option<Tables>);
+
+struct Tables {
+    characters: ClientCharacterData,
+    items: ClientItemData,
+    teleport: ClientTeleport,
+}
+
+impl GameData {
+    /// Read the tables and name what was read: a bench result is only
+    /// comparable with another run on the same data.
+    fn load() -> Self {
+        match read_tables() {
+            Ok((tables, report)) => {
+                info!("netcheck: game data {report}");
+                Self(Some(tables))
+            }
+            Err(why) => {
+                info!("netcheck: no game data ({why}) — spawn records are read only where the batch decides their kind");
+                Self(None)
+            }
+        }
+    }
+
+    fn resolver(&self) -> SpawnResolver<'_> {
+        match &self.0 {
+            Some(t) => SpawnResolver::Data(TextdataResolver {
+                char_data: &t.characters,
+                item_data: &t.items,
+                teleport: &t.teleport,
+            }),
+            None => SpawnResolver::Headless(HeadlessResolver),
+        }
+    }
+}
+
+/// The three tables as the asset loader assembles them: each master list names
+/// its shards, and a missing file fails the whole read rather than leaving a
+/// table that silently misclassifies.
+fn read_tables() -> Result<(Tables, String), String> {
+    let (path, archive) = open_media_pk2()?;
+    let read = std::cell::Cell::new(0usize);
+    let text = |name: &str| {
+        archive
+            .read_file_bytes(&std::path::Path::new("server_dep/silkroad/textdata").join(name))
+            .map(|bytes| {
+                read.set(read.get() + bytes.len());
+                decode_textdata(&bytes)
+            })
+            .ok_or_else(|| format!("{name} not in {}", path.display()))
+    };
+    let shards = |master: &str| -> Result<Vec<String>, String> {
+        Ok(text(master)?
+            .lines()
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect())
+    };
+    let mut characters = CharacterData(Default::default());
+    for shard in shards("characterdata.txt")? {
+        characters
+            .0
+            .extend(CharacterData::parse_shard(&text(&shard)?).0);
+    }
+    let mut items = ItemData(Default::default());
+    for shard in shards("itemdata.txt")? {
+        items.0.extend(ItemData::parse_shard(&text(&shard)?).0);
+    }
+    let teleport = TeleportTable::parse(
+        &text("teleportdata.txt")?,
+        &text("teleportlink.txt")?,
+        &text("teleportbuilding.txt")?,
+    );
+    let report = format!(
+        "from {}: characterdata {} rows, itemdata {} rows, {} bytes of textdata",
+        path.display(),
+        characters.0.len(),
+        items.0.len(),
+        read.get()
+    );
+    Ok((
+        Tables {
+            characters: ClientCharacterData::from_table(characters),
+            items: ClientItemData::from_data(items),
+            teleport: ClientTeleport::from_table(teleport),
+        },
+        report,
+    ))
+}
+
+/// [`GameData::resolver`]'s answer: the game's resolver, or the fallback.
+enum SpawnResolver<'a> {
+    Data(TextdataResolver<'a>),
+    Headless(HeadlessResolver),
+}
+
+impl RefResolver for SpawnResolver<'_> {
+    fn resolve(&self, ref_id: u32) -> RefType {
+        match self {
+            Self::Data(r) => r.resolve(ref_id),
+            Self::Headless(r) => r.resolve(ref_id),
+        }
+    }
+    fn item_is_equipment(&self, ref_id: u32) -> bool {
+        match self {
+            Self::Data(r) => r.item_is_equipment(ref_id),
+            Self::Headless(r) => r.item_is_equipment(ref_id),
+        }
+    }
+}
+
+/// The [`RefResolver`] without game data. Without characterdata it
 /// cannot tell an NPC from a monster and says so (`RefType::Character`), so a
 /// record is read only where the batch's length settles it — measured on our
 /// stub's batches, it does for monsters and does not for NPCs. It used to
@@ -613,24 +736,18 @@ fn netcheck_drive_actions(
     driver.next_move_at = Some(now + 1.5);
 }
 
-/// Select the first parseable nearby entity from a single-entity spawn, once.
+/// Select the nearest monster from the spawns seen so far, once.
 fn netcheck_select_target(
     mut driver: ResMut<ActionDriver>,
     mut reader: MessageReader<SingleEntitySpawn>,
     mut group_begins: MessageReader<GroupEntitySpawnBegin>,
     mut group_datas: MessageReader<GroupEntitySpawnData>,
+    game_data: Res<GameData>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if driver.select_sent {
+    if !driver.enabled || driver.select_sent {
         return;
     }
-    // Candidates are collected even before the driver is enabled. The spawn
-    // stream and the join handler land in the SAME frame against our stub
-    // (measured 2026-11-09: 0x3017/0x3019/0x3018 and "local player unique_id"
-    // share a timestamp), and a Bevy message lives two frames — gating the
-    // read on `enabled` dropped the only batch there was. Same race the
-    // `pending_body` field already exists for (#728).
-    //
     // A server may deliver the initial view either way, and this step used to
     // read only the single-spawn message. Measured against our own stub on
     // 2026-11-09: after it moved every spawn onto the group triple, 0x3015
@@ -649,12 +766,12 @@ fn netcheck_select_target(
         .filter_map(|d| {
             driver
                 .group_count
-                .map(|count| parse_group_spawn(&d.raw, true, count, &HeadlessResolver))
+                .map(|count| parse_group_spawn(&d.raw, true, count, &game_data.resolver()))
         })
         .collect();
     let single_spawns: Vec<_> = reader
         .read()
-        .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &HeadlessResolver))
+        .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver()))
         .collect();
     // Remember every candidate; choose when the local position is known.
     // Measured 2026-11-09: the spawn batch and the join land in the same frame,
@@ -693,10 +810,7 @@ fn netcheck_select_target(
             d(a).total_cmp(&d(b))
         })
         .map(|c| (c.0, c.1));
-    if let Some(found) = nearest {
-        driver.pending_target = Some(found);
-    }
-    let (Some((uid, region)), true) = (driver.pending_target, driver.enabled) else {
+    let Some((uid, region)) = nearest else {
         return;
     };
     let Ok(conn) = conn.single() else {
@@ -777,8 +891,16 @@ fn netcheck_press_attack(
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
     const MAX_SWINGS: u8 = 20;
+    /// Our stub's basic-attack cooldown is 1 s (30 ticks); 0.2 s over it, a
+    /// paced swing never lands on the cooldown.
     const SWING_INTERVAL: f64 = 1.2;
-    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+    // Stop once a drop is being walked to: the target is dead, and every
+    // swing after that hits a corpse.
+    if !driver.enabled
+        || !driver.attack_sent
+        || driver.pickup_sent
+        || driver.pending_pickup.is_some()
+    {
         return;
     }
     if driver.swings >= MAX_SWINGS {
@@ -815,37 +937,34 @@ fn netcheck_press_attack(
 fn netcheck_pick_up_loot(
     mut driver: ResMut<ActionDriver>,
     mut reader: MessageReader<SingleEntitySpawn>,
+    game_data: Res<GameData>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
-    if !driver.enabled || !driver.attack_sent || driver.pickup_sent {
+    if !driver.enabled
+        || !driver.attack_sent
+        || driver.pickup_sent
+        || driver.pending_pickup.is_some()
+    {
         return;
     }
     let Ok(conn) = conn.single() else {
         return;
     };
     for spawn in reader.read() {
-        let parsed = parse_group_spawn(&spawn.raw, true, 1, &HeadlessResolver);
+        let parsed = parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver());
         let Some(uid) = parsed
             .spawns
             .iter()
             .map(|entity| entity.unique_id)
             .find(|&uid| uid != 0 && Some(uid) != driver.selected_uid)
         else {
-            // Say so instead of skipping quietly. A drop whose ref id this
-            // harness cannot classify parses to nothing, and the uid cannot be
-            // read from the raw bytes either: a gold record carries its amount
-            // between the ref id and the uid, a non-gold record does not, so
-            // without the classification the field is ambiguous.
-            //
-            // The limit is OURS, not the server's. Headless runs load no
-            // itemdata, so `HeadlessResolver` knows exactly one id — gold —
-            // and reports every other drop here. Measured 2026-11-09: a stub
-            // dropped `ref=4`, which is the real `ITEM_ETC_HP_POTION_01` row;
-            // the first version of this comment called that an invented id and
-            // sent me looking for a server defect that was not there.
-            //
-            // The silent version of this branch reads as "the chain
-            // completed".
+            // Say so instead of skipping quietly: a drop this harness cannot
+            // classify parses to nothing, and its uid cannot be read from the
+            // raw bytes either — a gold record carries its amount between the
+            // ref id and the uid, a non-gold record does not. Without game
+            // data only gold is classified, so every other drop lands here;
+            // the limit is ours, not the server's. The silent version of this
+            // branch read as "the chain completed".
             warn!(
                 "netcheck: a drop arrived that could not be classified ({} bytes, ref={}); \
                  no pickup sent",
@@ -899,6 +1018,9 @@ fn netcheck_finish_pickup(
     time: Res<Time>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
 ) {
+    /// The movement square leaves the player about 150 units from where the
+    /// mob died (measured 2026-11-09); running, that is well under 3 s, and
+    /// the pickup then lands inside the server's 80-unit radius.
     const WALK_ALLOWANCE: f64 = 3.0;
     if !driver.enabled || driver.pickup_sent {
         return;
@@ -1022,6 +1144,15 @@ mod tests {
             ]
         );
 
+        let npcs = town_centre_npcs();
+        assert_eq!(npcs.len(), 343);
+        assert!(parse_group_spawn(&npcs, true, 7, &HeadlessResolver)
+            .spawns
+            .is_empty());
+    }
+
+    /// The seven NPCs our stub spawns at the Jangan town centre, 343 bytes.
+    fn town_centre_npcs() -> Vec<u8> {
         let refs = [2003u32, 2004, 2009, 2005, 2008, 2013, 2017];
         let spots = [
             (1019.0f32, 1419.0f32),
@@ -1032,14 +1163,27 @@ mod tests {
             (819.0, 1369.0),
             (1119.0, 1369.0),
         ];
-        let npcs: Vec<u8> = (0x1001u32..)
+        (0x1001u32..)
             .zip(refs.into_iter().zip(spots))
             .flat_map(|(uid, (ref_id, (x, z)))| character_record(ref_id, uid, x, z, true))
-            .collect();
-        assert_eq!(npcs.len(), 343);
-        assert!(parse_group_spawn(&npcs, true, 7, &HeadlessResolver)
+            .collect()
+    }
+
+    /// With the user's own tables the town centre reads as seven NPCs — the
+    /// batch the fallback has to leave unread.
+    #[test]
+    #[ignore = "reads the user's Media.pk2 (SRO_PK2_PATH, SRO_PATH or ./assets)"]
+    fn with_game_data_the_town_centre_reads_as_npcs() {
+        let data = GameData::load();
+        assert!(data.0.is_some(), "no game data could be read");
+        let parsed = parse_group_spawn(&town_centre_npcs(), true, 7, &data.resolver());
+        let read: Vec<_> = parsed
             .spawns
-            .is_empty());
+            .iter()
+            .map(|e| (e.unique_id, e.kind.clone()))
+            .collect();
+        let expected: Vec<_> = (0x1001..=0x1007).map(|uid| (uid, SpawnKind::Npc)).collect();
+        assert_eq!(read, expected);
     }
 
     /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
