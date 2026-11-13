@@ -392,6 +392,9 @@ pub fn on_invite_response(
                     "{INVITE_REFUSED_NOTICE} (code {error:#06x})"
                 )));
             }
+            ExchangeInviteResponse::Other(result) => {
+                warn!("exchange: invite answered with result {result} and no code (0xB081)");
+            }
         }
     }
 }

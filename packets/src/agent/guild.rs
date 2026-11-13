@@ -264,33 +264,29 @@ pub struct GuildNoticeEditRequest {
     pub message: String,
 }
 
-/// The guild command acks share **one body form**: `{result:u8}` on success,
-/// `{result:u8, error_code:u16}` on refusal. That is not an assumption — the
-/// eleven handlers sit in one VA cluster (`00881820`–`00881e70`) and every one
-/// of them reads the same two fields in the same order, and the server writers
-/// in the `0x005c9xxx` family answer with the single byte `01` on success
-/// (`docs/re/net/inbound/guild.md`, net-batch-10/11). Modelling them as one
-/// generated form keeps that finding visible instead of copying a struct
-/// eleven times.
+/// The guild command acks share **one body form**, a `result:u8` and then a
+/// `u16` error code, but not one condition for the code: most read it only
+/// after result 2; invite, kick and notice edit read it after any result but
+/// 1 `[V original handler]`. So each ack names its condition, and one
+/// generated form keeps the shared shape visible instead of copying a struct
+/// fifteen times.
 ///
 /// Each ack still gets its own type, because the opcode table in
 /// [`crate::Packet`] maps one opcode to one type.
 macro_rules! guild_op_ack {
-    ($(#[$meta:meta])* $name:ident) => {
+    ($(#[$meta:meta])* $name:ident when $code_when:tt) => {
         $(#[$meta])*
         ///
-        /// Body: `result:u8` (1 = ok, 2 = error); on `result != 1` a `u16`
-        /// error code follows. 1 byte on success, 3 on failure.
+        #[doc = concat!("Body: `result:u8`, then a `u16` error code when `", $code_when, "`.")]
         #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
         pub struct $name {
             pub result: u8,
-            #[sro_packet(when = "result != 1")]
+            #[sro_packet(when = $code_when)]
             pub error_code: Option<u16>,
         }
 
         impl $name {
-            /// `result == 1`. The original tests for exactly this value and
-            /// treats every other value as the error arm.
+            /// `result == 1`, the original's only success.
             pub fn is_success(&self) -> bool {
                 self.result == 1
             }
@@ -314,14 +310,14 @@ guild_op_ack! {
     /// (`FUN_005c8b90 @5c8bbe`, "kick vs leave") — so `0xB0F2` is the
     /// member-side verb and `0xB0F1` is the one left over. Naming is [S],
     /// the layout is [V].
-    GuildDisbandAck
+    GuildDisbandAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB0F2 — ack for the guild **leave/secede** request (C→S `0x70F2`),
     /// handler `FUN_008819e0`. See [`GuildDisbandAck`] for why this one is
     /// leave rather than disband.
-    GuildLeaveAck
+    GuildLeaveAck when "result == 2"
 }
 
 guild_op_ack! {
@@ -331,7 +327,7 @@ guild_op_ack! {
     /// The success arm is deliberately inert in the original: the inviter
     /// learns nothing here, the invitee gets the `0x3080` petition popup. The
     /// error arm additionally clears the client's "invitation pending" flag.
-    GuildInviteAck
+    GuildInviteAck when "result != 1"
 }
 
 guild_op_ack! {
@@ -341,7 +337,7 @@ guild_op_ack! {
     /// The success arm does nothing: the roster change arrives out of band via
     /// `0x3100`/`0x38F5`. Server writer `FUN_005c8b90 @5c8bbe` emits the single
     /// byte `01`.
-    GuildKickAck
+    GuildKickAck when "result != 1"
 }
 
 guild_op_ack! {
@@ -351,7 +347,7 @@ guild_op_ack! {
     /// On success the original shows `UIIT_MSG_GUILD_COMMON_KNOW_REMIND_UPDATE`
     /// and reads nothing further; the server writer `FUN_005c91a0 @5c91d7`
     /// agrees byte-for-byte.
-    GuildNoticeEditAck
+    GuildNoticeEditAck when "result != 1"
 }
 
 guild_op_ack! {
@@ -362,7 +358,7 @@ guild_op_ack! {
     /// side (`FUN_005c8fd0 @5c90aa`) charges a per-grade cost with the grade
     /// clamped to 2..=5, which is where the C→S grade range comes from — that
     /// request is not modelled here, only its ack.
-    GuildPromoteAck
+    GuildPromoteAck when "result == 2"
 }
 
 guild_op_ack! {
@@ -371,7 +367,7 @@ guild_op_ack! {
     ///
     /// Success is empty; the new bitmask itself arrives inside the guild record
     /// as [`GuildMember::permissions`]. Server writer `FUN_005c9530 @5c9557`.
-    GuildPermissionUpdateAck
+    GuildPermissionUpdateAck when "result == 2"
 }
 
 /// 0xB0F6 — ack for the guild **GP donation** (C→S `0x70F6`), handler
@@ -388,7 +384,7 @@ pub struct GuildDonateAck {
     pub result: u8,
     #[sro_packet(when = "result == 1")]
     pub donated_gp: Option<u32>,
-    #[sro_packet(when = "result != 1")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -763,6 +759,27 @@ mod tests {
         let decoded = GuildKickRequest::try_from(wire.clone()).unwrap();
         assert_eq!(decoded.member_name, "Grunt");
         assert_eq!(Bytes::from(decoded), wire);
+    }
+
+    /// A result other than 1 and 2 ends most guild acks: their code follows
+    /// result 2 only. Invite, kick and notice edit read it after any result
+    /// but 1. Each frame is exactly as long as the original reads it.
+    #[test]
+    fn each_ack_reads_its_code_under_its_own_condition() {
+        use crate::judge::{judge, Verdict};
+        for opcode in [
+            0xB0F1, 0xB0F2, 0xB0F6, 0xB0FA, 0xB0FB, 0xB0FC, 0xB0FD, 0xB103, 0xB104, 0xB105, 0xB107,
+            0xB110, 0xB112, 0xB114,
+        ] {
+            assert_eq!(judge(opcode, &[0x03]), Verdict::Exact, "{opcode:#06X}");
+        }
+        for opcode in [0xB0F3, 0xB0F4, 0xB0F9] {
+            assert_eq!(
+                judge(opcode, &[0x03, 0x0E, 0x1C]),
+                Verdict::Exact,
+                "{opcode:#06X}"
+            );
+        }
     }
 
     /// 0x7104 is one byte, so it cannot be carrying the 32-bit mask.

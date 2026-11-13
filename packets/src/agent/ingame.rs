@@ -3484,9 +3484,10 @@ pub struct AcademyInviteRequest {
 /// 4 ms `[V capture, peer vSRO]`. Before the answer the inviter hears nothing.
 ///
 /// The tail is **selected by the result byte**, which is why this is not a
-/// plain derive: `result == 1` carries the uid, anything else a `u16` error
-/// code. Reading both as one fixed 5-byte body made every *refused* invite fail
-/// to decode — a 3-byte body is short, not malformed.
+/// plain derive: `result == 1` carries the uid, `2` a `u16` error code, and
+/// any other result nothing `[V original handler]`. Reading both as one fixed
+/// 5-byte body made every *refused* invite fail to decode — a 3-byte body is
+/// short, not malformed.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ExchangeInviteResponse {
     /// The target accepted; the trade window opens on this, not on 0x3085.
@@ -3494,6 +3495,8 @@ pub enum ExchangeInviteResponse {
     /// The server refused. The code is carried verbatim: no source names its
     /// value space, so interpreting it here would be an invented table.
     Refused { error: u16 },
+    /// Any other result, which carries nothing more.
+    Other(u8),
 }
 
 impl TryFrom<Bytes> for ExchangeInviteResponse {
@@ -3505,17 +3508,20 @@ impl TryFrom<Bytes> for ExchangeInviteResponse {
                 "0xB081 body too short",
             ))
         };
-        let result = *value.first().ok_or_else(short)?;
-        if result == EXCHANGE_INVITE_RAISED {
-            let uid = value.get(1..5).ok_or_else(short)?;
-            Ok(ExchangeInviteResponse::Accepted {
-                unique_id: u32::from_le_bytes(uid.try_into().unwrap()),
-            })
-        } else {
-            let code = value.get(1..3).ok_or_else(short)?;
-            Ok(ExchangeInviteResponse::Refused {
-                error: u16::from_le_bytes(code.try_into().unwrap()),
-            })
+        match *value.first().ok_or_else(short)? {
+            EXCHANGE_INVITE_RAISED => {
+                let uid = value.get(1..5).ok_or_else(short)?;
+                Ok(ExchangeInviteResponse::Accepted {
+                    unique_id: u32::from_le_bytes(uid.try_into().unwrap()),
+                })
+            }
+            EXCHANGE_INVITE_REFUSED => {
+                let code = value.get(1..3).ok_or_else(short)?;
+                Ok(ExchangeInviteResponse::Refused {
+                    error: u16::from_le_bytes(code.try_into().unwrap()),
+                })
+            }
+            other => Ok(ExchangeInviteResponse::Other(other)),
         }
     }
 }
@@ -3532,14 +3538,14 @@ impl From<ExchangeInviteResponse> for Bytes {
                 bytes::BufMut::put_u8(&mut buf, EXCHANGE_INVITE_REFUSED);
                 bytes::BufMut::put_u16_le(&mut buf, error);
             }
+            ExchangeInviteResponse::Other(result) => bytes::BufMut::put_u8(&mut buf, result),
         }
         buf.freeze()
     }
 }
 
-/// `result` values of [`ExchangeInviteResponse`]. Only 1 is named by a source;
-/// 2 is the family's usual "failed" and is what we write when re-encoding a
-/// refusal, never something we require on the wire.
+/// `result` values of [`ExchangeInviteResponse`]: 1 carries the target's uid,
+/// 2 an error code.
 pub const EXCHANGE_INVITE_RAISED: u8 = 1;
 pub const EXCHANGE_INVITE_REFUSED: u8 = 2;
 
@@ -5138,6 +5144,12 @@ mod test {
         let ack: ExchangeInviteResponse = refused.clone().try_into().unwrap();
         assert_eq!(ack, ExchangeInviteResponse::Refused { error: 0x2C0C });
         assert_eq!(Bytes::from(ack), refused);
+
+        // any other result is the whole frame: the code follows 2 only
+        let other = Bytes::from_static(&[0x03]);
+        let ack: ExchangeInviteResponse = other.clone().try_into().unwrap();
+        assert_eq!(ack, ExchangeInviteResponse::Other(3));
+        assert_eq!(Bytes::from(ack), other);
 
         // a body that stops inside its tail is an error, not a silent zero
         assert!(ExchangeInviteResponse::try_from(Bytes::from_static(&[0x01, 0x00])).is_err());

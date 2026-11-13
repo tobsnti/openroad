@@ -91,13 +91,13 @@ guild_op_ack! {
     ///
     /// The success arm carries **no** successor id: any roster change arrives
     /// through `0x38F5`/`0x3100`, so a consumer must not expect one here.
-    GuildMasterTransferAck
+    GuildMasterTransferAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB105 — ack for [`GuildElectionStartRequest`], handler `FUN_008857b0`.
     /// [`GUILD_ELECTION_NOT_VOTE_TIME`] is the one code it special-cases.
-    GuildElectionStartAck
+    GuildElectionStartAck when "result == 2"
 }
 
 guild_op_ack! {
@@ -106,7 +106,7 @@ guild_op_ack! {
     /// Note the VA: `guild-alliance.md` misattributes this handler to `0xB0FB`.
     /// Its error box uses category `0x15`, shared only with 0xB106 — the
     /// binary's own grouping of the election subsystem.
-    GuildElectionVoteAck
+    GuildElectionVoteAck when "result == 2"
 }
 
 /// One row of the election roster in [`GuildElectionRoster`].
