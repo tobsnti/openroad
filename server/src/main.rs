@@ -2,8 +2,8 @@
 //! arguments; the start world, the event file and the admin socket come from
 //! the environment, and nothing outlives the process.
 //!
-//! - `BENCH_FIXTURE`: the start world. Its `konto` becomes the one account,
-//!   with its `charakter` as that account's character.
+//! - `BENCH_FIXTURE`: the start world. Each `konto<suffix>` (`konto`,
+//!   `konto_b`) becomes an account with `charakter<suffix>` as its character.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
 //!   `player.joined`, `c2s.rejected`.
@@ -31,17 +31,20 @@ fn main() {
     eprintln!("server build: commit {}", env!("OPENROAD_BUILD_COMMIT"));
     let fixture: Value =
         serde_json::from_str(&read(&var("BENCH_FIXTURE"))).expect("BENCH_FIXTURE is JSON");
-    let account = &fixture["konto"];
-    let character = character(
-        &fixture["charakter"],
-        start_position(&var("BENCH_START_POS")),
-    );
+    let start = start_position(&var("BENCH_START_POS"));
     let mut store = MemoryStore::default();
-    store.add_account(
-        text(&account["name"]),
-        text(&account["passwort"]),
-        vec![character],
-    );
+    // Every `konto<suffix>` with its `charakter<suffix>`: `konto` for the
+    // first client, `konto_b` for the second.
+    let accounts = fixture.as_object().expect("the fixture is an object");
+    for (key, account) in accounts.iter().filter(|(key, _)| key.starts_with("konto")) {
+        let suffix = &key["konto".len()..];
+        let character = character(&fixture[format!("charakter{suffix}")], start);
+        store.add_account(
+            text(&account["name"]),
+            text(&account["passwort"]),
+            vec![character],
+        );
+    }
     let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
     let refdata = RefData::load(Path::new(&var("OPENROAD_TEXTDATA_DIR")))
         .expect("OPENROAD_TEXTDATA_DIR is readable");
