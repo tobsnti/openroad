@@ -18,7 +18,7 @@ use rand_core::{OsRng, RngCore};
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
-use crate::store::{AccountId, Store};
+use crate::store::{AccountId, Position, Store};
 use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
@@ -54,6 +54,18 @@ pub enum Event {
     Overflowed(SessionId),
     /// A character's model has no reference-data row; its join was refused.
     NoRefData { session: SessionId, ref_id: u32 },
+    /// The client has loaded the world (0x3012): its character is in the game.
+    Joined { session: SessionId, uid: u32 },
+}
+
+/// A character in the world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Player {
+    pub session: SessionId,
+    pub name: String,
+    pub position: Position,
+    pub hp: u32,
+    pub mp: u32,
 }
 
 /// Where a session stands.
@@ -94,6 +106,8 @@ pub struct World {
     store: Arc<dyn Store + Send + Sync>,
     refdata: RefData,
     sessions: BTreeMap<SessionId, Session>,
+    /// Characters by unique id, from the join on.
+    players: BTreeMap<u32, Player>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -107,6 +121,7 @@ impl World {
             store,
             refdata,
             sessions: BTreeMap::new(),
+            players: BTreeMap::new(),
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
@@ -150,6 +165,7 @@ impl World {
 
     pub fn disconnect(&mut self, session: SessionId) {
         self.sessions.remove(&session);
+        self.players.retain(|_, player| player.session != session);
     }
 
     /// One client frame, as the transport cut it out of the stream.
@@ -248,6 +264,23 @@ impl World {
 
     pub(crate) fn store(&self) -> &dyn Store {
         self.store.as_ref()
+    }
+
+    /// The characters in the game, by unique id.
+    pub fn players(&self) -> impl Iterator<Item = (u32, &Player)> {
+        let in_game = |p: &Player| matches!(self.phase(p.session), Some(Phase::Game { .. }));
+        self.players
+            .iter()
+            .filter(move |(_, p)| in_game(p))
+            .map(|(uid, p)| (*uid, p))
+    }
+
+    pub fn player(&self, uid: u32) -> Option<&Player> {
+        self.players.get(&uid)
+    }
+
+    pub(crate) fn add_player(&mut self, uid: u32, player: Player) {
+        self.players.insert(uid, player);
     }
 
     /// Characters in the game.

@@ -131,6 +131,15 @@ fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
     agent_wire.send(0x7001, &bytes(Packet::CharacterJoinRequest(join)), false);
     let entry: Vec<u16> = (0..5).map(|_| agent_wire.recv().0).collect();
     assert_eq!(entry, [0xB001, 0x34A5, 0x3013, 0x34A6, 0x3020]);
+    agent_wire.send(0x3012, &[], false);
+    let names = || server.query(|world| world.players().map(|(_, p)| p.name.clone()).collect());
+    let started = Instant::now();
+    while names() != Some(vec!["Hero".to_owned()]) {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the character enters the game"
+        );
+    }
 }
 
 /// Reads what the server sends until it closes the connection; how long that
