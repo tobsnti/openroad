@@ -199,7 +199,11 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     world.receive(s, 0x3012, Bytes::new());
     assert!(frames(&mut world, s).is_empty());
     assert!(matches!(world.phase(s), Some(Phase::Game { uid: u, .. }) if u == uid));
-    assert!(world.take_events().is_empty());
+    assert_eq!(world.take_events(), [Event::Joined { session: s, uid }]);
+    let players: Vec<_> = world.players().map(|(u, p)| (u, p.name.as_str())).collect();
+    assert_eq!(players, [(uid, "Hero")]);
+    world.disconnect(s);
+    assert_eq!(world.players().count(), 0);
 }
 
 #[test]

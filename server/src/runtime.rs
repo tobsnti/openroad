@@ -46,10 +46,27 @@ pub struct Config {
     pub gateway_idle: Duration,
 }
 
-/// Where a started server listens.
+/// A started server: where it listens, and a way to ask its world.
 pub struct Running {
     pub gateway: SocketAddr,
     pub agent: SocketAddr,
+    commands: Sender<Command>,
+}
+
+impl Running {
+    /// `ask`'s answer about the world, computed on the simulation thread
+    /// between two commands; `None` once the simulation has stopped.
+    pub fn query<T: Send + 'static>(
+        &self,
+        ask: impl FnOnce(&World) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (reply, answer) = mpsc::channel();
+        let ask = move |world: &World| {
+            let _ = reply.send(ask(world));
+        };
+        self.commands.send(Command::Query(Box::new(ask))).ok()?;
+        answer.recv().ok()
+    }
 }
 
 /// Binds both listeners and starts the simulation thread. `report` hears
@@ -62,13 +79,14 @@ pub fn start(
 ) -> io::Result<Running> {
     let gateway_listener = TcpListener::bind(config.gateway_listen)?;
     let agent_listener = TcpListener::bind(config.agent_listen)?;
+    let (commands, inbox) = mpsc::channel();
     let running = Running {
         gateway: gateway_listener.local_addr()?,
         agent: agent_listener.local_addr()?,
+        commands: commands.clone(),
     };
     config.gateway.agent_port = running.agent.port();
     let cap = usize::from(config.gateway.capacity);
-    let (commands, inbox) = mpsc::channel();
     thread::spawn(move || simulate(world, inbox, report));
 
     let agent_commands = commands.clone();
@@ -110,6 +128,7 @@ enum Command {
         username: String,
         reply: Sender<Option<u32>>,
     },
+    Query(Box<dyn FnOnce(&World) + Send>),
 }
 
 fn simulate(mut world: World, inbox: Receiver<Command>, mut report: impl FnMut(&World, &Event)) {
@@ -177,6 +196,7 @@ fn apply(world: &mut World, writers: &mut HashMap<SessionId, Sender<Vec<u8>>>, c
         } => {
             let _ = reply.send(world.admit(account, &username));
         }
+        Command::Query(ask) => ask(world),
     }
 }
 
