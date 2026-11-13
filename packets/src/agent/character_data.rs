@@ -33,6 +33,7 @@
 
 use std::io::{Cursor, Read};
 
+use crate::region::{is_dungeon, REGION_SIZE};
 use crate::Message;
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -482,7 +483,7 @@ impl EntityMovement {
             movement.dest_region = Some(dest_region);
             if dest_region > 0 {
                 let mut coord = || -> Result<i32, SerializationError> {
-                    if super::ingame::is_dungeon(current_region) {
+                    if is_dungeon(current_region) {
                         i32::read_from(reader)
                     } else {
                         Ok(u16::read_from(reader)? as i32)
@@ -719,19 +720,19 @@ pub struct ItemReadTrace {
     pub class: ItemClass,
 }
 
-/// Region-local coordinates span one 1920-unit tile; a real spawn is never at
+/// Region-local coordinates span one [`REGION_SIZE`] tile; a real spawn is never at
 /// region 0, and its height stays within a sane band. Used to reject a stray
 /// byte sequence that happens to look like a position during the scan.
 fn plausible(region: u16, x: f32, y: f32, z: f32) -> bool {
     region != 0 && sane_coord(x) && sane_coord(z) && y.is_finite() && y.abs() <= 5000.0
 }
 
-/// A region-local horizontal coordinate lies in `[0, 1920]`. Reject sub-unit
+/// A region-local horizontal coordinate lies in `[0, REGION_SIZE]`. Reject sub-unit
 /// magnitudes (subnormals and other near-zero floats): real spawn coordinates
 /// are whole-ish values in the hundreds, and admitting tiny floats lets random
 /// blob bytes pass as a position when scanning without a known unique id.
 fn sane_coord(v: f32) -> bool {
-    v == 0.0 || (v.is_normal() && (1.0..=1920.0).contains(&v))
+    v == 0.0 || (v.is_normal() && (1.0..=REGION_SIZE).contains(&v))
 }
 
 fn read_u32_at(raw: &[u8], off: usize) -> Option<u32> {
@@ -1622,7 +1623,7 @@ impl EntityMovement {
             buf.put_u16_le(region);
             if region > 0 {
                 for coord in [self.dest_x?, self.dest_y?, self.dest_z?] {
-                    if super::ingame::is_dungeon(current_region) {
+                    if is_dungeon(current_region) {
                         buf.put_i32_le(coord);
                     } else {
                         buf.put_u16_le(coord as u16);

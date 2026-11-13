@@ -188,9 +188,11 @@ pub struct PartyMemberCore {
     pub hp_mp: Option<u8>,
     #[sro_packet(when = "presence & 0x20 != 0")]
     pub region: Option<u16>,
-    #[sro_packet(when = "presence & 0x20 != 0 && region.is_some_and(|r| r & 0x8000 != 0)")]
+    #[sro_packet(when = "presence & 0x20 != 0 && region.is_some_and(crate::region::is_dungeon)")]
     pub position_dungeon: Option<PartyPositionDungeon>,
-    #[sro_packet(when = "presence & 0x20 != 0 && region.is_some_and(|r| r & 0x8000 == 0)")]
+    #[sro_packet(
+        when = "presence & 0x20 != 0 && region.is_some_and(|r| !crate::region::is_dungeon(r))"
+    )]
     pub position_world: Option<PartyPositionWorld>,
     /// The `u32` at record+0x54, read under the *same* bit as the position.
     ///
