@@ -90,9 +90,14 @@ fn enter(
     (s, uid)
 }
 
+/// The frames `session` was sent, but for the entering character's own values
+/// (0x303D), which are not about sight.
 fn opcodes(world: &mut World, session: SessionId) -> Vec<(u16, Bytes)> {
-    let frames = world.take_frames(session);
-    frames.into_iter().map(|f| (f.opcode, f.body)).collect()
+    let frames = world.take_frames(session).into_iter();
+    frames
+        .filter(|f| f.opcode != 0x303D)
+        .map(|f| (f.opcode, f.body))
+        .collect()
 }
 
 /// The unique id in a player's single spawn: behind the model id, five bytes
