@@ -51,6 +51,36 @@ pub const CONSIGNMENT_SALE_DELETED: u8 = 255;
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ConsignmentListRequest;
 
+/// One row of 0xB50E, 41 bytes in the order the original client reads them
+/// [V original handler]. For `status` 1 and 2 the client looks `item_ref` up in
+/// itemdata; what the other fields mean is not established [U].
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct ConsignmentListing {
+    pub unk_00: u32,
+    pub status: u8,
+    pub item_ref: u32,
+    pub unk_09: u32,
+    pub unk_0d: u64,
+    pub unk_15: u64,
+    pub unk_1d: u64,
+    pub unk_25: u32,
+}
+
+/// 0xB50E — server → client: the answer to 0x750E. The vSRO server answered
+/// both captured requests with success and no rows, `01 00`
+/// [V capture, peer vSRO]; `result == 2` carries a `u16` error code instead
+/// [V original handler].
+#[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct ConsignmentListResponse {
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
+    pub count: Option<u8>,
+    #[sro_packet(list_type = "by-size-field", size_field = "count.unwrap_or(0)")]
+    pub listings: Vec<ConsignmentListing>,
+    #[sro_packet(when = "result == 2")]
+    pub error: Option<u16>,
+}
+
 /// One registered-listing record in 0xB508 — a fixed 30-byte record.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ConsignmentRegisteredItem {
@@ -279,6 +309,45 @@ mod tests {
             ConsignmentListRequest::try_from(wire).unwrap(),
             ConsignmentListRequest
         );
+    }
+
+    /// The vSRO server's answer to both captured 0x750E: success, no rows.
+    #[test]
+    fn list_response_reads_the_captured_answer_and_writes_it_back() {
+        let wire = Bytes::from_static(&[0x01, 0x00]);
+        let decoded = ConsignmentListResponse::try_from(wire.clone()).unwrap();
+        assert_eq!(
+            (decoded.result, decoded.count, decoded.listings.len()),
+            (1, Some(0), 0)
+        );
+        let back: Bytes = decoded.into();
+        assert_eq!(back, wire);
+    }
+
+    /// A row is 41 bytes, read in the client's order: the fields are filled
+    /// with distinct values so a swapped pair does not round-trip unnoticed.
+    #[test]
+    fn list_response_rows_are_41_bytes() {
+        let row = ConsignmentListing {
+            unk_00: 1,
+            status: 2,
+            item_ref: 3,
+            unk_09: 4,
+            unk_0d: 5,
+            unk_15: 6,
+            unk_1d: 7,
+            unk_25: 8,
+        };
+        let response = ConsignmentListResponse {
+            result: 1,
+            count: Some(1),
+            listings: vec![row],
+            error: None,
+        };
+        let wire: Bytes = response.clone().into();
+        assert_eq!(wire.len(), 2 + 41);
+        assert_eq!(wire[6], 2, "status behind the first u32");
+        assert_eq!(ConsignmentListResponse::try_from(wire).unwrap(), response);
     }
 
     /// One 30-byte record, the width the layout claims.
