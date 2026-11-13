@@ -3134,6 +3134,9 @@ pub struct EntityStateUpdate {
     pub unique_id: u32,
     pub kind: u8,
     pub value: u8,
+    /// Body state 1 only: one byte more `[V original handler]`, meaning [U].
+    #[sro_packet(when = "kind == STATE_KIND_BODY && value == 1")]
+    pub unk_u8_00: Option<u8>,
 }
 
 impl EntityStateUpdate {
@@ -4769,6 +4772,7 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_BODY,
             value: BODY_STATE_GM_INVISIBLE,
+            unk_u8_00: None,
         };
         assert_eq!(inv.body_invisibility(), Some(true));
         // kind 4, value 0 = none (visible)
@@ -4776,6 +4780,7 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_BODY,
             value: BODY_STATE_NONE,
+            unk_u8_00: None,
         };
         assert_eq!(vis.body_invisibility(), Some(false));
         // non-body update
@@ -4783,12 +4788,18 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_LIFE,
             value: LIFE_STATE_DEAD,
+            unk_u8_00: None,
         };
         assert_eq!(life.body_invisibility(), None);
         // ...and the raw value, which is what drawing somebody ELSE needs
         assert_eq!(inv.body_state_value(), Some(BODY_STATE_GM_INVISIBLE));
         assert_eq!(vis.body_state_value(), Some(BODY_STATE_NONE));
         assert_eq!(life.body_state_value(), None);
+        // body state 1 carries one byte more, no other value does
+        assert_eq!(
+            crate::judge::judge(0x30BF, &[1, 0, 0, 0, STATE_KIND_BODY, 1, 9]),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// GM invisibility and stealth are not the same secret, which is why the
