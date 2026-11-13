@@ -42,8 +42,10 @@ pub const PET_PICKUP_SLOT_NONE: u8 = 0xFE;
 /// op byte. `amount` is the moved stack size (full stack when not splitting);
 /// the server clamps it to what is actually present.
 ///
-/// Buy/sell are EXPERIMENTAL community-documented vSRO ops (8/9), not yet
-/// verified against our reference server (`docs/net-inventory-0x7034.md`).
+/// Buy and sell (ops 8/9) are what the original builds `[V original builder]`:
+/// buy is `tab, slot, quantity u16, NPC uid` and sell `slot, quantity u16,
+/// NPC uid`, its slot the bag index plus the 13 equipment slots — the
+/// inventory slot this enum already carries.
 ///
 /// The storage ops (1/2/3 items, 11/12 gold) come from xBot-WinForms'
 /// `SRTypes.InventoryItemMovement` enum + its `MoveItem` builders

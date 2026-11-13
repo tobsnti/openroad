@@ -265,9 +265,9 @@ and party-match `0x706D`/`0x306E` has its own richer popup.
 | `0xB0A1` | SkillLearnResponse | S→C | wired |  |
 | `0x70A2` | MasteryLearnRequest | C→S | wired | AGENT_SKILL_MASTERY_LEARN |
 | `0xB0A2` | MasteryLearnResponse | S→C | wired |  |
-| `0x7202` | SkillLevelDownRequest | C→S | experimental | level-down mirror of 0x70A1; body [U] (no builder in the original) |
+| `0x7202` | SkillLevelDownRequest | C→S | wired | reset item ref `u32`, skill `u32`, new level `u8` (9 B) — the original's builder |
 | `0xB202` | MasterySkillLevelDownResponse | S→C | experimental | success returns the new (lower) skill id; failure shape [U] |
-| `0x7203` | MasteryLevelDownRequest | C→S | experimental | mirror of 0x70A2 minus its `amount` byte, which stays [U] |
+| `0x7203` | MasteryLevelDownRequest | C→S | wired | reset item ref `u32`, mastery `u32`, new level `u8` (9 B) — the original's builder |
 | `0xB203` | MasteryLevelDownResponse | S→C | experimental | exact mirror of 0xB0A2; failure shape [U] |
 | `0xB0BD` | BuffAdd | S→C | wired |  |
 | `0xB072` | BuffRemove | S→C | wired |  |
@@ -586,7 +586,7 @@ for each unknown: .
 | `0x750E` | ConsignmentListRequest | C→S | experimental | empty body |
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
-| `0x7309` | MailSendRequest | C→S | experimental | verified head (title + message) only; everything after it is [U] and kept as a raw tail |
+| `0x7309` | MailSendRequest | C→S | wired | receiver + message, two `u16`-length strings and nothing after them — the original's builder and its one captured send (2026-09-29, 43 B) |
 
 Deliberately **not** wired — all three bodies are entirely unverified, so a layout
 would have to be invented: `0xB309 SERVER_MAIL_SEND_RESPONSE` (declared in the

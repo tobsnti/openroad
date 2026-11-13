@@ -101,9 +101,10 @@ pub enum CharacterSelectionAction {
 /// conditional, never both present. A success answer for Create/Delete/Restore
 /// is the bare two bytes: the original client receives `01 01`, `03 01` and
 /// `05 01` and nothing else, which is why only `List` reads a body on
-/// `result == 1`. The error code hangs on `result == 2` and is a u16 LE, e.g.
-/// `04 02 1004` = `0x0410` for action `04`, and `01 02 1004` for a rejected
-/// Create.
+/// `result == 1`. The error code hangs on any other result — the original
+/// reads it for every `result != 1` `[V original handler]` — and is a u16 LE,
+/// e.g. `04 02 1004` = `0x0410` for action `04`, and `01 02 1004` for a
+/// rejected Create.
 ///
 /// The failure arm of actions `03` and `05` cannot be provoked from the GUI
 /// (the Restore button only exists for a delete-scheduled character), but it
@@ -125,7 +126,7 @@ pub struct CharacterSelectionActionResponse {
     pub result: u8,
     #[sro_packet(when = "result == 1 && action == CharacterSelectionAction::List")]
     pub characters: Option<CharacterData>,
-    #[sro_packet(when = "result == 2")]
+    #[sro_packet(when = "result != 1")]
     pub error_code: Option<u16>,
 }
 
@@ -179,11 +180,12 @@ pub struct CharacterJoinRequest {
     pub character_name: String,
 }
 
-/// 0xB001 — result of [`CharacterJoinRequest`] (1 = ok, 2 = error).
+/// 0xB001 — result of [`CharacterJoinRequest`]: `1` = ok; any other result
+/// carries a u16 error code `[V original handler]` (captured: `2`).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
 pub struct CharacterJoinResponse {
     pub result: u8,
-    #[sro_packet(when = "result == 2")]
+    #[sro_packet(when = "result != 1")]
     pub error: Option<u16>,
 }
 
@@ -542,9 +544,9 @@ mod tests {
 
     /// The success answers carry **no tail at all** for all three actions
     /// (`01 01`, `03 01`, `05 01`). This pins the deserializer gates:
-    /// `characters` only for `List`, `error_code` only for
-    /// `result == 2`, so a two-byte frame must decode with both `None` and
-    /// leave nothing unread.
+    /// `characters` only for `List`, `error_code` only for a result other
+    /// than 1, so a two-byte frame must decode with both `None` and leave
+    /// nothing unread.
     #[test]
     fn action_response_success_has_no_tail_for_create_delete_and_restore() {
         for (raw, action) in [
@@ -561,9 +563,21 @@ mod tests {
         }
     }
 
+    /// The original reads the code for every result but 1, not only for 2: a
+    /// `03` answer read as a bare result left its code unread.
+    #[test]
+    fn any_failed_result_carries_its_code() {
+        let raw = Bytes::from_static(&[0x01, 0x03, 0x10, 0x04]);
+        let response = CharacterSelectionActionResponse::try_from(raw).unwrap();
+        assert_eq!(response.error_code, Some(0x0410));
+        let join =
+            CharacterJoinResponse::try_from(Bytes::from_static(&[0x03, 0x01, 0x04])).unwrap();
+        assert_eq!(join.error, Some(0x0401));
+    }
+
     /// The error arm against a real failure frame: `04 02 1004` — CheckName,
     /// result 2, code `0x0410` as u16 LE. A duplicate-name Create is answered
-    /// `01 02 1004`, the same shape, so the `result == 2` gate holds for
+    /// `01 02 1004`, the same shape, so the error gate holds for
     /// action 1 as well. The server can send that frame twice, which is why
     /// decoding is idempotent and debouncing is left to the consumer.
     #[test]
@@ -586,7 +600,7 @@ mod tests {
     /// | `05 0400 "<name>"` | `05 02 1904` | Restore of a character not delete-scheduled |
     /// | `03 0800 "Missing1"` | `03 02 0b04` | Delete of a name that does not exist |
     ///
-    /// Why this matters: the `result == 2` gate reads a u16 unconditionally, so
+    /// Why this matters: the error gate reads a u16 unconditionally, so
     /// a server that answered a bare `05 02` would make the deserializer
     /// overrun. It does not — the tail is there for action 5 and 3 as well, and
     /// both frames are exactly 4 bytes. The two codes land on different arms:
