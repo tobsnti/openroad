@@ -11,6 +11,7 @@
 
 pub mod clock;
 pub mod gateway;
+pub mod handshake;
 mod join;
 mod lobby;
 pub mod outbox;

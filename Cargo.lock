@@ -8409,6 +8409,7 @@ dependencies = [
  "bytes",
  "packets",
  "rand_core 0.6.4",
+ "sro_net",
  "sro_textdata",
 ]
 
