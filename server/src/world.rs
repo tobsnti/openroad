@@ -226,6 +226,22 @@ impl World {
         self.store.as_ref()
     }
 
+    /// Characters in the game.
+    pub(crate) fn online(&self) -> usize {
+        let in_game = |s: &&Session| matches!(s.phase, Phase::Game { .. });
+        self.sessions.values().filter(in_game).count()
+    }
+
+    /// Whether `account` has a session on the agent.
+    pub(crate) fn connected(&self, account: AccountId) -> bool {
+        self.sessions.values().any(|s| match s.phase {
+            Phase::Lobby(a)
+            | Phase::Joining { account: a, .. }
+            | Phase::Game { account: a, .. } => a == account,
+            Phase::Title | Phase::Closed => false,
+        })
+    }
+
     pub(crate) fn refdata(&self) -> &RefData {
         &self.refdata
     }
@@ -246,7 +262,7 @@ impl World {
     }
 }
 
-fn reason_of(verdict: Verdict) -> Reason {
+pub(crate) fn reason_of(verdict: Verdict) -> Reason {
     match verdict {
         Verdict::Unwired => Reason::UnknownOpcode,
         _ => Reason::DecodeError,

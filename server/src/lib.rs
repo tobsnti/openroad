@@ -10,6 +10,7 @@
 //! ([`tick`]).
 
 pub mod clock;
+pub mod gateway;
 mod join;
 mod lobby;
 pub mod outbox;
