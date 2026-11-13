@@ -17,6 +17,7 @@ mod lobby;
 pub mod outbox;
 pub mod refdata;
 pub mod registry;
+pub mod runtime;
 pub mod store;
 pub mod tick;
 pub mod transport;

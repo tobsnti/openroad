@@ -4,7 +4,10 @@
 
 #![allow(dead_code)]
 
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use server::transport::{Inbound, Transport};
@@ -14,6 +17,7 @@ use sro_net::frame::SilkroadFrame;
 use sro_net::key_exchange::{calc_challenge, calc_key, g_pow_x_mod_p, key_transform_value};
 use sro_net::security::{SilkroadSecurity, SilkroadSecurityState};
 use sro_net::sequence::Sequence;
+use sro_net::stream::{next_packet, FrameStep};
 
 pub fn plain() -> Arc<RwLock<SilkroadSecurityState>> {
     Arc::new(RwLock::new(SilkroadSecurityState::new()))
@@ -116,4 +120,82 @@ pub fn feed(server: &mut Transport, bytes: &[u8], split: usize) -> Inbound {
         all.reply.extend(inbound.reply);
     }
     all
+}
+
+/// The client's end of a connection to a running server.
+pub struct Wire {
+    stream: TcpStream,
+    buf: Vec<u8>,
+    pub client: Client,
+}
+
+impl Wire {
+    /// Connects and completes the handshake.
+    pub fn connect(server: SocketAddr) -> Wire {
+        let stream = TcpStream::connect(server).expect("the server accepts");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let opening = raw_frame(&stream, &mut buf);
+        let (client, answer) = Client::answer(&opening);
+        (&stream).write_all(&answer).unwrap();
+        client.challenged(&raw_frame(&stream, &mut buf));
+        (&stream)
+            .write_all(&client.send(0x9000, &[], false))
+            .unwrap();
+        Wire {
+            stream,
+            buf,
+            client,
+        }
+    }
+
+    pub fn into_stream(self) -> TcpStream {
+        self.stream
+    }
+
+    pub fn send(&mut self, opcode: u16, body: &[u8], encrypted: bool) {
+        let wire = self.client.send(opcode, body, encrypted);
+        self.stream.write_all(&wire).unwrap();
+    }
+
+    /// The next packet, a multi-part put together as the client does it.
+    pub fn recv(&mut self) -> (u16, Bytes) {
+        loop {
+            match next_packet(&mut self.buf, &plain()) {
+                FrameStep::Ready {
+                    opcode,
+                    data,
+                    consumed,
+                    ..
+                } => {
+                    self.buf.drain(..consumed);
+                    return (opcode, data);
+                }
+                FrameStep::Skip { consumed } => {
+                    self.buf.drain(..consumed);
+                }
+                FrameStep::Incomplete => fill(&self.stream, &mut self.buf),
+                FrameStep::Corrupt => panic!("the server sent bytes that are no frame"),
+            }
+        }
+    }
+}
+
+/// The next frame's bytes as they arrived.
+fn raw_frame(stream: &TcpStream, buf: &mut Vec<u8>) -> Vec<u8> {
+    loop {
+        if let Some(len) = SilkroadFrame::wire_len(buf).filter(|&len| len <= buf.len()) {
+            return buf.drain(..len).collect();
+        }
+        fill(stream, buf);
+    }
+}
+
+fn fill(mut stream: &TcpStream, buf: &mut Vec<u8>) {
+    let mut chunk = [0u8; 4096];
+    let n = stream.read(&mut chunk).expect("the server answers");
+    assert!(n > 0, "the server closed the connection");
+    buf.extend_from_slice(&chunk[..n]);
 }
