@@ -584,6 +584,7 @@ for each unknown: .
 | opcode | type | dir | status | notes |
 |---|---|---|---|---|
 | `0x750E` | ConsignmentListRequest | C→S | experimental | empty body |
+| `0xB50E` | ConsignmentListResponse | S→C | experimental | the answer to `0x750E`; 41-byte rows in the original client's reading order, field meanings open; the vSRO server answered both captured requests with `01 00` |
 | `0xB508` | ConsignmentRegisterResponse | S→C | experimental | fixed 30-byte listing rows; `result == 2` carries a u16 error code |
 | `0xB509` | ConsignmentUnregisterResponse | S→C | experimental | records are variable-length and itemdata-dependent, so the list stays raw behind a resolver-taking accessor |
 | `0x7309` | MailSendRequest | C→S | wired | receiver + message, two `u16`-length strings and nothing after them — the original's builder and its one captured send (2026-09-29, 43 B) |

@@ -284,6 +284,7 @@ mod tests {
             unk_u8_00: 0,
             member_count: members.len() as u8,
             members,
+            unk_entries: vec![],
         }
     }
 
