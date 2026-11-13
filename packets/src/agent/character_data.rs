@@ -590,8 +590,9 @@ pub struct PlayerExtras {
     pub pvp_state: u8,
     pub transport_flag: u8,
     pub in_combat: u8,
-    /// Present when riding a transport.
-    #[sro_packet(when = "transport_flag != 0")]
+    /// Present when riding a transport: the original reads it for a flag of
+    /// exactly 1 `[V original handler]`.
+    #[sro_packet(when = "transport_flag == 1")]
     pub transport_id: Option<u32>,
     pub pvp_flag: u8,
     pub guide_flag: u64,
@@ -605,7 +606,11 @@ pub struct PlayerExtras {
     pub auto_potion_delay: u8,
     pub blocked_whispers: Vec<String>,
     pub unk_u32: u32,
-    pub unk_u8: u8,
+    /// A count-prefixed list of `u32`: the original reads a `u8` count and that
+    /// many four-byte values here `[V original handler]`; what they are is
+    /// `[U]`. Read as one byte, a count of 0 — all 243 captured records — is
+    /// right, and any other left the values unread.
+    pub unk_list: Vec<u32>,
 }
 
 /// The spawn essentials extracted from a CHARACTER_DATA body: the unique id
@@ -2796,9 +2801,11 @@ mod test {
             auto_potion_delay: 0,
             blocked_whispers: vec!["Spammer".to_string()],
             unk_u32: 0x00010001,
-            unk_u8: 0,
+            unk_list: vec![5, 6],
         };
         let bytes: bytes::Bytes = extras.clone().into();
+        // the list is a u8 count and that many u32, last in the record
+        assert_eq!(&bytes[bytes.len() - 9..], &[2, 5, 0, 0, 0, 6, 0, 0, 0]);
         let decoded = PlayerExtras::try_from(bytes).unwrap();
         assert_eq!(decoded, extras);
     }
