@@ -6,11 +6,11 @@
 //! nothing needs a lock, and a test can drive it frame by frame.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::prelude::TalkResponse;
+use packets::agent::prelude::{SingleEntityDespawn, TalkResponse};
 use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
@@ -67,7 +67,13 @@ pub struct Player {
     pub position: Position,
     pub hp: u32,
     pub mp: u32,
-    /// World units per second (the model's run speed).
+    /// The characterdata row of its model.
+    pub ref_id: u32,
+    /// Height and build, a nibble each.
+    pub scale: u8,
+    pub inventory_size: u8,
+    /// World units per second, the model's.
+    pub walk_speed: f32,
     pub run_speed: f32,
     pub walk: Option<Walk>,
 }
@@ -116,6 +122,8 @@ struct Session {
     log: WireLog,
     /// The step the session connected in.
     since: u64,
+    /// The other characters' ids its client has been shown.
+    known: BTreeSet<u32>,
 }
 
 /// The original client sends the agent login right after the handshake, 0.05
@@ -179,14 +187,27 @@ impl World {
             outbox: Outbox::default(),
             log: WireLog::open("agent"),
             since: self.step,
+            known: BTreeSet::new(),
         };
         self.sessions.insert(id, session);
         id
     }
 
+    /// The session ends; whoever was shown its character is told it left.
     pub fn disconnect(&mut self, session: SessionId) {
         self.sessions.remove(&session);
-        self.players.retain(|_, player| player.session != session);
+        let gone: Vec<u32> = self
+            .players
+            .iter()
+            .filter(|(_, player)| player.session == session)
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in gone {
+            self.players.remove(&uid);
+            for observer in self.observers(uid) {
+                self.hide(observer, uid);
+            }
+        }
     }
 
     /// One client frame, as the transport cut it out of the stream.
@@ -228,15 +249,64 @@ impl World {
     /// Queue `packet` for `session`. A session that cannot take it any more is
     /// cut off and reported.
     pub fn send(&mut self, session: SessionId, packet: Packet) {
+        let (opcode, body) = packet.into_serialize();
+        self.push(session, opcode, body);
+    }
+
+    /// Queue `packet` for every session in `sessions`, encoded once: the
+    /// sessions share its bytes.
+    pub(crate) fn broadcast(&mut self, sessions: &[SessionId], packet: Packet) {
+        let (opcode, body) = packet.into_serialize();
+        for session in sessions {
+            self.push(*session, opcode, body.clone());
+        }
+    }
+
+    fn push(&mut self, session: SessionId, opcode: u16, body: Bytes) {
         let Some(s) = self.sessions.get_mut(&session) else {
             return;
         };
-        let (opcode, body) = packet.into_serialize();
         s.log.record(Dir::S2c, opcode, &body);
         if s.outbox.push(Frame { opcode, body }).is_err() {
             self.sessions.remove(&session);
             self.events.push(Event::Overflowed(session));
         }
+    }
+
+    /// Shows the character `uid` to `session` with `spawn`, unless its client
+    /// knows it already: a second spawn of an id it knows asserts in the
+    /// original client, and so does any frame about one it does not
+    /// [V original handler].
+    pub(crate) fn show(&mut self, session: SessionId, uid: u32, spawn: Packet) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        if s.known.insert(uid) {
+            self.send(session, spawn);
+        }
+    }
+
+    /// Takes the character `uid` back from `session` (0x3016), if it was shown.
+    pub(crate) fn hide(&mut self, session: SessionId, uid: u32) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        if s.known.remove(&uid) {
+            let gone = SingleEntityDespawn { unique_id: uid };
+            self.send(session, Packet::SingleEntityDespawn(gone));
+        }
+    }
+
+    /// The sessions whose clients know the character `uid`: its own and those
+    /// it was shown to.
+    pub(crate) fn observers(&self, uid: u32) -> Vec<SessionId> {
+        let own = self.players.get(&uid).map(|p| p.session);
+        let knows = |(id, s): (&SessionId, &Session)| s.known.contains(&uid) || Some(*id) == own;
+        self.sessions
+            .iter()
+            .filter(|e| knows(*e))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// Advance the world by one step of [`crate::tick::STEP`].

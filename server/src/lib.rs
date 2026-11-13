@@ -19,6 +19,7 @@ pub mod outbox;
 pub mod refdata;
 pub mod registry;
 pub mod runtime;
+mod sight;
 pub mod store;
 pub mod tick;
 pub mod transport;
