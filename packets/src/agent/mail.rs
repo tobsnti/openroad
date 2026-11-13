@@ -196,34 +196,23 @@ impl From<ConsignmentUnregisterResponse> for Bytes {
     }
 }
 
-/// 0x7309 — client → server: send a mail/memo.
+/// 0x7309 — client → server: send a letter — the receiver's name, then the
+/// message, two length-prefixed strings and nothing after them. The original
+/// client sent exactly that, `Testmate` + `hello from the measurement lane` in
+/// 43 bytes (capture of 2026-09-29) `[V capture, peer original client]`, and
+/// its builder writes only the two strings `[V original builder]`; the write
+/// window asks for RECEIVER and CONTENTS. The first string used to be named a
+/// title, and an unknown tail was required behind the message.
 ///
-/// **Knowingly incomplete, and shaped so a caller cannot miss that.** The only
-/// builder in the original writes just these two strings, and what follows them is
-/// [U]. The RE doc asserts the remainder is a recipient name, a mail-type
-/// discriminator and attachments (gold + item slots); that is not established —
-/// SilkroadDoc-wiki names this opcode pair `AGENT_COMMUNITY_MEMO_SEND`, i.e. the
-/// memo feature rather than the attachment-bearing mail system, and lists only
-/// title + message. So the tail's *contents* are unknown, not merely unread.
-///
-/// Rather than a two-field struct that looks complete and would silently send a
-/// truncated body, the remainder is a `tail` the caller must supply — a
-/// verified-head-plus-raw-tail shape. (`ItemUseRequest` used to be the sibling
-/// example; it became a class-discriminated enum in #454, because there the
-/// classes and their tails *are* known from the original's builders.) A real send is not
-/// possible from this type alone until `packet_dump/0x7309.log` resolves it.
-///
-/// ⚠️ `title`/`message` are user-authored free text carried as `String`, i.e.
-/// UTF-8, while the wire is cp1252. Inbound, a high byte fails the packet (the
-/// tree-wide derived-string property `party.rs` documents); outbound, the length
-/// prefix counts UTF-8 bytes, so a non-ASCII character would ship mojibake. Both
-/// are moot while nothing sends this, but neither is fixed here.
+/// ⚠️ Both are user-authored free text carried as `String`, i.e. UTF-8, while
+/// the wire is cp1252. Inbound, a high byte fails the packet (the tree-wide
+/// derived-string property `party.rs` documents); outbound, the length prefix
+/// counts UTF-8 bytes, so a non-ASCII character would ship mojibake. Both are
+/// moot while nothing sends this, but neither is fixed here.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct MailSendRequest {
-    pub title: String,
+    pub receiver: String,
     pub message: String,
-    /// Everything after `message` — [U], pending `packet_dump/0x7309.log`.
-    pub tail: Bytes,
 }
 
 /// SRO `Ascii`: u16 byte-length prefix + bytes, the framing the derive uses for
@@ -249,23 +238,17 @@ impl TryFrom<Bytes> for MailSendRequest {
     type Error = SerializationError;
     fn try_from(value: Bytes) -> Result<Self, SerializationError> {
         let mut cursor = Cursor::new(&value[..]);
-        let title = read_ascii(&mut cursor)?;
+        let receiver = read_ascii(&mut cursor)?;
         let message = read_ascii(&mut cursor)?;
-        let read = cursor.position() as usize;
-        Ok(MailSendRequest {
-            title,
-            message,
-            tail: value.slice(read..),
-        })
+        Ok(MailSendRequest { receiver, message })
     }
 }
 
 impl From<MailSendRequest> for Bytes {
     fn from(p: MailSendRequest) -> Self {
         let mut buf = BytesMut::new();
-        put_ascii(&mut buf, &p.title);
+        put_ascii(&mut buf, &p.receiver);
         put_ascii(&mut buf, &p.message);
-        buf.extend_from_slice(&p.tail);
         buf.freeze()
     }
 }
@@ -447,38 +430,19 @@ mod tests {
         assert!(!decoded.raw.is_empty());
     }
 
+    /// The original client's own 0x7309, byte for byte.
     #[test]
-    fn mail_send_request_roundtrips_its_verified_head() {
-        let req = MailSendRequest {
-            title: "Hello".to_string(),
-            message: "Some text".to_string(),
-            tail: Bytes::new(),
-        };
-        let wire: Bytes = req.clone().into();
-
-        // 2+5 title, 2+9 message
-        assert_eq!(wire.len(), 18);
-        assert_eq!(MailSendRequest::try_from(wire).unwrap(), req);
-    }
-
-    /// Everything past `message` is preserved rather than dropped, so a future
-    /// capture can be decoded without losing the unknown tail.
-    #[test]
-    fn mail_send_request_preserves_the_unverified_tail() {
-        let mut wire = 1u16.to_le_bytes().to_vec();
-        wire.push(b'a');
-        wire.extend_from_slice(&1u16.to_le_bytes());
-        wire.push(b'b');
-        wire.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+    fn mail_send_request_is_receiver_and_message() {
+        let mut wire = 8u16.to_le_bytes().to_vec();
+        wire.extend_from_slice(b"Testmate");
+        wire.extend_from_slice(&31u16.to_le_bytes());
+        wire.extend_from_slice(b"hello from the measurement lane");
+        assert_eq!(wire.len(), 43);
 
         let decoded = MailSendRequest::try_from(Bytes::from(wire.clone())).unwrap();
-
-        assert_eq!(decoded.title, "a");
-        assert_eq!(decoded.message, "b");
-        assert_eq!(&decoded.tail[..], &[0xDE, 0xAD, 0xBE, 0xEF]);
-
-        let back: Bytes = decoded.into();
-        assert_eq!(&back[..], &wire[..]);
+        assert_eq!(decoded.receiver, "Testmate");
+        assert_eq!(decoded.message, "hello from the measurement lane");
+        assert_eq!(Bytes::from(decoded), Bytes::from(wire));
     }
 
     #[test]

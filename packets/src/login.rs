@@ -265,15 +265,21 @@ pub struct CustomError {
     pub unk_u16: u16,
 }
 
+/// A timed ban: the reason, then when it ends as a Windows `SYSTEMTIME` —
+/// eight `u16`, sixteen bytes `[V original handler]`. This read six, so a
+/// banned login left four bytes unread and every field after the month took
+/// its neighbour's value.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct BanInfo {
     pub reason: String,
     pub end_year: u16,
     pub end_month: u16,
+    pub end_day_of_week: u16,
     pub end_day: u16,
     pub end_hour: u16,
+    pub end_minute: u16,
     pub end_second: u16,
-    pub end_microsecond: u16,
+    pub end_milliseconds: u16,
 }
 
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
@@ -528,10 +534,12 @@ mod tests {
             reason: "botting".to_string(),
             end_year: 2026,
             end_month: 8,
+            end_day_of_week: 5,
             end_day: 14,
             end_hour: 21,
+            end_minute: 0,
             end_second: 0,
-            end_microsecond: 0,
+            end_milliseconds: 0,
         };
         let mut blocked = error(2);
         blocked.account_blocked_err = Some(AccountBlockedError {
@@ -542,5 +550,29 @@ mod tests {
             blocked.failure(),
             LoginFailure::Blocked(AccountBlock::Banned(Some(ban)))
         );
+    }
+
+    /// A banned login as the original reads it: reason "test", then the end
+    /// as a SYSTEMTIME — 2026-11, day of week 3, the 12th, 16:00:00.000. The
+    /// re-encoded body is the 25 bytes that came in: none left unread.
+    #[test]
+    fn a_ban_ends_with_a_whole_systemtime() {
+        use bytes::Bytes;
+        let wire = Bytes::from_static(&[
+            0x02, 0x02, 0x01, 0x04, 0x00, b't', b'e', b's', b't', 0xEA, 0x07, 0x0B, 0x00, 0x03,
+            0x00, 0x0C, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        let response = LoginResponse::try_from(wire.clone()).unwrap();
+        let Some(LoginFailure::Blocked(AccountBlock::Banned(Some(ban)))) =
+            response.login_error.as_ref().map(LoginError::failure)
+        else {
+            panic!("a timed ban");
+        };
+        assert_eq!(ban.reason, "test");
+        assert_eq!(
+            (ban.end_year, ban.end_month, ban.end_day, ban.end_hour),
+            (2026, 11, 12, 16)
+        );
+        assert_eq!(Bytes::from(response), wire);
     }
 }
