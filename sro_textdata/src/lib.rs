@@ -5,3 +5,4 @@
 //! `bevy` feature, which only the client turns on.
 
 pub mod characterdata;
+pub mod npcpos;
