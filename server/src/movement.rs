@@ -1,7 +1,8 @@
 //! Walking: a client asks to go somewhere (0x7021), and the world moves its
 //! character there, a step at a time, at its run speed.
 //!
-//! An accepted request gets exactly one 0xB021, a refused one none: the
+//! An accepted request gets exactly one 0xB021, to the client and to every
+//! client the character is shown to; a refused one gets none: the
 //! original server builds 0xB021 only at the end of its success path
 //! [V original server]. The answer carries no start position; the captured
 //! vSRO server leaves it out in a quarter of its frames (1,543 of 6,180)
@@ -76,7 +77,8 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
             }
         }
     };
-    world.send(session, Packet::MovementResponse(answer));
+    let observers = world.observers(uid);
+    world.broadcast(&observers, Packet::MovementResponse(answer));
     Ok(())
 }
 

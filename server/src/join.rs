@@ -25,6 +25,7 @@ use packets::Packet;
 
 use crate::clock::{game_time, server_time};
 use crate::refdata::CharacterRef;
+use crate::sight;
 use crate::store::{AccountId, Character};
 use crate::world::{Event, Phase, Player, Reason, SessionId, World};
 
@@ -81,6 +82,10 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
         position: character.position,
         hp: character.hp,
         mp: character.mp,
+        ref_id: character.ref_id,
+        scale: character.scale,
+        inventory_size: character.inventory_size,
+        walk_speed: speeds.walk_speed,
         run_speed: speeds.run_speed,
         walk: None,
     };
@@ -95,6 +100,7 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
         return Err(Reason::NotHandled);
     };
     world.enter(session, Phase::Game { account, uid });
+    sight::enter(world, uid);
     world.report(Event::Joined { session, uid });
     Ok(())
 }
