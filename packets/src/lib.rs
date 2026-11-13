@@ -752,6 +752,7 @@ packets! {
     // REQUESTS. Wiring them needs packet_dump/0xb309.log, 0x7508.log and
     // 0x7509.log respectively.
     0x750E => ConsignmentListRequest,
+    0xB50E => ConsignmentListResponse,
     0xB508 => ConsignmentRegisterResponse,
     0xB509 => ConsignmentUnregisterResponse,
     0x7309 => MailSendRequest,
