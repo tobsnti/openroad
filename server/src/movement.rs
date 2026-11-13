@@ -8,19 +8,16 @@
 //! vSRO server leaves it out in a quarter of its frames (1,543 of 6,180)
 //! [V capture, peer vSRO], and the client walks from where it is.
 //!
-//! This slice moves within the character's region: a target in another
-//! region or in a dungeon is refused until the region arithmetic is shared
-//! with the client.
+//! A walk may cross into other regions, so it runs in world coordinates
+//! (`packets::region`). Dungeons are refused: their coordinates are local to
+//! the dungeon, outside the region grid.
 
 use packets::agent::prelude::{MovementRequest, MovementResponse};
-use packets::region::is_dungeon;
+use packets::region::{is_dungeon, region_id, sector, REGION_SIZE};
 use packets::Packet;
 
 use crate::tick::STEPS_PER_SECOND;
 use crate::world::{Phase, Player, Point, Reason, SessionId, Walk, World};
-
-/// The edge of a region in world units, the grid of the terrain files.
-const REGION_SIZE: i32 = 1920;
 
 /// 0x7021.
 pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
@@ -35,22 +32,24 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
         .expect("a character in the game has a player");
     let answer = match request {
         MovementRequest::ToLocation { region, x, y, z } => {
-            let inside = |v: i32| (0..=REGION_SIZE).contains(&v);
-            if region != player.position.region || is_dungeon(region) || !inside(x) || !inside(z) {
+            let at = player.position;
+            let inside = |v: i32| (0..=REGION_SIZE as i32).contains(&v);
+            if is_dungeon(region) || is_dungeon(at.region) || !inside(x) || !inside(z) {
                 return Ok(());
             }
-            let at = player.position;
+            let here = Point {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            };
+            let there = Point {
+                x: x as f32,
+                y: y as f32,
+                z: z as f32,
+            };
             player.walk = Some(Walk {
-                from: Point {
-                    x: at.x,
-                    y: at.y,
-                    z: at.z,
-                },
-                to: Point {
-                    x: x as f32,
-                    y: y as f32,
-                    z: z as f32,
-                },
+                from: in_world(at.region, here),
+                to: in_world(region, there),
                 steps: 0,
             });
             MovementResponse {
@@ -96,16 +95,43 @@ pub(crate) fn advance(player: &mut Player) {
     let length = f64::from(dx).hypot(f64::from(dz));
     let speed = f64::from(player.run_speed) / STEPS_PER_SECOND as f64;
     let covered = f64::from(walk.steps) * speed;
-    let at = &mut player.position;
-    if covered + 1e-6 >= length {
-        (at.x, at.y, at.z) = (to.x, to.y, to.z);
+    let now = if covered + 1e-6 >= length {
         player.walk = None;
+        to
     } else {
         let share = (covered / length) as f32;
-        (at.x, at.y, at.z) = (
-            from.x + dx * share,
-            from.y + dy * share,
-            from.z + dz * share,
-        );
+        Point {
+            x: from.x + dx * share,
+            y: from.y + dy * share,
+            z: from.z + dz * share,
+        }
+    };
+    let (region, local) = in_region(now);
+    let at = &mut player.position;
+    (at.region, at.x, at.y, at.z) = (region, local.x, local.y, local.z);
+}
+
+/// A point of an overworld region in world coordinates: the region's sector
+/// times [`REGION_SIZE`], plus the point.
+pub(crate) fn in_world(region: u16, local: Point) -> Point {
+    let (x, z) = sector(region);
+    Point {
+        x: f32::from(x) * REGION_SIZE + local.x,
+        y: local.y,
+        z: f32::from(z) * REGION_SIZE + local.z,
     }
+}
+
+/// The region a world point lies in, and the point in it.
+pub(crate) fn in_region(world: Point) -> (u16, Point) {
+    let (x, z) = (
+        (world.x / REGION_SIZE).floor(),
+        (world.z / REGION_SIZE).floor(),
+    );
+    let local = Point {
+        x: world.x - x * REGION_SIZE,
+        y: world.y,
+        z: world.z - z * REGION_SIZE,
+    };
+    (region_id(x as u8, z as u8), local)
 }

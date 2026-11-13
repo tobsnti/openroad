@@ -105,7 +105,7 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
     if let Some(c) = characters.iter().find(|c| Some(&c.name) == name.as_ref()) {
         world.send(session, Packet::CharacterStatsUpdate(values(c)));
     }
-    sight::enter(world, uid);
+    sight::update(world, uid);
     world.report(Event::Joined { session, uid });
     Ok(())
 }

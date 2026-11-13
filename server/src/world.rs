@@ -19,6 +19,7 @@ use crate::movement;
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
+use crate::sight;
 use crate::store::{AccountId, Position, Store};
 use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
@@ -78,8 +79,8 @@ pub struct Player {
     pub walk: Option<Walk>,
 }
 
-/// A walk within the character's region: from where, to where, and the steps
-/// it has taken so far.
+/// A walk in world coordinates (it may cross regions): from where, to where,
+/// and the steps it has taken so far.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Walk {
     pub from: Point,
@@ -87,7 +88,8 @@ pub struct Walk {
     pub steps: u32,
 }
 
-/// Region-local coordinates.
+/// A point in world units: region-local, or in world coordinates in a
+/// [`Walk`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f32,
@@ -285,6 +287,13 @@ impl World {
         }
     }
 
+    /// Whether `session`'s client was shown the character `uid`.
+    pub(crate) fn knows(&self, session: SessionId, uid: u32) -> bool {
+        self.sessions
+            .get(&session)
+            .is_some_and(|s| s.known.contains(&uid))
+    }
+
     /// Takes the character `uid` back from `session` (0x3016), if it was shown.
     pub(crate) fn hide(&mut self, session: SessionId, uid: u32) {
         let Some(s) = self.sessions.get_mut(&session) else {
@@ -311,7 +320,17 @@ impl World {
     /// Advance the world by one step of [`crate::tick::STEP`].
     pub fn step(&mut self) {
         self.step += 1;
-        self.players.values_mut().for_each(movement::advance);
+        let mut crossed = Vec::new();
+        for (uid, player) in &mut self.players {
+            let region = player.position.region;
+            movement::advance(player);
+            if player.position.region != region {
+                crossed.push(*uid);
+            }
+        }
+        for uid in crossed {
+            sight::update(self, uid);
+        }
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self
             .sessions

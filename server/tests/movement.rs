@@ -157,11 +157,32 @@ fn a_turn_stops_the_walk_and_is_answered_with_the_heading() {
     assert_eq!(x_of(&world, uid), stopped);
 }
 
+#[test]
+fn a_walk_across_the_region_border_ends_in_the_next_region() {
+    let (mut world, s, uid) = joined(true);
+    // Region 25001 is the one east of 25000: sector x 169 instead of 168.
+    let walk = MovementRequest::ToLocation {
+        region: REGION + 1,
+        x: 19,
+        y: 0,
+        z: 1419,
+    };
+    send(&mut world, s, Packet::MovementRequest(walk));
+    assert_eq!(world.take_frames(s)[0].opcode, 0xB021);
+    // 1920 - 969 + 19 = 970 units at 50 units/s.
+    for _ in 0..(970 * STEPS_PER_SECOND).div_ceil(50) {
+        world.step();
+    }
+    let at = world.player(uid).unwrap().position;
+    assert_eq!((at.region, at.x, at.z), (REGION + 1, 19.0, 1419.0));
+    assert_eq!(world.player(uid).unwrap().walk, None);
+}
+
 /// A refused move gets no answer, as in the original.
 #[test]
-fn a_target_outside_the_region_is_refused_without_an_answer() {
+fn a_target_off_the_grid_or_in_a_dungeon_is_refused_without_an_answer() {
     let (mut world, s, uid) = joined(true);
-    for (region, x) in [(REGION, 1921), (REGION + 1, 100), (0x8001, 100)] {
+    for (region, x) in [(REGION, 1921), (0x8001, 100)] {
         let walk = MovementRequest::ToLocation {
             region,
             x,
