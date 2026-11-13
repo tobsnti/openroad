@@ -43,6 +43,7 @@ fn ask(
 ) -> Result<(u16, Vec<u8>), Reason> {
     let (opcode, body) = packet.into_serialize();
     let frame = conn.receive(&gateway(), world, opcode, body)?;
+    let frame = frame.expect("a request is answered");
     Ok((frame.opcode, frame.body.to_vec()))
 }
 
@@ -178,13 +179,15 @@ fn a_frame_that_is_not_exactly_a_gateway_request_ends_the_connection() {
 }
 
 /// The original client sends heartbeats from its first frames on; one closed
-/// the gateway before (measured), now it gets an empty one back.
+/// the gateway before (measured). It is taken, unanswered, and the connection
+/// stays.
 #[test]
-fn a_heartbeat_is_answered_and_keeps_the_connection() {
+fn a_heartbeat_is_taken_and_keeps_the_connection() {
     let mut world = world();
     let mut conn = GatewayConnection::open();
-    let beat = ask(&mut conn, &mut world, Packet::KeepAlive(KeepAlive));
-    assert_eq!(beat, Ok((0x2002, Vec::new())));
+    let (opcode, body) = Packet::KeepAlive(KeepAlive).into_serialize();
+    let taken = conn.receive(&gateway(), &mut world, opcode, body);
+    assert!(matches!(taken, Ok(None)), "{taken:?}");
     assert!(!conn.closed());
     let notices = NoticeRequest { content_id: 22 };
     let answer = ask(&mut conn, &mut world, Packet::NoticeRequest(notices));

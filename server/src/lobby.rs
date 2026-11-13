@@ -6,7 +6,7 @@
 //! gateway checked the password of; a refused login closes the session.
 
 use packets::agent::prelude::*;
-use packets::global::{KeepAlive, ModuleIdentification};
+use packets::global::ModuleIdentification;
 use packets::Packet;
 
 use crate::store::Character;
@@ -14,14 +14,10 @@ use crate::world::{Phase, Reason, SessionId, World};
 
 /// 0x2001. The agent names itself as the original does: `AgentServer` and a
 /// zero [V capture, peer vSRO].
-/// A heartbeat (0x2002) gets an empty one back, in every phase. The original
-/// client hangs up 10 s after the server's last frame, measured twice at the
-/// character selection; the stub answers every heartbeat, and the original
-/// client stayed. A deliberate, provisional deviation [S]: not one of 44
-/// captures against the real vSRO server carries an s2c 0x2002, although our
-/// dumper records the stub's; the real behaviour in the lobby is open [U].
-pub(crate) fn keep_alive(world: &mut World, session: SessionId, _: Packet) -> Result<(), Reason> {
-    world.send(session, Packet::KeepAlive(KeepAlive));
+/// A heartbeat (0x2002) is taken in every phase and not answered, as by the
+/// original: its game server has no handler for it [V original server], and
+/// no capture carries an s2c 0x2002 [V capture, peer vSRO].
+pub(crate) fn keep_alive(_: &mut World, _: SessionId, _: Packet) -> Result<(), Reason> {
     Ok(())
 }
 
