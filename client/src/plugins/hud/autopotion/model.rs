@@ -201,7 +201,7 @@ mod test {
             auto_potion_delay: delay,
             blocked_whispers: Vec::new(),
             unk_u32: 0,
-            unk_u8: 0,
+            unk_list: Vec::new(),
         }
     }
 

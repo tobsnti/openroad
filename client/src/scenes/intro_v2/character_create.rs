@@ -1405,7 +1405,7 @@ pub fn update_explain_panel(
             let (key, fallback) = selection.garment.label(selection.race);
             (
                 ui_strings.get_or(key, fallback).to_string(),
-                ui_strings.get_or(&explanation_key(key), "").to_string(),
+                explanation(&ui_strings, key).to_string(),
             )
         }
         SliderRow::Weapon => {
@@ -1413,7 +1413,7 @@ pub fn update_explain_panel(
             match weapons.get(selection.weapon.min(weapons.len().saturating_sub(1))) {
                 Some((_, key, fallback)) => (
                     ui_strings.get_or(key, fallback).to_string(),
-                    ui_strings.get_or(&explanation_key(key), "").to_string(),
+                    explanation(&ui_strings, key).to_string(),
                 ),
                 None => ("—".to_string(), String::new()),
             }
@@ -1431,6 +1431,17 @@ pub fn update_explain_panel(
 /// follow the scheme is returned unchanged and simply resolves to nothing.
 fn explanation_key(caption_key: &str) -> String {
     caption_key.replace("_STT_", "_EXPLANATION_")
+}
+
+/// A row's description as the user's textuisystem spells it. The data breaks
+/// the scheme once: the European weapons' captions say `STT_EU_<W>`, their
+/// descriptions `EXPLANATION_<W>` (all nine; the armour keeps its `EU_`), so
+/// the plain form is looked up when the `EU_` one does not exist.
+fn explanation<'a>(ui: &'a ClientUiStrings, caption_key: &str) -> &'a str {
+    let key = explanation_key(caption_key);
+    ui.get(&key)
+        .or_else(|| ui.get(&key.replacen("_EU_", "_", 1)))
+        .unwrap_or("")
 }
 
 /// `CHAR_CH_MAN_ADVENTURER` -> "Adventurer", for corpora without the
@@ -1852,6 +1863,20 @@ mod tests {
             explanation_key("UIO_COMMON_CTL_CANCEL"),
             "UIO_COMMON_CTL_CANCEL"
         );
+    }
+
+    /// The European weapons break the key scheme in the user's data: caption
+    /// `STT_EU_<W>`, description `EXPLANATION_<W>` for all nine, while
+    /// `EU_ROBE` keeps its segment. Their Explain box stayed empty.
+    #[test]
+    fn a_european_weapon_finds_its_description_without_the_eu_segment() {
+        let ui = ClientUiStrings::from_rows(&[
+            ("UIO_NEWCHAR_EXPLANATION_HARP", "A harp."),
+            ("UIO_NEWCHAR_EXPLANATION_EU_ROBE", "A robe."),
+        ]);
+        assert_eq!(explanation(&ui, "UIO_NEWCHAR_STT_EU_HARP"), "A harp.");
+        assert_eq!(explanation(&ui, "UIO_NEWCHAR_STT_EU_ROBE"), "A robe.");
+        assert_eq!(explanation(&ui, "UIO_NEWCHAR_STT_EU_DAGGER"), "");
     }
 
     /// `Section = WCreate` is a complete authored modal and is transcribed

@@ -23,6 +23,7 @@
 //! 0x7005/0xB005/0x7006/0xB006/0x300A) driving the Esc system window's
 //! Quit/Restart buttons.
 
+use crate::region::is_dungeon;
 use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -200,17 +201,9 @@ impl From<CharacterDataBody> for Bytes {
 // --- Movement (0x7021 request / 0xB021 response) ---------------------------
 //
 // Coordinates are raw region-local units; on the wire their width depends on the
-// region: overworld regions (`region & 0x8000 == 0`) use 2-byte shorts, dungeon
-// regions use 4-byte ints. The derive macro can't switch a field's width on a
-// prior field, so these are hand-written.
-
-/// Whether a region id denotes a dungeon (4-byte coords) vs the overworld
-/// (2-byte coords). Bit 15 is the dungeon flag (go-sro/RSBot convention; xBot's
-/// two helpers disagree at 0x7FFF and are not evidence — see
-/// `docs/re/systems/dungeon-teleport-in.md`).
-pub fn is_dungeon(region: u16) -> bool {
-    region & 0x8000 != 0
-}
+// region (`is_dungeon`): overworld regions use 2-byte shorts, dungeon regions
+// use 4-byte ints. The derive macro can't switch a field's width on a prior
+// field, so these are hand-written.
 
 fn short_packet() -> SerializationError {
     SerializationError::IoError(std::io::Error::new(

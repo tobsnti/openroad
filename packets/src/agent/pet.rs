@@ -52,7 +52,7 @@ use crate::Message;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::agent::character_data::{InventoryItem, ItemClassResolver};
-use crate::agent::ingame::is_dungeon;
+use crate::region::is_dungeon;
 
 use sro_macro::ByteSize;
 use sro_macro::Deserialize;

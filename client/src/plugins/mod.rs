@@ -9,6 +9,8 @@ pub mod camera;
 pub mod combat;
 pub mod diagnostics;
 pub mod environment;
+/// A server refusal resolved to the original's text, one way for every feature.
+pub mod error_text;
 pub mod frame_pacing;
 pub mod gm;
 pub mod hud;

@@ -33,6 +33,7 @@
 
 use std::io::{Cursor, Read};
 
+use crate::region::{is_dungeon, REGION_SIZE};
 use crate::Message;
 use byteorder::ReadBytesExt;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -482,7 +483,7 @@ impl EntityMovement {
             movement.dest_region = Some(dest_region);
             if dest_region > 0 {
                 let mut coord = || -> Result<i32, SerializationError> {
-                    if super::ingame::is_dungeon(current_region) {
+                    if is_dungeon(current_region) {
                         i32::read_from(reader)
                     } else {
                         Ok(u16::read_from(reader)? as i32)
@@ -590,8 +591,9 @@ pub struct PlayerExtras {
     pub pvp_state: u8,
     pub transport_flag: u8,
     pub in_combat: u8,
-    /// Present when riding a transport.
-    #[sro_packet(when = "transport_flag != 0")]
+    /// Present when riding a transport: the original reads it for a flag of
+    /// exactly 1 `[V original handler]`.
+    #[sro_packet(when = "transport_flag == 1")]
     pub transport_id: Option<u32>,
     pub pvp_flag: u8,
     pub guide_flag: u64,
@@ -605,7 +607,11 @@ pub struct PlayerExtras {
     pub auto_potion_delay: u8,
     pub blocked_whispers: Vec<String>,
     pub unk_u32: u32,
-    pub unk_u8: u8,
+    /// A count-prefixed list of `u32`: the original reads a `u8` count and that
+    /// many four-byte values here `[V original handler]`; what they are is
+    /// `[U]`. Read as one byte, a count of 0 — all 243 captured records — is
+    /// right, and any other left the values unread.
+    pub unk_list: Vec<u32>,
 }
 
 /// The spawn essentials extracted from a CHARACTER_DATA body: the unique id
@@ -719,19 +725,19 @@ pub struct ItemReadTrace {
     pub class: ItemClass,
 }
 
-/// Region-local coordinates span one 1920-unit tile; a real spawn is never at
+/// Region-local coordinates span one [`REGION_SIZE`] tile; a real spawn is never at
 /// region 0, and its height stays within a sane band. Used to reject a stray
 /// byte sequence that happens to look like a position during the scan.
 fn plausible(region: u16, x: f32, y: f32, z: f32) -> bool {
     region != 0 && sane_coord(x) && sane_coord(z) && y.is_finite() && y.abs() <= 5000.0
 }
 
-/// A region-local horizontal coordinate lies in `[0, 1920]`. Reject sub-unit
+/// A region-local horizontal coordinate lies in `[0, REGION_SIZE]`. Reject sub-unit
 /// magnitudes (subnormals and other near-zero floats): real spawn coordinates
 /// are whole-ish values in the hundreds, and admitting tiny floats lets random
 /// blob bytes pass as a position when scanning without a known unique id.
 fn sane_coord(v: f32) -> bool {
-    v == 0.0 || (v.is_normal() && (1.0..=1920.0).contains(&v))
+    v == 0.0 || (v.is_normal() && (1.0..=REGION_SIZE).contains(&v))
 }
 
 fn read_u32_at(raw: &[u8], off: usize) -> Option<u32> {
@@ -1622,7 +1628,7 @@ impl EntityMovement {
             buf.put_u16_le(region);
             if region > 0 {
                 for coord in [self.dest_x?, self.dest_y?, self.dest_z?] {
-                    if super::ingame::is_dungeon(current_region) {
+                    if is_dungeon(current_region) {
                         buf.put_i32_le(coord);
                     } else {
                         buf.put_u16_le(coord as u16);
@@ -2796,9 +2802,11 @@ mod test {
             auto_potion_delay: 0,
             blocked_whispers: vec!["Spammer".to_string()],
             unk_u32: 0x00010001,
-            unk_u8: 0,
+            unk_list: vec![5, 6],
         };
         let bytes: bytes::Bytes = extras.clone().into();
+        // the list is a u8 count and that many u32, last in the record
+        assert_eq!(&bytes[bytes.len() - 9..], &[2, 5, 0, 0, 0, 6, 0, 0, 0]);
         let decoded = PlayerExtras::try_from(bytes).unwrap();
         assert_eq!(decoded, extras);
     }

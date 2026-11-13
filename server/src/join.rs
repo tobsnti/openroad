@@ -236,7 +236,7 @@ fn record(
         auto_potion_delay: 0,
         blocked_whispers: Vec::new(),
         unk_u32: 0x0001_0001, // 243 of 243, meaning unknown
-        unk_u8: 0,            // 243 of 243
+        unk_list: Vec::new(), // 243 of 243 carry none
     };
     let masteries = c.masteries.iter();
     ParsedCharacterInfo {

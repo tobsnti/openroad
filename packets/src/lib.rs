@@ -18,6 +18,7 @@ pub mod gateway;
 pub mod global;
 pub mod judge;
 pub mod login;
+pub mod region;
 
 /// The derive every packet type carries. With the `bevy` feature (the default,
 /// what the client builds) it is bevy's `Message`, so each type is an ECS

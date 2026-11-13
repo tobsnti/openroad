@@ -12,8 +12,8 @@
 //! region or in a dungeon is refused until the region arithmetic is shared
 //! with the client.
 
-use packets::agent::ingame::is_dungeon;
 use packets::agent::prelude::{MovementRequest, MovementResponse};
+use packets::region::is_dungeon;
 use packets::Packet;
 
 use crate::tick::STEPS_PER_SECOND;
