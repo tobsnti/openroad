@@ -236,14 +236,26 @@ impl From<GuildUpdate> for Bytes {
     }
 }
 
-/// 0xB0F0 — server → client: the answer to creating a guild. On success it
-/// carries the same record as the chunked transfer, inline.
+/// 0xB0F0 — server → client: the answer to creating a guild. On result 1 it
+/// carries the same record as the chunked transfer, inline; on result 2 a
+/// `u16` error code `[V original handler]`, which vSRO sent as `02 0300`
+/// `[V capture, peer vSRO]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildCreatedData {
-    pub success: bool,
-    #[sro_packet(when = "success")]
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub data: Option<GuildData>,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
+    /// Only after [`GUILD_SECESSION_PENALTY`]: the time the original shows in
+    /// `UIIT_MSG_GUILD_SECESSION_PENALTY`. Its unit is [U].
+    #[sro_packet(when = "error_code == Some(GUILD_SECESSION_PENALTY)")]
+    pub penalty_time: Option<u32>,
 }
+
+/// The [`GuildCreatedData`] refusal that carries a `u32` more, the secession
+/// penalty's time `[V original handler]`.
+pub const GUILD_SECESSION_PENALTY: u16 = 0x4C3C;
 
 /// 0x70F9 — client → server: edit the guild notice.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -591,14 +603,20 @@ mod tests {
         assert_eq!(decoded.members[0].name, "Solo");
     }
 
-    /// 0xB0F0 carries the same record inline, gated on success.
+    /// 0xB0F0 carries the same record inline on result 1, and on result 2 a
+    /// code — vSRO's `02 0300` (packet_dump/gf_admin5, 2026-08-24), which a
+    /// `success: bool` left unread — with a `u32` more behind 0x4C3C only.
     #[test]
-    fn the_create_response_carries_the_record_only_on_success() {
-        let failed = Bytes::from_static(&[0]);
-        let decoded = GuildCreatedData::try_from(failed.clone()).unwrap();
-        assert!(!decoded.success);
-        assert!(decoded.data.is_none());
-        assert_eq!(Bytes::from(decoded), failed);
+    fn the_create_response_carries_the_record_or_a_code() {
+        let refused = Bytes::from_static(&[0x02, 0x03, 0x00]);
+        let decoded = GuildCreatedData::try_from(refused.clone()).unwrap();
+        assert_eq!((decoded.error_code, decoded.penalty_time), (Some(3), None));
+        assert_eq!(Bytes::from(decoded), refused);
+
+        let penalty = Bytes::from_static(&[0x02, 0x3C, 0x4C, 0x10, 0x0E, 0x00, 0x00]);
+        let decoded = GuildCreatedData::try_from(penalty.clone()).unwrap();
+        assert_eq!(decoded.penalty_time, Some(3600));
+        assert_eq!(Bytes::from(decoded), penalty);
 
         let mut body = vec![1u8];
         body.extend(guild_record(&[("Founder", GuildPermissions::MASTER)]));
