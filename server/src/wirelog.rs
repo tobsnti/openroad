@@ -3,7 +3,9 @@
 //! line `seq<TAB>c2s|s2c<TAB>0xOPCODE<TAB>hex` in a file of its own under
 //! `<dir>`, in the order the session saw them, below a header naming the
 //! format, the server build and the connection (`agent` or `gateway`). The
-//! frames are the logical packets; the transport's framing is not in it.
+//! frames are the logical packets; the transport's framing is not in it. The
+//! two login requests carry the password in clear text, so their bodies are
+//! written as `-`, the format's mark for a body that was not recorded.
 
 use std::fs::File;
 use std::io::Write;
@@ -20,6 +22,9 @@ pub struct WireLog {
     file: Option<File>,
     seq: u64,
 }
+
+/// The gateway login (0x6102) and the agent login (0x6103).
+const CARRIES_PASSWORD: [u16; 2] = [0x6102, 0x6103];
 
 /// Logs opened by this process, so that two worlds in one test run never
 /// write the same file.
@@ -53,11 +58,14 @@ impl WireLog {
             return;
         };
         self.seq += 1;
-        let dir = match dir {
-            Dir::C2s => "c2s",
-            Dir::S2c => "s2c",
+        let (dir, withheld) = match dir {
+            Dir::C2s => ("c2s", CARRIES_PASSWORD.contains(&opcode)),
+            Dir::S2c => ("s2c", false),
         };
-        let hex: String = body.iter().map(|b| format!("{b:02x}")).collect();
+        let hex: String = match withheld {
+            true => "-".to_owned(),
+            false => body.iter().map(|b| format!("{b:02x}")).collect(),
+        };
         writeln!(file, "{}\t{dir}\t0x{opcode:04X}\t{hex}", self.seq)
             .expect("wire log write failed");
     }
