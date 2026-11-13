@@ -8,7 +8,7 @@ use packets::agent::prelude::AgentLoginRequest;
 use packets::gateway::{
     NoticeRequest, PatchRequest, ShardListPingRequest, ShardListRequest, ShardListResponse,
 };
-use packets::global::ModuleIdentification;
+use packets::global::{KeepAlive, ModuleIdentification};
 use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
 use server::gateway::{Gateway, GatewayConnection};
@@ -175,4 +175,18 @@ fn a_frame_that_is_not_exactly_a_gateway_request_ends_the_connection() {
     let longer = conn.receive(&gateway(), &mut world, 0x6101, Bytes::from_static(&[0]));
     assert_eq!(longer.err(), Some(Reason::DecodeError));
     assert!(conn.closed());
+}
+
+/// The original client sends heartbeats from its first frames on; one closed
+/// the gateway before (measured), now it gets an empty one back.
+#[test]
+fn a_heartbeat_is_answered_and_keeps_the_connection() {
+    let mut world = world();
+    let mut conn = GatewayConnection::open();
+    let beat = ask(&mut conn, &mut world, Packet::KeepAlive(KeepAlive));
+    assert_eq!(beat, Ok((0x2002, Vec::new())));
+    assert!(!conn.closed());
+    let notices = NoticeRequest { content_id: 22 };
+    let answer = ask(&mut conn, &mut world, Packet::NoticeRequest(notices));
+    assert_eq!(answer, Ok((0xA104, vec![0x00])));
 }

@@ -38,15 +38,6 @@ fn a_talk_is_answered_exactly_once_even_when_it_does_not_decode() {
     assert_eq!(world.take_events(), vec![rejected]);
 }
 
-#[test]
-fn a_keep_alive_is_taken_without_an_answer() {
-    let mut world = World::new(Arc::new(MemoryStore::default()), RefData::default());
-    let s = world.connect();
-    world.receive(s, 0x2002, Bytes::new());
-    assert!(world.take_frames(s).is_empty());
-    assert!(world.take_events().is_empty());
-}
-
 /// A longer body is not read as its prefix.
 #[test]
 fn a_frame_with_extra_bytes_is_rejected_not_truncated() {

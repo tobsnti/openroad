@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
 use packets::agent::prelude::*;
-use packets::global::ModuleIdentification;
+use packets::global::{KeepAlive, ModuleIdentification};
 use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position};
@@ -243,4 +243,38 @@ fn the_speeds_come_from_the_users_table() {
         .character(hero().ref_id)
         .expect("the model is in the table");
     assert_eq!((speeds.walk_speed, speeds.run_speed), (16.0, 50.0));
+}
+
+/// Every phase answers a heartbeat with an empty one: before the login, in
+/// the lobby and in the game.
+#[test]
+fn a_heartbeat_is_answered_in_every_phase() {
+    let (mut world, ticket) = admitted();
+    let s = world.connect();
+    let beat = |world: &mut World| {
+        send(world, s, Packet::KeepAlive(KeepAlive));
+        assert_eq!(
+            frames(world, s),
+            [(0x2002, Vec::new())],
+            "{:?}",
+            world.phase(s)
+        );
+    };
+    beat(&mut world);
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    frames(&mut world, s);
+    beat(&mut world);
+    let join = CharacterJoinRequest {
+        character_name: "Hero".to_owned(),
+    };
+    send(&mut world, s, Packet::CharacterJoinRequest(join));
+    world.receive(s, 0x3012, Bytes::new());
+    frames(&mut world, s);
+    assert!(matches!(world.phase(s), Some(Phase::Game { .. })));
+    beat(&mut world);
+    assert!(world
+        .take_events()
+        .iter()
+        .all(|e| !matches!(e, Event::Rejected { .. })));
 }
