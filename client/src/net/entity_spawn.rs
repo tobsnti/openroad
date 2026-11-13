@@ -520,12 +520,16 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     })
 }
 
-/// Dropped item record. Layout follows skrillax's `ItemSpawnData` (owner as a
-/// flagged optional), corrected against live vSRO 1.188 captures
-/// (`packet_dump/0x3015.log`, 2026-07-24): the drop-source tail is present on
-/// **every** dropped item, gold included —
-/// `ref u32, [amount u32 | upgrade u8], uid u32, pos, owner flag(+u32),
-/// rarity u8, drop source u8, dropper uid u32`.
+/// Dropped item record: `ref u32, [amount u32 | upgrade u8], uid u32, pos,
+/// owner flag(+u32), rarity u8` — the owner a flagged optional, as in
+/// skrillax's `ItemSpawnData`.
+///
+/// The record ends at the rarity byte. A single-entity spawn (0x3015) follows
+/// it with a drop-source byte and, for sources 5 and 6 only, the dropper's uid
+/// `[V original handler]`; the group frame (0x3019) has no such tail — a gold
+/// pile then a monster arrive as 30 + 55 bytes `[V capture, peer vSRO]`, see
+/// `a_group_drop_ends_at_its_rarity_byte`. The single frame's tail is left
+/// unread; nothing behind it in that frame needs it.
 fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Option<SpawnedEntity> {
     let mut amount = None;
     if equipment {
@@ -546,24 +550,6 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
     // colour. Values beyond 0/1 are UNKNOWN and are carried through unmapped
     // rather than guessed at.
     let rarity = r.u8()?;
-    // The dropper id is CONDITIONAL on the drop source, the same shape the
-    // owner flag has six lines up — not an unconditional u32. The original
-    // client settled it by dying on a record that carried one unasked:
-    //
-    //   MsgStreamBuffer.h:186
-    //   (CPSMission) MSGID:0x3015,R(31),W(36)
-    //
-    // Thirty-six written, thirty-one read. The five bytes it never consumed
-    // were a dropper id (4) and a trailing frame byte (1) behind a drop source
-    // of 0. Reading them unconditionally here costs four bytes of every plain
-    // drop and silently shifts whatever follows in a batch.
-    //
-    // What a NON-zero source means is UNKNOWN — no capture of ours carries one
-    // — so that branch reads the id it implies and nothing more is claimed.
-    let drop_source = r.u8()?;
-    if drop_source != 0 {
-        r.skip(4)?; // dropper uid
-    }
     Some(SpawnedEntity {
         ref_id,
         unique_id,
@@ -805,47 +791,42 @@ mod test {
         assert!(parsed.spawns[1].talk_options.is_empty());
     }
 
-    /// The counterpart of [`parses_gold_drop`]: a drop source of 0 carries NO
-    /// dropper id, and reading one anyway eats the next record.
-    ///
-    /// This is the case the original client settled by dying on it —
-    /// `MSGID:0x3015,R(31),W(36)`, thirty-six written and thirty-one read,
-    /// where the five it never touched were a dropper id behind a source of 0
-    /// plus the frame byte. Two records here, because the damage of an
-    /// unconditional read is not a short parse but a SHIFTED one: the first
-    /// record still looks fine.
+    /// A live vSRO group frame — `0x3017` with count 2, then this 85-byte
+    /// `0x3019` (packet_dump/0x3019.log, 2026-08-17T11:13:14.797Z): a gold pile
+    /// of 30 bytes, then a monster of 55. Read with a drop-source tail, the
+    /// pile took the monster's first byte (`8d`) for a source and four more for
+    /// a dropper, and the monster was lost.
     #[test]
-    fn a_drop_source_of_zero_carries_no_dropper_id() {
-        const GOLD_REF: u32 = 3000;
-        let res = resolver(&[(
-            GOLD_REF,
-            RefType::Item {
-                equipment: false,
-                gold: true,
-            },
-        )]);
-        let mut body = Body::default();
-        for (uid, amount) in [(77u32, 5000u32), (78, 6000)] {
-            body = body
-                .u32(GOLD_REF)
-                .u32(amount)
-                .u32(uid)
-                .u16(0x60A8)
-                .f32(1.0)
-                .f32(2.0)
-                .f32(3.0)
-                .u16(0)
-                .u8(0) // owner flag: none, so no owner id follows
-                .u8(0) // rarity
-                .u8(0); // drop source 0 -> no dropper id
-        }
-        let parsed = parse_group_spawn(&body.0, true, 2, &res);
-        assert_eq!(parsed.spawns.len(), 2, "both records must be consumed");
-        assert_eq!(parsed.spawns[0].unique_id, 77);
-        assert_eq!(parsed.spawns[1].unique_id, 78);
+    fn a_group_drop_ends_at_its_rarity_byte() {
+        const LINE: &str = "010000005f000000d0610100a8600f870a435cb834c2a32f33446c5500008d070000\
+                            caa00100a860acf30743e11926c2d5812144475d0100a8605000d7ffc6020100\
+                            0200000000410000b0410000c8420002010500";
+        let body: Vec<u8> = (0..LINE.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&LINE[i..i + 2], 16).unwrap())
+            .collect();
+        let res = resolver(&[
+            (
+                1,
+                RefType::Item {
+                    equipment: false,
+                    gold: true,
+                },
+            ),
+            (1933, RefType::Monster),
+        ]);
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        let read: Vec<_> = parsed
+            .spawns
+            .iter()
+            .map(|e| (e.unique_id, e.kind.clone()))
+            .collect();
         assert_eq!(
-            parsed.spawns[1].kind,
-            SpawnKind::Item { amount: Some(6000) }
+            read,
+            vec![
+                (0x161D0, SpawnKind::Item { amount: Some(95) }),
+                (0x1A0CA, SpawnKind::Monster)
+            ]
         );
     }
 
@@ -859,7 +840,8 @@ mod test {
                 gold: true,
             },
         )]);
-        // mirrors a live 0x3015 gold line: gold carries the drop-source tail
+        // mirrors a live 0x3015 gold line, drop-source tail included; the
+        // record ends at the rarity byte and the tail is left unread
         let body = Body::default()
             .u32(GOLD_REF)
             .u32(5000) // amount
