@@ -1,6 +1,8 @@
 //! Login, lobby and world entry in-process: the gateway's ticket, the
 //! agent's answers.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
 use packets::agent::prelude::*;
@@ -56,8 +58,8 @@ fn admitted() -> (World, u32) {
     let account = login(&store, "admin", "secret").expect("the seeded password logs in");
     let mut refdata = RefData::default();
     refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
-    let mut world = World::new(store, refdata);
-    let ticket = world.admit(account, "admin");
+    let mut world = World::new(Arc::new(store), refdata);
+    let ticket = world.admit(account, "admin").expect("no agent session yet");
     (world, ticket)
 }
 

@@ -7,15 +7,17 @@
 //! [`GatewayConnection::receive`] returns. A good login gets a token for one
 //! agent login ([`World::admit`]) and the agent's address.
 //!
-//! The gateway touches the world only to admit an account and to count who is
-//! online. Checking a password runs argon2 for tens of milliseconds, so in the
-//! server it runs on the gateway connection's own task, never in a world step.
+//! The gateway asks the shard behind it ([`Shard`]) to check a password, to
+//! admit an account and to count who is online. In-process that is the world
+//! itself. In the server it is a handle that checks the password on the
+//! gateway connection's thread and asks the simulation thread for the rest, so
+//! argon2, tens of milliseconds by design, never runs in a world step.
 
 use std::net::Ipv4Addr;
 
 use bytes::Bytes;
 use packets::gateway::{
-    Farm, FarmDetails, NoticeResponse, PatchResponse, Shard, ShardListPingResponse,
+    Farm, FarmDetails, NoticeResponse, PatchResponse, Shard as ListedShard, ShardListPingResponse,
     ShardListResponse,
 };
 use packets::global::ModuleIdentification;
@@ -24,7 +26,7 @@ use packets::login::{LoginError, LoginInfo, LoginRequest, LoginResponse, WrongAt
 use packets::Packet;
 
 use crate::outbox::Frame;
-use crate::store;
+use crate::store::{self, AccountId};
 use crate::wirelog::{Dir, WireLog};
 use crate::world::{reason_of, Reason, World};
 
@@ -37,6 +39,31 @@ const LOGIN_ATTEMPTS: u32 = 6;
 /// The client words code 3 as "This user is already connected" [V original
 /// handler].
 const ALREADY_CONNECTED: u8 = 3;
+
+/// What the gateway needs from the shard behind it.
+pub trait Shard {
+    /// The account `username` names, if `password` is its password.
+    fn login(&mut self, username: &str, password: &str) -> Option<AccountId>;
+    /// Characters in the game.
+    fn online(&mut self) -> usize;
+    /// A token for one agent login, or `None` while the account has a session
+    /// on the agent ([`World::admit`]).
+    fn admit(&mut self, account: AccountId, username: &str) -> Option<u32>;
+}
+
+impl Shard for World {
+    fn login(&mut self, username: &str, password: &str) -> Option<AccountId> {
+        store::login(self.store(), username, password)
+    }
+
+    fn online(&mut self) -> usize {
+        World::online(self)
+    }
+
+    fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
+        World::admit(self, account, username)
+    }
+}
 
 /// What the gateway tells clients about this server.
 #[derive(Clone, Debug)]
@@ -81,7 +108,7 @@ impl GatewayConnection {
     pub fn receive(
         &mut self,
         gateway: &Gateway,
-        world: &mut World,
+        shard: &mut dyn Shard,
         opcode: u16,
         body: Bytes,
     ) -> Result<Frame, Reason> {
@@ -105,7 +132,7 @@ impl GatewayConnection {
             Ok(Packet::NoticeRequest(_)) => {
                 Packet::NoticeResponse(NoticeResponse { notice_count: 0 })
             }
-            Ok(Packet::ShardListRequest(_)) => shard_list(gateway, world),
+            Ok(Packet::ShardListRequest(_)) => shard_list(gateway, shard),
             Ok(Packet::ShardListPingRequest(_)) => {
                 let farms = vec![Farm {
                     id: gateway.farm_id,
@@ -114,7 +141,7 @@ impl GatewayConnection {
                 Packet::ShardListPingResponse(ShardListPingResponse { farms })
             }
             Ok(Packet::LoginRequest(request)) => {
-                Packet::LoginResponse(self.login(gateway, world, request))
+                Packet::LoginResponse(self.login(gateway, shard, request))
             }
             Ok(_) => return Err(self.close(Reason::NotHandled)),
             Err(verdict) => return Err(self.close(reason_of(verdict))),
@@ -136,7 +163,7 @@ impl GatewayConnection {
     fn login(
         &mut self,
         gateway: &Gateway,
-        world: &mut World,
+        shard: &mut dyn Shard,
         request: LoginRequest,
     ) -> LoginResponse {
         let refused = |error_code, wrong_attempt| LoginResponse {
@@ -149,8 +176,7 @@ impl GatewayConnection {
             }),
             custom: None,
         };
-        let Some(account) = store::login(world.store(), &request.username, &request.password)
-        else {
+        let Some(account) = shard.login(&request.username, &request.password) else {
             self.failed_logins += 1;
             self.closed = self.failed_logins >= LOGIN_ATTEMPTS;
             let attempt = WrongAttempt {
@@ -159,11 +185,11 @@ impl GatewayConnection {
             };
             return refused(1, Some(attempt));
         };
-        if world.connected(account) {
+        let Some(agent_token) = shard.admit(account, &request.username) else {
             return refused(ALREADY_CONNECTED, None);
-        }
+        };
         let agent = LoginInfo {
-            agent_token: world.admit(account, &request.username),
+            agent_token,
             agent_ip: gateway.agent_ip.clone(),
             agent_port: gateway.agent_port,
         };
@@ -178,15 +204,15 @@ impl GatewayConnection {
     }
 }
 
-fn shard_list(gateway: &Gateway, world: &World) -> Packet {
+fn shard_list(gateway: &Gateway, shard: &mut dyn Shard) -> Packet {
     let farms = vec![FarmDetails {
         id: gateway.farm_id,
         name: gateway.farm_name.clone(),
     }];
-    let shards = vec![Shard {
+    let shards = vec![ListedShard {
         id: gateway.shard_id,
         name: gateway.shard_name.clone(),
-        online_count: u16::try_from(world.online()).unwrap_or(u16::MAX),
+        online_count: u16::try_from(shard.online()).unwrap_or(u16::MAX),
         capacity: gateway.capacity,
         is_operating: true,
         farm_id: gateway.farm_id,

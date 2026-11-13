@@ -7,6 +7,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use packets::agent::prelude::TalkResponse;
@@ -82,7 +83,7 @@ struct Session {
 }
 
 pub struct World {
-    store: Box<dyn Store>,
+    store: Arc<dyn Store + Send + Sync>,
     refdata: RefData,
     sessions: BTreeMap<SessionId, Session>,
     tickets: HashMap<u32, Ticket>,
@@ -93,9 +94,9 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(store: impl Store + 'static, refdata: RefData) -> World {
+    pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
         World {
-            store: Box::new(store),
+            store,
             refdata,
             sessions: BTreeMap::new(),
             tickets: HashMap::new(),
@@ -107,8 +108,12 @@ impl World {
     }
 
     /// Let `account` in after the gateway checked its password: the returned
-    /// token is good for one login as `username`.
-    pub fn admit(&mut self, account: AccountId, username: &str) -> u32 {
+    /// token is good for one login as `username`. `None` while the account has
+    /// a session on the agent.
+    pub fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
+        if self.connected(account) {
+            return None;
+        }
         let ticket = Ticket {
             account,
             username: username.to_owned(),
@@ -117,7 +122,7 @@ impl World {
             let token = OsRng.next_u32();
             if let Entry::Vacant(slot) = self.tickets.entry(token) {
                 slot.insert(ticket);
-                return token;
+                return Some(token);
             }
         }
     }
@@ -227,13 +232,13 @@ impl World {
     }
 
     /// Characters in the game.
-    pub(crate) fn online(&self) -> usize {
+    pub fn online(&self) -> usize {
         let in_game = |s: &&Session| matches!(s.phase, Phase::Game { .. });
         self.sessions.values().filter(in_game).count()
     }
 
     /// Whether `account` has a session on the agent.
-    pub(crate) fn connected(&self, account: AccountId) -> bool {
+    fn connected(&self, account: AccountId) -> bool {
         self.sessions.values().any(|s| match s.phase {
             Phase::Lobby(a)
             | Phase::Joining { account: a, .. }

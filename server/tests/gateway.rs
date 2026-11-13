@@ -1,6 +1,7 @@
 //! The gateway in-process: everything a client does before the agent.
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use packets::agent::prelude::AgentLoginRequest;
@@ -31,7 +32,7 @@ fn gateway() -> Gateway {
 fn world() -> World {
     let mut store = MemoryStore::default();
     store.add_account("admin", "secret", Vec::new());
-    World::new(store, RefData::default())
+    World::new(Arc::new(store), RefData::default())
 }
 
 /// The answer to `packet`, as opcode and body.
