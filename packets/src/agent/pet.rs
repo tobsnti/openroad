@@ -641,15 +641,17 @@ impl From<PetUpdate> for Bytes {
 /// away exactly when the rider needed unlinking.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetPlayerMounted {
-    pub success: bool,
-    #[sro_packet(when = "success")]
+    /// 1 ok, 2 refused with a code; any other result carries nothing
+    /// `[V original handler]`. The same holds for 0xB420, 0xB117 and 0xB0C5.
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub player_unique_id: Option<u32>,
-    #[sro_packet(when = "success")]
+    #[sro_packet(when = "result == 1")]
     pub is_mounting: Option<bool>,
-    #[sro_packet(when = "success")]
+    #[sro_packet(when = "result == 1")]
     pub riding_unique_id: Option<u32>,
     /// The mount-message category is `0x0E` for this opcode. Value space [U].
-    #[sro_packet(when = "!success")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -663,17 +665,17 @@ pub struct PetPlayerMounted {
 /// to carry) left 4 bytes unconsumed on every cash-pet ack.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetSettingsChangeResponse {
-    pub success: bool,
-    #[sro_packet(when = "success")]
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub unique_id: Option<u32>,
     /// 1 = gold pet, 2 = cash pet — **not** a pet-class discriminator.
-    #[sro_packet(when = "success")]
+    #[sro_packet(when = "result == 1")]
     pub settings_type: Option<u8>,
     /// [`AttackPetSettings`] or [`PickPetSettings`] depending on the COS.
-    #[sro_packet(when = "success")]
+    #[sro_packet(when = "result == 1")]
     pub settings: Option<u32>,
     /// COS error category `0x0C`. Value space [U].
-    #[sro_packet(when = "!success")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -748,13 +750,13 @@ pub struct PetRenameRequest {
 /// apply a rename optimistically.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetRenameResponse {
-    pub success: bool,
-    #[sro_packet(when = "!success")]
+    pub result: u8,
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
 /// 0xB0C5 — the ack for a 0x70C5 COS command (`FUN_00872590`;
-/// `docs/re/net/inbound/pet-cos.md` §0xB0C5). 7 / 11 / 9 / 13 bytes.
+/// `docs/re/net/inbound/pet-cos.md` §0xB0C5). 6 / 10 bytes, 8 / 12 with a code.
 ///
 /// Note the field order: the error code sits **between** the action echo and
 /// the cos uid, so `unique_id` is at offset 2 on success and 4 on failure.
@@ -763,18 +765,20 @@ pub struct PetRenameResponse {
 /// [`PET_ACTION_ITEM_PICKUP`] [V] rather than bot-sourced.
 ///
 /// Actions other than 8 read no tail, so a server that appended one for e.g.
-/// `Movement` would desync — the original would too. [V]
+/// `Movement` would desync — the original would too `[V original handler]`.
+/// A refusal with code 0 ends after the uid, and the original discards
+/// whatever follows `[V original handler]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetActionResponse {
-    pub success: bool,
+    pub result: u8,
     /// Echo of the action byte we sent — see the `PET_ACTION_*` consts.
     pub action: u8,
-    #[sro_packet(when = "!success")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
     pub unique_id: u32,
     /// The grabbed item's GID, present only on the pick-up action. The
     /// original names it `dwGIDItem` in a `DropItemManager.cpp` assert.
-    #[sro_packet(when = "action == 8")]
+    #[sro_packet(when = "action == 8 && error_code != Some(0)")]
     pub item_gid: Option<u32>,
 }
 
@@ -1386,7 +1390,7 @@ mod tests {
 
         let decoded = PetPlayerMounted::try_from(Bytes::from(wire)).unwrap();
 
-        assert!(decoded.success);
+        assert_eq!(decoded.result, 1);
         assert_eq!(decoded.player_unique_id, Some(777));
         assert_eq!(decoded.is_mounting, Some(true));
         assert_eq!(decoded.riding_unique_id, Some(888));
@@ -1413,7 +1417,7 @@ mod tests {
     fn pet_player_mounted_failure_carries_an_error_code() {
         let decoded = PetPlayerMounted::try_from(Bytes::from_static(&[2, 0x0d, 0x30])).unwrap();
 
-        assert!(!decoded.success);
+        assert_eq!(decoded.result, 2);
         assert_eq!(decoded.player_unique_id, None);
         assert_eq!(decoded.riding_unique_id, None);
         assert_eq!(decoded.error_code, Some(0x300d));
@@ -1443,7 +1447,7 @@ mod tests {
         let decoded =
             PetSettingsChangeResponse::try_from(Bytes::from_static(&[2, 0x11, 0x4c])).unwrap();
 
-        assert!(!decoded.success);
+        assert_eq!(decoded.result, 2);
         assert_eq!(decoded.settings, None);
         assert_eq!(decoded.error_code, Some(0x4c11));
     }
@@ -1452,16 +1456,16 @@ mod tests {
     /// so the uid's offset moves with `result`. All four sizes must round-trip.
     #[test]
     fn pet_action_response_places_the_uid_after_the_error_code() {
-        // success, non-pick action: 7 bytes
+        // success, non-pick action: 6 bytes
         let mut wire = vec![1u8, PET_ACTION_ATTACK];
         wire.extend_from_slice(&55u32.to_le_bytes());
         let decoded = PetActionResponse::try_from(Bytes::from(wire.clone())).unwrap();
-        assert!(decoded.success);
+        assert_eq!(decoded.result, 1);
         assert_eq!(decoded.unique_id, 55);
         assert_eq!(decoded.item_gid, None);
         assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
 
-        // success, pick action: 11 bytes, the trailing GID present
+        // success, pick action: 10 bytes, the trailing GID present
         let mut wire = vec![1u8, PET_ACTION_ITEM_PICKUP];
         wire.extend_from_slice(&55u32.to_le_bytes());
         wire.extend_from_slice(&909u32.to_le_bytes());
@@ -1469,22 +1473,18 @@ mod tests {
         assert_eq!(decoded.item_gid, Some(909));
         assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
 
-        // error on attack: 9 bytes, uid pushed to offset 4 — the server's own
+        // error on attack: 8 bytes, uid pushed to offset 4 — the server's own
         // 0x3009 case (server-dec/004ecbc0)
         let mut wire = vec![2u8, PET_ACTION_ATTACK];
         wire.extend_from_slice(&0x3009u16.to_le_bytes());
         wire.extend_from_slice(&55u32.to_le_bytes());
         let decoded = PetActionResponse::try_from(Bytes::from(wire.clone())).unwrap();
-        assert!(!decoded.success);
+        assert_eq!(decoded.result, 2);
         assert_eq!(decoded.error_code, Some(0x3009));
         assert_eq!(decoded.unique_id, 55);
-        // Length, not bytes: `success: bool` re-serializes the failure marker
-        // as 0 rather than the wire's 2 (the tree-wide `u8 == 1` bool rule),
-        // which costs nothing on an S→C packet we never send. What matters is
-        // that all nine bytes were consumed in the right order.
-        assert_eq!(Bytes::from(decoded).len(), wire.len());
+        assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
 
-        // error on pick: 13 bytes — error 0x4414, and the GID still follows
+        // error on pick: 12 bytes — error 0x4414, and the GID still follows
         let mut wire = vec![2u8, PET_ACTION_ITEM_PICKUP];
         wire.extend_from_slice(&0x4414u16.to_le_bytes());
         wire.extend_from_slice(&55u32.to_le_bytes());
@@ -1493,7 +1493,32 @@ mod tests {
         assert_eq!(decoded.error_code, Some(0x4414));
         assert_eq!(decoded.unique_id, 55);
         assert_eq!(decoded.item_gid, Some(909));
-        assert_eq!(Bytes::from(decoded).len(), wire.len());
+        assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
+    }
+
+    /// The COS acks read a code after result 2 only, and 0xB0C5's item GID
+    /// needs the pick-up action and a code other than 0: each frame here is
+    /// exactly as long as the original reads it.
+    #[test]
+    fn the_cos_acks_read_a_code_after_result_2_only() {
+        use crate::judge::{judge, Verdict};
+        let uid = 55u32.to_le_bytes();
+        let pick = PET_ACTION_ITEM_PICKUP;
+        for (opcode, body) in [
+            (0xB0CB, vec![3]),
+            (0xB117, vec![3]),
+            (0xB420, vec![3]),
+            (0xB0C5, [&[3, pick][..], &uid, &uid].concat()),
+            (0xB0C5, [&[3, PET_ACTION_ATTACK][..], &uid].concat()),
+            (0xB0C5, [&[2, pick, 1, 0][..], &uid, &uid].concat()),
+            (0xB0C5, [&[2, pick, 0, 0][..], &uid].concat()),
+        ] {
+            assert_eq!(
+                judge(opcode, &body),
+                Verdict::Exact,
+                "{opcode:#06X} {body:02x?}"
+            );
+        }
     }
 
     /// The three COS acks whose success body is empty. `PetTerminateResponse`
@@ -1506,7 +1531,7 @@ mod tests {
         assert_eq!(err.error_code, Some(3));
 
         let ok = PetRenameResponse::try_from(Bytes::from_static(&[1])).unwrap();
-        assert!(ok.success && ok.error_code.is_none());
+        assert!(ok.result == 1 && ok.error_code.is_none());
 
         let err = PetTerminateResponse::try_from(Bytes::from_static(&[7, 4, 0])).unwrap();
         assert!(!err.success);

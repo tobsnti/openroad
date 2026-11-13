@@ -487,7 +487,7 @@ pub fn apply_cos_settings(
     mut setup: ResMut<CosSetupState>,
 ) {
     for ack in acks.read() {
-        if !ack.success {
+        if ack.result != 1 {
             // A rejected change leaves the confirmed value standing; the page
             // snaps back to it rather than keeping an edit the server refused.
             setup.edited = setup.confirmed;
