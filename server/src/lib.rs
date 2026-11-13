@@ -14,6 +14,7 @@ pub mod gateway;
 pub mod handshake;
 mod join;
 mod lobby;
+mod movement;
 pub mod outbox;
 pub mod refdata;
 pub mod registry;
