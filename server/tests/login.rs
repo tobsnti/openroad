@@ -173,7 +173,8 @@ impl ItemClassResolver for NoItems {
 
 /// The record parses as the client reads it, carries the stored level the
 /// lobby shows too, and nothing follows it until the client's 0x3012: a chat
-/// frame in that window crashes the original client.
+/// frame in that window crashes the original client. Then the character's
+/// values follow; without them the original shows HP and MP as 0/0.
 #[test]
 fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     let (mut world, ticket) = admitted();
@@ -197,7 +198,24 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     assert_eq!(info.stats.map(|stats| stats.level), Some(hero().level));
 
     world.receive(s, 0x3012, Bytes::new());
-    assert!(frames(&mut world, s).is_empty());
+    // Then only the character's values: no items and formulas yet, the
+    // stored HP and MP as the maximum.
+    let values = CharacterStatsUpdate {
+        phys_attack_min: 0,
+        phys_attack_max: 0,
+        mag_attack_min: 0,
+        mag_attack_max: 0,
+        phys_defense: 0,
+        mag_defense: 0,
+        hit_rate: 0,
+        parry_rate: 0,
+        max_hp: 489,
+        max_mp: 489,
+        strength: 29,
+        intelligence: 29,
+    };
+    let (opcode, body) = Packet::CharacterStatsUpdate(values).into_serialize();
+    assert_eq!(frames(&mut world, s), [(opcode, body.to_vec())]);
     assert!(matches!(world.phase(s), Some(Phase::Game { uid: u, .. }) if u == uid));
     assert_eq!(world.take_events(), [Event::Joined { session: s, uid }]);
     let players: Vec<_> = world.players().map(|(u, p)| (u, p.name.as_str())).collect();
