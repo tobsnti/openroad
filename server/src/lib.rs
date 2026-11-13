@@ -19,5 +19,6 @@ pub mod refdata;
 pub mod registry;
 pub mod store;
 pub mod tick;
+pub mod transport;
 pub mod wirelog;
 pub mod world;
