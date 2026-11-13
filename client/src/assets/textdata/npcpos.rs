@@ -1,5 +1,5 @@
-//! Authored NPC spawn positions (`npcpos.txt`): one row per NPC —
-//! `ref_obj_id`, region, x, y, z, no header and no service column.
+//! Authored NPC spawn positions (`npcpos.txt`, rows read by
+//! `sro_textdata::npcpos`), indexed for a lookup by position.
 //!
 //! Idea: the server spawns its NPCs out of this very table, so the table can
 //! answer "who does the data put here?" for a position alone — nothing has to
@@ -19,6 +19,8 @@
 //! captured marks.
 
 use std::collections::HashMap;
+
+use sro_textdata::npcpos;
 
 /// Slack on x and z, in world units.
 ///
@@ -49,35 +51,13 @@ struct NpcSpawnPoint {
 pub struct NpcPositions(HashMap<u16, Vec<NpcSpawnPoint>>);
 
 impl NpcPositions {
-    /// Parse the tab-separated file content (already decoded from UTF-16).
+    /// Index the file content (already decoded from UTF-16) by region.
     pub fn parse(content: &str) -> Self {
         let mut by_region: HashMap<u16, Vec<NpcSpawnPoint>> = HashMap::new();
-        for line in content.lines() {
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 5 {
-                continue;
-            }
-            let Ok(ref_id) = fields[0]
-                .trim_start_matches('\u{feff}')
-                .trim()
-                .parse::<i32>()
-            else {
-                continue;
-            };
-            // Dungeon ids are stored signed here: bit 15 is the dungeon flag,
-            // so `0x8004` appears as `-32764`. Read as `i16` and reinterpret,
-            // which is the same convention `util::region` documents.
-            let Ok(region) = fields[1].trim().parse::<i16>() else {
-                continue;
-            };
-            let (Ok(x), Ok(z)) = (
-                fields[2].trim().parse::<f32>(),
-                fields[4].trim().parse::<f32>(),
-            ) else {
-                continue;
-            };
+        for row in npcpos::parse(content) {
+            let (ref_id, x, z) = (row.ref_id, row.x, row.z);
             by_region
-                .entry(region as u16)
+                .entry(row.region)
                 .or_default()
                 .push(NpcSpawnPoint { ref_id, x, z });
         }
@@ -116,8 +96,7 @@ mod test {
     use super::*;
 
     /// Literal rows from the player's `npcpos.txt`, including the two the
-    /// captured quest marks point at (refs 2003 and 2010) and one dungeon row
-    /// with its negative region id.
+    /// captured quest marks point at (refs 2003 and 2010) and one dungeon row.
     const ROWS: &str = "2003\t25000\t332.73001\t0.0\t1406.7\r\n\
                         2010\t25000\t1760.3199\t11.0\t480.22\r\n\
                         15004\t-32764\t100.0\t0.0\t200.0\r\n";
@@ -141,13 +120,6 @@ mod test {
     fn the_authored_height_is_not_part_of_the_key() {
         let positions = NpcPositions::parse(ROWS);
         assert_eq!(positions.ref_at(25000, 1760.0, 480.0), Some(2010));
-    }
-
-    /// Dungeon regions are stored as a negative `i16`; `-32764` is `0x8004`.
-    #[test]
-    fn a_dungeon_region_is_read_as_the_unsigned_id_with_its_flag_bit() {
-        let positions = NpcPositions::parse(ROWS);
-        assert_eq!(positions.ref_at(0x8004, 100.0, 200.0), Some(15004));
     }
 
     /// Two NPCs within the tolerance cannot be told apart by position, so the
