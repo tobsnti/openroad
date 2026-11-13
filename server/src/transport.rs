@@ -73,6 +73,11 @@ impl Transport {
         (transport, frame(0x5000, &opening))
     }
 
+    /// Whether the handshake is done.
+    pub fn established(&self) -> bool {
+        self.handshake.is_none()
+    }
+
     /// Bytes as the socket delivered them, in any split. A frame that is not
     /// complete yet waits for the next read.
     pub fn receive(&mut self, bytes: &[u8]) -> Result<Inbound, Broken> {
