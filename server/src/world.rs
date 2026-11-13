@@ -15,6 +15,7 @@ use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
+use crate::movement;
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
@@ -66,6 +67,26 @@ pub struct Player {
     pub position: Position,
     pub hp: u32,
     pub mp: u32,
+    /// World units per second (the model's run speed).
+    pub run_speed: f32,
+    pub walk: Option<Walk>,
+}
+
+/// A walk within the character's region: from where, to where, and the steps
+/// it has taken so far.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Walk {
+    pub from: Point,
+    pub to: Point,
+    pub steps: u32,
+}
+
+/// Region-local coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// Where a session stands.
@@ -221,6 +242,7 @@ impl World {
     /// Advance the world by one step of [`crate::tick::STEP`].
     pub fn step(&mut self) {
         self.step += 1;
+        self.players.values_mut().for_each(movement::advance);
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self
             .sessions
@@ -277,6 +299,10 @@ impl World {
 
     pub fn player(&self, uid: u32) -> Option<&Player> {
         self.players.get(&uid)
+    }
+
+    pub(crate) fn player_mut(&mut self, uid: u32) -> Option<&mut Player> {
+        self.players.get_mut(&uid)
     }
 
     pub(crate) fn add_player(&mut self, uid: u32, player: Player) {
