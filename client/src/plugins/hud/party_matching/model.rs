@@ -213,8 +213,9 @@ pub fn toggle_party_match(
 
 /// 0xB06C — one page of the list.
 ///
-/// An empty answer is a real answer: `has_data` false means "nothing to list",
-/// which must clear the board rather than leave the previous page on screen.
+/// An empty page is a real answer: "nothing to list" must clear the board
+/// rather than leave the previous page on screen. So does a refusal, which
+/// carries no page at all.
 pub fn on_match_list(
     mut reader: MessageReader<PartyMatchListResponse>,
     mut state: ResMut<PartyMatchState>,
@@ -541,7 +542,8 @@ mod tests {
             .add_systems(Update, on_match_list);
 
         app.world_mut().write_message(PartyMatchListResponse {
-            has_data: true,
+            result: 1,
+            error_code: None,
             page: Some(PartyMatchListPage {
                 page_count: 1,
                 page_index: 0,
@@ -853,8 +855,14 @@ mod tests {
 
         app.world_mut().resource_mut::<PartyMatchState>().entries = vec![entry(1, "A", 10, 4)];
         app.world_mut().write_message(PartyMatchListResponse {
-            has_data: false,
-            page: None,
+            result: 1,
+            error_code: None,
+            page: Some(PartyMatchListPage {
+                page_count: 0,
+                page_index: 0,
+                party_count: 0,
+                parties: vec![],
+            }),
         });
         app.update();
 
@@ -872,7 +880,8 @@ mod tests {
             .add_systems(Update, on_match_list);
 
         app.world_mut().write_message(PartyMatchListResponse {
-            has_data: true,
+            result: 1,
+            error_code: None,
             page: Some(PartyMatchListPage {
                 page_count: 3,
                 page_index: 1,
@@ -898,7 +907,8 @@ mod tests {
         app.world_mut().resource_mut::<PartyMatchState>().selected = Some(42);
 
         app.world_mut().write_message(PartyMatchListResponse {
-            has_data: true,
+            result: 1,
+            error_code: None,
             page: Some(PartyMatchListPage {
                 page_count: 1,
                 page_index: 0,

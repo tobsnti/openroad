@@ -235,12 +235,14 @@ pub fn on_confirm_response(
         let Some(session) = state.session.as_mut() else {
             continue;
         };
-        if msg.success {
+        if msg.result == 1 {
             info!("exchange: our offer is locked (0xB082)");
             session.own_confirmed = true;
         } else {
-            // The failure tail is unmodelled ([U], docs/net-exchange-0x3085.md).
-            warn!("exchange: confirm refused (0xB082 success=false)");
+            warn!(
+                "exchange: confirm refused (0xB082 code {:?})",
+                msg.error_code
+            );
         }
     }
 }
@@ -254,11 +256,14 @@ pub fn on_approve_response(
         let Some(session) = state.session.as_mut() else {
             continue;
         };
-        if msg.success {
+        if msg.result == 1 {
             info!("exchange: approved, waiting for the partner (0xB083)");
             session.own_approved = true;
         } else {
-            warn!("exchange: approve refused (0xB083 success=false)");
+            warn!(
+                "exchange: approve refused (0xB083 code {:?})",
+                msg.error_code
+            );
         }
     }
 }
@@ -325,8 +330,11 @@ pub fn on_exit_response(
     mut state: ResMut<ExchangeState>,
 ) {
     for msg in reader.read() {
-        if !msg.success {
-            warn!("exchange: exit refused (0xB084 success=false) — window stays open");
+        if msg.result != 1 {
+            warn!(
+                "exchange: exit refused (0xB084 code {:?}) — window stays open",
+                msg.error_code
+            );
             continue;
         }
         if state.session.take().is_some() {

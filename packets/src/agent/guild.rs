@@ -117,11 +117,22 @@ pub struct GuildData {
     pub member_count: u8,
     #[sro_packet(list_type = "by-size-field", size_field = "member_count")]
     pub members: Vec<GuildMember>,
+    /// [U] — a `u8`-counted list the original reads after the members
+    /// `[V original handler]`.
+    pub unk_entries: Vec<GuildDataEntry>,
+}
+
+/// One entry of [`GuildData::unk_entries`], read verbatim.
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct GuildDataEntry {
+    pub unk_u32_00: u32,
+    pub unk_u8_00: u8,
+    pub unk_u32_01: u32,
 }
 
 impl GuildData {
     /// Parse an assembled record. The original reads exactly to the end of the
-    /// last member, so a well-formed buffer leaves no tail.
+    /// list behind the members, so a well-formed buffer leaves no tail.
     pub fn parse(assembled: Bytes) -> Result<Self, SerializationError> {
         Self::try_from(assembled)
     }
@@ -225,14 +236,26 @@ impl From<GuildUpdate> for Bytes {
     }
 }
 
-/// 0xB0F0 — server → client: the answer to creating a guild. On success it
-/// carries the same record as the chunked transfer, inline.
+/// 0xB0F0 — server → client: the answer to creating a guild. On result 1 it
+/// carries the same record as the chunked transfer, inline; on result 2 a
+/// `u16` error code `[V original handler]`, which vSRO sent as `02 0300`
+/// `[V capture, peer vSRO]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildCreatedData {
-    pub success: bool,
-    #[sro_packet(when = "success")]
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub data: Option<GuildData>,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
+    /// Only after [`GUILD_SECESSION_PENALTY`]: the time the original shows in
+    /// `UIIT_MSG_GUILD_SECESSION_PENALTY`. Its unit is [U].
+    #[sro_packet(when = "error_code == Some(GUILD_SECESSION_PENALTY)")]
+    pub penalty_time: Option<u32>,
 }
+
+/// The [`GuildCreatedData`] refusal that carries a `u32` more, the secession
+/// penalty's time `[V original handler]`.
+pub const GUILD_SECESSION_PENALTY: u16 = 0x4C3C;
 
 /// 0x70F9 — client → server: edit the guild notice.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -493,11 +516,14 @@ mod tests {
             out.push(u8::from(*perms == GuildPermissions::MASTER));
             out.push(0); // is_offline
         }
+        out.push(0); // unk_entries: none
         out
     }
 
-    /// The assembled record round-trips, and the roster is sized by the header
-    /// count rather than read to EOF.
+    /// The assembled record round-trips, the roster is sized by the header
+    /// count rather than read to EOF, and the list behind the members is read
+    /// too: vSRO's creation answer ends in its count byte, which was left
+    /// unread (`packet_dump/gf_admin5/0xb0f0.log`, 2026-08-24).
     #[test]
     fn an_assembled_guild_record_round_trips() {
         let wire = Bytes::from(guild_record(&[
@@ -514,6 +540,23 @@ mod tests {
         assert_eq!(decoded.members[1].nickname, "nick");
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+
+        let mut wire = guild_record(&[("Solo", GuildPermissions::ALL)]);
+        *wire.last_mut().unwrap() = 1;
+        wire.extend([7, 0, 0, 0, 2, 9, 0, 0, 0]);
+        let decoded = GuildData::parse(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(decoded.unk_entries.len(), 1);
+        assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
+
+        let created: Vec<u8> = "010100000008004f70656e526f616405000000000000000000000000000105000000040044657669004400000000ffffffff00000000000000000000000000008b070000010100"
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(
+            crate::judge::judge(0xB0F0, &created),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// `permissions` is a bitfield, so the master sentinel is every bit set —
@@ -560,14 +603,20 @@ mod tests {
         assert_eq!(decoded.members[0].name, "Solo");
     }
 
-    /// 0xB0F0 carries the same record inline, gated on success.
+    /// 0xB0F0 carries the same record inline on result 1, and on result 2 a
+    /// code — vSRO's `02 0300` (packet_dump/gf_admin5, 2026-08-24), which a
+    /// `success: bool` left unread — with a `u32` more behind 0x4C3C only.
     #[test]
-    fn the_create_response_carries_the_record_only_on_success() {
-        let failed = Bytes::from_static(&[0]);
-        let decoded = GuildCreatedData::try_from(failed.clone()).unwrap();
-        assert!(!decoded.success);
-        assert!(decoded.data.is_none());
-        assert_eq!(Bytes::from(decoded), failed);
+    fn the_create_response_carries_the_record_or_a_code() {
+        let refused = Bytes::from_static(&[0x02, 0x03, 0x00]);
+        let decoded = GuildCreatedData::try_from(refused.clone()).unwrap();
+        assert_eq!((decoded.error_code, decoded.penalty_time), (Some(3), None));
+        assert_eq!(Bytes::from(decoded), refused);
+
+        let penalty = Bytes::from_static(&[0x02, 0x3C, 0x4C, 0x10, 0x0E, 0x00, 0x00]);
+        let decoded = GuildCreatedData::try_from(penalty.clone()).unwrap();
+        assert_eq!(decoded.penalty_time, Some(3600));
+        assert_eq!(Bytes::from(decoded), penalty);
 
         let mut body = vec![1u8];
         body.extend(guild_record(&[("Founder", GuildPermissions::MASTER)]));

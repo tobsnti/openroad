@@ -209,28 +209,37 @@ pub struct ExchangeApproveRequest;
 
 /// 0x7084 — client → server: back out of the window.
 ///
-/// Empty body is **inferred** — the original has no builder for this opcode, so
-/// [S] rather than [V]. It matches its siblings and its ack carries only a
-/// success flag, but a capture is what settles it.
+/// Empty body is **inferred** — the original has no builder for this opcode.
+/// It matches its siblings, but a capture is what settles it.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ExchangeExitRequest;
 
 /// 0xB082 — server → client: ack for [`ExchangeConfirmRequest`].
+///
+/// Result 1 is the whole body; result 2 carries a `u16` error code
+/// `[V original handler]`, which vSRO sends as `02 1b18`
+/// `[V capture, peer vSRO]`. The same holds for 0xB083 and 0xB084.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ExchangeConfirmResponse {
-    pub success: bool,
+    pub result: u8,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
 }
 
 /// 0xB083 — server → client: ack for [`ExchangeApproveRequest`].
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ExchangeApproveResponse {
-    pub success: bool,
+    pub result: u8,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
 }
 
 /// 0xB084 — server → client: ack for [`ExchangeExitRequest`].
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct ExchangeExitResponse {
-    pub success: bool,
+    pub result: u8,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
 }
 
 #[cfg(test)]
@@ -307,24 +316,23 @@ mod tests {
         assert_eq!(Bytes::from(decoded), wire);
     }
 
+    /// vSRO's answers (packet_dump/admin6, 2026-08-20): `01`, and the refusal
+    /// `02 1b18`, whose code a `success: bool` left unread. A result the
+    /// original reads no code for is the whole frame.
     #[test]
-    fn the_bool_acks_round_trip_both_ways() {
-        for (byte, expected) in [(1u8, true), (0u8, false)] {
-            let wire = Bytes::copy_from_slice(&[byte]);
-            let decoded = ExchangeConfirmResponse::try_from(wire.clone()).unwrap();
-            assert_eq!(decoded.success, expected);
-            assert_eq!(Bytes::from(decoded), wire);
-            assert_eq!(
-                ExchangeApproveResponse::try_from(wire.clone())
-                    .unwrap()
-                    .success,
-                expected
-            );
-            assert_eq!(
-                ExchangeExitResponse::try_from(wire).unwrap().success,
-                expected
-            );
+    fn the_acks_read_a_code_after_result_2_only() {
+        use crate::judge::{judge, Verdict};
+        for opcode in [0xB082, 0xB083, 0xB084] {
+            for body in [&[0x01][..], &[0x02, 0x1B, 0x18], &[0x03]] {
+                assert_eq!(
+                    judge(opcode, body),
+                    Verdict::Exact,
+                    "{opcode:#06X} {body:02x?}"
+                );
+            }
         }
+        let refused = ExchangeExitResponse::try_from(Bytes::from_static(&[0x02, 0x1B, 0x18]));
+        assert_eq!(refused.unwrap().error_code, Some(0x181B));
     }
 
     /// 0x308C keeps its list as a raw tail because an item record's width is

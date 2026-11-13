@@ -508,9 +508,9 @@ pub struct PartyMatchEntry {
 }
 
 /// The populated half of a 0xB06C response. Nested rather than flattened
-/// because the whole block hangs off one `has_data` flag — the original's parser
-/// opens a single `if` around all of it — and because a count that drives a
-/// sized list cannot itself be conditional.
+/// because the whole block hangs off result 1 — the original's parser opens a
+/// single `if` around all of it — and because a count that drives a sized
+/// list cannot itself be conditional.
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchListPage {
     pub page_count: u8,
@@ -520,13 +520,16 @@ pub struct PartyMatchListPage {
     pub parties: Vec<PartyMatchEntry>,
 }
 
-/// 0xB06C — server → client: one page of the party-match list. Everything after
-/// `has_data` is absent when there is nothing to list.
+/// 0xB06C — server → client: one page of the party-match list on result 1, a
+/// `u16` error code on result 2 `[V original handler]`. Nothing to list is a
+/// page with no parties: vSRO sends `01 00 00 00` `[V capture, peer vSRO]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchListResponse {
-    pub has_data: bool,
-    #[sro_packet(when = "has_data")]
+    pub result: u8,
+    #[sro_packet(when = "result == 1")]
     pub page: Option<PartyMatchListPage>,
+    #[sro_packet(when = "result == 2")]
+    pub error_code: Option<u16>,
 }
 
 // --- The family remainder: the four acks/pushes the seed never carried -----
@@ -955,22 +958,31 @@ mod tests {
         assert_eq!(back, wire);
     }
 
-    /// The match list's whole body hangs off one flag.
+    /// Nothing to list is an empty page, not a missing one: vSRO's answer
+    /// `01 00 00 00` (`packet_dump/0xb06c.log`, 2026-08-25). A refusal is
+    /// result 2 and its code, which a `has_data: bool` left unread.
     #[test]
-    fn an_empty_match_list_is_just_the_flag() {
-        let wire = Bytes::from_static(&[0]);
+    fn an_empty_match_list_is_an_empty_page_and_a_refusal_a_code() {
+        let wire = Bytes::from_static(&[1, 0, 0, 0]);
         let decoded = PartyMatchListResponse::try_from(wire.clone()).unwrap();
 
-        assert!(!decoded.has_data);
-        assert!(decoded.page.is_none());
+        assert_eq!(
+            decoded.page.as_ref().map(|page| page.parties.len()),
+            Some(0)
+        );
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+
+        let refused = Bytes::from_static(&[2, 0x1C, 0x2C]);
+        let decoded = PartyMatchListResponse::try_from(refused.clone()).unwrap();
+        assert_eq!(decoded.error_code, Some(0x2C1C));
+        assert_eq!(Bytes::from(decoded), refused);
     }
 
     /// ...and round-trips a populated page.
     #[test]
     fn a_populated_match_list_round_trips() {
-        let mut body: Vec<u8> = vec![1, 2, 0, 1]; // has_data, page_count, page_index, party_count
+        let mut body: Vec<u8> = vec![1, 2, 0, 1]; // result, page_count, page_index, party_count
         body.extend(77u32.to_le_bytes()); // number
         body.extend(0x1234u32.to_le_bytes()); // registered_at
         body.extend(3u16.to_le_bytes());
