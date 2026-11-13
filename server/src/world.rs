@@ -148,6 +148,8 @@ pub struct World {
     npcs: BTreeMap<u32, Npc>,
     /// The NPCs of each region, for sight.
     npcs_in: HashMap<u16, Vec<u32>>,
+    /// Rows of `npcpos.txt` that name no NPC model (`crate::npc`).
+    skipped_npc_rows: usize,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -165,6 +167,7 @@ impl World {
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
             npcs_in: HashMap::new(),
+            skipped_npc_rows: 0,
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
@@ -175,6 +178,10 @@ impl World {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
                 continue;
             };
+            if !world.refdata.is_npc(ref_id) {
+                world.skipped_npc_rows += 1;
+                continue;
+            }
             let position = Position {
                 region: row.region,
                 x: row.x,
@@ -187,6 +194,11 @@ impl World {
             world.npcs.insert(uid, Npc { ref_id, position });
         }
         world
+    }
+
+    /// Rows of `npcpos.txt` that were not placed (`crate::npc`).
+    pub fn skipped_npc_rows(&self) -> usize {
+        self.skipped_npc_rows
     }
 
     pub fn npc(&self, uid: u32) -> Option<&Npc> {

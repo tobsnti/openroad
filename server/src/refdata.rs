@@ -66,6 +66,13 @@ impl RefData {
         &self.npcs
     }
 
+    /// Whether `ref_id` is an NPC's model: a characterdata row with the type
+    /// ids 1/2/2.
+    pub fn is_npc(&self, ref_id: u32) -> bool {
+        let row = self.characters.get(&ref_id);
+        row.is_some_and(|row| matches!(row.type_ids(), Some((1, 2, 2, _))))
+    }
+
     /// The characterdata row `ref_id`, as far as the server uses it.
     pub fn character(&self, ref_id: u32) -> Option<CharacterRef> {
         let row = self.characters.get(&ref_id)?;

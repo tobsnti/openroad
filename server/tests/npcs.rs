@@ -14,11 +14,30 @@ const REGION: u16 = 25000;
 
 /// Rows as `npcpos.txt` has them: the smith in the start region (4 options),
 /// a warehouse one region east (2 options), an NPC without options two
-/// regions east, and one in a dungeon.
+/// regions east, one in a dungeon; and, not placed, a monster in the start
+/// region and a model characterdata does not have.
 const NPCPOS: &str = "2003\t25000\t332.73001\t0.0\t1406.7\r\n\
                       2013\t25001\t980.79999\t-32.43\t989.13\r\n\
                       2028\t25002\t100.0\t0.0\t100.0\r\n\
-                      15004\t-32764\t100.0\t0.0\t200.0\r\n";
+                      15004\t-32764\t100.0\t0.0\t200.0\r\n\
+                      1933\t25000\t900.0\t0.0\t1400.0\r\n\
+                      9252\t25000\t950.0\t0.0\t1400.0\r\n";
+
+/// The models' characterdata rows as far as the server reads them: the type
+/// ids, NPC (1/2/2) for the four NPCs and monster (1/2/1) for 1933.
+fn model_rows(refdata: &mut RefData) {
+    for (ref_id, tid3) in [
+        ("2003", "2"),
+        ("2013", "2"),
+        ("2028", "2"),
+        ("15004", "2"),
+        ("1933", "1"),
+    ] {
+        let mut row = vec![String::from("0"); 48];
+        (row[1], row[9], row[10], row[11]) = (ref_id.into(), "1".into(), "2".into(), tid3.into());
+        refdata.add_characters(&row.join("\t"));
+    }
+}
 
 fn hero() -> Character {
     Character {
@@ -54,6 +73,7 @@ fn world() -> (World, Arc<MemoryStore>) {
     let mut row = vec![String::from("0"); 48];
     (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
     refdata.add_characters(&row.join("\t"));
+    model_rows(&mut refdata);
     refdata.add_npcs(NPCPOS);
     let store = Arc::new(store);
     (World::new(store.clone(), refdata), store)
@@ -139,9 +159,12 @@ fn frames(world: &mut World, session: SessionId) -> Vec<(u16, Bytes)> {
         .collect()
 }
 
+/// Only NPC models are placed: the monster and the model not in the client's
+/// data are counted and skipped.
 #[test]
 fn npcs_stand_where_the_data_puts_them() {
     let (world, _) = world();
+    assert_eq!(world.skipped_npc_rows(), 2);
     let placed: Vec<(u32, u16, f32)> = world
         .npcs()
         .map(|(_, n)| (n.ref_id, n.position.region, n.position.x))
@@ -190,4 +213,22 @@ fn walking_brings_npcs_into_sight_and_takes_them_back() {
         assert_eq!(seen[0].0, 0xB021);
         assert_eq!(group(&seen[1..]), (kind, vec![far]));
     }
+}
+
+/// With the user's data (OPENROAD_TEXTDATA_DIR): Hero enters at the bench's
+/// start point and is shown the NPCs around Jangan in one group. Run it with
+/// OPENROAD_WIRE_LOG to have the reading contract check the real records.
+#[test]
+#[ignore = "needs the user's data: OPENROAD_TEXTDATA_DIR=<textdata> cargo test -p server --test npcs -- --ignored"]
+fn the_users_npcs_around_the_start_point_come_in_one_group() {
+    let textdata = std::env::var("OPENROAD_TEXTDATA_DIR").expect("OPENROAD_TEXTDATA_DIR");
+    let refdata = RefData::load(std::path::Path::new(&textdata)).expect("the textdata loads");
+    let mut store = MemoryStore::default();
+    store.add_account("a", "a", vec![hero()]);
+    let store = Arc::new(store);
+    let mut shard = (World::new(store.clone(), refdata), store);
+    let (s, _) = enter(&mut shard);
+    let (kind, uids) = group(&frames(&mut shard.0, s));
+    assert_eq!(kind, 1);
+    assert!(uids.iter().all(|uid| shard.0.npc(*uid).is_some()));
 }
