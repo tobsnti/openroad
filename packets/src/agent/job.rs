@@ -40,11 +40,12 @@
 //!
 //! ## Deliberately not here
 //!
-//! - `0x70E2`/`0xB0E2` carry exactly the shapes below — one `u32`, then
-//!   `result` + code — but which league action they are is unknown: the only
-//!   captured body is a zero gid, and the player's data gives two candidate
-//!   actions (join, withdraw) without binding either to an opcode. Typing them
-//!   would mean naming the action, so they wait for a capture that shows one.
+//! - `0x70E2`/`0xB0E2` carry one `u32`, then `result` + code, without the
+//!   success arm of 0xB0E6 `[V original handler]` — but which league action
+//!   they are is unknown: the only captured body is a zero gid, and the
+//!   player's data gives two candidate actions (join, withdraw) without
+//!   binding either to an opcode. Typing them would mean naming the action,
+//!   so they wait for a capture that shows one.
 //! - `0x70EA` moved to [`crate::agent::guide`] — its handler indexes a UI
 //!   ("eight bytes, identical on both frames, no field split readable") was
 //!   true of the two frames it had and false as a statement: a sweep over
@@ -89,17 +90,31 @@ pub struct JobNpcRequest {
 
 /// 0xB0E6 — server → client: the answer to [`JobNpcRequest`].
 ///
-/// `u8 result`, then a `u16` code when the result is [`JOB_RESULT_ERROR`].
-/// Both captured frames are `02 03 00`; the success arm's tail is unknown,
-/// which is why nothing is decoded after the code.
+/// `u8 result`, then [`JobNpcAnswer`] on [`JOB_RESULT_SUCCESS`] and a `u16`
+/// code on [`JOB_RESULT_ERROR`] `[V original handler]`. Both captured frames
+/// are `02 03 00`, so no capture shows the success arm.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct JobNpcResponse {
     pub result: u8,
+    #[sro_packet(when = "result == JOB_RESULT_SUCCESS")]
+    pub answer: Option<JobNpcAnswer>,
     /// `None` on the success arm. Decoded as a raw `u16` rather than an enum so
     /// an unknown code degrades instead of failing the frame — the same reason
     /// `AgentLoginResponse` keeps its code numeric.
     #[sro_packet(when = "result == JOB_RESULT_ERROR")]
     pub error_code: Option<u16>,
+}
+
+/// The success arm of [`JobNpcResponse`]: three `u8, u32` pairs
+/// `[V original handler]`. What they hold is [U].
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct JobNpcAnswer {
+    pub unk_u8_00: u8,
+    pub unk_u32_00: u32,
+    pub unk_u8_01: u8,
+    pub unk_u32_01: u32,
+    pub unk_u8_02: u8,
+    pub unk_u32_02: u32,
 }
 
 #[cfg(test)]
@@ -121,8 +136,8 @@ mod tests {
         assert_eq!(npc.npc_gid, 343);
     }
 
-    /// `admin6/0xb0e6.log`, both frames — and the success arm, which reads no
-    /// code and stops there because its tail is in no capture of ours.
+    /// `admin6/0xb0e6.log`, both frames — and the success arm, which reads its
+    /// three pairs to the last byte and no code.
     #[test]
     fn the_refusal_carries_its_code_and_success_carries_none() {
         let refused =
@@ -130,8 +145,17 @@ mod tests {
         assert_eq!(refused.result, JOB_RESULT_ERROR);
         assert_eq!(refused.error_code, Some(3));
 
-        let ok = JobNpcResponse::try_from(Bytes::from_static(&[JOB_RESULT_SUCCESS]))
-            .expect("success arm");
+        let mut success = vec![JOB_RESULT_SUCCESS];
+        for pair in 1u8..=3 {
+            success.push(pair);
+            success.extend(u32::from(pair).to_le_bytes());
+        }
+        assert_eq!(
+            crate::judge::judge(0xB0E6, &success),
+            crate::judge::Verdict::Exact
+        );
+        let ok = JobNpcResponse::try_from(Bytes::from(success)).expect("success arm");
         assert_eq!(ok.error_code, None);
+        assert_eq!(ok.answer.map(|answer| answer.unk_u32_02), Some(3));
     }
 }
