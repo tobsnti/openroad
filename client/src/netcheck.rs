@@ -46,7 +46,7 @@ use packets::agent::prelude::{
     SelectEntityResponse, SingleEntitySpawn,
 };
 
-use crate::net::entity_spawn::{parse_group_spawn, RefResolver, RefType};
+use crate::net::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -457,30 +457,31 @@ struct ActionDriver {
     pending_body: Option<Bytes>,
 }
 
-/// Minimal [`RefResolver`] for headless spawn parsing: with no itemdata tables
-/// we cannot classify ref ids, so treat every record as a monster/NPC — the
-/// leading `unique_id` + position are read before any itemdata-dependent
-/// branch, which is all we need to pick a select target. Player/item/structure
-/// records simply fail to parse and are skipped (`parse_group_spawn` never
-/// panics), so a wrong guess costs at most a skipped target.
+/// Minimal [`RefResolver`] for headless spawn parsing. Without characterdata it
+/// cannot tell an NPC from a monster and says so (`RefType::Character`), so a
+/// record is read only where the batch's length settles it — measured on our
+/// stub's batches, it does for monsters and does not for NPCs. It used to
+/// answer "monster" for every ref, and an NPC record is one byte shorter: at the
+/// Jangan town centre (2026-11-11) the first NPC shifted the rest of its batch
+/// and five garbage entities came out. Player records still cannot be read
+/// without itemdata.
 struct HeadlessResolver;
 
 impl RefResolver for HeadlessResolver {
     fn resolve(&self, ref_id: u32) -> RefType {
-        // Ref id 1 is `ITEM_ETC_GOLD_01` in the user's itemdata — the one ref
-        // this harness can name without the tables, because the gold pile is
-        // the only record whose id is a fixed wire constant rather than a row
-        // lookup. Measured 2026-11-09: a kill drops `0x3015` with ref 1, and
-        // reading it as a monster record (what this returned for everything)
-        // consumes the wrong field widths and parses nothing at all, so the
-        // drop was invisible to the driver.
+        // Ref id 1 is `ITEM_ETC_GOLD_01` in the user's itemdata, and our stub
+        // drops every gold pile as ref 1 — so it is the one ref this harness
+        // can name without the tables. A vSRO server uses ref 2 for larger
+        // piles (from 2,850 gold, 276 of 478 captured drops), which stays
+        // unnamed here. Measured 2026-11-09: read as anything but an item, the
+        // stub's gold drop parsed to nothing and was invisible to the driver.
         if ref_id == GOLD_REF_ID {
             return RefType::Item {
                 equipment: false,
                 gold: true,
             };
         }
-        RefType::Monster
+        RefType::Character
     }
     fn item_is_equipment(&self, _ref_id: u32) -> bool {
         false
@@ -662,11 +663,13 @@ fn netcheck_select_target(
     // record of our stub's batch sits 311 units out, and the server refused the
     // attack with "Basic attack - out of range (311 > 190)": a correct refusal
     // that left the 0x7074 -> 0xB074 half of the chain unproven.
+    // Only a monster can be attacked, killed and looted; the town's NPCs used
+    // to be candidates as soon as they parsed.
     for entity in single_spawns
         .iter()
         .chain(group_spawns.iter())
         .flat_map(|parsed| parsed.spawns.iter())
-        .filter(|entity| entity.unique_id != 0)
+        .filter(|entity| entity.unique_id != 0 && entity.kind == SpawnKind::Monster)
     {
         driver.candidates.push((
             entity.unique_id,
@@ -971,6 +974,72 @@ mod tests {
         v.extend_from_slice(&z.to_le_bytes());
         v.extend_from_slice(&0u16.to_le_bytes());
         v
+    }
+
+    /// One character record the way our stub writes it: standing, alive,
+    /// default speeds, no buffs; an NPC ends in one talk option, a monster in
+    /// no options and its rarity byte.
+    fn character_record(ref_id: u32, uid: u32, x: f32, z: f32, npc: bool) -> Vec<u8> {
+        let mut v = ref_id.to_le_bytes().to_vec();
+        v.extend(id_and_position(uid, 25_000, x, 0.0, z));
+        v.extend([0, 1, 0, 0, 0]); // standing
+        v.extend([1, 0, 0, 0]); // life, unk, motion, body
+        for speed in [12.0f32, 33.0, 100.0] {
+            v.extend(speed.to_le_bytes());
+        }
+        v.push(0); // no buffs
+        v.extend(if npc { &[2u8, 1, 2][..] } else { &[0u8, 1][..] });
+        v
+    }
+
+    /// Two batches our stub sent on 2026-11-11, rebuilt byte for byte: three
+    /// monsters at the bench's default spot, and the seven NPCs of the Jangan
+    /// town centre. The monsters settle and are read. The NPCs do not — read as
+    /// monsters, the first one shifted the batch and five garbage entities came
+    /// out — so nothing is read from that batch rather than something invented.
+    #[test]
+    fn headless_spawns_are_read_only_where_the_batch_decides() {
+        let monsters: Vec<u8> = [
+            (0x2001, 669.0, 269.0),
+            (0x2002, 1269.0, 269.0),
+            (0x2003, 969.0, 369.0),
+        ]
+        .into_iter()
+        .flat_map(|(uid, x, z)| character_record(1933, uid, x, z, false))
+        .collect();
+        let parsed = parse_group_spawn(&monsters, true, 3, &HeadlessResolver);
+        let read: Vec<_> = parsed
+            .spawns
+            .iter()
+            .map(|e| (e.unique_id, e.kind.clone()))
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                (0x2001, SpawnKind::Monster),
+                (0x2002, SpawnKind::Monster),
+                (0x2003, SpawnKind::Monster)
+            ]
+        );
+
+        let refs = [2003u32, 2004, 2009, 2005, 2008, 2013, 2017];
+        let spots = [
+            (1019.0f32, 1419.0f32),
+            (919.0, 1419.0),
+            (969.0, 1469.0),
+            (1069.0, 1319.0),
+            (869.0, 1319.0),
+            (819.0, 1369.0),
+            (1119.0, 1369.0),
+        ];
+        let npcs: Vec<u8> = (0x1001u32..)
+            .zip(refs.into_iter().zip(spots))
+            .flat_map(|(uid, (ref_id, (x, z)))| character_record(ref_id, uid, x, z, true))
+            .collect();
+        assert_eq!(npcs.len(), 343);
+        assert!(parse_group_spawn(&npcs, true, 7, &HeadlessResolver)
+            .spawns
+            .is_empty());
     }
 
     /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than

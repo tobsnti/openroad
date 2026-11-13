@@ -25,6 +25,8 @@
 //! tid4-dependent owner tail, and a riding player inserts a `u32` mount uid
 //! between its state flags — both used to desync the whole batch.
 
+use std::collections::HashMap;
+
 use packets::agent::character_data::{EntityState, ItemClass, ItemClassResolver};
 use packets::hexdump;
 
@@ -107,6 +109,11 @@ pub enum RefType {
     Player,
     Monster,
     Npc,
+    /// An NPC or a monster, undecided: a resolver without characterdata (the
+    /// headless net check) cannot tell them apart. The two records differ only
+    /// by the monster's trailing rarity byte, so the rest of the batch has to
+    /// settle it (see `settle_character`).
+    Character,
     /// A COS (characterdata `1/2/3/tid4`) — NPC record plus an owner tail.
     Cos {
         kind: CosKind,
@@ -224,11 +231,24 @@ pub fn parse_group_spawn(
         return out;
     }
 
+    let mut fit = BatchFit::new(raw, resolver);
     let mut i = 0;
     while i < count {
         let record_start = r.pos();
         match parse_spawn_record(&mut r, resolver) {
-            Some(entity) => out.spawns.push(entity),
+            Some(entity) => match settle_character(entity, &mut r, count - i - 1, &mut fit) {
+                Some(entity) => out.spawns.push(entity),
+                None => {
+                    bevy::log::warn!(
+                        "entity_spawn: record {}/{} is an NPC or a monster and no characterdata \
+                         says which; the batch ends on its last byte either way, or neither \
+                         way, so the rest of it is not read",
+                        i,
+                        count,
+                    );
+                    break;
+                }
+            },
             None => {
                 // An unclassifiable ref id has no derivable record width, so
                 // the whole batch used to end here — losing every entity
@@ -241,7 +261,7 @@ pub fn parse_group_spawn(
                     .filter(|id| resolver.resolve(*id) == RefType::Unknown);
                 if let Some(ref_id) = unresolved {
                     if let Some(resume) =
-                        recover_unknown_record(raw, record_start, count - i - 1, resolver)
+                        recover_unknown_record(raw, record_start, count - i - 1, &mut fit)
                             .filter(|resume| r.seek(*resume).is_some())
                     {
                         bevy::log::warn!(
@@ -298,23 +318,18 @@ pub fn parse_group_spawn(
 /// by its `GroupEntitySpawnBegin` count). A wrong `n` shifts every following
 /// record, so it practically never survives that. Accepted only when exactly
 /// one `n` does; anything else keeps the batch-abort behaviour.
-fn recover_unknown_record(
+fn recover_unknown_record<R: RefResolver>(
     raw: &[u8],
     record_start: usize,
     remaining: u16,
-    resolver: &impl RefResolver,
+    fit: &mut BatchFit<'_, R>,
 ) -> Option<usize> {
     let body_start = record_start.checked_add(4)?;
     let max_body = raw.len().checked_sub(body_start)?;
     let mut found = None;
     for body_len in 0..=max_body {
         let resume = body_start + body_len;
-        let mut probe = Reader::new(raw);
-        probe.seek(resume)?;
-        if (0..remaining).any(|_| parse_spawn_record(&mut probe, resolver).is_none()) {
-            continue;
-        }
-        if probe.pos() != raw.len() {
+        if !fit.fits(resume, remaining) {
             continue;
         }
         if found.is_some() {
@@ -326,12 +341,97 @@ fn recover_unknown_record(
     found
 }
 
+/// Whether the records from an offset read to exactly the end of the payload —
+/// the property [`recover_unknown_record`] and [`settle_character`] decide by.
+/// Memoised per `(offset, records left)`: an undecided record offers two
+/// readings, and without the memo a batch of them would be searched once per
+/// combination.
+struct BatchFit<'a, R> {
+    raw: &'a [u8],
+    resolver: &'a R,
+    memo: HashMap<(usize, u16), bool>,
+}
+
+impl<'a, R: RefResolver> BatchFit<'a, R> {
+    fn new(raw: &'a [u8], resolver: &'a R) -> Self {
+        Self {
+            raw,
+            resolver,
+            memo: HashMap::new(),
+        }
+    }
+
+    /// Whether `remaining` records starting at `pos` end on the payload's last
+    /// byte.
+    fn fits(&mut self, pos: usize, remaining: u16) -> bool {
+        if remaining == 0 {
+            return pos == self.raw.len();
+        }
+        if let Some(&known) = self.memo.get(&(pos, remaining)) {
+            return known;
+        }
+        let ok = self
+            .record_ends(pos)
+            .into_iter()
+            .any(|end| self.fits(end, remaining - 1));
+        self.memo.insert((pos, remaining), ok);
+        ok
+    }
+
+    /// Where the record at `pos` can end: once for a resolved type, twice for
+    /// an undecided character (as an NPC, or one byte later as a monster),
+    /// never for an unknown or short record.
+    fn record_ends(&self, pos: usize) -> Vec<usize> {
+        let mut r = Reader::new(self.raw);
+        let Some(entity) = r
+            .seek(pos)
+            .and_then(|()| parse_spawn_record(&mut r, self.resolver))
+        else {
+            return Vec::new();
+        };
+        if self.resolver.resolve(entity.ref_id) == RefType::Character {
+            vec![r.pos(), r.pos() + 1]
+        } else {
+            vec![r.pos()]
+        }
+    }
+}
+
+/// An undecided character record, read as an NPC by [`parse_spawn_record`],
+/// is settled by the rest of the batch: an NPC when only that reading lets the
+/// batch end on its last byte, a monster (rarity byte included) when only the
+/// one-byte-longer reading does. Anything else leaves it undecided (`None`):
+/// measured on our stub's batches (2026-11-11), seven NPCs in a row fit 64
+/// readings, and without characterdata nothing picks the true one.
+fn settle_character<R: RefResolver>(
+    mut entity: SpawnedEntity,
+    r: &mut Reader,
+    remaining: u16,
+    fit: &mut BatchFit<'_, R>,
+) -> Option<SpawnedEntity> {
+    if fit.resolver.resolve(entity.ref_id) != RefType::Character {
+        return Some(entity);
+    }
+    let end = r.pos();
+    match (fit.fits(end, remaining), fit.fits(end + 1, remaining)) {
+        (true, false) => Some(entity),
+        (false, true) => {
+            entity.spawn_rarity = Some(r.u8()?);
+            entity.kind = SpawnKind::Monster;
+            Some(entity)
+        }
+        _ => None,
+    }
+}
+
 fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<SpawnedEntity> {
     let ref_id = r.u32()?;
     match resolver.resolve(ref_id) {
         RefType::Player => parse_player(r, ref_id, resolver),
         RefType::Monster => parse_character(r, ref_id, true),
-        RefType::Npc => parse_character(r, ref_id, false),
+        // An undecided record is read as an NPC; whether a monster's rarity
+        // byte follows is the batch's call (`settle_character`).
+        RefType::Npc | RefType::Character => parse_character(r, ref_id, false),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
         RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold),
         RefType::Structure => parse_structure(r, ref_id),
@@ -757,6 +857,49 @@ mod test {
         assert_eq!(parsed.spawns[1].unique_id, 22);
         assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster);
         assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
+    }
+
+    /// A resolver without characterdata answers [`RefType::Character`] for
+    /// both: the rarity byte is settled by where the batch ends. NPC, monster,
+    /// NPC — each reading other than the right one shifts the records behind
+    /// it off the payload's end.
+    #[test]
+    fn undecided_characters_are_settled_by_the_batch_end() {
+        const NPC_REF: u32 = 2003;
+        const MOB_REF: u32 = 1933;
+        let res = resolver(&[(NPC_REF, RefType::Character), (MOB_REF, RefType::Character)]);
+        let body = Body::default()
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x61A8, 1.0, 0.0, 2.0, 0)
+            .u8(2) // talk: one option
+            .u8(1)
+            .u8(2)
+            .u32(MOB_REF)
+            .u32(22)
+            .pos_move_state(0x61A8, 3.0, 0.0, 4.0, 0)
+            .u8(0) // no options
+            .u8(1) // rarity
+            .u32(NPC_REF)
+            .u32(33)
+            .pos_move_state(0x61A8, 5.0, 0.0, 6.0, 0)
+            .u8(0) // no options
+            .0;
+
+        let parsed = parse_group_spawn(&body, true, 3, &res);
+        let read: Vec<_> = parsed
+            .spawns
+            .iter()
+            .map(|e| (e.unique_id, e.kind.clone(), e.spawn_rarity))
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                (11, SpawnKind::Npc, None),
+                (22, SpawnKind::Monster, Some(1)),
+                (33, SpawnKind::Npc, None),
+            ]
+        );
     }
 
     #[test]
