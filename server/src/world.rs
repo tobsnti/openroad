@@ -240,7 +240,6 @@ impl World {
                     self.events.push(reject(reason));
                 }
             }
-            (Ok(_), Some(Handling::Silent)) => {}
             (Ok(_), None) => self.events.push(reject(Reason::NotHandled)),
             (Err(rejected), _) => self.events.push(reject(reason_of(rejected))),
         }

@@ -20,7 +20,7 @@ use packets::gateway::{
     Farm, FarmDetails, NoticeResponse, PatchResponse, Shard as ListedShard, ShardListPingResponse,
     ShardListResponse,
 };
-use packets::global::ModuleIdentification;
+use packets::global::{KeepAlive, ModuleIdentification};
 use packets::judge::decode_exact;
 use packets::login::{LoginError, LoginInfo, LoginRequest, LoginResponse, WrongAttempt};
 use packets::Packet;
@@ -143,6 +143,9 @@ impl GatewayConnection {
             Ok(Packet::LoginRequest(request)) => {
                 Packet::LoginResponse(self.login(gateway, shard, request))
             }
+            // As on the agent (`lobby::keep_alive`): the original client hangs
+            // up after 10 s without a frame from the server.
+            Ok(Packet::KeepAlive(_)) => Packet::KeepAlive(KeepAlive),
             Ok(_) => return Err(self.close(Reason::NotHandled)),
             Err(verdict) => return Err(self.close(reason_of(verdict))),
         };
