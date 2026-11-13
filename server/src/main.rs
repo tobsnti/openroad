@@ -1,9 +1,12 @@
 //! The server as the test bench starts it (studio bench contract v1): no
 //! arguments; the start world, the event file and the admin socket come from
-//! the environment, and nothing outlives the process.
+//! the environment, and nothing outlives the process. A setting it cannot use
+//! ends it with a message naming the setting, not with a panic.
 //!
 //! - `BENCH_FIXTURE`: the start world. Each `konto<suffix>` (`konto`,
 //!   `konto_b`) becomes an account with `charakter<suffix>` as its character.
+//!   As the fixture's own rule says, a suffixed entry names only what differs:
+//!   it is laid over its unsuffixed one.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
 //!   `player.joined`, `c2s.rejected`.
@@ -17,49 +20,50 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use server::gateway::Gateway;
 use server::refdata::RefData;
 use server::runtime::{self, Config, Running, GATEWAY_IDLE, HANDSHAKE};
 use server::store::{Character, MemoryStore, Position, Store};
 use server::world::{Event, Phase, Reason, World};
 
-fn main() {
+fn main() -> ExitCode {
     eprintln!("server build: commit {}", env!("OPENROAD_BUILD_COMMIT"));
-    let fixture: Value =
-        serde_json::from_str(&read(&var("BENCH_FIXTURE"))).expect("BENCH_FIXTURE is JSON");
-    let start = start_position(&var("BENCH_START_POS"));
-    let mut store = MemoryStore::default();
-    // Every `konto<suffix>` with its `charakter<suffix>`: `konto` for the
-    // first client, `konto_b` for the second.
-    let accounts = fixture.as_object().expect("the fixture is an object");
-    for (key, account) in accounts.iter().filter(|(key, _)| key.starts_with("konto")) {
-        let suffix = &key["konto".len()..];
-        let character = character(&fixture[format!("charakter{suffix}")], start);
-        store.add_account(
-            text(&account["name"]),
-            text(&account["passwort"]),
-            vec![character],
-        );
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("openroad-server: {why}");
+            ExitCode::from(2)
+        }
     }
-    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
-    let refdata = RefData::load(Path::new(&var("OPENROAD_TEXTDATA_DIR")))
-        .expect("OPENROAD_TEXTDATA_DIR is readable");
-    let events = Events(Arc::new(Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(var("BENCH_EVENTS"))
-            .expect("BENCH_EVENTS can be written"),
-    )));
+}
 
-    let agent_listen = listen_on("BENCH_AGENT", 4012);
+fn run() -> Result<(), String> {
+    let path = var("BENCH_FIXTURE")?;
+    let fixture = fs::read_to_string(&path).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
+    let fixture: Value =
+        serde_json::from_str(&fixture).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
+    let store = accounts(&fixture, start_position(&var("BENCH_START_POS")?)?)?;
+    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
+    let textdata = var("OPENROAD_TEXTDATA_DIR")?;
+    let refdata = RefData::load(Path::new(&textdata))
+        .map_err(|e| format!("OPENROAD_TEXTDATA_DIR {textdata}: {e}"))?;
+    let events = var("BENCH_EVENTS")?;
+    let events = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events)
+        .map_err(|e| format!("BENCH_EVENTS {events}: {e}"))?;
+    let events = Events(Arc::new(Mutex::new(events)));
+
+    let agent_listen = listen_on("BENCH_AGENT", 4012)?;
     let config = Config {
         gateway: gateway(agent_listen),
-        gateway_listen: listen_on("BENCH_GATEWAY", 4011),
+        gateway_listen: listen_on("BENCH_GATEWAY", 4011)?,
         agent_listen,
         handshake: HANDSHAKE,
         gateway_idle: GATEWAY_IDLE,
@@ -69,13 +73,13 @@ fn main() {
     let running = runtime::start(config, world, store, move |world, event| {
         reporter.report(world, event)
     })
-    .expect("the listeners bind");
+    .map_err(|e| format!("the listeners: {e}"))?;
     eprintln!("gateway on {}, agent on {}", running.gateway, running.agent);
 
-    let admin = var("BENCH_ADMIN");
+    let admin = var("BENCH_ADMIN")?;
     // A socket file an earlier run left behind would make the bind fail.
     let _ = fs::remove_file(&admin);
-    let admin = UnixListener::bind(&admin).expect("BENCH_ADMIN can be bound");
+    let admin = UnixListener::bind(&admin).map_err(|e| format!("BENCH_ADMIN {admin}: {e}"))?;
     let addresses =
         json!({"gateway": running.gateway.to_string(), "agent": running.agent.to_string()});
     events.write("ready", addresses);
@@ -85,6 +89,40 @@ fn main() {
             let _ = writeln!(&stream, "{}", answer(command.trim(), &running));
         }
     }
+    Ok(())
+}
+
+/// Every `konto<suffix>` of the fixture with its `charakter<suffix>`.
+fn accounts(fixture: &Value, start: Position) -> Result<MemoryStore, String> {
+    let entries = fixture
+        .as_object()
+        .ok_or("BENCH_FIXTURE is not a JSON object")?;
+    let mut store = MemoryStore::default();
+    for key in entries.keys().filter(|key| key.starts_with("konto")) {
+        let suffix = &key["konto".len()..];
+        let account = laid_over(entries, "konto", key)?;
+        let name = format!("charakter{suffix}");
+        let character = character(&laid_over(entries, "charakter", &name)?, &name, start)?;
+        let user = text(&account, key, "name")?;
+        store.add_account(user, text(&account, key, "passwort")?, vec![character]);
+    }
+    Ok(store)
+}
+
+/// The entry `key` laid over the entry `base`, field by field.
+fn laid_over(entries: &Map<String, Value>, base: &str, key: &str) -> Result<Value, String> {
+    let object = |key: &str| {
+        let entry = entries
+            .get(key)
+            .ok_or(format!("BENCH_FIXTURE has no {key}"))?;
+        entry
+            .as_object()
+            .cloned()
+            .ok_or(format!("BENCH_FIXTURE {key} is not an object"))
+    };
+    let mut merged = object(base)?;
+    merged.extend(object(key)?);
+    Ok(Value::Object(merged))
 }
 
 /// The admin commands of the bench contract that this server can answer yet.
@@ -171,69 +209,73 @@ fn gateway(agent: SocketAddr) -> Gateway {
     }
 }
 
-/// The fixture's character. What the fixture does not name is set to what
-/// the captured vSRO records carry [V capture, peer vSRO: 243 records]:
+/// The fixture's character `key`. What the fixture does not name is set to
+/// what the captured vSRO records carry [V capture, peer vSRO: 243 records]:
 /// height and build 0x22 for this model, 109 inventory slots, the seven
 /// Chinese masteries at level 0. Its bag (`tasche`) waits for the inventory.
-fn character(c: &Value, position: Position) -> Character {
-    Character {
-        name: text(&c["name"]).to_owned(),
-        ref_id: number(c, "ref"),
+fn character(c: &Value, key: &str, position: Position) -> Result<Character, String> {
+    Ok(Character {
+        name: text(c, key, "name")?.to_owned(),
+        ref_id: number(c, key, "ref")?,
         scale: 0x22,
-        level: number(c, "level"),
-        exp: number(c, "exp"),
+        level: number(c, key, "level")?,
+        exp: number(c, key, "exp")?,
         skill_exp: 0,
-        gold: number(c, "gold"),
+        gold: number(c, key, "gold")?,
         skill_points: 0,
-        strength: number(c, "str"),
-        intellect: number(c, "int"),
-        stat_points: number(c, "statuspunkte"),
-        hp: number(c, "hp"),
-        mp: number(c, "mp"),
+        strength: number(c, key, "str")?,
+        intellect: number(c, key, "int")?,
+        stat_points: number(c, key, "statuspunkte")?,
+        hp: number(c, key, "hp")?,
+        mp: number(c, key, "mp")?,
         inventory_size: 109,
         masteries: [257, 258, 259, 273, 274, 275, 276]
             .map(|id| (id, 0))
             .to_vec(),
         position,
-    }
+    })
 }
 
-fn start_position(text: &str) -> Position {
+fn start_position(text: &str) -> Result<Position, String> {
+    let wrong = || format!("BENCH_START_POS is `<region> <x> <y> <z>`, not `{text}`");
     let parts: Vec<&str> = text.split_whitespace().collect();
     let [region, x, y, z] = parts[..] else {
-        panic!("BENCH_START_POS is `<region> <x> <y> <z>`");
+        return Err(wrong());
     };
-    let coordinate = |v: &str| v.parse().expect("BENCH_START_POS holds numbers");
-    Position {
-        region: region.parse().expect("BENCH_START_POS names a region"),
-        x: coordinate(x),
-        y: coordinate(y),
-        z: coordinate(z),
+    let coordinate = |v: &str| v.parse().map_err(|_| wrong());
+    Ok(Position {
+        region: region.parse().map_err(|_| wrong())?,
+        x: coordinate(x)?,
+        y: coordinate(y)?,
+        z: coordinate(z)?,
         heading: 0,
-    }
-}
-
-fn number<T: TryFrom<u64>>(c: &Value, key: &str) -> T {
-    let value = c[key]
-        .as_u64()
-        .unwrap_or_else(|| panic!("charakter.{key} is a number"));
-    T::try_from(value).unwrap_or_else(|_| panic!("charakter.{key} is out of range"))
-}
-
-fn text(value: &Value) -> &str {
-    value.as_str().expect("the fixture names it as text")
-}
-
-fn var(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is set"))
-}
-
-fn read(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|_| panic!("{path} is readable"))
-}
-
-fn listen_on(name: &str, port: u16) -> SocketAddr {
-    std::env::var(name).map_or(SocketAddr::from((Ipv4Addr::LOCALHOST, port)), |a| {
-        a.parse().unwrap_or_else(|_| panic!("{name} is an address"))
     })
+}
+
+fn number<T: TryFrom<u64>>(entry: &Value, key: &str, field: &str) -> Result<T, String> {
+    let value = entry[field].as_u64();
+    value
+        .and_then(|value| T::try_from(value).ok())
+        .ok_or(format!(
+            "BENCH_FIXTURE {key}.{field} is not a number in range"
+        ))
+}
+
+fn text<'a>(entry: &'a Value, key: &str, field: &str) -> Result<&'a str, String> {
+    entry[field]
+        .as_str()
+        .ok_or(format!("BENCH_FIXTURE {key}.{field} is not text"))
+}
+
+fn var(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|_| format!("{name} is not set"))
+}
+
+fn listen_on(name: &str, port: u16) -> Result<SocketAddr, String> {
+    match std::env::var(name) {
+        Ok(address) => address
+            .parse()
+            .map_err(|_| format!("{name} is not an address: {address}")),
+        Err(_) => Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, port))),
+    }
 }
