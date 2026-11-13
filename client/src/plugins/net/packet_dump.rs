@@ -19,6 +19,12 @@
 //! encryption policy is on. The separate directory is what keeps the two
 //! directions apart: several opcodes (`0x2001`, `0x6100`, ...) are used in
 //! both, so a shared file would interleave request and response bodies.
+//!
+//! What a frame proves depends on who sent it — our stub, a vSRO server, a
+//! foreign emulator — and the dumps accumulate across runs against all of
+//! them. So every connection also appends one line to `packet_dump/
+//! sessions.log`: `<RFC3339-ms UTC> peer=<addr> module=<name> client=<build>`.
+//! A frame belongs to the latest session line before its timestamp.
 
 use bevy::log::warn;
 use bevy::prelude::Resource;
@@ -32,6 +38,8 @@ use std::path::PathBuf;
 const DUMP_DIR: &str = "packet_dump";
 /// Subdirectory of [`DUMP_DIR`] holding the client → server direction.
 const SENT_SUBDIR: &str = "c2s";
+/// One line per connection, naming its peer (see the module doc).
+const SESSIONS_FILE: &str = "sessions.log";
 
 #[derive(Resource)]
 pub struct PacketDump {
@@ -60,6 +68,29 @@ impl PacketDump {
     /// wire `0x8000` bit, recorded as the line's third column.
     pub fn dump(&mut self, opcode: u16, data: &[u8], encrypted: bool) {
         self.write("", opcode, data, encrypted);
+    }
+
+    /// Record that a connection to `peer` began (see the module doc).
+    pub fn session(&mut self, peer: &str) {
+        if self.failed {
+            return;
+        }
+        let line = format!(
+            "{} {peer} client={}\n",
+            chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            crate::plugins::dev::build_info::build_label()
+        );
+        let written = std::fs::create_dir_all(&self.root).and_then(|()| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.root.join(SESSIONS_FILE))?
+                .write_all(line.as_bytes())
+        });
+        if let Err(e) = written {
+            warn!("packet_dump: disabled after I/O error on {SESSIONS_FILE}: {e}");
+            self.failed = true;
+        }
     }
 
     /// Record a sent (client → server) payload. Call before serialization so
@@ -136,6 +167,32 @@ mod tests {
         let sent = std::fs::read_to_string(root.join("c2s").join("0x2001.log")).expect("c2s log");
         assert!(received.trim_end().ends_with(" aa P"), "got {received:?}");
         assert!(sent.trim_end().ends_with(" bb P"), "got {sent:?}");
+
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// Each connection leaves one line naming its peer, so a frame can be
+    /// traced to the server that sent it.
+    #[test]
+    fn a_session_line_names_the_peer() {
+        let root = std::env::temp_dir().join(format!("openroad-dump-ses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut dump = PacketDump {
+            root: root.clone(),
+            ..Default::default()
+        };
+
+        dump.session("peer=127.0.0.1:4011 module=GatewayServer");
+        dump.session("peer=127.0.0.1:4012 module=AgentServer");
+
+        let log = std::fs::read_to_string(root.join(SESSIONS_FILE)).expect("sessions log");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "got {log:?}");
+        assert!(
+            lines[1].contains(" peer=127.0.0.1:4012 module=AgentServer client="),
+            "got {:?}",
+            lines[1]
+        );
 
         std::fs::remove_dir_all(&root).expect("clean up");
     }
