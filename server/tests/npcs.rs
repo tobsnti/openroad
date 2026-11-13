@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, MovementRequest};
+use packets::agent::prelude::{
+    AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest,
+    SelectEntityRequest, TalkRequest,
+};
 use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position};
@@ -24,19 +27,30 @@ const NPCPOS: &str = "2003\t25000\t332.73001\t0.0\t1406.7\r\n\
                       9252\t25000\t950.0\t0.0\t1400.0\r\n";
 
 /// The models' characterdata rows as far as the server reads them: the type
-/// ids, NPC (1/2/2) for the four NPCs and monster (1/2/1) for 1933.
+/// ids, NPC (1/2/2) for the four NPCs and monster (1/2/1) for 1933, and the
+/// fortress column, which names Jangan for the smith only; and Jangan's row
+/// of `siegefortress.txt`.
 fn model_rows(refdata: &mut RefData) {
-    for (ref_id, tid3) in [
-        ("2003", "2"),
-        ("2013", "2"),
-        ("2028", "2"),
-        ("15004", "2"),
-        ("1933", "1"),
+    for (ref_id, tid3, fortress) in [
+        ("2003", "2", "FORTRESS_JANGAN"),
+        ("2013", "2", "xxx"),
+        ("2028", "2", "xxx"),
+        ("15004", "2", "xxx"),
+        ("1933", "1", "xxx"),
     ] {
-        let mut row = vec![String::from("0"); 48];
-        (row[1], row[9], row[10], row[11]) = (ref_id.into(), "1".into(), "2".into(), tid3.into());
+        let mut row = vec![String::from("0"); 60];
+        (row[1], row[9], row[10], row[11], row[55]) = (
+            ref_id.into(),
+            "1".into(),
+            "2".into(),
+            tid3.into(),
+            fortress.into(),
+        );
         refdata.add_characters(&row.join("\t"));
     }
+    refdata.add_fortresses(
+        "1\t1\tFORTRESS_JANGAN\t?\tSN_FORTRESS_JANGAN\tGATE_CH\t0\t300\t30\t25\t63\t1000000\tetc\\fort_jangan.ddj\tNPC_CH_FORTRESS_OFFICIAL",
+    );
 }
 
 fn hero() -> Character {
@@ -231,4 +245,65 @@ fn the_users_npcs_around_the_start_point_come_in_one_group() {
     let (kind, uids) = group(&frames(&mut shard.0, s));
     assert_eq!(kind, 1);
     assert!(uids.iter().all(|uid| shard.0.npc(*uid).is_some()));
+    // The smith of Jangan, selected, talked to and left, with the user's
+    // characterdata and siegefortress.txt deciding the fortress bytes.
+    let smith = uid_of(&shard.0, 2003);
+    send(
+        &mut shard.0,
+        s,
+        Packet::SelectEntityRequest(SelectEntityRequest { unique_id: smith }),
+    );
+    let talk = TalkRequest {
+        unique_id: smith,
+        talk_flag: 1,
+    };
+    send(&mut shard.0, s, Packet::TalkRequest(talk));
+    send(
+        &mut shard.0,
+        s,
+        Packet::CloseTalkRequest(CloseTalkRequest { unique_id: smith }),
+    );
+    let codes: Vec<u16> = frames(&mut shard.0, s).iter().map(|f| f.0).collect();
+    assert_eq!(codes, [0xB045, 0xB046, 0xB04B]);
+}
+
+/// The smith (a Jangan fortress NPC) and the warehouse, selected, talked to
+/// and closed: the selection carries the options and, for the smith only,
+/// the fortress's two bytes; a talk about an option the NPC does not offer,
+/// or about an id the client was not shown, is refused.
+#[test]
+fn an_npc_is_selected_talked_to_and_closed() {
+    let mut shard = world();
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    frames(world, s);
+    let (smith, warehouse) = (uid_of(world, 2003), uid_of(world, 2013));
+    let ask = |world: &mut World, packet| {
+        send(world, s, packet);
+        frames(world, s)
+    };
+    let select = |uid| Packet::SelectEntityRequest(SelectEntityRequest { unique_id: uid });
+    let talk = |uid, talk_flag| {
+        Packet::TalkRequest(TalkRequest {
+            unique_id: uid,
+            talk_flag,
+        })
+    };
+    let id = |uid: u32| uid.to_le_bytes().to_vec();
+    let selected = |uid, tail: &[u8]| (0xB045, Bytes::from([&[1][..], &id(uid), tail].concat()));
+    assert_eq!(
+        ask(world, select(smith)),
+        [selected(smith, &[0, 4, 1, 2, 4, 0x20, 0, 0, 0])]
+    );
+    assert_eq!(
+        ask(world, select(warehouse)),
+        [selected(warehouse, &[0, 2, 1, 3, 0])]
+    );
+    let opened = (0xB046, Bytes::from_static(&[0x01, 0x01]));
+    let refused = || (0xB046, Bytes::from_static(&[0x02, 0x00, 0x00]));
+    assert_eq!(ask(world, talk(smith, 1)), [opened]);
+    assert_eq!(ask(world, talk(smith, 3)), [refused()]);
+    assert_eq!(ask(world, talk(uid_of(world, 2028), 1)), [refused()]);
+    let close = Packet::CloseTalkRequest(CloseTalkRequest { unique_id: smith });
+    assert_eq!(ask(world, close), [(0xB04B, Bytes::from_static(&[0x01]))]);
 }

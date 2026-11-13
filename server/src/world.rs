@@ -13,7 +13,6 @@ use bytes::Bytes;
 use packets::agent::ingame::{GROUP_DESPAWN, GROUP_SPAWN};
 use packets::agent::prelude::{
     GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, SingleEntityDespawn,
-    TalkResponse,
 };
 use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
@@ -539,14 +538,4 @@ pub(crate) fn reason_of(verdict: Verdict) -> Reason {
         Verdict::Unwired => Reason::UnknownOpcode,
         _ => Reason::DecodeError,
     }
-}
-
-/// 0x7046. This world holds no NPC yet, so every talk is refused.
-pub(crate) fn talk(_: &mut World, _: SessionId, _: Packet) -> Packet {
-    talk_refusal()
-}
-
-/// Code 0, which the client words as "invalid target" [V original handler].
-pub(crate) fn talk_refusal() -> Packet {
-    Packet::TalkResponse(TalkResponse::Failure(0))
 }
