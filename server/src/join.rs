@@ -26,7 +26,7 @@ use packets::Packet;
 use crate::clock::{game_time, server_time};
 use crate::refdata::CharacterRef;
 use crate::store::{AccountId, Character};
-use crate::world::{Event, Phase, Reason, SessionId, World};
+use crate::world::{Event, Phase, Player, Reason, SessionId, World};
 
 /// The client words 0x40D as "Invalid character name." [V original handler];
 /// it has no text for a character of another account.
@@ -75,6 +75,14 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
         minute,
     };
     world.send(session, Packet::CelestialPosition(time));
+    let player = Player {
+        session,
+        name: character.name.clone(),
+        position: character.position,
+        hp: character.hp,
+        mp: character.mp,
+    };
+    world.add_player(uid, player);
     world.enter(session, Phase::Joining { account, uid });
     Ok(())
 }
@@ -85,6 +93,7 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
         return Err(Reason::NotHandled);
     };
     world.enter(session, Phase::Game { account, uid });
+    world.report(Event::Joined { session, uid });
     Ok(())
 }
 

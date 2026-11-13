@@ -7,17 +7,19 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use packets::agent::prelude::TalkResponse;
+use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
-use crate::inbound::{decode_exact, Rejected};
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
-use crate::store::{AccountId, Store};
+use crate::store::{AccountId, Position, Store};
+use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -28,7 +30,8 @@ pub struct SessionId(pub u32);
 pub enum Reason {
     /// No packet type exists for the opcode.
     UnknownOpcode,
-    /// The body is not exactly one packet of its opcode ([`crate::inbound`]).
+    /// The body is not exactly one packet of its opcode: it does not decode,
+    /// or it does not encode back to the same bytes (`packets::judge`).
     DecodeError,
     /// The packet is understood, but the server does not act on it in the
     /// session's phase.
@@ -51,6 +54,18 @@ pub enum Event {
     Overflowed(SessionId),
     /// A character's model has no reference-data row; its join was refused.
     NoRefData { session: SessionId, ref_id: u32 },
+    /// The client has loaded the world (0x3012): its character is in the game.
+    Joined { session: SessionId, uid: u32 },
+}
+
+/// A character in the world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Player {
+    pub session: SessionId,
+    pub name: String,
+    pub position: Position,
+    pub hp: u32,
+    pub mp: u32,
 }
 
 /// Where a session stands.
@@ -78,12 +93,21 @@ struct Session {
     phase: Phase,
     outbox: Outbox,
     log: WireLog,
+    /// The step the session connected in.
+    since: u64,
 }
 
+/// The original client sends the agent login right after the handshake, 0.05
+/// to 0.4 s after its gateway login [V capture, original client]. A session
+/// that has not logged in after 30 s is gone, and its connection is closed.
+const LOGIN_STEPS: u64 = 30 * STEPS_PER_SECOND;
+
 pub struct World {
-    store: Box<dyn Store>,
+    store: Arc<dyn Store + Send + Sync>,
     refdata: RefData,
     sessions: BTreeMap<SessionId, Session>,
+    /// Characters by unique id, from the join on.
+    players: BTreeMap<u32, Player>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -92,11 +116,12 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(store: impl Store + 'static, refdata: RefData) -> World {
+    pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
         World {
-            store: Box::new(store),
+            store,
             refdata,
             sessions: BTreeMap::new(),
+            players: BTreeMap::new(),
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
@@ -106,8 +131,12 @@ impl World {
     }
 
     /// Let `account` in after the gateway checked its password: the returned
-    /// token is good for one login as `username`.
-    pub fn admit(&mut self, account: AccountId, username: &str) -> u32 {
+    /// token is good for one login as `username`. `None` while the account has
+    /// a session on the agent.
+    pub fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
+        if self.connected(account) {
+            return None;
+        }
         let ticket = Ticket {
             account,
             username: username.to_owned(),
@@ -116,7 +145,7 @@ impl World {
             let token = OsRng.next_u32();
             if let Entry::Vacant(slot) = self.tickets.entry(token) {
                 slot.insert(ticket);
-                return token;
+                return Some(token);
             }
         }
     }
@@ -128,6 +157,7 @@ impl World {
             phase: Phase::Title,
             outbox: Outbox::default(),
             log: WireLog::open("agent"),
+            since: self.step,
         };
         self.sessions.insert(id, session);
         id
@@ -135,6 +165,7 @@ impl World {
 
     pub fn disconnect(&mut self, session: SessionId) {
         self.sessions.remove(&session);
+        self.players.retain(|_, player| player.session != session);
     }
 
     /// One client frame, as the transport cut it out of the stream.
@@ -190,6 +221,16 @@ impl World {
     /// Advance the world by one step of [`crate::tick::STEP`].
     pub fn step(&mut self) {
         self.step += 1;
+        let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
+        let late: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| late(s))
+            .map(|(id, _)| *id)
+            .collect();
+        for session in late {
+            self.enter(session, Phase::Closed);
+        }
     }
 
     /// The frames `session` has to send, oldest first.
@@ -225,6 +266,39 @@ impl World {
         self.store.as_ref()
     }
 
+    /// The characters in the game, by unique id.
+    pub fn players(&self) -> impl Iterator<Item = (u32, &Player)> {
+        let in_game = |p: &Player| matches!(self.phase(p.session), Some(Phase::Game { .. }));
+        self.players
+            .iter()
+            .filter(move |(_, p)| in_game(p))
+            .map(|(uid, p)| (*uid, p))
+    }
+
+    pub fn player(&self, uid: u32) -> Option<&Player> {
+        self.players.get(&uid)
+    }
+
+    pub(crate) fn add_player(&mut self, uid: u32, player: Player) {
+        self.players.insert(uid, player);
+    }
+
+    /// Characters in the game.
+    pub fn online(&self) -> usize {
+        let in_game = |s: &&Session| matches!(s.phase, Phase::Game { .. });
+        self.sessions.values().filter(in_game).count()
+    }
+
+    /// Whether `account` has a session on the agent.
+    fn connected(&self, account: AccountId) -> bool {
+        self.sessions.values().any(|s| match s.phase {
+            Phase::Lobby(a)
+            | Phase::Joining { account: a, .. }
+            | Phase::Game { account: a, .. } => a == account,
+            Phase::Title | Phase::Closed => false,
+        })
+    }
+
     pub(crate) fn refdata(&self) -> &RefData {
         &self.refdata
     }
@@ -245,10 +319,10 @@ impl World {
     }
 }
 
-fn reason_of(rejected: Rejected) -> Reason {
-    match rejected {
-        Rejected::UnknownOpcode => Reason::UnknownOpcode,
-        Rejected::Undecodable | Rejected::NotExact => Reason::DecodeError,
+pub(crate) fn reason_of(verdict: Verdict) -> Reason {
+    match verdict {
+        Verdict::Unwired => Reason::UnknownOpcode,
+        _ => Reason::DecodeError,
     }
 }
 

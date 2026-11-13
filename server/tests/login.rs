@@ -1,6 +1,8 @@
 //! Login, lobby and world entry in-process: the gateway's ticket, the
 //! agent's answers.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
 use packets::agent::prelude::*;
@@ -56,8 +58,8 @@ fn admitted() -> (World, u32) {
     let account = login(&store, "admin", "secret").expect("the seeded password logs in");
     let mut refdata = RefData::default();
     refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
-    let mut world = World::new(store, refdata);
-    let ticket = world.admit(account, "admin");
+    let mut world = World::new(Arc::new(store), refdata);
+    let ticket = world.admit(account, "admin").expect("no agent session yet");
     (world, ticket)
 }
 
@@ -197,7 +199,11 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     world.receive(s, 0x3012, Bytes::new());
     assert!(frames(&mut world, s).is_empty());
     assert!(matches!(world.phase(s), Some(Phase::Game { uid: u, .. }) if u == uid));
-    assert!(world.take_events().is_empty());
+    assert_eq!(world.take_events(), [Event::Joined { session: s, uid }]);
+    let players: Vec<_> = world.players().map(|(u, p)| (u, p.name.as_str())).collect();
+    assert_eq!(players, [(uid, "Hero")]);
+    world.disconnect(s);
+    assert_eq!(world.players().count(), 0);
 }
 
 #[test]

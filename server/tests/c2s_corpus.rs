@@ -12,8 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bytes::Bytes;
-use server::inbound::decode_exact;
+use packets::judge::decode_exact;
 
 /// Opcodes with recorded forms that strict reading rejects today.
 const NOT_MODELLED: [(u16, &str); 4] = [
@@ -66,7 +65,7 @@ fn every_recorded_original_request_passes_strict_reading() {
     for (_, opcode, body) in &frames {
         let tally = seen.entry(*opcode).or_default();
         tally.0 += 1;
-        tally.1 += usize::from(decode_exact(*opcode, &Bytes::from(body.clone())).is_err());
+        tally.1 += usize::from(decode_exact(*opcode, body).is_err());
     }
     let rejected: Vec<_> = seen.iter().filter(|(_, t)| t.1 > 0).collect();
     eprintln!(
@@ -93,7 +92,7 @@ fn every_recorded_original_request_passes_strict_reading() {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

@@ -9,9 +9,15 @@ rust-version.workspace = true
 description = "The OpenRoad game server: one simulation thread owns the world."
 license.workspace = true
 
+[[bin]]
+name = "openroad-server"
+path = "src/main.rs"
+
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 bytes = { workspace = true }
 packets = { path = "../packets" }
 rand_core = { version = "0.6", features = ["getrandom"] }
+serde_json = "1"
+sro_net = { path = "../sro_net" }
 sro_textdata = { path = "../sro_textdata" }
