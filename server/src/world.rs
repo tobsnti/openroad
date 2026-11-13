@@ -19,6 +19,7 @@ use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::store::{AccountId, Store};
+use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -80,7 +81,14 @@ struct Session {
     phase: Phase,
     outbox: Outbox,
     log: WireLog,
+    /// The step the session connected in.
+    since: u64,
 }
+
+/// The original client sends the agent login right after the handshake, 0.05
+/// to 0.4 s after its gateway login [V capture, original client]. A session
+/// that has not logged in after 30 s is gone, and its connection is closed.
+const LOGIN_STEPS: u64 = 30 * STEPS_PER_SECOND;
 
 pub struct World {
     store: Arc<dyn Store + Send + Sync>,
@@ -134,6 +142,7 @@ impl World {
             phase: Phase::Title,
             outbox: Outbox::default(),
             log: WireLog::open("agent"),
+            since: self.step,
         };
         self.sessions.insert(id, session);
         id
@@ -196,6 +205,16 @@ impl World {
     /// Advance the world by one step of [`crate::tick::STEP`].
     pub fn step(&mut self) {
         self.step += 1;
+        let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
+        let late: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| late(s))
+            .map(|(id, _)| *id)
+            .collect();
+        for session in late {
+            self.enter(session, Phase::Closed);
+        }
     }
 
     /// The frames `session` has to send, oldest first.

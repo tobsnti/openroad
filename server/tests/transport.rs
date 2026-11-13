@@ -18,8 +18,10 @@ fn connected(split: usize) -> (Transport, Client) {
     let challenge = feed(&mut server, &answer, split);
     assert!(challenge.frames.is_empty());
     client.challenged(&challenge.reply);
+    assert!(!server.established());
     let done = feed(&mut server, &client.send(0x9000, &[], false), split);
     assert!(done.frames.is_empty() && done.reply.is_empty());
+    assert!(server.established());
     (server, client)
 }
 

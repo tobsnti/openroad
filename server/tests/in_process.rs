@@ -6,7 +6,8 @@ use bytes::Bytes;
 use server::outbox::CAPACITY;
 use server::refdata::RefData;
 use server::store::MemoryStore;
-use server::world::{Event, Reason, World};
+use server::tick::STEPS_PER_SECOND;
+use server::world::{Event, Phase, Reason, World};
 
 /// 0x7046 locks the client's talk requests until its answer arrives, so it
 /// gets exactly one — also when its body does not decode.
@@ -91,4 +92,19 @@ fn a_session_that_stops_reading_is_cut_off() {
     }
     assert_eq!(world.take_events(), vec![Event::Overflowed(s)]);
     assert!(world.take_frames(s).is_empty(), "the session is gone");
+}
+
+/// The original client logs in right after the handshake; a session that has
+/// not after 30 s is closed.
+#[test]
+fn a_session_that_does_not_log_in_is_closed_after_thirty_seconds() {
+    let mut world = World::new(Arc::new(MemoryStore::default()), RefData::default());
+    let s = world.connect();
+    for _ in 1..30 * STEPS_PER_SECOND {
+        world.step();
+    }
+    assert_eq!(world.phase(s), Some(Phase::Title));
+    world.step();
+    assert_eq!(world.phase(s), Some(Phase::Closed));
+    assert_eq!(world.take_events(), vec![Event::Closed(s)]);
 }
