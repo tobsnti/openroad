@@ -39,13 +39,15 @@ fn character(name: &str, region: u16) -> Character {
     }
 }
 
-/// Accounts a, b, c (each with its name as password) with Hero and Kiro in
-/// one region and Far in the next; the store, for the gateway's login.
+/// Accounts a, b, c, d (each with its name as password): Hero and Kiro in
+/// one region, Next in the region east of it and Far two regions east; the
+/// store, for the gateway's login.
 fn world() -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("a", "a", vec![character("Hero", REGION)]);
     store.add_account("b", "b", vec![character("Kiro", REGION)]);
-    store.add_account("c", "c", vec![character("Far", REGION + 1)]);
+    store.add_account("c", "c", vec![character("Far", REGION + 2)]);
+    store.add_account("d", "d", vec![character("Next", REGION + 1)]);
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
     (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
@@ -104,6 +106,14 @@ fn opcodes(world: &mut World, session: SessionId) -> Vec<(u16, Bytes)> {
 /// of build and inventory, and the four of its empty item sections.
 fn spawned(body: &Bytes) -> u32 {
     u32::from_le_bytes(body[13..17].try_into().unwrap())
+}
+
+/// The character a spawn (0x3015), despawn (0x3016) or walk (0xB021) is about.
+fn about((opcode, body): &(u16, Bytes)) -> u32 {
+    match opcode {
+        0x3015 => spawned(body),
+        _ => u32::from_le_bytes(body[..4].try_into().unwrap()),
+    }
 }
 
 #[test]
@@ -181,6 +191,45 @@ fn a_character_that_enters_is_shown_a_walker_walking() {
     let body = &to_b[0].1;
     assert_eq!((to_b[0].0, body.len()), (0x3015, 94 + 5));
     assert_eq!(&body[33..43], &block[..]);
+}
+
+#[test]
+fn a_character_in_a_neighbouring_region_is_shown() {
+    let mut shard = world();
+    let (a, hero) = enter(&mut shard, "a", "Hero");
+    let (d, next) = enter(&mut shard, "d", "Next");
+    assert_eq!(spawned(&opcodes(&mut shard.0, a)[0].1), next);
+    assert_eq!(spawned(&opcodes(&mut shard.0, d)[0].1), hero);
+}
+
+/// Hero walks one region east, into sight of Far two regions east, and back
+/// out of it. On the way back Far, who knows Hero by then, also sees the walk.
+#[test]
+fn walking_across_a_border_shows_and_takes_back_both_ways() {
+    let mut shard = world();
+    let (a, hero) = enter(&mut shard, "a", "Hero");
+    let (c, far) = enter(&mut shard, "c", "Far");
+    assert!(opcodes(&mut shard.0, a).is_empty());
+    let east = (REGION + 1, 100, vec![0xB021, 0x3015], vec![0x3015]);
+    let back = (REGION, 969, vec![0xB021, 0x3016], vec![0xB021, 0x3016]);
+    for (region, x, to_hero, to_far) in [east, back] {
+        let walk = MovementRequest::ToLocation {
+            region,
+            x,
+            y: 0,
+            z: 1419,
+        };
+        send(&mut shard.0, a, Packet::MovementRequest(walk));
+        while shard.0.player(hero).unwrap().walk.is_some() {
+            shard.0.step();
+        }
+        let (seen_by_hero, seen_by_far) = (opcodes(&mut shard.0, a), opcodes(&mut shard.0, c));
+        let codes = |frames: &[(u16, Bytes)]| frames.iter().map(|f| f.0).collect::<Vec<_>>();
+        assert_eq!(codes(&seen_by_hero), to_hero);
+        assert_eq!(codes(&seen_by_far), to_far);
+        assert_eq!(about(seen_by_hero.last().unwrap()), far);
+        assert_eq!(about(seen_by_far.last().unwrap()), hero);
+    }
 }
 
 #[test]

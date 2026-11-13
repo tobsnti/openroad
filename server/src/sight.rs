@@ -1,37 +1,63 @@
-//! Who sees whom. A character in the game sees the others in its region. The
-//! original takes a leaving character back from the observers of its block
-//! and of the neighbouring blocks [V original server]; how large a block is
-//! is open [U], and neighbours need the region arithmetic the server does not
-//! share with the client yet.
+//! Who sees whom. The original takes a leaving character back from the
+//! observers of its block and of the neighbouring blocks [V original server];
+//! how large a block is is open [U]. This server takes a region for a block,
+//! so a character sees the others in its region and the eight around it; in
+//! a dungeon, in its region.
 //!
 //! The original client asserts on the spawn of an id it knows and on any
 //! other frame about an id it does not [V original handler], so the world
 //! keeps, per session, the ids its client was shown ([`World::show`]), and
-//! takes them back with 0x3016 when the character leaves.
+//! takes them back with 0x3016 when the character leaves its sight.
 
 use bytes::{BufMut, BytesMut};
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
 use packets::agent::prelude::SingleEntitySpawn;
+use packets::region::{is_dungeon, sector};
 use packets::Packet;
 use sro_macro::Serialize;
 
+use crate::movement::in_region;
 use crate::world::{Player, World};
 
-/// The character `uid` has entered the game: it and the characters in its
-/// region are shown to each other.
-pub(crate) fn enter(world: &mut World, uid: u32) {
+/// Brings who sees the character `uid`, and whom it sees, in line with where
+/// everyone is: what came into sight is shown, what left it is taken back,
+/// both ways. Run when it enters the game and when it crosses into another
+/// region.
+pub(crate) fn update(world: &mut World, uid: u32) {
     let Some(me) = world.player(uid).cloned() else {
         return;
     };
-    let near: Vec<(u32, Player)> = world
+    let others: Vec<(u32, u16)> = world
         .players()
-        .filter(|(other, p)| *other != uid && p.position.region == me.position.region)
-        .map(|(other, p)| (other, p.clone()))
+        .filter(|(other, _)| *other != uid)
+        .map(|(other, p)| (other, p.position.region))
         .collect();
-    for (other, player) in near {
-        world.show(me.session, other, spawn(other, &player));
-        world.show(player.session, uid, spawn(uid, &me));
+    for (other, region) in others {
+        let near = in_sight(me.position.region, region);
+        if near == world.knows(me.session, other) {
+            continue;
+        }
+        let Some(player) = world.player(other).cloned() else {
+            continue;
+        };
+        if near {
+            world.show(me.session, other, spawn(other, &player));
+            world.show(player.session, uid, spawn(uid, &me));
+        } else {
+            world.hide(me.session, other);
+            world.hide(player.session, uid);
+        }
     }
+}
+
+/// Whether a character in region `a` sees one in region `b`: the same
+/// region, or in the overworld one of the eight around it.
+fn in_sight(a: u16, b: u16) -> bool {
+    if is_dungeon(a) || is_dungeon(b) {
+        return a == b;
+    }
+    let ((ax, az), (bx, bz)) = (sector(a), sector(b));
+    ax.abs_diff(bx) <= 1 && az.abs_diff(bz) <= 1
 }
 
 /// The single spawn (0x3015) of a character, in the order the original
@@ -57,14 +83,14 @@ fn spawn(uid: u32, p: &Player) -> Packet {
         heading: at.heading,
     };
     position.serialize_to(&mut b);
-    let movement = match p.walk {
-        Some(walk) => EntityMovement {
+    let movement = match p.walk.map(|walk| in_region(walk.to)) {
+        Some((region, to)) => EntityMovement {
             has_destination: true,
             move_type: 1,
-            dest_region: Some(at.region),
-            dest_x: Some(walk.to.x as i32),
-            dest_y: Some(walk.to.y as i32),
-            dest_z: Some(walk.to.z as i32),
+            dest_region: Some(region),
+            dest_x: Some(to.x as i32),
+            dest_y: Some(to.y as i32),
+            dest_z: Some(to.z as i32),
             ..Default::default()
         },
         None => EntityMovement {
