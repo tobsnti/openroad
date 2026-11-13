@@ -610,6 +610,7 @@ mod test {
             petition: kind,
             unique_id: 0x1234,
             setup,
+            academy_text: None,
         }
     }
 
