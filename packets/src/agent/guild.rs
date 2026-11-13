@@ -117,11 +117,22 @@ pub struct GuildData {
     pub member_count: u8,
     #[sro_packet(list_type = "by-size-field", size_field = "member_count")]
     pub members: Vec<GuildMember>,
+    /// [U] — a `u8`-counted list the original reads after the members
+    /// `[V original handler]`.
+    pub unk_entries: Vec<GuildDataEntry>,
+}
+
+/// One entry of [`GuildData::unk_entries`], read verbatim.
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct GuildDataEntry {
+    pub unk_u32_00: u32,
+    pub unk_u8_00: u8,
+    pub unk_u32_01: u32,
 }
 
 impl GuildData {
     /// Parse an assembled record. The original reads exactly to the end of the
-    /// last member, so a well-formed buffer leaves no tail.
+    /// list behind the members, so a well-formed buffer leaves no tail.
     pub fn parse(assembled: Bytes) -> Result<Self, SerializationError> {
         Self::try_from(assembled)
     }
@@ -493,11 +504,14 @@ mod tests {
             out.push(u8::from(*perms == GuildPermissions::MASTER));
             out.push(0); // is_offline
         }
+        out.push(0); // unk_entries: none
         out
     }
 
-    /// The assembled record round-trips, and the roster is sized by the header
-    /// count rather than read to EOF.
+    /// The assembled record round-trips, the roster is sized by the header
+    /// count rather than read to EOF, and the list behind the members is read
+    /// too: vSRO's creation answer ends in its count byte, which was left
+    /// unread (`packet_dump/gf_admin5/0xb0f0.log`, 2026-08-24).
     #[test]
     fn an_assembled_guild_record_round_trips() {
         let wire = Bytes::from(guild_record(&[
@@ -514,6 +528,23 @@ mod tests {
         assert_eq!(decoded.members[1].nickname, "nick");
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+
+        let mut wire = guild_record(&[("Solo", GuildPermissions::ALL)]);
+        *wire.last_mut().unwrap() = 1;
+        wire.extend([7, 0, 0, 0, 2, 9, 0, 0, 0]);
+        let decoded = GuildData::parse(Bytes::from(wire.clone())).unwrap();
+        assert_eq!(decoded.unk_entries.len(), 1);
+        assert_eq!(&Bytes::from(decoded)[..], &wire[..]);
+
+        let created: Vec<u8> = "010100000008004f70656e526f616405000000000000000000000000000105000000040044657669004400000000ffffffff00000000000000000000000000008b070000010100"
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(
+            crate::judge::judge(0xB0F0, &created),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// `permissions` is a bitfield, so the master sentinel is every bit set —

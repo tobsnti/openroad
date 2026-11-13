@@ -1131,6 +1131,7 @@ mod test {
             unk_u8_00: 0,
             member_count: 2,
             members: vec![member("Grunt", false), member("Master", true)],
+            unk_entries: vec![],
         }
     }
 
