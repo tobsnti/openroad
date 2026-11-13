@@ -74,15 +74,20 @@ fn a_wrong_crc_ends_the_connection() {
 /// A replayed frame carries a sequence byte the server has used up.
 #[test]
 fn a_replayed_frame_ends_the_connection() {
-    let (mut server, client) = connected(4096);
-    let mut replay = client.send(0x2002, &[], false);
-    server.receive(&replay).unwrap();
-    // Two positions of the sequence can share a value; replay one that does not.
-    while client.next_sequence_byte() == replay[4] {
-        replay = client.send(0x2002, &[], false);
+    // A replay shows only where the next sequence byte differs from the
+    // replayed one, and for some seeds the sequence settles on a single value
+    // (seen once in this test: it waited for a change for an hour). So the
+    // replay goes to the first connection whose next byte differs.
+    for _ in 0..64 {
+        let (mut server, client) = connected(4096);
+        let replay = client.send(0x2002, &[], false);
         server.receive(&replay).unwrap();
+        if client.next_sequence_byte() != replay[4] {
+            assert_eq!(server.receive(&replay).err(), Some(Broken::SecurityBytes));
+            return;
+        }
     }
-    assert_eq!(server.receive(&replay).err(), Some(Broken::SecurityBytes));
+    panic!("64 connections without a replay that shows");
 }
 
 #[test]
