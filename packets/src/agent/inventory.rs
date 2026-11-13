@@ -1524,17 +1524,19 @@ impl ByteSize for InventoryItemUpdate {
     }
 }
 
-/// 0x3092 — server → client: the result of a bag-expansion purchase. The new
-/// slot count follows only on success.
-///
-/// Layout is xBot-sourced only — there is no `packet_dump/0x3092.log`, so a
-/// failure tail (if any) is unknown and stays unparsed.
+/// 0x3092 — server → client: a bag grew. Always two bytes: the bag, then its
+/// new slot count. The original takes 13 off bag 1's count, applies bag 2's
+/// to the storage window, and does nothing for any other bag
+/// `[V original handler]`. So bag 1 is the inventory, counted with its 13
+/// equipment slots, and bag 2 the storage.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct InventoryCapacityUpdate {
-    pub success: bool,
-    #[sro_packet(when = "success")]
-    pub new_capacity: Option<u8>,
+    pub bag: u8,
+    pub new_capacity: u8,
 }
+
+/// [`InventoryCapacityUpdate::bag`] of the inventory.
+pub const CAPACITY_BAG_INVENTORY: u8 = 1;
 
 #[cfg(test)]
 mod tests {
@@ -2425,19 +2427,16 @@ mod tests {
         assert_eq!((decoded.slot, decoded.mask), (0x0F, 0));
     }
 
-    /// 0x3092 carries the new slot count only on success.
+    /// 0x3092 is always the bag and its new slot count, the storage's too.
     #[test]
-    fn inventory_capacity_update_tail_follows_success() {
-        let bytes = Bytes::from_static(&[0x01, 0x6D]);
-        let decoded = InventoryCapacityUpdate::try_from(bytes.clone()).unwrap();
-        assert!(decoded.success);
-        assert_eq!(decoded.new_capacity, Some(109));
-        let back: Bytes = decoded.into();
-        assert_eq!(back, bytes);
-
-        let decoded = InventoryCapacityUpdate::try_from(Bytes::from_static(&[0x00])).unwrap();
-        assert!(!decoded.success);
-        assert_eq!(decoded.new_capacity, None);
+    fn inventory_capacity_update_is_a_bag_and_its_count() {
+        for bytes in [[0x01, 0x6D], [0x02, 0x96]] {
+            assert_eq!(
+                crate::judge::judge(0x3092, &bytes),
+                crate::judge::Verdict::Exact,
+                "{bytes:02x?}"
+            );
+        }
     }
 
     /// The gold arm carries no NPC id. Two captured op-12 frames and eight

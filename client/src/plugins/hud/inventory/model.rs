@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use packets::agent::prelude::{
     CharacterPointsUpdate, EntityEquip, EntityUnequip, InventoryCapacityUpdate,
     InventoryItemDurabilityUpdate, InventoryItemUpdate, InventoryOperationResponse,
-    InventoryOperationResult, ItemUseResponse,
+    InventoryOperationResult, ItemUseResponse, CAPACITY_BAG_INVENTORY,
 };
 
 use crate::assets::bsr::resource::SroResource;
@@ -124,9 +124,9 @@ pub fn on_inventory_deltas(
     }
 
     for msg in capacity.read() {
-        if let Some(new_capacity) = msg.new_capacity {
-            debug!("inventory: bag capacity -> {}", new_capacity);
-            inventory.set_capacity(new_capacity);
+        if msg.bag == CAPACITY_BAG_INVENTORY {
+            debug!("inventory: bag capacity -> {}", msg.new_capacity);
+            inventory.set_capacity(msg.new_capacity);
         }
     }
 }
