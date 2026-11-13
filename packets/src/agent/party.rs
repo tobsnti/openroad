@@ -439,17 +439,16 @@ pub struct PartyMatchForm {
 /// 0xB069 — server → client: result of advertising a party.
 ///
 /// `result` is the discriminator, not a spare byte: `1` means the record
-/// follows, `2` a `u16` error code. Reading the record unconditionally made a
-/// real failure (a 3-byte body) run the derive off the end, so the packet was
+/// follows, `2` a `u16` error code, and any other result carries nothing
+/// `[V original handler]`. Reading the record unconditionally made a real
+/// failure (a 3-byte body) run the derive off the end, so the packet was
 /// dropped and the error never surfaced.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchCreationResponse {
     pub result: u8,
     #[sro_packet(when = "result == 1")]
     pub entry: Option<PartyMatchForm>,
-    /// Branch on `!= 1`, not `== 2`: an unexpected result must read as an error
-    /// rather than as a truncated record.
-    #[sro_packet(when = "result != 1")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -461,7 +460,7 @@ pub struct PartyMatchEditedResponse {
     pub result: u8,
     #[sro_packet(when = "result == 1")]
     pub entry: Option<PartyMatchForm>,
-    #[sro_packet(when = "result != 1")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -594,7 +593,7 @@ pub struct PartyJoinResponse {
     pub result: u8,
     #[sro_packet(when = "result == 1")]
     pub own_join_id: Option<u32>,
-    #[sro_packet(when = "result != 1")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 
@@ -1046,6 +1045,16 @@ mod tests {
         assert_eq!(decoded.error_code, Some(11276));
         let back: Bytes = decoded.into();
         assert_eq!(back, wire);
+    }
+
+    /// In these acks a result other than 1 and 2 carries nothing: the code
+    /// follows result 2 only, so a lone `03` is the whole frame.
+    #[test]
+    fn a_result_other_than_1_and_2_ends_the_ack() {
+        use crate::judge::{judge, Verdict};
+        for opcode in [0xB067, 0xB069, 0xB06A] {
+            assert_eq!(judge(opcode, &[0x03]), Verdict::Exact, "{opcode:#06X}");
+        }
     }
 
     /// Sharing EXP raises the member cap from 4 to 8.
