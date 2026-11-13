@@ -10,3 +10,4 @@ pub mod frame;
 pub mod key_exchange;
 pub mod security;
 pub mod sequence;
+pub mod stream;
