@@ -292,3 +292,22 @@ fn a_heartbeat_is_taken_and_left_unanswered_in_every_phase() {
         .iter()
         .all(|e| !matches!(e, Event::Rejected { .. })));
 }
+
+/// The consignment listing (0x750E), which the original client asks for
+/// after the entry: success with no rows, as the vSRO server answered. Before
+/// the game it is not handled.
+#[test]
+fn the_consignment_listing_is_empty() {
+    let (mut world, ticket) = admitted();
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    frames(&mut world, s);
+    world.receive(s, 0x750E, Bytes::new());
+    assert!(frames(&mut world, s).is_empty());
+    join(&mut world, s, "Hero");
+    world.receive(s, 0x3012, Bytes::new());
+    frames(&mut world, s);
+    world.receive(s, 0x750E, Bytes::new());
+    assert_eq!(frames(&mut world, s), [(0xB50E, vec![0x01, 0x00])]);
+}

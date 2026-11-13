@@ -10,6 +10,7 @@
 //! ([`tick`]).
 
 pub mod clock;
+mod consignment;
 pub mod gateway;
 pub mod handshake;
 mod join;
