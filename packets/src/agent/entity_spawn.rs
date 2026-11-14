@@ -499,6 +499,51 @@ impl<'a, R: RefResolver> BatchFit<'a, R> {
     }
 }
 
+/// What a single spawn (0x3015) carries behind its record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SingleTail {
+    /// One byte behind a character record, its meaning [U]. The original
+    /// reads it behind a player, an NPC and a monster [V original handler];
+    /// behind a COS the captures show the same byte.
+    Figure(u8),
+    /// The drop source and, for a source of 5 or 6, the dropper's unique id
+    /// [V original handler].
+    Item { source: u8, dropper: Option<u32> },
+    /// Behind a gate building: not known [U], kept as it came.
+    Rest(Vec<u8>),
+}
+
+/// Decode a single-spawn payload (0x3015): one record as in a group payload,
+/// then its [`SingleTail`]. `None` when the record does not read or a byte is
+/// left over. Without characterdata an NPC and a monster are told apart by
+/// what is left behind the NPC reading: one byte for an NPC's tail, two for a
+/// monster's rarity and its tail.
+pub fn parse_single_spawn(
+    raw: &[u8],
+    resolver: &impl RefResolver,
+) -> Option<(SpawnedEntity, SingleTail)> {
+    let mut r = Reader::new(raw);
+    let mut entity = parse_spawn_record(&mut r, resolver)?;
+    let tail = match resolver.resolve(entity.ref_id) {
+        RefType::Item { .. } => {
+            let source = r.u8()?;
+            let dropper = match source {
+                5 | 6 => Some(r.u32()?),
+                _ => None,
+            };
+            SingleTail::Item { source, dropper }
+        }
+        RefType::Structure => SingleTail::Rest(r.take(raw.len() - r.pos())?.to_vec()),
+        RefType::Character if raw.len() - r.pos() == 2 => {
+            entity.spawn_rarity = Some(r.u8()?);
+            entity.kind = SpawnKind::Monster { extra: None };
+            SingleTail::Figure(r.u8()?)
+        }
+        _ => SingleTail::Figure(r.u8()?),
+    };
+    (r.pos() == raw.len()).then_some((entity, tail))
+}
+
 /// An undecided character record, read as an NPC by [`parse_spawn_record`],
 /// is settled by the rest of the batch: an NPC when only that reading lets the
 /// batch end on its last byte, a monster (rarity byte included) when only the
@@ -1293,6 +1338,91 @@ mod test {
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
+    }
+
+    /// A single spawn ends behind its record's tail: one byte for a
+    /// character, the drop source and maybe the dropper for an item. A byte
+    /// left over is no single spawn.
+    #[test]
+    fn a_single_spawn_reads_its_tail() {
+        const MOB_REF: u32 = 2000;
+        const GOLD_REF: u32 = 1;
+        let gold = RefType::Item {
+            equipment: false,
+            gold: true,
+            named: false,
+        };
+        let res = resolver(&[
+            (MOB_REF, RefType::Monster { extra: false }),
+            (GOLD_REF, gold),
+        ]);
+        let monster = Body::default()
+            .u32(MOB_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0) // interaction
+            .u8(1) // rarity
+            .u8(3) // the tail
+            .0;
+        let (entity, tail) = parse_single_spawn(&monster, &res).expect("a monster");
+        assert_eq!((entity.unique_id, tail), (22, SingleTail::Figure(3)));
+        let longer = [&monster[..], &[0]].concat();
+        assert_eq!(parse_single_spawn(&longer, &res), None);
+
+        let drop = |source: u8, dropper: Option<u32>| {
+            let body = Body::default()
+                .u32(GOLD_REF)
+                .u32(95)
+                .u32(77)
+                .u16(0x60A8)
+                .f32(1.0)
+                .f32(2.0)
+                .f32(3.0)
+                .u16(0)
+                .u8(0) // no owner
+                .u8(0) // rarity
+                .u8(source);
+            match dropper {
+                Some(uid) => body.u32(uid).0,
+                None => body.0,
+            }
+        };
+        let tail = |body: Vec<u8>| parse_single_spawn(&body, &res).map(|(_, tail)| tail);
+        let from_a_monster = SingleTail::Item {
+            source: 5,
+            dropper: Some(0x147A8),
+        };
+        assert_eq!(tail(drop(5, Some(0x147A8))), Some(from_a_monster));
+        let plain = SingleTail::Item {
+            source: 1,
+            dropper: None,
+        };
+        assert_eq!(tail(drop(1, None)), Some(plain));
+    }
+
+    /// Without characterdata, what is left behind the NPC reading decides:
+    /// two bytes are a monster's rarity and its tail.
+    #[test]
+    fn an_undecided_single_spawn_is_settled_by_its_length() {
+        const REF: u32 = 2000;
+        let res = resolver(&[(REF, RefType::Character)]);
+        let head = Body::default()
+            .u32(REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0)
+            .0;
+        let npc = [&head[..], &[3]].concat();
+        let monster = [&head[..], &[1, 3]].concat();
+        let read = |body: &[u8]| {
+            parse_single_spawn(body, &res).map(|(e, tail)| (e.kind, e.spawn_rarity, tail))
+        };
+        assert_eq!(
+            read(&npc),
+            Some((SpawnKind::Npc, None, SingleTail::Figure(3)))
+        );
+        let mob = SpawnKind::Monster { extra: None };
+        assert_eq!(read(&monster), Some((mob, Some(1), SingleTail::Figure(3))));
     }
 
     /// A dropped piece of equipment keeps its plus and its owner.
