@@ -208,6 +208,9 @@ impl Plugin for HudPlugin {
 }
 
 #[cfg(test)]
+mod window_smoke;
+
+#[cfg(test)]
 mod test {
     /// The registry text, up to (not including) this test module — so the
     /// literals the tests search for do not match themselves.
