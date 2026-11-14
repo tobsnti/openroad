@@ -284,8 +284,8 @@ impl PartyData {
 ///
 /// Modelled with `when`-conditional fields rather than a derived enum so an
 /// unrecognised update type decodes to "no payload" instead of failing the
-/// packet — go-sro documents types 1/2/3/6/9 but xBot only handles four of them,
-/// and 9 (new master) has no known body at all.
+/// packet — go-sro documents types 1/2/3/6/9 but xBot only handles four of them.
+/// Type 9 carries one `u32` `[V original handler]`, kept in [`Self::type9_tail`].
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyUpdate {
     /// 1 dismissed · 2 joined · 3 left/kicked · 6 member update · 9 new master.
@@ -312,6 +312,9 @@ pub struct PartyUpdate {
     /// nothing at all for a combined mask such as `0x24` (level *and* hp/mp).
     #[sro_packet(when = "update_type == 6")]
     pub member_update: Option<PartyMemberCore>,
+    /// Type 9's tail `[V original handler]`; what it holds is [U].
+    #[sro_packet(when = "update_type == 9")]
+    pub type9_tail: Option<u32>,
 }
 
 /// 0x306E — client → server answer to an incoming 0x706D join request. Sits in
@@ -878,13 +881,12 @@ mod tests {
     }
 
     /// An unrecognised 0x3864 update type must decode to "no payload" rather
-    /// than failing the packet — go-sro documents a type 9 the original client
-    /// does not handle at all.
+    /// than failing the packet: the original reads nothing more for it.
     #[test]
     fn an_unknown_party_update_type_is_not_fatal() {
-        let decoded = PartyUpdate::try_from(Bytes::from_static(&[9])).unwrap();
+        let decoded = PartyUpdate::try_from(Bytes::from_static(&[7])).unwrap();
 
-        assert_eq!(decoded.update_type, 9);
+        assert_eq!(decoded.update_type, 7);
         assert!(decoded.joined.is_none());
         assert!(decoded.member_id.is_none());
         assert!(decoded.member_update.is_none());
@@ -902,6 +904,12 @@ mod tests {
         assert_eq!(decoded.member_id, None);
         let back: Bytes = decoded.into();
         assert_eq!(back, wire, "a dropped tail would shorten the frame");
+
+        // 09 05000000 — type 9's `u32`, which nothing captured shows.
+        assert_eq!(
+            crate::judge::judge(0x3864, &[0x09, 0x05, 0x00, 0x00, 0x00]),
+            crate::judge::Verdict::Exact
+        );
 
         // 03 05000000 01 and 03 04000000 02 — two captured departures, two
         // different trailing bytes for the same update type.

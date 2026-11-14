@@ -186,7 +186,7 @@ impl PartyRoster {
                     }
                 }
             }
-            // 9 (new master) has no known body, and nothing else is defined.
+            // 9's `u32` is not applied, and nothing else is defined.
             _ => {}
         }
     }
@@ -758,6 +758,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(2),
             member_update: None,
+            type9_tail: None,
         });
         assert!(roster.is_active(), "the party outlives another member");
         assert_eq!(roster.members.len(), 1);
@@ -770,6 +771,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(4),
             member_update: None,
+            type9_tail: None,
         });
         assert!(
             !roster.is_active(),
@@ -800,6 +802,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(4),
             member_update: None,
+            type9_tail: None,
         });
         assert!(roster.is_active());
         assert_eq!(roster.members.len(), 1);
@@ -828,6 +831,7 @@ pub(crate) mod tests {
             joined: Some(core(2, "Bob", 25000)),
             member_id: None,
             member_update: None,
+            type9_tail: None,
         });
         assert_eq!(roster.members.len(), 2);
 
@@ -839,6 +843,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(2),
             member_update: Some(delta(PartyMemberMask::LEVEL, |r| r.level = Some(42))),
+            type9_tail: None,
         });
         assert_eq!(roster.member(2).unwrap().level, Some(42));
 
@@ -850,6 +855,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(2),
             member_update: None,
+            type9_tail: None,
         });
         assert!(roster.member(2).is_none());
 
@@ -861,6 +867,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: None,
             member_update: None,
+            type9_tail: None,
         });
         assert_eq!(roster.members.len(), 1);
 
@@ -872,6 +879,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: None,
             member_update: None,
+            type9_tail: None,
         });
         assert!(roster.members.is_empty());
         assert!(!roster.is_active());
@@ -895,6 +903,7 @@ pub(crate) mod tests {
             joined: None,
             member_id: Some(1),
             member_update: Some(delta(PartyMemberMask::HP_MP, |r| r.hp_mp = Some(0x12))),
+            type9_tail: None,
         });
 
         let member = roster.member(1).unwrap();
@@ -925,6 +934,7 @@ pub(crate) mod tests {
                 r.position_dungeon =
                     Some(packets::agent::party::PartyPositionDungeon { x: 1, y: 2, z: 3 });
             })),
+            type9_tail: None,
         });
 
         let member = roster.member(1).unwrap();

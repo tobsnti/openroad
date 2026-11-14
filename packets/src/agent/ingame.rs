@@ -3134,6 +3134,9 @@ pub struct EntityStateUpdate {
     pub unique_id: u32,
     pub kind: u8,
     pub value: u8,
+    /// Body state 1 only: one byte more `[V original handler]`, meaning [U].
+    #[sro_packet(when = "kind == STATE_KIND_BODY && value == 1")]
+    pub unk_u8_00: Option<u8>,
 }
 
 impl EntityStateUpdate {
@@ -3363,6 +3366,9 @@ pub struct InvitePetition {
     /// Party petitions only (`PARTY_CREATION`/`PARTY_INVITATION`): the
     /// `PARTY_SETUP_*` flags. Capacity is 8 when `EXP_SHARED` is set, else 4.
     pub setup: Option<u8>,
+    /// Academy petitions only: a string `[V original handler]`; what it names
+    /// is [U].
+    pub academy_text: Option<String>,
 }
 
 impl InvitePetition {
@@ -3418,10 +3424,15 @@ impl TryFrom<Bytes> for GameInvite {
             petition,
             unique_id,
             setup: None,
+            academy_text: None,
         };
         // the setup byte is party-only; tolerate its absence rather than fail
         if invite.is_party() {
             invite.setup = r.u8().ok();
+        }
+        if petition == PETITION_ACADEMY {
+            let len = r.u16()? as usize;
+            invite.academy_text = Some(String::from_utf8_lossy(r.take(len)?).into_owned());
         }
         Ok(GameInvite::Petition(invite))
     }
@@ -3442,6 +3453,10 @@ impl From<GameInvite> for Bytes {
                 buf.put_u32_le(invite.unique_id);
                 if let Some(setup) = invite.setup {
                     buf.put_u8(setup);
+                }
+                if let Some(text) = invite.academy_text {
+                    buf.put_u16_le(text.len() as u16);
+                    buf.extend_from_slice(text.as_bytes());
                 }
             }
         }
@@ -4769,6 +4784,7 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_BODY,
             value: BODY_STATE_GM_INVISIBLE,
+            unk_u8_00: None,
         };
         assert_eq!(inv.body_invisibility(), Some(true));
         // kind 4, value 0 = none (visible)
@@ -4776,6 +4792,7 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_BODY,
             value: BODY_STATE_NONE,
+            unk_u8_00: None,
         };
         assert_eq!(vis.body_invisibility(), Some(false));
         // non-body update
@@ -4783,12 +4800,18 @@ mod test {
             unique_id: 1,
             kind: STATE_KIND_LIFE,
             value: LIFE_STATE_DEAD,
+            unk_u8_00: None,
         };
         assert_eq!(life.body_invisibility(), None);
         // ...and the raw value, which is what drawing somebody ELSE needs
         assert_eq!(inv.body_state_value(), Some(BODY_STATE_GM_INVISIBLE));
         assert_eq!(vis.body_state_value(), Some(BODY_STATE_NONE));
         assert_eq!(life.body_state_value(), None);
+        // body state 1 carries one byte more, no other value does
+        assert_eq!(
+            crate::judge::judge(0x30BF, &[1, 0, 0, 0, STATE_KIND_BODY, 1, 9]),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// GM invisibility and stealth are not the same secret, which is why the
@@ -5052,8 +5075,8 @@ mod test {
         }
     }
 
-    /// 0x3080 S->C: `{type, uid}`, plus a party-only `setup` byte. The
-    /// discriminator is `SRTypes.PlayerPetition`.
+    /// 0x3080 S->C: `{type, uid}`, plus a party-only `setup` byte and an
+    /// academy-only string. The discriminator is `SRTypes.PlayerPetition`.
     #[test]
     fn game_invite_decodes_a_petition() {
         // exchange (1), uid 0x0001_60AA, no setup byte
@@ -5065,6 +5088,13 @@ mod test {
         assert_eq!(p.unique_id, 0x0001_60AA);
         assert_eq!(p.setup, None, "only party petitions carry setup");
         assert!(!p.is_party());
+
+        // the academy petition (9) carries a string behind the uid
+        let academy = [0x09, 0xAA, 0x60, 0x01, 0x00, 0x02, 0x00, b'A', b'x'];
+        assert_eq!(
+            crate::judge::judge(0x3080, &academy),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// The party arms carry the extra `setup` byte; capacity is 8 when

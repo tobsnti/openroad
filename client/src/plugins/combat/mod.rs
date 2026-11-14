@@ -1389,6 +1389,7 @@ mod tests {
             unique_id: uid,
             kind: STATE_KIND_LIFE,
             value: LIFE_STATE_DEAD,
+            unk_u8_00: None,
         }
     }
 
