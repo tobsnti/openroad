@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, MovementRequest};
 use packets::gateway::PatchRequest;
-use packets::login::{LoginRequest, LoginResponse};
+use packets::login::{LoginInfo, LoginRequest, LoginResponse};
 use packets::Packet;
 use server::gateway::Gateway;
 use server::refdata::RefData;
@@ -65,15 +65,14 @@ fn noticed(
     gateway_idle: Duration,
     notice: impl Fn(Notice) + Send + Sync + 'static,
 ) -> (Running, Arc<MemoryStore>) {
-    let mut store = MemoryStore::default();
-    store.add_account("admin", "secret", vec![hero()]);
-    let store = Arc::new(store);
-    let mut refdata = RefData::default();
-    let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
-    refdata.add_characters(&row.join("\t"));
+    started(config(capacity, handshake, gateway_idle), notice)
+}
+
+/// Loopback listeners on ports of their own; the gateway announces the
+/// agent's.
+fn config(capacity: u16, handshake: Duration, gateway_idle: Duration) -> Config {
     let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let config = Config {
+    Config {
         gateway: Gateway {
             farm_id: 20,
             farm_name: "OpenRoad".to_owned(),
@@ -88,7 +87,21 @@ fn noticed(
         agent_listen: loopback,
         handshake,
         gateway_idle,
-    };
+    }
+}
+
+/// A server on `config` with `admin` (password `secret`) and Hero.
+fn started(
+    config: Config,
+    notice: impl Fn(Notice) + Send + Sync + 'static,
+) -> (Running, Arc<MemoryStore>) {
+    let mut store = MemoryStore::default();
+    store.add_account("admin", "secret", vec![hero()]);
+    let store = Arc::new(store);
+    let mut refdata = RefData::default();
+    let mut row = vec![String::from("0"); 48];
+    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    refdata.add_characters(&row.join("\t"));
     let world = World::new(store.clone(), refdata);
     let running =
         start(config, world, store.clone(), |_, _| {}, notice).expect("the server starts");
@@ -99,9 +112,8 @@ fn bytes(packet: Packet) -> Bytes {
     packet.into_serialize().1
 }
 
-#[test]
-fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
-    let (server, store) = server(10, HANDSHAKE, GATEWAY_IDLE);
+/// `admin` logs in at the gateway: where it says the agent is.
+fn gateway_login(server: &Running) -> LoginInfo {
     let mut gateway = Wire::connect(server.gateway);
     // The original client encrypts these on the way out [V capture, original client].
     gateway.send(0x2001, b"\x09\x00SR_Client\x00", true);
@@ -128,6 +140,13 @@ fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
     else {
         panic!("a successful login");
     };
+    agent
+}
+
+#[test]
+fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
+    let (server, store) = server(10, HANDSHAKE, GATEWAY_IDLE);
+    let agent = gateway_login(&server);
     assert_eq!(agent.agent_port, server.agent.port());
 
     let mut agent_wire = Wire::connect(server.agent);
@@ -180,6 +199,20 @@ fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
             "the store has the character as it left"
         );
     }
+}
+
+/// A client that reaches the agent through a relay is told the relay's
+/// address, not the one the agent listens on.
+#[test]
+fn the_gateway_announces_the_agent_address_it_is_given() {
+    let mut config = config(10, HANDSHAKE, GATEWAY_IDLE);
+    (config.gateway.agent_ip, config.gateway.agent_port) = ("192.0.2.7".to_owned(), 4002);
+    let (server, _) = started(config, |_| {});
+    let agent = gateway_login(&server);
+    assert_eq!(
+        (agent.agent_ip.as_str(), agent.agent_port),
+        ("192.0.2.7", 4002)
+    );
 }
 
 /// Reads what the server sends until it closes the connection; how long that

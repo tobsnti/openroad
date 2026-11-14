@@ -76,7 +76,8 @@ pub struct Gateway {
     pub shard_id: u16,
     pub shard_name: String,
     pub capacity: u16,
-    /// Where the agent listens.
+    /// Where clients find the agent: where it listens, or the address of a
+    /// relay in front of it.
     pub agent_ip: String,
     pub agent_port: u16,
 }
