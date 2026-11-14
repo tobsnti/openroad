@@ -65,11 +65,19 @@ fn send(world: &mut World, session: SessionId, packet: Packet) {
 
 /// `user`'s character in the game, as its client gets it there; what the
 /// session was sent on the way is dropped.
-fn enter(
-    (world, store): &mut (World, Arc<MemoryStore>),
-    user: &str,
-    name: &str,
-) -> (SessionId, u32) {
+fn enter(shard: &mut (World, Arc<MemoryStore>), user: &str, name: &str) -> (SessionId, u32) {
+    let s = loading(shard, user, name);
+    let world = &mut shard.0;
+    world.receive(s, 0x3012, Bytes::new());
+    let Some(Phase::Game { uid, .. }) = world.phase(s) else {
+        panic!("{name} is in the game");
+    };
+    (s, uid)
+}
+
+/// `user`'s character joined, its client loading the world: after the
+/// entry's 0x34A6, before its own 0x3012. What it was sent is dropped.
+fn loading((world, store): &mut (World, Arc<MemoryStore>), user: &str, name: &str) -> SessionId {
     let account = login(store.as_ref(), user, user).unwrap();
     let token = world
         .admit(account, user, store.characters(account))
@@ -89,11 +97,7 @@ fn enter(
     };
     send(world, s, Packet::CharacterJoinRequest(join));
     world.take_frames(s);
-    world.receive(s, 0x3012, Bytes::new());
-    let Some(Phase::Game { uid, .. }) = world.phase(s) else {
-        panic!("{name} is in the game");
-    };
-    (s, uid)
+    s
 }
 
 /// The frames `session` was sent, but for the entering character's own values
@@ -309,4 +313,26 @@ fn a_line_said_is_heard_by_whoever_sees_the_speaker() {
         )
     });
     assert!(rejected);
+}
+
+/// A client loading the world crashes on a chat frame before its own 0x3012
+/// [V original handler], so a line said nearby while it loads does not reach
+/// it, neither then nor once it is in the game.
+#[test]
+fn a_client_loading_the_world_does_not_hear_a_line() {
+    let mut shard = world();
+    let (a, _) = enter(&mut shard, "a", "Hero");
+    let b = loading(&mut shard, "b", "Kiro");
+    opcodes(&mut shard.0, a);
+    let hallo = ChatRequest {
+        chat_type: 1,
+        chat_index: 1,
+        receiver: None,
+        message: "Hallo".to_owned(),
+    };
+    send(&mut shard.0, a, Packet::ChatRequest(hallo));
+    assert!(opcodes(&mut shard.0, b).is_empty());
+    shard.0.receive(b, 0x3012, Bytes::new());
+    let codes: Vec<u16> = opcodes(&mut shard.0, b).iter().map(|f| f.0).collect();
+    assert_eq!(codes, [0x3015], "only Hero's spawn, no chat");
 }
