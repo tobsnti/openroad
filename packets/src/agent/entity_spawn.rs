@@ -40,16 +40,26 @@ pub use crate::agent::character_data::SpawnPosition;
 /// The kind of a spawned entity, with the per-kind extras the spawn system uses.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpawnKind {
-    /// A remote player character; `equipment` are the equipped/avatar item
-    /// `(ref id, +N opt level)` pairs to attach. `riding_uid` is the unique id
-    /// of the COS the player is mounted on (`None` when on foot).
+    /// A remote player character. `equipment` and `avatar` are its equipped
+    /// and its avatar items, `(ref id, +N opt level)`, two lists as on the
+    /// wire. `riding_uid` is the unique id of the COS the player is mounted on
+    /// (`None` when on foot). `guild_id` and `guild_tail` complete the guild
+    /// block whose name and nick are [`SpawnedEntity::guild`].
     Player {
         equipment: Vec<(u32, u8)>,
+        avatar: Vec<(u32, u8)>,
         riding_uid: Option<u32>,
         mask: Option<Mask>,
+        /// A mode of 4 brings the stall [V original handler].
+        interact_mode: u8,
         /// Read when the interact mode is 4 [V original handler]: the stall's
         /// title and a u32 [U].
         stall: Option<(String, u32)>,
+        guild_id: u32,
+        /// [U]; go-sro's `WriteGuild` (DBAD, read only) names them crest
+        /// revision, union id, union crest revision and two flags.
+        guild_tail: [u8; 14],
+        bytes: PlayerBytes,
     },
     Npc,
     /// A monster; `extra` is the byte the original client reads after the
@@ -78,6 +88,25 @@ pub enum SpawnKind {
     /// A world structure (teleport gate building) — spawns as an invisible
     /// click anchor.
     Structure,
+}
+
+/// The bytes of a player record that the original client reads
+/// [V original handler] and nothing here interprets: their meanings are [U],
+/// so each is named by its place in the record.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlayerBytes {
+    /// The five bytes before the equipment.
+    pub head: [u8; 5],
+    /// The byte between the equipment and the avatar items.
+    pub between_lists: u8,
+    /// The three bytes after the name.
+    pub after_name: [u8; 3],
+    /// The byte after the riding flag.
+    pub after_riding: u8,
+    /// The bytes before and after the interact mode.
+    pub around_mode: [u8; 2],
+    /// The record's last two bytes.
+    pub tail: [u8; 2],
 }
 
 /// The mask a player wears [V original handler]: its ref id and, when the
@@ -537,12 +566,15 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
 /// A player record. A player in a job suit takes another path in the original
 /// client, which is not known [U]; it is read like any other here.
 fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Option<SpawnedEntity> {
-    // scale, hwan_level, pvp_cape, auto_invest_xp, base_inventory_size
-    r.skip(5)?;
+    let mut bytes = PlayerBytes {
+        head: r.array()?,
+        ..PlayerBytes::default()
+    };
     let mut equipment = Vec::new();
-    read_item_list(r, resolver, &mut equipment)?; // inventory (equipped gear)
-    let _avatar_slots = r.u8()?;
-    read_item_list(r, resolver, &mut equipment)?; // avatar items
+    read_item_list(r, resolver, &mut equipment)?;
+    bytes.between_lists = r.u8()?;
+    let mut avatar = Vec::new();
+    read_item_list(r, resolver, &mut avatar)?;
     let mask = read_mask(r, resolver)?;
 
     let unique_id = r.u32()?;
@@ -550,27 +582,25 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     let movement = r.movement(position.region)?;
     let state = r.character_state()?;
     let name = r.string()?;
-    // job_type, job_level, pk_state
-    r.skip(3)?;
+    bytes.after_name = r.array()?;
     // A mounted player inserts its COS's unique id between the riding and
     // scroll flags ([S] xBot PacketParser.cs:744-747; the old flat skip(8)
     // desynced the batch by 4 bytes whenever a rider was in view).
     // The original reads the COS id for a riding byte of 1 only.
     let riding = r.u8()? == 1;
-    let _in_combat = r.u8()?;
+    bytes.after_riding = r.u8()?;
     let riding_uid = if riding { Some(r.u32()?) } else { None };
-    let _scroll = r.u8()?;
+    let before_mode = r.u8()?;
     let interact_mode = r.u8()?;
-    let _unk = r.u8()?;
+    bytes.around_mode = [before_mode, r.u8()?];
     // guildless players send an empty name here, not an absent block
-    let guild = r.guild()?;
+    let (guild, guild_id, guild_tail) = r.guild()?;
     let stall = if interact_mode == 4 {
         Some((r.string()?, r.u32()?))
     } else {
         None
     };
-    // equipment_cooldown, pk_flag(0xFF)
-    r.skip(2)?;
+    bytes.tail = r.array()?;
 
     Some(SpawnedEntity {
         ref_id,
@@ -585,9 +615,14 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         interaction: None,
         kind: SpawnKind::Player {
             equipment,
+            avatar,
             riding_uid,
             mask,
+            interact_mode,
             stall,
+            guild_id,
+            guild_tail,
+            bytes,
         },
     })
 }
@@ -952,16 +987,17 @@ mod test {
         assert_eq!(e.guild, None);
         assert_eq!(e.position.region, 0x60A8);
         assert_eq!(e.position.x, 1058.0);
-        assert_eq!(
-            e.kind,
-            SpawnKind::Player {
-                // the sword's +3 opt byte is captured; non-equipment has none
-                equipment: vec![(SWORD, 3), (NECKLACE, 0)],
-                riding_uid: None,
-                mask: None,
-                stall: None,
-            }
-        );
+        let SpawnKind::Player {
+            equipment,
+            riding_uid,
+            ..
+        } = &e.kind
+        else {
+            panic!("a player");
+        };
+        // the sword's +3 opt byte is captured; non-equipment has none
+        assert_eq!(equipment, &[(SWORD, 3), (NECKLACE, 0)]);
+        assert_eq!(*riding_uid, None);
         let state = e.state.as_ref().expect("characters carry a state block");
         assert_eq!(state.walk_speed, 16.0);
         assert_eq!(state.run_speed, 50.0);
@@ -1665,16 +1701,76 @@ mod test {
 
         let parsed = parse_group_spawn(&body, true, 2, &res);
         assert_eq!(parsed.spawns.len(), 2, "rider + follower must both parse");
-        assert_eq!(
-            parsed.spawns[0].kind,
-            SpawnKind::Player {
-                equipment: vec![],
-                riding_uid: Some(4711),
-                mask: None,
-                stall: None,
-            }
-        );
+        let SpawnKind::Player { riding_uid, .. } = &parsed.spawns[0].kind else {
+            panic!("a player");
+        };
+        assert_eq!(*riding_uid, Some(4711));
         assert_eq!(parsed.spawns[1].unique_id, 99);
+    }
+
+    /// Every byte of a player record is kept, the ones nothing interprets by
+    /// position, so a writer can give the record back as it came.
+    #[test]
+    fn a_player_record_keeps_every_byte() {
+        const PLAYER_REF: u32 = 1907;
+        const SWORD: u32 = 3632;
+        const HAT: u32 = 10971;
+        let equipment = RefType::Item {
+            equipment: true,
+            gold: false,
+            named: false,
+        };
+        let res = resolver(&[
+            (PLAYER_REF, RefType::Player),
+            (SWORD, equipment),
+            (HAT, equipment),
+        ]);
+        let body = Body::default()
+            .u32(PLAYER_REF)
+            .raw(&[1, 2, 3, 4, 5])
+            .u8(1)
+            .u32(SWORD)
+            .u8(7) // +7
+            .u8(6)
+            .u8(1)
+            .u32(HAT)
+            .u8(2)
+            .u8(0) // no mask
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Remote")
+            .raw(&[7, 8, 9])
+            .u8(0) // not riding
+            .u8(10)
+            .raw(&[11, 0, 12]) // around interact mode 0
+            .string("Guild")
+            .u32(13)
+            .string("Nick")
+            .raw(&[14; 14])
+            .raw(&[28, 29])
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let bytes = PlayerBytes {
+            head: [1, 2, 3, 4, 5],
+            between_lists: 6,
+            after_name: [7, 8, 9],
+            after_riding: 10,
+            around_mode: [11, 12],
+            tail: [28, 29],
+        };
+        let player = SpawnKind::Player {
+            equipment: vec![(SWORD, 7)],
+            avatar: vec![(HAT, 2)],
+            riding_uid: None,
+            mask: None,
+            interact_mode: 0,
+            stall: None,
+            guild_id: 13,
+            guild_tail: [14; 14],
+            bytes,
+        };
+        assert_eq!(parsed.spawns[0].kind, player);
     }
 
     /// A masked player in a stall carries both blocks the original reads for

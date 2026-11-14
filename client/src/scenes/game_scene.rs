@@ -1463,6 +1463,7 @@ fn spawn_remote_entity(
     match &entity.kind {
         SpawnKind::Player {
             equipment,
+            avatar,
             riding_uid,
             ..
         } => {
@@ -1522,7 +1523,7 @@ fn spawn_remote_entity(
                 item_data,
                 rare_effects,
                 parent,
-                equipment.iter().copied(),
+                equipment.iter().chain(avatar).copied(),
             );
         }
         SpawnKind::Structure => {

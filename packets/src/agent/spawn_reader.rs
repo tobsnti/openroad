@@ -58,6 +58,11 @@ impl<'a> Reader<'a> {
         self.take(n).map(|_| ())
     }
 
+    /// The next `N` bytes.
+    pub fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+        self.take(N)?.try_into().ok()
+    }
+
     pub fn u8(&mut self) -> Option<u8> {
         Some(self.take(1)?[0])
     }
@@ -157,8 +162,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Read the guild block: name string, guild id (u32), member-nick string,
-    /// then 14 bytes — crest revision, union id, union crest revision and two
-    /// flag bytes — that nothing consumes yet.
+    /// then 14 bytes that nothing consumes yet [U] (go-sro's `WriteGuild`
+    /// names them crest revision, union id, union crest revision and two flag
+    /// bytes). The name and nick come back as the [`GuildTag`], then the id
+    /// and the 14 bytes.
     ///
     /// The block is **always present**, guild or not: a guildless player sends
     /// a zero-length name and the same zeroed tail, so this is not conditional
@@ -171,12 +178,12 @@ impl<'a> Reader<'a> {
     /// against), corroborated field-for-field by the vSRO client-side parser.
     /// Closing it needs the guilded-player capture, `docs/re/CAPTURE_LIST.md`
     /// row A5.
-    pub fn guild(&mut self) -> Option<GuildTag> {
+    pub fn guild(&mut self) -> Option<(GuildTag, u32, [u8; 14])> {
         let name = self.string()?;
-        self.skip(4)?; // guild id
+        let id = self.u32()?;
         let granted_nick = self.string()?;
-        self.skip(14)?; // crest rev, union id, union crest rev, 2×u8 flags
-        Some(GuildTag { name, granted_nick })
+        let tail = self.array()?;
+        Some((GuildTag { name, granted_nick }, id, tail))
     }
 }
 
