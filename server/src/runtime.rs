@@ -23,7 +23,7 @@ use bytes::Bytes;
 use crate::gateway::{Gateway, GatewayConnection, Shard};
 use crate::store::{self, AccountId, Changes, Character, Store};
 use crate::tick::STEP;
-use crate::transport::{frame, Transport};
+use crate::transport::{frame, Broken, Transport};
 use crate::world::{Event, SessionId, World};
 
 /// The handshake is two round trips without user input: twice the 5 s our own
@@ -45,6 +45,49 @@ pub struct Config {
     pub handshake: Duration,
     pub gateway_idle: Duration,
 }
+
+/// The connection a [`Notice`] is about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    /// `gateway` or `agent`.
+    pub listener: &'static str,
+    pub address: Option<SocketAddr>,
+    /// The sequence and CRC seeds its handshake drew.
+    pub seeds: (u32, u32),
+}
+
+/// What the connection threads report besides the world: the seeds of every
+/// handshake, and why a connection ended when the server ended it or the
+/// client left before the handshake was done. The seeds go with both, since
+/// a client that stamps the security bytes differently from the original
+/// fails for some seeds only (measured 2026-11-14 on a proxy that lacks the
+/// original's substitute for a zero seed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// The opening 0x5000 is out.
+    Opened(Peer),
+    Ended {
+        peer: Peer,
+        /// Whether the handshake was done.
+        established: bool,
+        why: Why,
+    },
+}
+
+/// Why a connection ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// The client closed before the handshake was done.
+    Closed,
+    /// No frame in time: the handshake's deadline, or the gateway's idle time.
+    Deadline,
+    /// The socket failed.
+    Socket(io::ErrorKind),
+    /// The client's bytes did not check.
+    Broken(Broken),
+}
+
+type Notify = dyn Fn(Notice) + Send + Sync;
 
 /// A started server: where it listens, and a way to ask its world.
 pub struct Running {
@@ -70,12 +113,14 @@ impl Running {
 }
 
 /// Binds both listeners and starts the simulation thread. `report` hears
-/// every world event, on that thread.
+/// every world event, on that thread; `notice` hears the connections, on
+/// theirs.
 pub fn start(
     mut config: Config,
     world: World,
     store: Arc<dyn Store + Send + Sync>,
     report: impl FnMut(&World, &Event) + Send + 'static,
+    notice: impl Fn(Notice) + Send + Sync + 'static,
 ) -> io::Result<Running> {
     let gateway_listener = TcpListener::bind(config.gateway_listen)?;
     let agent_listener = TcpListener::bind(config.agent_listen)?;
@@ -92,9 +137,11 @@ pub fn start(
 
     let agent_commands = commands.clone();
     let handshake = config.handshake;
+    let notice: Arc<Notify> = Arc::new(notice);
+    let agent_notice = notice.clone();
     thread::spawn(move || {
         listen(agent_listener, cap, move |stream| {
-            serve_agent(stream, &agent_commands, handshake)
+            serve_agent(stream, &agent_commands, handshake, &*agent_notice)
         })
     });
     let gateway = Arc::new(config.gateway);
@@ -105,7 +152,7 @@ pub fn start(
                 store: store.clone(),
                 commands: commands.clone(),
             };
-            serve_gateway(stream, &gateway, shard, handshake, idle)
+            serve_gateway(stream, &gateway, shard, handshake, idle, &*notice)
         })
     });
     Ok(running)
@@ -247,22 +294,43 @@ fn listen(listener: TcpListener, cap: usize, serve: impl Fn(TcpStream) + Send + 
 
 /// The handshake on this thread, then the world session: frames go to the
 /// simulation thread, and a second thread writes what it hands back.
-fn serve_agent(mut stream: TcpStream, commands: &Sender<Command>, handshake: Duration) {
+fn serve_agent(
+    mut stream: TcpStream,
+    commands: &Sender<Command>,
+    handshake: Duration,
+    notice: &Notify,
+) {
     let started = Instant::now();
     let (mut transport, opening) = Transport::open();
+    let peer = Peer {
+        listener: "agent",
+        address: stream.peer_addr().ok(),
+        seeds: transport.seeds(),
+    };
     let mut session = None;
     let mut buf = [0u8; 4096];
     if stream.write_all(&opening).is_err() {
         return;
     }
+    notice(Notice::Opened(peer.clone()));
     loop {
         let limit = session.is_none().then(|| left(started, handshake));
         let read = stream
             .set_read_timeout(limit)
             .and_then(|_| stream.read(&mut buf));
-        let Ok(n @ 1..) = read else { break };
-        let Ok(inbound) = transport.receive(&buf[..n]) else {
-            break;
+        let n = match read {
+            Ok(n @ 1..) => n,
+            ended => {
+                notice_end(notice, peer, &transport, read_end(&ended, &transport));
+                break;
+            }
+        };
+        let inbound = match transport.receive(&buf[..n]) {
+            Ok(inbound) => inbound,
+            Err(broken) => {
+                notice_end(notice, peer, &transport, Some(Why::Broken(broken)));
+                break;
+            }
         };
         if stream.write_all(&inbound.reply).is_err() {
             break;
@@ -308,14 +376,21 @@ fn serve_gateway(
     mut shard: Link,
     handshake: Duration,
     idle: Duration,
+    notice: &Notify,
 ) {
     let started = Instant::now();
     let (mut transport, opening) = Transport::open();
+    let peer = Peer {
+        listener: "gateway",
+        address: stream.peer_addr().ok(),
+        seeds: transport.seeds(),
+    };
     let mut connection = GatewayConnection::open();
     let mut buf = [0u8; 4096];
     if stream.write_all(&opening).is_err() {
         return;
     }
+    notice(Notice::Opened(peer.clone()));
     loop {
         let limit = match transport.established() {
             true => idle,
@@ -324,9 +399,19 @@ fn serve_gateway(
         let read = stream
             .set_read_timeout(Some(limit))
             .and_then(|_| stream.read(&mut buf));
-        let Ok(n @ 1..) = read else { return };
-        let Ok(inbound) = transport.receive(&buf[..n]) else {
-            return;
+        let n = match read {
+            Ok(n @ 1..) => n,
+            ended => {
+                notice_end(notice, peer, &transport, read_end(&ended, &transport));
+                return;
+            }
+        };
+        let inbound = match transport.receive(&buf[..n]) {
+            Ok(inbound) => inbound,
+            Err(broken) => {
+                notice_end(notice, peer, &transport, Some(Why::Broken(broken)));
+                return;
+            }
         };
         let mut wire = inbound.reply;
         for (opcode, body) in inbound.frames {
@@ -342,6 +427,35 @@ fn serve_gateway(
         if stream.write_all(&wire).is_err() || connection.closed() {
             return;
         }
+    }
+}
+
+/// Why a read that brought no frame ends the connection, if the end is worth
+/// a notice: a client may always close an established connection.
+fn read_end(read: &io::Result<usize>, transport: &Transport) -> Option<Why> {
+    match read {
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Some(Why::Deadline)
+        }
+        _ if transport.established() => None,
+        Ok(_) => Some(Why::Closed),
+        Err(e) => Some(Why::Socket(e.kind())),
+    }
+}
+
+fn notice_end(notice: &Notify, peer: Peer, transport: &Transport, why: Option<Why>) {
+    if let Some(why) = why {
+        let established = transport.established();
+        notice(Notice::Ended {
+            peer,
+            established,
+            why,
+        });
     }
 }
 
