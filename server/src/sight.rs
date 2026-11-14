@@ -33,10 +33,10 @@ pub(crate) fn update(world: &mut World, uid: u32) {
     let others: Vec<(u32, u16)> = world
         .players()
         .filter(|(other, _)| *other != uid)
-        .map(|(other, p)| (other, p.position.region))
+        .map(|(other, p)| (other, p.character.position.region))
         .collect();
     for (other, region) in others {
-        let near = in_sight(me.position.region, region);
+        let near = in_sight(me.character.position.region, region);
         if near == world.knows(me.session, other) {
             continue;
         }
@@ -53,7 +53,7 @@ pub(crate) fn update(world: &mut World, uid: u32) {
     }
     // NPCs only are seen, and come and go in groups, as the vSRO server
     // sends them [V capture, peer vSRO: every NPC record in 0x3019].
-    let near: BTreeSet<u32> = around(me.position.region)
+    let near: BTreeSet<u32> = around(me.character.position.region)
         .into_iter()
         .flat_map(|region| world.npcs_in(region).to_vec())
         .collect();
@@ -99,11 +99,12 @@ fn in_sight(a: u16, b: u16) -> bool {
 /// records]: alive, 5 avatar slots, job level 1, Hwan speed 100, PK flag
 /// 0xFF, last byte 1.
 fn spawn(uid: u32, p: &Player) -> Packet {
-    let at = p.position;
+    let c = &p.character;
+    let at = c.position;
     let mut b = BytesMut::new();
-    b.put_u32_le(p.ref_id);
+    b.put_u32_le(c.ref_id);
     // Height and build, Hwan level, PVP cape, auto-invest, inventory size.
-    b.put_slice(&[p.scale, 0, 0, 0, p.inventory_size]);
+    b.put_slice(&[c.scale, 0, 0, 0, c.inventory_size]);
     // No gear; an avatar section of 5 slots with none worn; no mask.
     b.put_slice(&[0, 5, 0, 0]);
     b.put_u32_le(uid);
@@ -147,9 +148,9 @@ fn spawn(uid: u32, p: &Player) -> Packet {
         buffs: Vec::new(),
     };
     state.serialize_to(&mut b);
-    let name = u16::try_from(p.name.len()).expect("a name fits its u16 length");
+    let name = u16::try_from(c.name.len()).expect("a name fits its u16 length");
     b.put_u16_le(name);
-    b.put_slice(p.name.as_bytes());
+    b.put_slice(c.name.as_bytes());
     // Job type and level, PK state; not riding, not fighting; no scroll,
     // interaction or the byte after it.
     b.put_slice(&[0, 1, 0, 0, 0, 0, 0, 0]);

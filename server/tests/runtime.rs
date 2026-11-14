@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest};
+use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, MovementRequest};
 use packets::gateway::PatchRequest;
 use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
@@ -47,10 +47,15 @@ fn hero() -> Character {
     }
 }
 
-fn server(capacity: u16, handshake: Duration, gateway_idle: Duration) -> Running {
+/// A running server with `admin` (password `secret`) and Hero, and its store.
+fn server(
+    capacity: u16,
+    handshake: Duration,
+    gateway_idle: Duration,
+) -> (Running, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("admin", "secret", vec![hero()]);
-    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
+    let store = Arc::new(store);
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
     (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
@@ -73,7 +78,8 @@ fn server(capacity: u16, handshake: Duration, gateway_idle: Duration) -> Running
         gateway_idle,
     };
     let world = World::new(store.clone(), refdata);
-    start(config, world, store, |_, _| {}).expect("the server starts")
+    let running = start(config, world, store.clone(), |_, _| {}).expect("the server starts");
+    (running, store)
 }
 
 fn bytes(packet: Packet) -> Bytes {
@@ -82,7 +88,7 @@ fn bytes(packet: Packet) -> Bytes {
 
 #[test]
 fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
-    let server = server(10, HANDSHAKE, GATEWAY_IDLE);
+    let (server, store) = server(10, HANDSHAKE, GATEWAY_IDLE);
     let mut gateway = Wire::connect(server.gateway);
     // The original client encrypts these on the way out [V capture, original client].
     gateway.send(0x2001, b"\x09\x00SR_Client\x00", true);
@@ -132,12 +138,33 @@ fn a_client_walks_the_gateway_and_enters_the_world_over_sockets() {
     let entry: Vec<u16> = (0..5).map(|_| agent_wire.recv().0).collect();
     assert_eq!(entry, [0xB001, 0x34A5, 0x3013, 0x34A6, 0x3020]);
     agent_wire.send(0x3012, &[], false);
-    let names = || server.query(|world| world.players().map(|(_, p)| p.name.clone()).collect());
+    let names = || {
+        server.query(|world| {
+            world
+                .players()
+                .map(|(_, p)| p.character.name.clone())
+                .collect()
+        })
+    };
     let started = Instant::now();
     while names() != Some(vec!["Hero".to_owned()]) {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the character enters the game"
+        );
+    }
+
+    // It turns and leaves: the storage thread writes it as it left.
+    let turn = MovementRequest::ToAngle { angle: 0x4000 };
+    agent_wire.send(0x7021, &bytes(Packet::MovementRequest(turn)), false);
+    drop(agent_wire);
+    let account = store.account("admin").expect("seeded").0;
+    let heading = || store.characters(account)[0].position.heading;
+    let started = Instant::now();
+    while heading() != 0x4000 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the store has the character as it left"
         );
     }
 }
@@ -156,7 +183,7 @@ fn until_closed(mut stream: TcpStream) -> Duration {
 
 #[test]
 fn a_connection_that_does_not_finish_its_handshake_is_closed() {
-    let server = server(10, Duration::from_millis(300), GATEWAY_IDLE);
+    let (server, _) = server(10, Duration::from_millis(300), GATEWAY_IDLE);
     for listener in [server.agent, server.gateway] {
         let silent = TcpStream::connect(listener).unwrap();
         assert!(until_closed(silent) < Duration::from_secs(2));
@@ -165,7 +192,7 @@ fn a_connection_that_does_not_finish_its_handshake_is_closed() {
 
 #[test]
 fn a_silent_gateway_connection_is_closed() {
-    let server = server(10, HANDSHAKE, Duration::from_millis(300));
+    let (server, _) = server(10, HANDSHAKE, Duration::from_millis(300));
     let gateway = Wire::connect(server.gateway);
     assert!(until_closed(gateway.into_stream()) < Duration::from_secs(2));
 }
@@ -174,7 +201,7 @@ fn a_silent_gateway_connection_is_closed() {
 /// shard's capacity; the next is closed at once.
 #[test]
 fn a_listener_holds_at_most_the_shards_capacity() {
-    let server = server(2, HANDSHAKE, GATEWAY_IDLE);
+    let (server, _) = server(2, HANDSHAKE, GATEWAY_IDLE);
     let _held = [Wire::connect(server.agent), Wire::connect(server.agent)];
     let third = TcpStream::connect(server.agent).unwrap();
     assert!(until_closed(third) < Duration::from_secs(1));

@@ -78,13 +78,7 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
     world.send(session, Packet::CelestialPosition(time));
     let player = Player {
         session,
-        name: character.name.clone(),
-        position: character.position,
-        hp: character.hp,
-        mp: character.mp,
-        ref_id: character.ref_id,
-        scale: character.scale,
-        inventory_size: character.inventory_size,
+        character: character.clone(),
         walk_speed: speeds.walk_speed,
         run_speed: speeds.run_speed,
         walk: None,
@@ -100,12 +94,7 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
         return Err(Reason::NotHandled);
     };
     world.enter(session, Phase::Game { account, uid });
-    let name = world.player(uid).map(|p| p.name.as_str());
-    let character = world
-        .characters(session)
-        .iter()
-        .find(|c| Some(c.name.as_str()) == name);
-    if let Some(values) = character.map(values) {
+    if let Some(values) = world.player(uid).map(|p| values(&p.character)) {
         world.send(session, Packet::CharacterStatsUpdate(values));
     }
     sight::update(world, uid);

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::gateway::{Gateway, GatewayConnection, Shard};
-use crate::store::{self, AccountId, Character, Store};
+use crate::store::{self, AccountId, Changes, Character, Store};
 use crate::tick::STEP;
 use crate::transport::{frame, Transport};
 use crate::world::{Event, SessionId, World};
@@ -87,7 +87,8 @@ pub fn start(
     };
     config.gateway.agent_port = running.agent.port();
     let cap = usize::from(config.gateway.capacity);
-    thread::spawn(move || simulate(world, inbox, report));
+    let commits = store_writer(store.clone());
+    thread::spawn(move || simulate(world, inbox, commits, report));
 
     let agent_commands = commands.clone();
     let handshake = config.handshake;
@@ -132,7 +133,27 @@ enum Command {
     Query(Box<dyn FnOnce(&World) + Send>),
 }
 
-fn simulate(mut world: World, inbox: Receiver<Command>, mut report: impl FnMut(&World, &Event)) {
+/// The storage thread: writes what the world commits, in order, so the
+/// simulation never waits for the store. A failed write is logged; the
+/// world goes on.
+fn store_writer(store: Arc<dyn Store + Send + Sync>) -> Sender<Changes> {
+    let (commits, queue) = mpsc::channel::<Changes>();
+    thread::spawn(move || {
+        for changes in queue {
+            if let Err(e) = store.commit(&changes) {
+                eprintln!("store: a commit failed: {e}");
+            }
+        }
+    });
+    commits
+}
+
+fn simulate(
+    mut world: World,
+    inbox: Receiver<Command>,
+    commits: Sender<Changes>,
+    mut report: impl FnMut(&World, &Event),
+) {
     let mut writers: HashMap<SessionId, Sender<Vec<u8>>> = HashMap::new();
     let mut due = Instant::now() + STEP;
     loop {
@@ -159,6 +180,9 @@ fn simulate(mut world: World, inbox: Receiver<Command>, mut report: impl FnMut(&
                 // A writer that is gone has a reader that reports the disconnect.
                 let _ = writer.send(wire);
             }
+        }
+        for changes in world.take_commits() {
+            let _ = commits.send(changes);
         }
         for event in world.take_events() {
             // Dropping the writer ends the writing thread, which closes the

@@ -32,7 +32,7 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
         .expect("a character in the game has a player");
     let answer = match request {
         MovementRequest::ToLocation { region, x, y, z } => {
-            let at = player.position;
+            let at = player.character.position;
             let inside = |v: i32| (0..=REGION_SIZE as i32).contains(&v);
             if is_dungeon(region) || is_dungeon(at.region) || !inside(x) || !inside(z) {
                 return Ok(());
@@ -64,7 +64,7 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
         }
         MovementRequest::ToAngle { angle } => {
             player.walk = None;
-            player.position.heading = angle;
+            player.character.position.heading = angle;
             MovementResponse {
                 unique_id: uid,
                 has_destination: false,
@@ -107,7 +107,7 @@ pub(crate) fn advance(player: &mut Player) {
         }
     };
     let (region, local) = in_region(now);
-    let at = &mut player.position;
+    let at = &mut player.character.position;
     (at.region, at.x, at.y, at.z) = (region, local.x, local.y, local.z);
 }
 

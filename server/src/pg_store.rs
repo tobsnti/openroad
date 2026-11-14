@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use postgres::{Client, Config, GenericClient, NoTls};
 
-use crate::store::{hash_password, AccountId, Character, Position, Store};
+use crate::store::{hash_password, AccountId, Changes, Character, Position, Store};
 
 /// The migrations in order. A version once applied is never edited; a change
 /// is a new version.
@@ -77,6 +77,19 @@ impl Store for PgStore {
         let mut client = self.client.lock().expect("no store user panicked");
         read_characters(&mut *client, account)
             .unwrap_or_else(|e| failed("characters", e, Vec::new()))
+    }
+
+    /// One transaction: every changed character's row and masteries, or none
+    /// (a transaction dropped before its commit is rolled back).
+    fn commit(&self, changes: &Changes) -> Result<(), String> {
+        let mut client = self.client.lock().expect("no store user panicked");
+        let mut tx = client.transaction().map_err(|e| e.to_string())?;
+        for c in &changes.characters {
+            if !update_character(&mut tx, c).map_err(|e| e.to_string())? {
+                return Err(format!("no character {}", c.name));
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 }
 
@@ -200,10 +213,59 @@ fn insert_character(
             ],
         )?
         .get(0);
-    for (mastery, level) in &c.masteries {
+    insert_masteries(tx, id, &c.masteries)
+}
+
+/// Writes a character's row and replaces its masteries; false when the store
+/// has no character of that name.
+fn update_character(tx: &mut impl GenericClient, c: &Character) -> Result<bool, postgres::Error> {
+    let at = c.position;
+    let row = tx.query_opt(
+        "UPDATE characters SET ref_id = $2, scale = $3, level = $4, exp = $5, skill_exp = $6,
+             gold = $7, skill_points = $8, strength = $9, intellect = $10, stat_points = $11,
+             hp = $12, mp = $13, inventory_size = $14, region = $15, x = $16, y = $17, z = $18,
+             heading = $19
+         WHERE name = $1 RETURNING id",
+        &[
+            &c.name,
+            &i64::from(c.ref_id),
+            &i16::from(c.scale),
+            &i16::from(c.level),
+            &db(c.exp),
+            &i64::from(c.skill_exp),
+            &db(c.gold),
+            &i64::from(c.skill_points),
+            &i32::from(c.strength),
+            &i32::from(c.intellect),
+            &i32::from(c.stat_points),
+            &i64::from(c.hp),
+            &i64::from(c.mp),
+            &i16::from(c.inventory_size),
+            &i32::from(at.region),
+            &at.x,
+            &at.y,
+            &at.z,
+            &i32::from(at.heading),
+        ],
+    )?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let id: i32 = row.get(0);
+    tx.execute("DELETE FROM masteries WHERE character_id = $1", &[&id])?;
+    insert_masteries(tx, id, &c.masteries)?;
+    Ok(true)
+}
+
+fn insert_masteries(
+    tx: &mut impl GenericClient,
+    character: i32,
+    masteries: &[(u32, u8)],
+) -> Result<(), postgres::Error> {
+    for (mastery, level) in masteries {
         tx.execute(
             "INSERT INTO masteries (character_id, mastery_id, level) VALUES ($1, $2, $3)",
-            &[&id, &i64::from(*mastery), &i16::from(*level)],
+            &[&character, &i64::from(*mastery), &i16::from(*level)],
         )?;
     }
     Ok(())

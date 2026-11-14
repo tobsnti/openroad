@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use postgres::{Client, Config, NoTls};
 use server::pg_store::PgStore;
-use server::store::{login, Character, Position, Store};
+use server::store::{login, Changes, Character, Position, Store};
 
 const NEEDS: &str = "DATABASE_URL names the database to test against";
 
@@ -109,4 +109,30 @@ fn opening_twice_and_seeding_twice_change_nothing() {
     let sql = format!("SELECT count(*) FROM {}.schema_migrations", scratch.schema);
     let applied: i64 = scratch.admin.query_one(&sql, &[]).unwrap().get(0);
     assert_eq!(applied, 1);
+}
+
+/// A commit writes the character, masteries included, in one transaction:
+/// one character the store does not know undoes the other's change too.
+#[test]
+#[ignore = "needs a database: DATABASE_URL=<url> cargo test -p server --test pg_store -- --ignored"]
+fn a_commit_writes_all_of_it_or_nothing() {
+    let scratch = Scratch::new();
+    let store = PgStore::open(&scratch.config).expect("the store opens");
+    let admin = store.seed_account("admin", "secret", &[hero()]).unwrap();
+    let mut moved = hero();
+    moved.position.x = 1119.0;
+    moved.gold = 1;
+    moved.masteries = vec![(259, 2)];
+    let mut nobody = hero();
+    nobody.name = "Nobody".to_owned();
+    let both = Changes {
+        characters: vec![moved.clone(), nobody],
+    };
+    assert_eq!(store.commit(&both), Err("no character Nobody".to_owned()));
+    assert_eq!(store.characters(admin), [hero()]);
+    let one = Changes {
+        characters: vec![moved.clone()],
+    };
+    assert_eq!(store.commit(&one), Ok(()));
+    assert_eq!(store.characters(admin), [moved]);
 }

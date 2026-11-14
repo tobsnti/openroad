@@ -133,9 +133,10 @@ fn answer(command: &str, running: &Running) -> Value {
         Some("players") => {
             let players = running.query(|world| {
                 let row = |(uid, p): (u32, &server::world::Player)| {
-                    let at = p.position;
-                    json!({"uid": uid, "name": p.name, "region": at.region, "x": at.x,
-                        "y": at.y, "z": at.z, "hp": p.hp, "mp": p.mp})
+                    let c = &p.character;
+                    let at = c.position;
+                    json!({"uid": uid, "name": c.name, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z, "hp": c.hp, "mp": c.mp})
                 };
                 world.players().map(row).collect::<Vec<_>>()
             });
@@ -177,7 +178,7 @@ impl Events {
     fn report(&self, world: &World, event: &Event) {
         match *event {
             Event::Joined { uid, .. } => {
-                let name = world.player(uid).map(|p| p.name.as_str());
+                let name = world.player(uid).map(|p| p.character.name.as_str());
                 self.write("player.joined", json!({"uid": uid, "name": name}));
             }
             Event::Rejected {
