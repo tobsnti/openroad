@@ -58,9 +58,13 @@ pub enum SpawnKind {
         owner_name: Option<String>,
         owner_uid: Option<u32>,
     },
-    /// A dropped item; `amount` is the gold pile size (gold only).
+    /// A dropped item; `amount` is the gold pile size (gold only). `name` is
+    /// the name an item of TypeID 3/3/8 or 3/3/9 carries
+    /// [V original handler]; the captured ones carry what looks like a
+    /// character's name [U].
     Item {
         amount: Option<u32>,
+        name: Option<String>,
     },
     /// A world structure (teleport gate building) — spawns as an invisible
     /// click anchor.
@@ -206,10 +210,13 @@ pub enum RefType {
     Cos {
         kind: CosKind,
     },
-    /// A dropped item, with the sub-shape needed to parse its record.
+    /// A dropped item, with the sub-shape needed to parse its record: its
+    /// head carries an opt level (equipment), a name (`named`, TypeID
+    /// 3/3/8 and 3/3/9) or a gold amount (gold), never two of them.
     Item {
         equipment: bool,
         gold: bool,
+        named: bool,
     },
     /// A gate building (teleportbuilding.txt ref) — a fixed structure record,
     /// not a character body.
@@ -446,7 +453,11 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
         // byte follows is the batch's call (`settle_character`).
         RefType::Npc | RefType::Character => parse_character(r, ref_id, false),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
-        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold),
+        RefType::Item {
+            equipment,
+            gold,
+            named,
+        } => parse_item(r, ref_id, equipment, gold, named),
         RefType::Structure => parse_structure(r, ref_id),
         RefType::Unknown => None,
     }
@@ -633,9 +644,10 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     })
 }
 
-/// Dropped item record: `ref u32, [amount u32 | upgrade u8], uid u32, pos,
-/// owner flag(+u32), rarity u8` — the owner a flagged optional, as in
-/// skrillax's `ItemSpawnData`.
+/// Dropped item record: `ref u32, [upgrade u8 | name s16 | amount u32], uid
+/// u32, pos, owner flag(+u32), rarity u8` — the owner a flagged optional, as
+/// in skrillax's `ItemSpawnData`; the name as the original client reads it for
+/// TypeID 3/3/8 and 3/3/9 [V original handler].
 ///
 /// The record ends at the rarity byte. A single-entity spawn (0x3015) follows
 /// it with a drop-source byte and, for sources 5 and 6 only, the dropper's uid
@@ -643,10 +655,18 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
 /// pile then a monster arrive as 30 + 55 bytes `[V capture, peer vSRO]`, see
 /// `a_group_drop_ends_at_its_rarity_byte`. The single frame's tail is left
 /// unread; nothing behind it in that frame needs it.
-fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Option<SpawnedEntity> {
-    let mut amount = None;
+fn parse_item(
+    r: &mut Reader,
+    ref_id: u32,
+    equipment: bool,
+    gold: bool,
+    named: bool,
+) -> Option<SpawnedEntity> {
+    let (mut amount, mut name) = (None, None);
     if equipment {
         r.skip(1)?; // upgrade / opt level
+    } else if named {
+        name = Some(r.string()?);
     } else if gold {
         amount = Some(r.u32()?);
     }
@@ -672,7 +692,7 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
         state: None,
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
-        kind: SpawnKind::Item { amount },
+        kind: SpawnKind::Item { amount, name },
     })
 }
 
@@ -773,6 +793,7 @@ mod test {
                 RefType::Item {
                     equipment: true,
                     gold: false,
+                    named: false,
                 },
             ),
             (
@@ -780,6 +801,7 @@ mod test {
                 RefType::Item {
                     equipment: false,
                     gold: false,
+                    named: false,
                 },
             ),
         ]);
@@ -967,6 +989,7 @@ mod test {
                 RefType::Item {
                     equipment: false,
                     gold: true,
+                    named: false,
                 },
             ),
             (1933, RefType::Monster),
@@ -980,7 +1003,13 @@ mod test {
         assert_eq!(
             read,
             vec![
-                (0x161D0, SpawnKind::Item { amount: Some(95) }),
+                (
+                    0x161D0,
+                    SpawnKind::Item {
+                        amount: Some(95),
+                        name: None
+                    }
+                ),
                 (0x1A0CA, SpawnKind::Monster)
             ]
         );
@@ -994,6 +1023,7 @@ mod test {
             RefType::Item {
                 equipment: false,
                 gold: true,
+                named: false,
             },
         )]);
         // mirrors a live 0x3015 gold line, drop-source tail included; the
@@ -1018,11 +1048,50 @@ mod test {
         assert_eq!(parsed.spawns[0].unique_id, 77);
         assert_eq!(
             parsed.spawns[0].kind,
-            SpawnKind::Item { amount: Some(5000) }
+            SpawnKind::Item {
+                amount: Some(5000),
+                name: None
+            }
         );
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
+    }
+
+    /// An item of TypeID 3/3/8 or 3/3/9 names someone between its ref and its
+    /// unique id; read as gold or plain, the name's bytes would be the uid.
+    /// A synthetic frame: the captured ones carry a real player's name.
+    #[test]
+    fn a_named_item_reads_its_name_before_the_unique_id() {
+        const BOX_REF: u32 = 3862;
+        let res = resolver(&[(
+            BOX_REF,
+            RefType::Item {
+                equipment: false,
+                gold: false,
+                named: true,
+            },
+        )]);
+        let body = Body::default()
+            .u32(BOX_REF)
+            .string("Someone")
+            .u32(88) // unique id
+            .u16(0x60A8)
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0) // position
+            .u8(0) // no owner
+            .u8(0) // rarity
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        assert_eq!(parsed.spawns[0].unique_id, 88);
+        let named = SpawnKind::Item {
+            amount: None,
+            name: Some("Someone".to_owned()),
+        };
+        assert_eq!(parsed.spawns[0].kind, named);
     }
 
     #[test]

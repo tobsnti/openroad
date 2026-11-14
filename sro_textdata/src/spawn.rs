@@ -28,6 +28,7 @@ impl RefResolver for SpawnTables<'_> {
             return RefType::Item {
                 equipment: item.is_equipment(),
                 gold: item.is_gold(),
+                named: matches!(item.type_ids(), Some((3, 3, 8 | 9, _))),
             };
         }
         if let Some(ch) = self.characters.and_then(|characters| characters.get(&id)) {
@@ -98,6 +99,10 @@ mod test {
         let items = ItemData(HashMap::from([
             (8, ItemDataRow(row(8, "ITEM_CH_SWORD_01_A", [3, 1, 6, 2]))),
             (1, ItemDataRow(row(1, "ITEM_ETC_GOLD_01", [3, 3, 5, 0]))),
+            (
+                3862,
+                ItemDataRow(row(3862, "ITEM_ETC_E050618_TREASUREBOX", [3, 3, 9, 0])),
+            ),
         ]));
         let gate = GateBuilding {
             codename: "STORE_CH_GATE".to_owned(),
@@ -109,14 +114,19 @@ mod test {
             items: Some(&items),
             gates: Some(&gates),
         };
-        let item = |equipment, gold| RefType::Item { equipment, gold };
+        let item = |equipment, gold, named| RefType::Item {
+            equipment,
+            gold,
+            named,
+        };
         assert_eq!(tables.resolve(1907), RefType::Player);
         assert_eq!(tables.resolve(1933), RefType::Monster);
         assert_eq!(tables.resolve(2003), RefType::Npc);
         let horse = CosKind::from_type_id4(1).expect("tid4 1 is a COS");
         assert_eq!(tables.resolve(3), RefType::Cos { kind: horse });
-        assert_eq!(tables.resolve(8), item(true, false));
-        assert_eq!(tables.resolve(1), item(false, true));
+        assert_eq!(tables.resolve(8), item(true, false, false));
+        assert_eq!(tables.resolve(1), item(false, true, false));
+        assert_eq!(tables.resolve(3862), item(false, false, true));
         assert_eq!(tables.resolve(2094), RefType::Structure);
         assert_eq!(tables.resolve(9999), RefType::Unknown);
         assert!(tables.item_is_equipment(8) && !tables.item_is_equipment(1));

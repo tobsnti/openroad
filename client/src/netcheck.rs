@@ -602,6 +602,7 @@ impl RefResolver for HeadlessResolver {
             return RefType::Item {
                 equipment: false,
                 gold: true,
+                named: false,
             };
         }
         RefType::Character

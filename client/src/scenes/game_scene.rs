@@ -1678,7 +1678,7 @@ fn spawn_remote_entity(
                 warn!("network: no characterdata for COS ref {}", entity.ref_id);
             }
         }
-        SpawnKind::Item { amount } => {
+        SpawnKind::Item { amount, .. } => {
             // Items don't move, so no RemoteMovement. Ground drops render the
             // itemdata *drop* model (gold piles / category drop bags) rather
             // than the inventory model, which is "xxx" for etc items; when a
