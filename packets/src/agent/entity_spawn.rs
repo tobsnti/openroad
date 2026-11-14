@@ -6,10 +6,10 @@
 //! player record embeds an equipment ref-id list whose per-item width depends on
 //! whether each item is equipment, which needs itemdata. That is the same reason
 //! `CharacterDataBody` is a raw passthrough, so the whole payload is carried
-//! unparsed and decoded here, where the client's characterdata/itemdata tables
-//! live. Each record starts with a `ref_id` (u32); its type (player / NPC /
-//! monster / dropped item) is resolved from that id against those tables, which
-//! selects the per-record layout. Because records are variable-length and
+//! unparsed and decoded here, against the characterdata/itemdata tables the
+//! caller holds ([`RefResolver`]). Each record starts with a `ref_id` (u32); its
+//! type (player / NPC / monster / dropped item) is resolved from that id against
+//! those tables, which selects the per-record layout. Because records are variable-length and
 //! back-to-back, a mis-parse can't recover the next record boundary, so on any
 //! unknown type or short read we stop the batch and return what parsed so far
 //! (fail-safe, mirroring `character_data.rs`) rather than desync.
@@ -29,13 +29,13 @@ use std::collections::HashMap;
 
 use std::fmt::{self, Display, Formatter};
 
-use packets::agent::character_data::EntityState;
-use packets::hexdump;
+use crate::agent::character_data::EntityState;
+use crate::hexdump;
 
-use crate::net::reader::{GuildTag, Reader};
-use packets::agent::pet::CosKind;
+use crate::agent::pet::CosKind;
+use crate::agent::spawn_reader::{GuildTag, Reader};
 
-pub use packets::agent::character_data::SpawnPosition;
+pub use crate::agent::character_data::SpawnPosition;
 
 /// The kind of a spawned entity, with the per-kind extras the spawn system uses.
 #[derive(Debug, Clone, PartialEq)]

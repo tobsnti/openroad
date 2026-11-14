@@ -1,7 +1,7 @@
 # Entity spawn / despawn (0x3017 begin / 0x3019 data / 0x3018 end, 0x3015 / 0x3016)
 
 Status: layout decoded from the client parser and its byte-array unit tests
-(`client/src/net/entity_spawn.rs`), calibrated against live vSRO 1.188 captures.
+(`packets/src/agent/entity_spawn.rs`), calibrated against live vSRO 1.188 captures.
 The player and NPC records (incl. the interaction-option list) are
 capture-verified; the monster rarity tail and the dropped-item drop-source tail
 are cross-referenced with skrillax's `silkroad-protocol` and corrected against
@@ -18,9 +18,9 @@ The framing structs live in `packets/src/agent/ingame.rs`
 `SingleEntityDespawn`); the shared wire blocks (`SpawnPosition`,
 `EntityMovement`, `EntityState`, `ActiveBuff`) live in
 `packets/src/agent/character_data.rs`. The record payload is carried **unparsed**
-at dispatch and decoded in `client/src/net/entity_spawn.rs`
+at dispatch and decoded in `packets/src/agent/entity_spawn.rs`
 (`parse_group_spawn`) with the bounds-checked reader in
-`client/src/net/reader.rs`, because a record's shape depends on the client's
+`packets/src/agent/spawn_reader.rs`, because a record's shape depends on the client's
 itemdata/characterdata tables (the same reason `CharacterDataBody` (0x3013) is a
 raw passthrough — see [`net-character-data-0x3013.md`](net-character-data-0x3013.md)).
 The batch consumer is `on_group_spawn` / `on_single_spawn` in
@@ -28,8 +28,8 @@ The batch consumer is `on_group_spawn` / `on_single_spawn` in
 
 ## Sources
 
-- **Repo code (ground truth):** `client/src/net/entity_spawn.rs` (the parser +
-  its inline `#[cfg(test)]` byte fixtures), `client/src/net/reader.rs` (the
+- **Repo code (ground truth):** `packets/src/agent/entity_spawn.rs` (the parser +
+  its inline `#[cfg(test)]` byte fixtures), `packets/src/agent/spawn_reader.rs` (the
   position / movement / character-state block readers),
   `packets/src/agent/ingame.rs` (framing structs and their round-trip tests),
   `packets/src/agent/character_data.rs` (`SpawnPosition`, `EntityMovement`,
@@ -113,7 +113,7 @@ NPC_CH_EVENT_KISAENG1 (49 B).
 ## Shared wire blocks
 
 These three blocks recur inside the character-bearing records and are read by
-`Reader` in `client/src/net/reader.rs`.
+`Reader` in `packets/src/agent/spawn_reader.rs`.
 
 **Position** (16 bytes, `SpawnPosition`):
 
@@ -362,7 +362,7 @@ or session data.
 ```
 
 Player, NPC, monster and item-drop record bytes are exercised in
-`client/src/net/entity_spawn.rs`'s `#[cfg(test)]` module via a little-endian
+`packets/src/agent/entity_spawn.rs`'s `#[cfg(test)]` module via a little-endian
 `Body` builder (`parses_player_with_mixed_equipment`, `parses_npc_and_monster`,
 `parses_talkable_npc_with_options`, `parses_gold_drop`, `parses_despawn_list`);
 see that module for full synthetic record bytes.

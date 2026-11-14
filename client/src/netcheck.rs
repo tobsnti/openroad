@@ -50,9 +50,9 @@ use crate::assets::textdata::characterdata::CharacterData;
 use crate::assets::textdata::decode::decode_textdata;
 use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::teleport::TeleportTable;
-use crate::net::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
 use crate::net::log_spawn_notes;
 use crate::plugins::textdata::TextdataResolver;
+use packets::agent::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -387,7 +387,7 @@ fn netcheck_game_ready(
 }
 
 /// Explicitly surface the group-spawn packets we are verifying, hex-dumping the
-/// data payload (cross-check against `net::entity_spawn`).
+/// data payload (cross-check against `packets::agent::entity_spawn`).
 fn netcheck_dump_group_spawns(
     mut begins: MessageReader<GroupEntitySpawnBegin>,
     mut datas: MessageReader<GroupEntitySpawnData>,
