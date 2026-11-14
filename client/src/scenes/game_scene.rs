@@ -1554,7 +1554,7 @@ fn spawn_remote_entity(
                 Visibility::default(),
             ));
         }
-        SpawnKind::Npc | SpawnKind::Monster => {
+        SpawnKind::Npc | SpawnKind::Monster { .. } => {
             let Some(row) = char_data.get(&(entity.ref_id as i32)) else {
                 warn!(
                     "network: no characterdata for remote entity ref {}",
@@ -1562,7 +1562,7 @@ fn spawn_remote_entity(
                 );
                 return;
             };
-            let (marker, label) = if matches!(entity.kind, SpawnKind::Monster) {
+            let (marker, label) = if matches!(entity.kind, SpawnKind::Monster { .. }) {
                 (RemoteEntity::Monster, "monster")
             } else {
                 (RemoteEntity::Npc, "npc")
