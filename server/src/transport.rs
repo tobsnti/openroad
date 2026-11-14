@@ -51,6 +51,8 @@ pub struct Inbound {
 
 pub struct Transport {
     handshake: Option<Handshake>,
+    /// The sequence and CRC seeds this connection's handshake drew.
+    seeds: (u32, u32),
     /// What the client's frames are decrypted with once the handshake is done.
     security: Arc<RwLock<SilkroadSecurityState>>,
     sequence: Sequence,
@@ -73,6 +75,7 @@ impl Transport {
         let (sequence_seed, crc_seed) = handshake.seeds();
         let transport = Transport {
             handshake: Some(handshake),
+            seeds: (sequence_seed, crc_seed),
             security: Arc::new(RwLock::new(SilkroadSecurityState::new())),
             sequence: Sequence::from(sequence_seed),
             crc: CRC::from(crc_seed),
@@ -81,9 +84,16 @@ impl Transport {
         (transport, frame(0x5000, &opening))
     }
 
-    /// Whether the handshake is done.
+    /// Whether the handshake is done. Asked of the session key, not of the
+    /// handshake's state: a refused handshake leaves no state behind either.
     pub fn established(&self) -> bool {
-        self.handshake.is_none()
+        let security = self.security.read().expect("one owner");
+        matches!(security.state, SilkroadSecurity::Established)
+    }
+
+    /// The sequence and CRC seeds the handshake drew.
+    pub fn seeds(&self) -> (u32, u32) {
+        self.seeds
     }
 
     /// Bytes as the socket delivered them, in any split. A frame that is not

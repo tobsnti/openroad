@@ -9,7 +9,9 @@
 //!   it is laid over its unsuffixed one.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
-//!   `player.joined`, `c2s.rejected`.
+//!   `player.joined`, `c2s.rejected`, `session.opened` (a handshake's seeds)
+//!   and `session.ended` (why the server ended a connection, or the client
+//!   left before its handshake was done; also a line on stderr).
 //! - `BENCH_ADMIN`: a Unix socket; one command line in, one JSON line out.
 //! - `OPENROAD_TEXTDATA_DIR`: the user's textdata, for the reference data.
 //! - `BENCH_GATEWAY`, `BENCH_AGENT`: where to listen; the bench's ports
@@ -27,8 +29,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 use server::gateway::Gateway;
 use server::refdata::RefData;
-use server::runtime::{self, Config, Running, GATEWAY_IDLE, HANDSHAKE};
+use server::runtime::{self, Config, Notice, Peer, Running, Why, GATEWAY_IDLE, HANDSHAKE};
 use server::store::{Character, MemoryStore, Position, Store};
+use server::transport::Broken;
 use server::world::{Event, Phase, Reason, World};
 
 fn main() -> ExitCode {
@@ -72,9 +75,14 @@ fn run() -> Result<(), String> {
     let (placed, skipped) = (world.npcs().count(), world.skipped_npc_rows());
     eprintln!("npcpos.txt: {placed} NPCs placed, {skipped} rows skipped (no NPC model in the client's data)");
     let reporter = events.clone();
-    let running = runtime::start(config, world, store, move |world, event| {
-        reporter.report(world, event)
-    })
+    let notices = events.clone();
+    let running = runtime::start(
+        config,
+        world,
+        store,
+        move |world, event| reporter.report(world, event),
+        move |notice| notices.notice(&notice),
+    )
     .map_err(|e| format!("the listeners: {e}"))?;
     eprintln!("gateway on {}, agent on {}", running.gateway, running.agent);
 
@@ -204,6 +212,46 @@ impl Events {
             }
             _ => {}
         }
+    }
+
+    fn notice(&self, notice: &Notice) {
+        let fields = |peer: &Peer| {
+            let address = peer.address.map(|a| a.to_string());
+            json!({"conn": peer.listener, "peer": address,
+                   "count_seed": peer.seeds.0, "crc_seed": peer.seeds.1})
+        };
+        match notice {
+            Notice::Opened(peer) => self.write("session.opened", fields(peer)),
+            Notice::Ended {
+                peer,
+                established,
+                why,
+            } => {
+                let (count, crc) = peer.seeds;
+                let address = peer.address.map(|a| a.to_string()).unwrap_or_default();
+                let phase = if *established { "session" } else { "handshake" };
+                eprintln!(
+                    "{} connection {address} ended in the {phase}: {why:?} (seeds {count}/{crc})",
+                    peer.listener
+                );
+                let mut fields = fields(peer);
+                fields["established"] = json!(established);
+                fields["reason"] = json!(reason(why));
+                self.write("session.ended", fields);
+            }
+        }
+    }
+}
+
+/// The `reason` of a `session.ended`.
+fn reason(why: &Why) -> &'static str {
+    match why {
+        Why::Closed => "closed",
+        Why::Deadline => "deadline",
+        Why::Socket(_) => "socket",
+        Why::Broken(Broken::SecurityBytes) => "security",
+        Why::Broken(Broken::Frame) => "frame",
+        Why::Broken(Broken::Handshake(_)) => "handshake",
     }
 }
 

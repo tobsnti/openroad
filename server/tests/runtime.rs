@@ -1,9 +1,9 @@
 //! The server on sockets: a client walks the gateway and enters the world over
 //! loopback, and a connection's limits hold.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -13,9 +13,11 @@ use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
 use server::gateway::Gateway;
 use server::refdata::RefData;
-use server::runtime::{start, Config, Running, GATEWAY_IDLE, HANDSHAKE};
+use server::runtime::{start, Config, Notice, Peer, Running, Why, GATEWAY_IDLE, HANDSHAKE};
 use server::store::{Character, MemoryStore, Position, Store};
+use server::transport::Broken;
 use server::world::World;
+use sro_net::sequence::Sequence;
 
 mod common;
 use common::Wire;
@@ -53,6 +55,16 @@ fn server(
     handshake: Duration,
     gateway_idle: Duration,
 ) -> (Running, Arc<MemoryStore>) {
+    noticed(capacity, handshake, gateway_idle, |_| {})
+}
+
+/// [`server`], its connections' notices going to `notice`.
+fn noticed(
+    capacity: u16,
+    handshake: Duration,
+    gateway_idle: Duration,
+    notice: impl Fn(Notice) + Send + Sync + 'static,
+) -> (Running, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("admin", "secret", vec![hero()]);
     let store = Arc::new(store);
@@ -78,7 +90,8 @@ fn server(
         gateway_idle,
     };
     let world = World::new(store.clone(), refdata);
-    let running = start(config, world, store.clone(), |_, _| {}).expect("the server starts");
+    let running =
+        start(config, world, store.clone(), |_, _| {}, notice).expect("the server starts");
     (running, store)
 }
 
@@ -205,4 +218,38 @@ fn a_listener_holds_at_most_the_shards_capacity() {
     let _held = [Wire::connect(server.agent), Wire::connect(server.agent)];
     let third = TcpStream::connect(server.agent).unwrap();
     assert!(until_closed(third) < Duration::from_secs(1));
+}
+
+/// The server says why it let a connection go, with the seeds the client was
+/// to stamp its frames with: here an answer whose sequence byte is wrong.
+#[test]
+fn a_connection_ended_over_its_security_bytes_is_noticed_with_its_seeds() {
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let heard = notices.clone();
+    let (server, _) = noticed(10, HANDSHAKE, GATEWAY_IDLE, move |notice| {
+        heard.lock().unwrap().push(notice)
+    });
+    let mut client = TcpStream::connect(server.agent).unwrap();
+    let mut opening = [0u8; 6 + 37];
+    client.read_exact(&mut opening).unwrap();
+    let seed = |at: usize| u32::from_le_bytes(opening[6 + at..10 + at].try_into().unwrap());
+    let seeds = (seed(9), seed(13));
+    let wrong = Sequence::from(seeds.0).next() ^ 0xFF;
+    let mut answer = vec![12, 0, 0x00, 0x50, wrong, 0];
+    answer.extend([0u8; 12]);
+    client.write_all(&answer).unwrap();
+    let address = client.local_addr().ok();
+    until_closed(client);
+
+    let peer = Peer {
+        listener: "agent",
+        address,
+        seeds,
+    };
+    let ended = Notice::Ended {
+        peer: peer.clone(),
+        established: false,
+        why: Why::Broken(Broken::SecurityBytes),
+    };
+    assert_eq!(*notices.lock().unwrap(), [Notice::Opened(peer), ended]);
 }

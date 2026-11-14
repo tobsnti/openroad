@@ -47,7 +47,7 @@ fn main() {
         gateway_idle: GATEWAY_IDLE,
     };
     let world = World::new(store.clone(), RefData::default());
-    let server = start(config, world, store, |_, _| {}).expect("the server starts");
+    let server = start(config, world, store, |_, _| {}, |_| {}).expect("the server starts");
     thread::sleep(Duration::from_millis(200));
     let (rss_before, threads_before) = sample();
 
