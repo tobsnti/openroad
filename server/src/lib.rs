@@ -9,6 +9,7 @@
 //! drive the same world in-process, without sockets, one step at a time
 //! ([`tick`]).
 
+mod chat;
 pub mod clock;
 mod consignment;
 pub mod gateway;
