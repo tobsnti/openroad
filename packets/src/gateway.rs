@@ -98,20 +98,29 @@ pub struct NoticeRequest {
 /// packet it blocks on: with the notice service dead the launcher keeps
 /// keepaliving forever and never offers its Start button.
 ///
-/// The layout is `u8 noticeCount`, then per notice a u16-length-prefixed
-/// subject and article followed by six `u16` date fields (year, month, day,
-/// hour, minute, second) and a `u32` nanosecond.
-///
-/// **Only the count is modelled**, on purpose and twice over: our derive cannot
-/// express a counted list of *structs* (`sro_macro_derive` rejects nested
-/// collection-like types), and the only answer we ever *send* is the empty one
-/// — `noticeCount = 0`, a single byte, which is the honest answer for a server
-/// that has no notices. A real non-empty `0xA104` therefore decodes to its
-/// count with the entries left unread; OpenRoad's own client never sends
+/// A `u8`-counted list of [`Notice`]s `[V original handler]`. The only answer
+/// we ever *send* is the empty one, a single `0` byte, which is the honest
+/// answer for a server that has no notices; OpenRoad's own client never sends
 /// `0x6104`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct NoticeResponse {
-    pub notice_count: u8,
+    pub notices: Vec<Notice>,
+}
+
+/// One launcher notice: a subject, an article, and its date as a Windows
+/// `SYSTEMTIME`, eight `u16` `[V original handler]`.
+#[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub subject: String,
+    pub article: String,
+    pub year: u16,
+    pub month: u16,
+    pub day_of_week: u16,
+    pub day: u16,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub milliseconds: u16,
 }
 
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug)]
@@ -165,6 +174,7 @@ pub struct Shard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::{judge, Verdict};
     use bytes::Bytes;
 
     /// The maintainer's capture, all 9 lines of `packet_dump/0xa106.log`:
@@ -272,18 +282,20 @@ mod tests {
         assert_eq!(encoded.as_ref(), &[0x02, 0x03]);
     }
 
-    /// The news pair: the request is the locale byte, and the only answer we
-    /// send is the empty list.
+    /// The news pair: the request is the locale byte; the answer is a counted
+    /// list, empty in the only answer we send and read whole when it is not.
     #[test]
-    fn notice_request_and_empty_response_roundtrip() {
+    fn notice_request_and_response_roundtrip() {
         let request = NoticeRequest::try_from(Bytes::from_static(&[0x16])).expect("decodes");
         assert_eq!(request.content_id, 0x16);
         let encoded: Bytes = request.into();
         assert_eq!(encoded.as_ref(), &[0x16]);
 
-        let response = NoticeResponse::try_from(Bytes::from_static(&[0x00])).expect("decodes");
-        assert_eq!(response.notice_count, 0);
-        let encoded: Bytes = response.into();
-        assert_eq!(encoded.as_ref(), &[0x00]);
+        let mut one = vec![0x01, 0x02, 0x00, b'H', b'i', 0x00, 0x00];
+        one.extend([0xEA, 0x07, 0x0B, 0x00, 0x05, 0x00, 0x0D, 0x00]); // 2026-11, Friday the 13th
+        one.extend([0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // 12:00:00.000
+        for body in [&[0x00][..], &one] {
+            assert_eq!(judge(0xA104, body), Verdict::Exact, "{body:02x?}");
+        }
     }
 }

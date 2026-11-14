@@ -68,19 +68,19 @@ impl From<UnionLeaveRequest> for Bytes {
 
 guild_op_ack! {
     /// 0xB0FB — ack for [`UnionInviteRequest`], handler `FUN_00881dd0`.
-    UnionInviteAck
+    UnionInviteAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB0FC — ack for [`UnionLeaveRequest`], handler `FUN_00881e20`
     /// (server writer `FUN_005c9210 @5c9237` emits the single byte `01`).
-    UnionLeaveAck
+    UnionLeaveAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB0FD — ack for [`UnionExpelRequest`], handler `FUN_00881e70`
     /// (server writer `FUN_005c9270 @5c9297`).
-    UnionExpelAck
+    UnionExpelAck when "result == 2"
 }
 
 #[cfg(test)]

@@ -249,7 +249,8 @@ pub fn sync_quest_markers(
     let name_of = |target: &QuestMarkTarget| {
         index
             .as_ref()
-            .and_then(|index| index.get(target.target_unique_id))
+            .zip(target.target_unique_id)
+            .and_then(|(index, unique_id)| index.get(unique_id))
             .and_then(|entity| named.get(entity).ok())
             .map(|name| name.0.clone())
             .or_else(|| {
@@ -545,7 +546,7 @@ mod test {
                 x: 1584,
                 y: 0,
                 z: 1407,
-                target_unique_id: 243,
+                target_unique_id: Some(243),
             },
         );
         // and one inside a dungeon (bit 15), whose coordinates no overworld
@@ -557,12 +558,12 @@ mod test {
                 x: 10,
                 y: 0,
                 z: 20,
-                target_unique_id: 7,
+                target_unique_id: Some(7),
             },
         );
 
         let markers = quest_markers(&marks, |target| {
-            (target.target_unique_id == 243).then(|| "Smith".to_string())
+            (target.target_unique_id == Some(243)).then(|| "Smith".to_string())
         });
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].kind, MarkerKind::Quest);
@@ -609,13 +610,13 @@ mod test {
 
         app.world_mut().write_message(QuestMarkAdd {
             mark_id: 0x52e647e8,
-            unknown0: 0x82,
+            flags: 0x82,
             mark: QUEST_MARK_NEW,
             region: 25000,
             x: 1584,
             y: 0,
             z: 1407,
-            target_unique_id: 243,
+            target_unique_id: Some(243),
         });
         app.update();
 
@@ -687,7 +688,7 @@ mod test {
                     x: 332,
                     y: 0,
                     z: 1406,
-                    target_unique_id: 55,
+                    target_unique_id: Some(55),
                 },
             );
             // mark 2's target was never spawned
@@ -698,7 +699,7 @@ mod test {
                     x: 1584,
                     y: 0,
                     z: 1407,
-                    target_unique_id: 243,
+                    target_unique_id: Some(243),
                 },
             );
         }

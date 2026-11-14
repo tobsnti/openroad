@@ -131,7 +131,7 @@ impl GatewayConnection {
                 error: None,
             }),
             Ok(Packet::NoticeRequest(_)) => {
-                Packet::NoticeResponse(NoticeResponse { notice_count: 0 })
+                Packet::NoticeResponse(NoticeResponse { notices: vec![] })
             }
             Ok(Packet::ShardListRequest(_)) => shard_list(gateway, shard),
             Ok(Packet::ShardListPingRequest(_)) => {

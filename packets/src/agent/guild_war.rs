@@ -104,12 +104,12 @@ guild_op_ack! {
     /// Its tail runs **unconditionally**: the war-declaration dialog is torn
     /// down whether the request succeeded or failed. A consumer should close the
     /// dialog on both arms rather than only on success.
-    GuildWarStartAck
+    GuildWarStartAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB112 — ack for [`GuildWarEndRequest`], handler `FUN_00881f30`.
-    GuildWarEndAck
+    GuildWarEndAck when "result == 2"
 }
 
 /// 0xB114 — ack for [`GuildWarRewardRequest`], handler `FUN_00885ae0`.
@@ -124,7 +124,7 @@ pub struct GuildWarRewardAck {
     pub result: u8,
     #[sro_packet(when = "result == 1")]
     pub compensation: Option<u32>,
-    #[sro_packet(when = "result != 1")]
+    #[sro_packet(when = "result == 2")]
     pub error_code: Option<u16>,
 }
 

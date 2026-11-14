@@ -68,9 +68,9 @@ pub const QUEST_MARK_HARD: u8 = 4;
 ///   of 44 (278 of 293 gaps are exactly 44, the rest multiples of it), i.e. a
 ///   server-side pool index, not a quest id: the same target's mark gets a new
 ///   value each time it is re-added (114 distinct handles for one target).
-/// * `unknown0` **[U]** — `0x82` in all 294 samples. Constant, so the capture
-///   cannot say what it means; it may equally be the high byte of a `u16`
-///   with `mark`.
+/// * `flags` — bit `0x02` says `target_unique_id` follows
+///   `[V original handler]`; the other bits are **[U]** (`0x82` in all 294
+///   samples).
 /// * `mark` **[S]** — 1 / 2 / 3 / 4 in the capture, exactly the wiki's
 ///   `QuestMark` enum. (`Open` did appear after all — 88 samples from
 ///   2026-08-19 on, which the 18-sample reading had called "never".)
@@ -84,7 +84,8 @@ pub const QUEST_MARK_HARD: u8 = 4;
 ///   large `u32` — read `y` back through `as i32`. No sample has a negative
 ///   height, so that half stays **[U]**.
 /// * `target_unique_id` **[V]** — the target entity's server unique id, the
-///   same key `NetworkEntities` indexes spawns by. All 8 captured targets are
+///   same key `NetworkEntities` indexes spawns by, present only with flag
+///   `0x02`. All 8 captured targets are
 ///   NPCs (`characterdata_5000.txt` ref ids 2003/2005/2008/2009/2010/2019/
 ///   2021/2037 = `NPC_CH_SMITH`, `_POTION`, `_ACCESSORY`, `_HORSE`,
 ///   `_SPECIAL`, `_GENARAL`, `_GENARAL_SP`, `_SOLDIER_SO1`), which is what a
@@ -131,7 +132,7 @@ pub const QUEST_MARK_HARD: u8 = 4;
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct QuestMarkAdd {
     pub mark_id: u32,
-    pub unknown0: u8,
+    pub flags: u8,
     /// See the `QUEST_MARK_*` constants.
     pub mark: u8,
     /// The target's region — see the type's docs; dungeon ids carry bit 15.
@@ -140,7 +141,8 @@ pub struct QuestMarkAdd {
     /// Height, truncated toward zero; reinterpret as `i32` before use.
     pub y: u32,
     pub z: u32,
-    pub target_unique_id: u32,
+    #[sro_packet(when = "flags & 0x02 != 0")]
+    pub target_unique_id: Option<u32>,
 }
 
 /// 0x30D7 — remove the quest mark with this handle. Whole body, 4 bytes
@@ -191,6 +193,14 @@ pub struct QuestJournalUpdate {
     pub entry_count: Option<u8>,
     #[sro_packet(list_type = "by-size-field", size_field = "entry_count.unwrap_or(0)")]
     pub entries: Vec<u8>,
+    /// Flag `0x40` — a counted list of `u32`s `[V original handler]`. That they
+    /// are NPC ref ids, like those an active-quest record carries behind the
+    /// same bit ([`crate::agent::character_data::QUEST_HAS_NPCS`]), is an
+    /// analogy `[U]`.
+    #[sro_packet(when = "flags.is_some_and(|f| f & 0x40 != 0)")]
+    pub npc_count: Option<u8>,
+    #[sro_packet(list_type = "by-size-field", size_field = "npc_count.unwrap_or(0)")]
+    pub target_npcs: Vec<u32>,
 }
 
 impl QuestJournalUpdate {
@@ -215,7 +225,7 @@ mod tests {
     fn a_captured_quest_mark_add_round_trips() {
         let wire = Bytes::from_static(&[
             0x6c, 0x5e, 0xe6, 0x52, // mark_id
-            0x82, // unknown0
+            0x82, // flags
             0x01, // mark = New
             0xa8, 0x61, // region 25000
             0x4c, 0x01, 0x00, 0x00, // x 332
@@ -225,15 +235,22 @@ mod tests {
         ]);
         let decoded = QuestMarkAdd::try_from(wire.clone()).unwrap();
         assert_eq!(decoded.mark_id, 0x52e65e6c);
-        assert_eq!(decoded.unknown0, 0x82);
+        assert_eq!(decoded.flags, 0x82);
         assert_eq!(decoded.mark, QUEST_MARK_NEW);
         assert_eq!(decoded.region, 25000);
         // `packet_dump/0x3019.log` 2026-09-01T14:50:11.763Z spawns unique id
         // 55 (ref 2003, NPC_CH_SMITH) at region 25000, (332.73, 0.0, 1406.70).
         assert_eq!((decoded.x, decoded.y, decoded.z), (332, 0, 1406));
-        assert_eq!(decoded.target_unique_id, 55);
+        assert_eq!(decoded.target_unique_id, Some(55));
         let back: Bytes = decoded.into();
         assert_eq!(back, wire, "24 bytes, nothing left over");
+
+        // without flag 0x02 the body ends before the target's unique id
+        let mut bare = wire[..20].to_vec();
+        bare[4] = 0x80;
+        let decoded = QuestMarkAdd::try_from(Bytes::from(bare.clone())).unwrap();
+        assert_eq!(decoded.target_unique_id, None);
+        assert_eq!(&Bytes::from(decoded)[..], &bare[..]);
     }
 
     /// The capture's own proof of the pairing: `0x30D7`'s whole body is the
@@ -324,5 +341,11 @@ mod tests {
         assert_eq!(full.timer_secs(), Some(60));
         assert_eq!(full.unk_10, Some(9));
         assert_eq!(full.entries, vec![0x11, 0x22]);
+
+        // Flag 0x40 pulls a counted list of u32s behind everything else.
+        let npcs = decode(&[
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x01, 0xf5, 0x07, 0x00, 0x00,
+        ]);
+        assert_eq!(npcs.target_npcs, vec![2037]);
     }
 }

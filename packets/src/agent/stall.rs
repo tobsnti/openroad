@@ -383,8 +383,8 @@ impl From<StallEntityAction> for Bytes {
 
 // --- 0xB0B3 SERVER_STALL_TALK_RESPONSE ------------------------------------
 
-/// `result == 1` on the two response opcodes of this family; anything else is
-/// followed by a `StallErrorCode` u16.
+/// `result == 1` is 0xB0B3's success; a `StallErrorCode` u16 follows result 2
+/// only, and any other result carries nothing `[V original handler]`.
 const STALL_RESULT_OK: u8 = 1;
 
 /// 0xB0B3 — the snapshot a viewer receives on entering a remote stall (#759).
@@ -417,11 +417,9 @@ pub enum StallTalkResponse {
         /// undecoded — read with [`Self::snapshot`].
         raw_tail: Bytes,
     },
-    /// `StallErrorCode` (see `docs/net-stall-0x30B7.md` §7's error list). The
-    /// `result` byte is kept verbatim rather than normalised to 2: the family's
-    /// other acks show only that `!= 1` means failure, so re-encoding some
-    /// other value as 2 would invent a discrimination the sources do not make.
-    Failure { result: u8, error_code: u16 },
+    /// `StallErrorCode` (see `docs/net-stall-0x30B7.md` §7's error list) on
+    /// result 2; no code on any other result.
+    Failure { result: u8, error_code: Option<u16> },
 }
 
 /// What a successful 0xB0B3 carries after its header: the listing and who else
@@ -458,10 +456,11 @@ impl TryFrom<Bytes> for StallTalkResponse {
         let mut cursor = Cursor::new(&value[..]);
         let result = u8::read_from(&mut cursor)?;
         if result != STALL_RESULT_OK {
-            return Ok(StallTalkResponse::Failure {
-                result,
-                error_code: u16::read_from(&mut cursor)?,
-            });
+            let error_code = match result {
+                2 => Some(u16::read_from(&mut cursor)?),
+                _ => None,
+            };
+            return Ok(StallTalkResponse::Failure { result, error_code });
         }
         let unique_id = u32::read_from(&mut cursor)?;
         let message = read_ascii(&mut cursor)?;
@@ -498,7 +497,9 @@ impl From<StallTalkResponse> for Bytes {
             }
             StallTalkResponse::Failure { result, error_code } => {
                 buf.put_u8(result);
-                buf.put_u16_le(error_code);
+                if let Some(code) = error_code {
+                    buf.put_u16_le(code);
+                }
             }
         }
         buf.freeze()
@@ -1150,8 +1151,9 @@ mod tests {
         assert!(snapshot.viewers.is_empty());
     }
 
-    /// Failure carries the family's `StallErrorCode`, exactly like the three
-    /// simple acks — and no snapshot.
+    /// Failure carries the family's `StallErrorCode` on result 2, exactly like
+    /// the three simple acks — and no snapshot. Any other result is the whole
+    /// frame.
     #[test]
     fn stall_talk_failure_is_an_error_code() {
         let mut wire = vec![2u8];
@@ -1162,12 +1164,17 @@ mod tests {
             decoded,
             StallTalkResponse::Failure {
                 result: 2,
-                error_code: 0x3C2B,
+                error_code: Some(0x3C2B),
             }
         );
         assert!(decoded.snapshot(&expendable()).is_none());
         let re: Bytes = decoded.into();
         assert_eq!(&re[..], &wire[..]);
+
+        assert_eq!(
+            crate::judge::judge(0xB0B3, &[0x03]),
+            crate::judge::Verdict::Exact
+        );
     }
 
     /// A truncated tail must yield `None`, never a partial listing: a short row
