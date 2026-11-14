@@ -97,9 +97,25 @@ pub struct SpawnedEntity {
     pub spawn_rarity: Option<u8>,
     /// Interaction option ids of a talkable NPC (empty for everything else) —
     /// the entries of its talk dialog (talk/store/storage/teleport…, see
-    /// `plugins::cursor::interactions::npcs::TalkOption`).
+    /// `plugins::cursor::interactions::npcs::TalkOption`). They are the
+    /// interaction block's list, read for its flag bit 2.
     pub talk_options: Vec<u8>,
+    /// The rest of the interaction block of an NPC, monster or COS record
+    /// (`None` for every other kind).
+    pub interaction: Option<Interaction>,
     pub kind: SpawnKind,
+}
+
+/// The interaction block as the original client reads it
+/// [V original handler]: a flag byte, then a text for bit 1, the talk options
+/// for bit 2 (kept in [`SpawnedEntity::talk_options`], the one place of that
+/// list) and for bit 4 a type byte (1 or 2) and a u32. The meanings of the
+/// text and of the typed value are [U].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Interaction {
+    pub flags: u8,
+    pub text: Option<String>,
+    pub typed_value: Option<(u8, u32)>,
 }
 
 /// The outcome of decoding a group-spawn payload.
@@ -497,6 +513,7 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
         state: None,
         spawn_rarity: None,
         talk_options: Vec::new(),
+        interaction: None,
         kind: SpawnKind::Structure,
     })
 }
@@ -539,6 +556,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         state: Some(state),
         spawn_rarity: None,
         talk_options: Vec::new(),
+        interaction: None,
         kind: SpawnKind::Player {
             equipment,
             riding_uid,
@@ -568,6 +586,33 @@ fn read_item_list(
     Some(())
 }
 
+/// The interaction block ([`Interaction`]); its talk options go to
+/// `talk_options`.
+fn read_interaction(r: &mut Reader, talk_options: &mut Vec<u8>) -> Option<Interaction> {
+    let flags = r.u8()?;
+    let text = if flags & 1 != 0 {
+        Some(r.string()?)
+    } else {
+        None
+    };
+    if flags & 2 != 0 {
+        let count = r.u8()?;
+        for _ in 0..count {
+            talk_options.push(r.u8()?);
+        }
+    }
+    let typed_value = if flags & 4 != 0 {
+        Some((r.u8()?, r.u32()?))
+    } else {
+        None
+    };
+    Some(Interaction {
+        flags,
+        text,
+        typed_value,
+    })
+}
+
 /// An NPC (`monster` None) or a monster: the NPC record plus the rarity, and
 /// for a thief or hunter monster one byte more.
 fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option<SpawnedEntity> {
@@ -575,16 +620,8 @@ fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option
     let position = r.position()?;
     r.skip_movement(position.region)?;
     let state = r.character_state()?;
-    // Interaction options: a tag byte (0 = none), and for a talkable entity a
-    // `u8` option count followed by that many 1-byte option ids. (Verified
-    // against a live capture: tag=2, count=4, then 4 option bytes.)
     let mut talk_options = Vec::new();
-    if r.u8()? != 0 {
-        let option_count = r.u8()?;
-        for _ in 0..option_count {
-            talk_options.push(r.u8()?);
-        }
-    }
+    let interaction = read_interaction(r, &mut talk_options)?;
     let (spawn_rarity, kind) = match monster {
         Some(extra) => {
             let rarity = r.u8()?;
@@ -602,6 +639,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option
         state: Some(state),
         spawn_rarity,
         talk_options,
+        interaction: Some(interaction),
         kind,
     })
 }
@@ -619,14 +657,9 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     let position = r.position()?;
     r.skip_movement(position.region)?;
     let state = r.character_state()?;
-    // The talk-options block is shared with NPCs (a summoned COS sends tag 0).
+    // The interaction block is shared with NPCs (a summoned COS sends flag 0).
     let mut talk_options = Vec::new();
-    if r.u8()? != 0 {
-        let option_count = r.u8()?;
-        for _ in 0..option_count {
-            talk_options.push(r.u8()?);
-        }
-    }
+    let interaction = read_interaction(r, &mut talk_options)?;
     let mut pet_name = None;
     let mut owner_name = None;
     let mut owner_uid = None;
@@ -653,6 +686,7 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
         state: Some(state),
         spawn_rarity: None,
         talk_options,
+        interaction: Some(interaction),
         kind: SpawnKind::Cos {
             kind,
             pet_name,
@@ -710,6 +744,7 @@ fn parse_item(
         state: None,
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
+        interaction: None,
         kind: SpawnKind::Item { amount, name },
     })
 }
@@ -913,6 +948,42 @@ mod test {
         assert_eq!(parsed.spawns[1].unique_id, 22);
         assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster { extra: None });
         assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
+    }
+
+    /// The interaction block has three parts, one per flag bit; with only the
+    /// options read, an NPC carrying the other two would shift the record
+    /// behind it.
+    #[test]
+    fn an_interaction_block_reads_all_three_parts() {
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(NPC_REF, RefType::Npc)]);
+        let body = Body::default()
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(1 | 2 | 4)
+            .string("Hi") // bit 1
+            .u8(2) // bit 2: two options
+            .u8(1)
+            .u8(4)
+            .u8(2) // bit 4: type and value
+            .u32(0xBEEF)
+            .u32(NPC_REF)
+            .u32(12)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(0)
+            .0;
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let npc = &parsed.spawns[0];
+        let interaction = Interaction {
+            flags: 7,
+            text: Some("Hi".to_owned()),
+            typed_value: Some((2, 0xBEEF)),
+        };
+        assert_eq!(npc.interaction.as_ref(), Some(&interaction));
+        assert_eq!(npc.talk_options, [1, 4]);
+        assert_eq!(parsed.spawns[1].unique_id, 12);
     }
 
     /// A thief or hunter monster carries one byte more after its rarity; read
