@@ -70,6 +70,15 @@ impl Handshake {
     /// session; generator, prime and private value are 31-bit, as the
     /// client's private value [S original client].
     pub fn open() -> (Handshake, Bytes) {
+        Self::seeded(OsRng.next_u32() as u8, OsRng.next_u32() as u8)
+    }
+
+    /// [`Self::open`] with the sequence and CRC seeds given. Both are bytes:
+    /// the original client keeps only the low byte of the CRC seed
+    /// (`sro_net::crc`), and the stub sends both as bytes, noting that the
+    /// original server does [S]. A seed of 0 is legal; the client and
+    /// `sro_net` map it the same way.
+    pub fn seeded(sequence_seed: u8, crc_seed: u8) -> (Handshake, Bytes) {
         let draw31 = || OsRng.next_u32() & 0x7FFF_FFFF;
         let (generator, prime, private) = (draw31(), draw31(), draw31());
         let opening = Opening {
@@ -77,8 +86,8 @@ impl Handshake {
             public: g_pow_x_mod_p(generator, private, prime),
             prime,
             handshake_key: OsRng.next_u64(),
-            sequence_seed: OsRng.next_u32(),
-            crc_seed: OsRng.next_u32(),
+            sequence_seed: u32::from(sequence_seed),
+            crc_seed: u32::from(crc_seed),
         };
         let mut body = BytesMut::with_capacity(37);
         body.put_u8(SETUP_FLAGS);

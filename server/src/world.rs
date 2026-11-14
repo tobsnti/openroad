@@ -6,19 +6,25 @@
 //! nothing needs a lock, and a test can drive it frame by frame.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::prelude::TalkResponse;
+use packets::agent::ingame::{GROUP_DESPAWN, GROUP_SPAWN};
+use packets::agent::prelude::{
+    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, SingleEntityDespawn,
+};
 use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
+use crate::movement;
+use crate::npc::Npc;
 use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
-use crate::store::{AccountId, Position, Store};
+use crate::sight;
+use crate::store::{AccountId, Changes, Character, Position, Store};
 use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
@@ -62,10 +68,31 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Player {
     pub session: SessionId,
-    pub name: String,
-    pub position: Position,
-    pub hp: u32,
-    pub mp: u32,
+    /// The character as the store keeps it, kept current while it is in the
+    /// world (its position, for one) and written back when it leaves.
+    pub character: Character,
+    /// World units per second, the model's.
+    pub walk_speed: f32,
+    pub run_speed: f32,
+    pub walk: Option<Walk>,
+}
+
+/// A walk in world coordinates (it may cross regions): from where, to where,
+/// and the steps it has taken so far.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Walk {
+    pub from: Point,
+    pub to: Point,
+    pub steps: u32,
+}
+
+/// A point in world units: region-local, or in world coordinates in a
+/// [`Walk`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// Where a session stands.
@@ -83,10 +110,12 @@ pub enum Phase {
     Closed,
 }
 
-/// What the gateway hands over for one login: whose it is, under which name.
+/// What the gateway hands over for one login: whose it is, under which name,
+/// and the account's characters, read where the password was checked.
 pub(crate) struct Ticket {
     pub account: AccountId,
     pub username: String,
+    pub characters: Vec<Character>,
 }
 
 struct Session {
@@ -95,6 +124,10 @@ struct Session {
     log: WireLog,
     /// The step the session connected in.
     since: u64,
+    /// The other characters' ids its client has been shown.
+    known: BTreeSet<u32>,
+    /// The account's characters, from its ticket on.
+    characters: Vec<Character>,
 }
 
 /// The original client sends the agent login right after the handshake, 0.05
@@ -108,6 +141,14 @@ pub struct World {
     sessions: BTreeMap<SessionId, Session>,
     /// Characters by unique id, from the join on.
     players: BTreeMap<u32, Player>,
+    /// NPCs by unique id, placed from the reference data at the start.
+    npcs: BTreeMap<u32, Npc>,
+    /// The NPCs of each region, for sight.
+    npcs_in: HashMap<u16, Vec<u32>>,
+    /// Rows of `npcpos.txt` that name no NPC model (`crate::npc`).
+    skipped_npc_rows: usize,
+    /// What the store has to write, in order (`take_commits`).
+    commits: Vec<Changes>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -117,29 +158,79 @@ pub struct World {
 
 impl World {
     pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
-        World {
+        let placed = refdata.npcs().to_vec();
+        let mut world = World {
             store,
             refdata,
             sessions: BTreeMap::new(),
             players: BTreeMap::new(),
+            npcs: BTreeMap::new(),
+            npcs_in: HashMap::new(),
+            skipped_npc_rows: 0,
+            commits: Vec::new(),
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
             step: 0,
             events: Vec::new(),
+        };
+        for row in placed {
+            let Ok(ref_id) = u32::try_from(row.ref_id) else {
+                continue;
+            };
+            if !world.refdata.is_npc(ref_id) {
+                world.skipped_npc_rows += 1;
+                continue;
+            }
+            let position = Position {
+                region: row.region,
+                x: row.x,
+                y: row.y,
+                z: row.z,
+                heading: 0,
+            };
+            let uid = world.next_uid();
+            world.npcs_in.entry(row.region).or_default().push(uid);
+            world.npcs.insert(uid, Npc { ref_id, position });
         }
+        world
+    }
+
+    /// Rows of `npcpos.txt` that were not placed (`crate::npc`).
+    pub fn skipped_npc_rows(&self) -> usize {
+        self.skipped_npc_rows
+    }
+
+    pub fn npc(&self, uid: u32) -> Option<&Npc> {
+        self.npcs.get(&uid)
+    }
+
+    pub fn npcs(&self) -> impl Iterator<Item = (u32, &Npc)> {
+        self.npcs.iter().map(|(uid, npc)| (*uid, npc))
+    }
+
+    /// The NPCs standing in `region`.
+    pub(crate) fn npcs_in(&self, region: u16) -> &[u32] {
+        self.npcs_in.get(&region).map_or(&[], Vec::as_slice)
     }
 
     /// Let `account` in after the gateway checked its password: the returned
     /// token is good for one login as `username`. `None` while the account has
-    /// a session on the agent.
-    pub fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
+    /// a session on the agent. The caller reads the account's `characters`
+    /// from the store, so the step never waits for it.
+    pub fn admit(
+        &mut self,
+        account: AccountId,
+        username: &str,
+        characters: Vec<Character>,
+    ) -> Option<u32> {
         if self.connected(account) {
             return None;
         }
         let ticket = Ticket {
             account,
             username: username.to_owned(),
+            characters,
         };
         loop {
             let token = OsRng.next_u32();
@@ -158,14 +249,40 @@ impl World {
             outbox: Outbox::default(),
             log: WireLog::open("agent"),
             since: self.step,
+            known: BTreeSet::new(),
+            characters: Vec::new(),
         };
         self.sessions.insert(id, session);
         id
     }
 
+    /// The session ends; whoever was shown its character is told it left,
+    /// and the character as it left is due to the store.
     pub fn disconnect(&mut self, session: SessionId) {
         self.sessions.remove(&session);
-        self.players.retain(|_, player| player.session != session);
+        let gone: Vec<u32> = self
+            .players
+            .iter()
+            .filter(|(_, player)| player.session == session)
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in gone {
+            let Some(player) = self.players.remove(&uid) else {
+                continue;
+            };
+            self.commits.push(Changes {
+                characters: vec![player.character],
+            });
+            for observer in self.observers(uid) {
+                self.hide(observer, uid);
+            }
+        }
+    }
+
+    /// What the store has to write, oldest first. The runtime hands it to the
+    /// storage thread, so the step never waits for the store.
+    pub fn take_commits(&mut self) -> Vec<Changes> {
+        std::mem::take(&mut self.commits)
     }
 
     /// One client frame, as the transport cut it out of the stream.
@@ -198,7 +315,6 @@ impl World {
                     self.events.push(reject(reason));
                 }
             }
-            (Ok(_), Some(Handling::Silent)) => {}
             (Ok(_), None) => self.events.push(reject(Reason::NotHandled)),
             (Err(rejected), _) => self.events.push(reject(reason_of(rejected))),
         }
@@ -207,10 +323,23 @@ impl World {
     /// Queue `packet` for `session`. A session that cannot take it any more is
     /// cut off and reported.
     pub fn send(&mut self, session: SessionId, packet: Packet) {
+        let (opcode, body) = packet.into_serialize();
+        self.push(session, opcode, body);
+    }
+
+    /// Queue `packet` for every session in `sessions`, encoded once: the
+    /// sessions share its bytes.
+    pub(crate) fn broadcast(&mut self, sessions: &[SessionId], packet: Packet) {
+        let (opcode, body) = packet.into_serialize();
+        for session in sessions {
+            self.push(*session, opcode, body.clone());
+        }
+    }
+
+    fn push(&mut self, session: SessionId, opcode: u16, body: Bytes) {
         let Some(s) = self.sessions.get_mut(&session) else {
             return;
         };
-        let (opcode, body) = packet.into_serialize();
         s.log.record(Dir::S2c, opcode, &body);
         if s.outbox.push(Frame { opcode, body }).is_err() {
             self.sessions.remove(&session);
@@ -218,9 +347,111 @@ impl World {
         }
     }
 
+    /// Shows the character `uid` to `session` with `spawn`, unless its client
+    /// knows it already: a second spawn of an id it knows asserts in the
+    /// original client, and so does any frame about one it does not
+    /// [V original handler].
+    pub(crate) fn show(&mut self, session: SessionId, uid: u32, spawn: Packet) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        if s.known.insert(uid) {
+            self.send(session, spawn);
+        }
+    }
+
+    /// Shows `session` the entities of `records` (uid and spawn record) that
+    /// its client does not know yet, as one group (0x3017, 0x3019, 0x3018).
+    pub(crate) fn show_group(&mut self, session: SessionId, records: Vec<(u32, Bytes)>) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let new: Vec<Bytes> = records
+            .into_iter()
+            .filter(|(uid, _)| s.known.insert(*uid))
+            .map(|(_, record)| record)
+            .collect();
+        self.group(session, GROUP_SPAWN, new.len(), new.concat());
+    }
+
+    /// Takes the entities `uids` back from `session`, those it was shown, as
+    /// one group.
+    pub(crate) fn hide_group(&mut self, session: SessionId, uids: Vec<u32>) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        let gone: Vec<u32> = uids.into_iter().filter(|uid| s.known.remove(uid)).collect();
+        let raw: Vec<u8> = gone.iter().flat_map(|uid| uid.to_le_bytes()).collect();
+        self.group(session, GROUP_DESPAWN, gone.len(), raw);
+    }
+
+    fn group(&mut self, session: SessionId, kind: u8, count: usize, raw: Vec<u8>) {
+        if count == 0 {
+            return;
+        }
+        let count = u16::try_from(count).expect("a group counts in u16");
+        let begin = GroupEntitySpawnBegin { kind, count };
+        self.send(session, Packet::GroupEntitySpawnBegin(begin));
+        let data = GroupEntitySpawnData { raw: raw.into() };
+        self.send(session, Packet::GroupEntitySpawnData(data));
+        self.send(session, Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
+    }
+
+    /// The entities `session`'s client was shown that are NPCs.
+    pub(crate) fn shown_npcs(&self, session: SessionId) -> Vec<u32> {
+        self.sessions.get(&session).map_or(Vec::new(), |s| {
+            s.known
+                .iter()
+                .filter(|uid| self.npcs.contains_key(uid))
+                .copied()
+                .collect()
+        })
+    }
+
+    /// Whether `session`'s client was shown the character `uid`.
+    pub(crate) fn knows(&self, session: SessionId, uid: u32) -> bool {
+        self.sessions
+            .get(&session)
+            .is_some_and(|s| s.known.contains(&uid))
+    }
+
+    /// Takes the character `uid` back from `session` (0x3016), if it was shown.
+    pub(crate) fn hide(&mut self, session: SessionId, uid: u32) {
+        let Some(s) = self.sessions.get_mut(&session) else {
+            return;
+        };
+        if s.known.remove(&uid) {
+            let gone = SingleEntityDespawn { unique_id: uid };
+            self.send(session, Packet::SingleEntityDespawn(gone));
+        }
+    }
+
+    /// The sessions whose clients know the character `uid`: its own and those
+    /// it was shown to.
+    pub(crate) fn observers(&self, uid: u32) -> Vec<SessionId> {
+        let own = self.players.get(&uid).map(|p| p.session);
+        let knows = |(id, s): (&SessionId, &Session)| s.known.contains(&uid) || Some(*id) == own;
+        self.sessions
+            .iter()
+            .filter(|e| knows(*e))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// Advance the world by one step of [`crate::tick::STEP`].
     pub fn step(&mut self) {
         self.step += 1;
+        let mut crossed = Vec::new();
+        for (uid, player) in &mut self.players {
+            let region = player.character.position.region;
+            movement::advance(player);
+            if player.character.position.region != region {
+                crossed.push(*uid);
+            }
+        }
+        for uid in crossed {
+            sight::update(self, uid);
+        }
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self
             .sessions
@@ -262,6 +493,19 @@ impl World {
         self.tickets.remove(&token)
     }
 
+    /// The characters of `session`'s account, as its ticket brought them.
+    pub(crate) fn characters(&self, session: SessionId) -> &[Character] {
+        self.sessions
+            .get(&session)
+            .map_or(&[], |s| s.characters.as_slice())
+    }
+
+    pub(crate) fn hold_characters(&mut self, session: SessionId, characters: Vec<Character>) {
+        if let Some(s) = self.sessions.get_mut(&session) {
+            s.characters = characters;
+        }
+    }
+
     pub(crate) fn store(&self) -> &dyn Store {
         self.store.as_ref()
     }
@@ -277,6 +521,10 @@ impl World {
 
     pub fn player(&self, uid: u32) -> Option<&Player> {
         self.players.get(&uid)
+    }
+
+    pub(crate) fn player_mut(&mut self, uid: u32) -> Option<&mut Player> {
+        self.players.get_mut(&uid)
     }
 
     pub(crate) fn add_player(&mut self, uid: u32, player: Player) {
@@ -324,14 +572,4 @@ pub(crate) fn reason_of(verdict: Verdict) -> Reason {
         Verdict::Unwired => Reason::UnknownOpcode,
         _ => Reason::DecodeError,
     }
-}
-
-/// 0x7046. This world holds no NPC yet, so every talk is refused.
-pub(crate) fn talk(_: &mut World, _: SessionId, _: Packet) -> Packet {
-    talk_refusal()
-}
-
-/// Code 0, which the client words as "invalid target" [V original handler].
-pub(crate) fn talk_refusal() -> Packet {
-    Packet::TalkResponse(TalkResponse::Failure(0))
 }

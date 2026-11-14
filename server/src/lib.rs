@@ -9,15 +9,21 @@
 //! drive the same world in-process, without sockets, one step at a time
 //! ([`tick`]).
 
+mod chat;
 pub mod clock;
+mod consignment;
 pub mod gateway;
 pub mod handshake;
 mod join;
 mod lobby;
+mod movement;
+pub mod npc;
 pub mod outbox;
+pub mod pg_store;
 pub mod refdata;
 pub mod registry;
 pub mod runtime;
+mod sight;
 pub mod store;
 pub mod tick;
 pub mod transport;
