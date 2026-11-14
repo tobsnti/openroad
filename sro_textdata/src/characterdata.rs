@@ -93,6 +93,9 @@ enum ChardataFields {
     // the summon *item*'s icon does not reach the laddered growth stages,
     // which have no 1:1 item.
     AssocFileIcon = 54,
+    // RefObjCommon AssocFile1_128, the fourth of that run; see
+    // [`CharacterDataRow::fortress`].
+    AssocFile1 = 55,
     // RefObjChar tail (after the shared RefObjCommon columns): Lvl(57),
     // CharGender(58), MaxHP(59). Verified against Media.pk2 characterdata:
     // MOB_CH_MANGNYANG lvl 1 / 54 HP, MOB_CH_TIGERWOMAN lvl 20 / 598720 HP,
@@ -332,6 +335,16 @@ impl CharacterDataRow {
         }
     }
 
+    /// The fortress the row belongs to. On an NPC row (TID 1/2/2) and a TID1 4
+    /// row the original client reads `AssocFile1_128` as a fortress codename
+    /// and looks it up in `siegefortress.txt` (`crate::siegefortress`)
+    /// [V original handler]: `FORTRESS_JANGAN` on the Jangan smith. `None` for
+    /// `xxx`.
+    pub fn fortress(&self) -> Option<&str> {
+        let name = self.0.get(ChardataFields::AssocFile1 as usize)?.trim();
+        (name != "xxx").then_some(name)
+    }
+
     /// RefObjChar `Speed1` — walk speed in world units/s, `None` when missing.
     pub fn walk_speed(&self) -> Option<f32> {
         let speed: f32 = self.0.get(ChardataFields::Speed1 as usize)?.parse().ok()?;
@@ -383,6 +396,18 @@ impl CharacterDataRow {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn the_fortress_is_column_55_unless_it_reads_xxx() {
+        let row = |value: &str| {
+            let mut fields = vec![String::new(); 56];
+            fields[55] = value.to_string();
+            CharacterDataRow(fields)
+        };
+        assert_eq!(row("FORTRESS_JANGAN").fortress(), Some("FORTRESS_JANGAN"));
+        assert_eq!(row("xxx").fortress(), None);
+        assert_eq!(CharacterDataRow(vec![String::new(); 3]).fortress(), None);
+    }
 
     fn typed_row(tid: (u32, u32, u32, u32)) -> CharacterDataRow {
         let mut fields = vec![String::new(); 53];
