@@ -80,10 +80,14 @@ pub enum SpawnKind {
     /// A dropped item; `amount` is the gold pile size (gold only). `name` is
     /// the name an item of TypeID 3/3/8 or 3/3/9 carries
     /// [V original handler]; the captured ones carry what looks like a
-    /// character's name [U].
+    /// character's name [U]. `opt_level` is the plus of a piece of
+    /// equipment, `owner` the unique id of whom the drop belongs to
+    /// [V original handler].
     Item {
         amount: Option<u32>,
         name: Option<String>,
+        opt_level: Option<u8>,
+        owner: Option<u32>,
     },
     /// A world structure (teleport gate building) — spawns as an invisible
     /// click anchor.
@@ -796,9 +800,9 @@ fn parse_item(
     gold: bool,
     named: bool,
 ) -> Option<SpawnedEntity> {
-    let (mut amount, mut name) = (None, None);
+    let (mut amount, mut name, mut opt_level) = (None, None, None);
     if equipment {
-        r.skip(1)?; // upgrade / opt level
+        opt_level = Some(r.u8()?);
     } else if named {
         name = Some(r.string()?);
     } else if gold {
@@ -807,9 +811,7 @@ fn parse_item(
     let unique_id = r.u32()?;
     let position = r.position()?;
     // owner: flag byte + optional owner id
-    if r.u8()? != 0 {
-        r.skip(4)?;
-    }
+    let owner = if r.u8()? != 0 { Some(r.u32()?) } else { None };
     // The drop's rarity class, kept rather than skipped: it is the only thing
     // on the wire that says whether the pile is a plain, a "blue" (magic-option)
     // or a Seal-grade drop. A ground drop carries NO item body — no opt level,
@@ -828,7 +830,12 @@ fn parse_item(
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
         interaction: None,
-        kind: SpawnKind::Item { amount, name },
+        kind: SpawnKind::Item {
+            amount,
+            name,
+            opt_level,
+            owner,
+        },
     })
 }
 
@@ -1219,7 +1226,9 @@ mod test {
                     0x161D0,
                     SpawnKind::Item {
                         amount: Some(95),
-                        name: None
+                        name: None,
+                        opt_level: None,
+                        owner: None,
                     }
                 ),
                 (0x1A0CA, SpawnKind::Monster { extra: None })
@@ -1262,12 +1271,50 @@ mod test {
             parsed.spawns[0].kind,
             SpawnKind::Item {
                 amount: Some(5000),
-                name: None
+                name: None,
+                opt_level: None,
+                owner: Some(4),
             }
         );
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
+    }
+
+    /// A dropped piece of equipment keeps its plus and its owner.
+    #[test]
+    fn an_equipment_drop_keeps_its_plus_and_its_owner() {
+        const SWORD: u32 = 3632;
+        let res = resolver(&[(
+            SWORD,
+            RefType::Item {
+                equipment: true,
+                gold: false,
+                named: false,
+            },
+        )]);
+        let body = Body::default()
+            .u32(SWORD)
+            .u8(5) // +5
+            .u32(88) // unique id
+            .u16(0x60A8)
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0) // position
+            .u8(1) // an owner
+            .u32(0x1234)
+            .u8(2) // rarity
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let sword = SpawnKind::Item {
+            amount: None,
+            name: None,
+            opt_level: Some(5),
+            owner: Some(0x1234),
+        };
+        assert_eq!(parsed.spawns[0].kind, sword);
     }
 
     /// An item of TypeID 3/3/8 or 3/3/9 names someone between its ref and its
@@ -1302,6 +1349,8 @@ mod test {
         let named = SpawnKind::Item {
             amount: None,
             name: Some("Someone".to_owned()),
+            opt_level: None,
+            owner: None,
         };
         assert_eq!(parsed.spawns[0].kind, named);
     }
