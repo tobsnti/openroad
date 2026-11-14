@@ -36,6 +36,7 @@ use crate::assets::textdata::worldmap::WorldMapTable;
 use crate::assets::textdata::zonenames::ZoneNames;
 use crate::assets::textdata::zonesound::{ZoneSound, ZoneSoundTable};
 use crate::assets::textdata::Textdata;
+use crate::net::entity_spawn::{RefResolver, RefType};
 use crate::scenes::SceneState;
 
 #[derive(Default)]
@@ -115,9 +116,8 @@ impl ClientItemData {
 }
 
 /// Lets the packets crate resolve an item's class from the client-held
-/// itemdata (same mapping as `net::entity_spawn::TextdataResolver`), so
-/// resolver-driven item parsing (inventory pickups) works with just the item
-/// table.
+/// itemdata, so resolver-driven item parsing (inventory pickups) works with
+/// just the item table; [`TextdataResolver`] hands its item lookups here.
 impl packets::agent::character_data::ItemClassResolver for ClientItemData {
     fn item_class(&self, ref_id: u32) -> packets::agent::character_data::ItemClass {
         use packets::agent::character_data::ItemClass;
@@ -127,6 +127,60 @@ impl packets::agent::character_data::ItemClassResolver for ClientItemData {
             Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
             _ => ItemClass::Unknown,
         }
+    }
+}
+
+/// [`RefResolver`] backed by the loaded characterdata/itemdata tables, plus
+/// the teleport table for gate buildings (whose refs live ONLY in
+/// teleportbuilding.txt — the Jangan dimensional gate, ref 2094, has no
+/// characterdata row and used to abort the whole spawn batch as `Unknown`).
+pub struct TextdataResolver<'a> {
+    pub char_data: &'a ClientCharacterData,
+    pub item_data: &'a ClientItemData,
+    pub teleport: &'a ClientTeleport,
+}
+
+impl RefResolver for TextdataResolver<'_> {
+    fn resolve(&self, ref_id: u32) -> RefType {
+        let id = ref_id as i32;
+        if let Some(item) = self.item_data.get(&id) {
+            return RefType::Item {
+                equipment: item.is_equipment(),
+                gold: item.is_gold(),
+            };
+        }
+        if let Some(ch) = self.char_data.get(&id) {
+            if ch.is_player() {
+                return RefType::Player;
+            }
+            if ch.is_monster() {
+                return RefType::Monster;
+            }
+            if let Some(kind) = ch.cos_kind() {
+                return RefType::Cos { kind };
+            }
+            // is_npc, plus any remaining uncategorized character-family row
+            // (quest clones 1/2/3/6..8, …), parses with the NPC record layout.
+            return RefType::Npc;
+        }
+        if self.teleport.is_gate_ref(id) {
+            return RefType::Structure;
+        }
+        RefType::Unknown
+    }
+
+    fn item_is_equipment(&self, ref_id: u32) -> bool {
+        self.item_data
+            .get(&(ref_id as i32))
+            .map(|i| i.is_equipment())
+            .unwrap_or(false)
+    }
+}
+
+/// The itemdata classification the 0x3013 parser in `packets` asks for.
+impl packets::agent::character_data::ItemClassResolver for TextdataResolver<'_> {
+    fn item_class(&self, ref_id: u32) -> packets::agent::character_data::ItemClass {
+        self.item_data.item_class(ref_id)
     }
 }
 

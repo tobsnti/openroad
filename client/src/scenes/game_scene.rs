@@ -35,7 +35,8 @@ use packets::hexdump;
 
 use crate::assets::bmt::sheen::ShineColor;
 use crate::net::connection::SilkroadConnection;
-use crate::net::entity_spawn::{parse_group_spawn, SpawnKind, SpawnedEntity, TextdataResolver};
+use crate::net::entity_spawn::{parse_group_spawn, SpawnKind, SpawnedEntity};
+use crate::net::log_spawn_notes;
 use crate::plugins::camera::{
     despawn_cinematic_camera, spawn_game_camera, CinematicCamera, CinematicCamera2, PlayerCamera,
 };
@@ -62,6 +63,7 @@ use crate::plugins::player::{
     spawn_player_character, Player, PlayerCommands, PlayerConfig, PlayerMoveOrder,
 };
 use crate::plugins::skills::EquippedWeapon;
+use crate::plugins::textdata::TextdataResolver;
 use crate::plugins::textdata::{
     ClientCharacterData, ClientItemData, ClientRareEffects, ClientTextNames, ClientUiStrings,
 };
@@ -1219,6 +1221,7 @@ fn on_group_spawn(
                     teleport: &teleport,
                 };
                 let parsed = parse_group_spawn(&data.raw, spawning, count, &resolver);
+                log_spawn_notes(&parsed);
                 info!(
                     "network: group {} — {} spawns, {} despawns",
                     if spawning { "spawn" } else { "despawn" },
@@ -1300,6 +1303,7 @@ fn on_single_spawn(
             teleport: &teleport,
         };
         let parsed = parse_group_spawn(&msg.raw, true, 1, &resolver);
+        log_spawn_notes(&parsed);
         if parsed.spawns.is_empty() {
             // unknown ref id or a record-layout mismatch — keep the evidence
             warn!(
