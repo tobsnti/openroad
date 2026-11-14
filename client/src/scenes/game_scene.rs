@@ -1464,6 +1464,7 @@ fn spawn_remote_entity(
         SpawnKind::Player {
             equipment,
             riding_uid,
+            ..
         } => {
             let Some(row) = char_data.get(&(entity.ref_id as i32)) else {
                 warn!(

@@ -46,6 +46,10 @@ pub enum SpawnKind {
     Player {
         equipment: Vec<(u32, u8)>,
         riding_uid: Option<u32>,
+        mask: Option<Mask>,
+        /// Read when the interact mode is 4 [V original handler]: the stall's
+        /// title and a u32 [U].
+        stall: Option<(String, u32)>,
     },
     Npc,
     /// A monster; `extra` is the byte the original client reads after the
@@ -74,6 +78,14 @@ pub enum SpawnKind {
     /// A world structure (teleport gate building) — spawns as an invisible
     /// click anchor.
     Structure,
+}
+
+/// The mask a player wears [V original handler]: its ref id and, when the
+/// mask is a player model, a byte and a list of u32 values, meanings [U].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mask {
+    pub ref_id: u32,
+    pub model: Option<(u8, Vec<u32>)>,
 }
 
 /// One entity to spawn.
@@ -518,6 +530,8 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
     })
 }
 
+/// A player record. A player in a job suit takes another path in the original
+/// client, which is not known [U]; it is read like any other here.
 fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Option<SpawnedEntity> {
     // scale, hwan_level, pvp_cape, auto_invest_xp, base_inventory_size
     r.skip(5)?;
@@ -525,7 +539,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     read_item_list(r, resolver, &mut equipment)?; // inventory (equipped gear)
     let _avatar_slots = r.u8()?;
     read_item_list(r, resolver, &mut equipment)?; // avatar items
-    let _has_mask = r.u8()?;
+    let mask = read_mask(r, resolver)?;
 
     let unique_id = r.u32()?;
     let position = r.position()?;
@@ -537,13 +551,20 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
     // A mounted player inserts its COS's unique id between the riding and
     // scroll flags ([S] xBot PacketParser.cs:744-747; the old flat skip(8)
     // desynced the batch by 4 bytes whenever a rider was in view).
-    let riding = r.u8()? != 0;
+    // The original reads the COS id for a riding byte of 1 only.
+    let riding = r.u8()? == 1;
     let _in_combat = r.u8()?;
     let riding_uid = if riding { Some(r.u32()?) } else { None };
-    // scroll, interact, unk
-    r.skip(3)?;
+    let _scroll = r.u8()?;
+    let interact_mode = r.u8()?;
+    let _unk = r.u8()?;
     // guildless players send an empty name here, not an absent block
     let guild = r.guild()?;
+    let stall = if interact_mode == 4 {
+        Some((r.string()?, r.u32()?))
+    } else {
+        None
+    };
     // equipment_cooldown, pk_flag(0xFF)
     r.skip(2)?;
 
@@ -560,6 +581,8 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         kind: SpawnKind::Player {
             equipment,
             riding_uid,
+            mask,
+            stall,
         },
     })
 }
@@ -568,6 +591,23 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
 /// `(ref id, opt level)` to `out`. Equipment items carry a trailing
 /// enhancement (+N opt) byte; non-equipment (avatar attachments without
 /// one) records 0.
+/// The mask flag and, when it is set, the [`Mask`].
+fn read_mask(r: &mut Reader, resolver: &impl RefResolver) -> Option<Option<Mask>> {
+    if r.u8()? == 0 {
+        return Some(None);
+    }
+    let ref_id = r.u32()?;
+    let model = if resolver.resolve(ref_id) == RefType::Player {
+        let byte = r.u8()?;
+        let count = r.u8()?;
+        let values = (0..count).map(|_| r.u32()).collect::<Option<Vec<_>>>()?;
+        Some((byte, values))
+    } else {
+        None
+    };
+    Some(Some(Mask { ref_id, model }))
+}
+
 fn read_item_list(
     r: &mut Reader,
     resolver: &impl RefResolver,
@@ -910,6 +950,8 @@ mod test {
                 // the sword's +3 opt byte is captured; non-equipment has none
                 equipment: vec![(SWORD, 3), (NECKLACE, 0)],
                 riding_uid: None,
+                mask: None,
+                stall: None,
             }
         );
         let state = e.state.as_ref().expect("characters carry a state block");
@@ -1617,8 +1659,60 @@ mod test {
             SpawnKind::Player {
                 equipment: vec![],
                 riding_uid: Some(4711),
+                mask: None,
+                stall: None,
             }
         );
+        assert_eq!(parsed.spawns[1].unique_id, 99);
+    }
+
+    /// A masked player in a stall carries both blocks the original reads for
+    /// them; a follower record proves the boundary.
+    #[test]
+    fn a_masked_player_in_a_stall_reads_both_blocks() {
+        const PLAYER_REF: u32 = 1907;
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(PLAYER_REF, RefType::Player), (NPC_REF, RefType::Npc)]);
+        let mut body = Body::default()
+            .u32(PLAYER_REF)
+            .raw(&[0u8; 5])
+            .u8(0) // no equipment
+            .u8(0) // the byte between the item lists
+            .u8(0) // no avatar items
+            .u8(1) // a mask
+            .u32(PLAYER_REF) // that is a player model
+            .u8(3)
+            .u8(2)
+            .u32(10)
+            .u32(20)
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Seller")
+            .raw(&[0, 1, 0xFF]) // job type, job level, pk state
+            .u8(0) // not riding
+            .u8(0) // in combat
+            .raw(&[0, 4, 0]) // scroll, interact mode 4, unk
+            .string("") // guild block
+            .u32(0)
+            .string("")
+            .raw(&[0u8; 14])
+            .string("Cheap") // stall
+            .u32(77)
+            .u8(0)
+            .u8(0xFF)
+            .0;
+        body.extend_from_slice(&follower_npc(Body::default(), NPC_REF, 99).0);
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let SpawnKind::Player { mask, stall, .. } = &parsed.spawns[0].kind else {
+            panic!("a player");
+        };
+        let worn = Mask {
+            ref_id: PLAYER_REF,
+            model: Some((3, vec![10, 20])),
+        };
+        let title = ("Cheap".to_owned(), 77);
+        assert_eq!((mask.as_ref(), stall.as_ref()), (Some(&worn), Some(&title)));
         assert_eq!(parsed.spawns[1].unique_id, 99);
     }
 
