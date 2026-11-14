@@ -43,7 +43,7 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
     let Some(Phase::Lobby(account)) = world.phase(session) else {
         return Err(Reason::NotHandled);
     };
-    let characters = world.store().characters(account);
+    let characters = world.characters(session).to_vec();
     let Some(character) = characters.iter().find(|c| c.name == request.character_name) else {
         world.send(session, refusal(NOT_THE_ACCOUNTS));
         return Ok(());
@@ -100,10 +100,13 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
         return Err(Reason::NotHandled);
     };
     world.enter(session, Phase::Game { account, uid });
-    let name = world.player(uid).map(|p| p.name.clone());
-    let characters = world.store().characters(account);
-    if let Some(c) = characters.iter().find(|c| Some(&c.name) == name.as_ref()) {
-        world.send(session, Packet::CharacterStatsUpdate(values(c)));
+    let name = world.player(uid).map(|p| p.name.as_str());
+    let character = world
+        .characters(session)
+        .iter()
+        .find(|c| Some(c.name.as_str()) == name);
+    if let Some(values) = character.map(values) {
+        world.send(session, Packet::CharacterStatsUpdate(values));
     }
     sight::update(world, uid);
     world.report(Event::Joined { session, uid });

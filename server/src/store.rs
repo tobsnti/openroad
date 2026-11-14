@@ -1,10 +1,11 @@
 //! What outlives a session, behind one seam (ADR 0013 §7).
 //!
 //! Accounts and characters are read through [`Store`]: [`MemoryStore`] for
-//! tests, a Postgres store later, which is then queried off the simulation
-//! step. Passwords exist only as argon2id hashes. Checking one costs tens of
-//! milliseconds by design, so [`login`] belongs where the gateway checks a
-//! password, never in a step.
+//! tests, a Postgres store later. The simulation step never reads the store:
+//! the gateway reads an account's characters where it checks the password,
+//! and they travel with the ticket (`World::admit`). Passwords exist only as
+//! argon2id hashes. Checking one costs tens of milliseconds by design, so
+//! [`login`] belongs where the gateway checks a password, never in a step.
 
 use argon2::password_hash::{PasswordHash, SaltString};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};

@@ -7,7 +7,7 @@ use bytes::Bytes;
 use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, MovementRequest};
 use packets::Packet;
 use server::refdata::RefData;
-use server::store::{login, Character, MemoryStore, Position};
+use server::store::{login, Character, MemoryStore, Position, Store};
 use server::world::{Phase, SessionId, World};
 
 const REGION: u16 = 25000;
@@ -69,7 +69,9 @@ fn enter(
     name: &str,
 ) -> (SessionId, u32) {
     let account = login(store.as_ref(), user, user).unwrap();
-    let token = world.admit(account, user).unwrap();
+    let token = world
+        .admit(account, user, store.characters(account))
+        .unwrap();
     let s = world.connect();
     let login = AgentLoginRequest {
         token,

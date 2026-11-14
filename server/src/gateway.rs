@@ -61,7 +61,8 @@ impl Shard for World {
     }
 
     fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
-        World::admit(self, account, username)
+        let characters = self.store().characters(account);
+        World::admit(self, account, username, characters)
     }
 }
 

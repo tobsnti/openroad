@@ -9,7 +9,7 @@ use packets::agent::prelude::*;
 use packets::global::{KeepAlive, ModuleIdentification};
 use packets::Packet;
 use server::refdata::RefData;
-use server::store::{login, Character, MemoryStore, Position};
+use server::store::{login, AccountId, Character, MemoryStore, Position};
 use server::world::{Event, Phase, Reason, SessionId, World};
 
 fn hero() -> Character {
@@ -59,7 +59,9 @@ fn admitted() -> (World, u32) {
     let mut refdata = RefData::default();
     refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
     let mut world = World::new(Arc::new(store), refdata);
-    let ticket = world.admit(account, "admin").expect("no agent session yet");
+    let ticket = world
+        .admit(account, "admin", vec![hero()])
+        .expect("no agent session yet");
     (world, ticket)
 }
 
@@ -310,4 +312,26 @@ fn the_consignment_listing_is_empty() {
     frames(&mut world, s);
     world.receive(s, 0x750E, Bytes::new());
     assert_eq!(frames(&mut world, s), [(0xB50E, vec![0x01, 0x00])]);
+}
+
+/// The step does not read the store: the lobby lists, and the join finds, the
+/// characters the ticket brought. Here the store has none.
+#[test]
+fn the_lobby_and_the_join_use_the_characters_of_the_ticket() {
+    let mut refdata = RefData::default();
+    refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
+    let mut world = World::new(Arc::new(MemoryStore::default()), refdata);
+    let ticket = world.admit(AccountId(1), "admin", vec![hero()]).unwrap();
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    frames(&mut world, s);
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    let listed = frames(&mut world, s);
+    let name = b"\x04\x00Hero";
+    assert!(
+        listed[0].1.windows(name.len()).any(|w| w == name),
+        "{listed:?}"
+    );
+    join(&mut world, s, "Hero");
+    assert_eq!(frames(&mut world, s)[0], (0xB001, vec![0x01]));
 }
