@@ -4,11 +4,13 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, MovementRequest};
+use packets::agent::prelude::{
+    AgentLoginRequest, CharacterJoinRequest, ChatRequest, MovementRequest,
+};
 use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position, Store};
-use server::world::{Phase, SessionId, World};
+use server::world::{Event, Phase, Reason, SessionId, World};
 
 const REGION: u16 = 25000;
 
@@ -257,4 +259,54 @@ fn a_character_that_leaves_is_taken_back_once() {
     );
     shard.0.disconnect(b);
     assert!(opcodes(&mut shard.0, a).is_empty());
+}
+
+/// A line said in the local channel reaches the speaker and whoever sees it,
+/// as 0x3026 with the speaker's id, and the speaker then gets the
+/// acknowledgement with its index; a character out of sight hears nothing,
+/// and a whisper is not handled yet.
+#[test]
+fn a_line_said_is_heard_by_whoever_sees_the_speaker() {
+    let mut shard = world();
+    let (a, hero) = enter(&mut shard, "a", "Hero");
+    let (b, _) = enter(&mut shard, "b", "Kiro");
+    let (c, _) = enter(&mut shard, "c", "Far");
+    for s in [a, b, c] {
+        opcodes(&mut shard.0, s);
+    }
+    let hallo = ChatRequest {
+        chat_type: 1,
+        chat_index: 5,
+        receiver: None,
+        message: "Hallo".to_owned(),
+    };
+    send(&mut shard.0, a, Packet::ChatRequest(hallo));
+    let mut line = vec![0x01];
+    line.extend(hero.to_le_bytes());
+    line.extend(b"\x05\x00Hallo");
+    let heard = (0x3026, Bytes::from(line));
+    let ack = (0xB025, Bytes::from_static(&[0x01, 0x01, 0x05]));
+    assert_eq!(opcodes(&mut shard.0, a), [heard.clone(), ack]);
+    assert_eq!(opcodes(&mut shard.0, b), [heard]);
+    assert!(opcodes(&mut shard.0, c).is_empty());
+
+    let whisper = ChatRequest {
+        chat_type: 2,
+        chat_index: 6,
+        receiver: Some("Kiro".to_owned()),
+        message: "psst".to_owned(),
+    };
+    send(&mut shard.0, a, Packet::ChatRequest(whisper));
+    assert!(opcodes(&mut shard.0, b).is_empty());
+    let rejected = shard.0.take_events().into_iter().any(|e| {
+        matches!(
+            e,
+            Event::Rejected {
+                opcode: 0x7025,
+                reason: Reason::NotHandled,
+                ..
+            }
+        )
+    });
+    assert!(rejected);
 }
