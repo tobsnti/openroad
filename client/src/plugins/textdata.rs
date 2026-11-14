@@ -36,8 +36,8 @@ use crate::assets::textdata::worldmap::WorldMapTable;
 use crate::assets::textdata::zonenames::ZoneNames;
 use crate::assets::textdata::zonesound::{ZoneSound, ZoneSoundTable};
 use crate::assets::textdata::Textdata;
-use crate::net::entity_spawn::{RefResolver, RefType};
 use crate::scenes::SceneState;
+use packets::agent::entity_spawn::{RefResolver, RefType};
 
 #[derive(Default)]
 pub struct TextdataPlugin;

@@ -1,13 +1,14 @@
-//! Bounds-checked little-endian reader for the client-side decoding of the
-//! group-spawn payload (0x3019), whose records need the itemdata/characterdata
-//! tables to select their layout (see `entity_spawn.rs`). The wire-block
-//! shapes themselves (position, character state) are defined in
-//! `packets::agent::character_data`; this reader just decodes them
+//! Bounds-checked little-endian reader for the decoding of the group-spawn
+//! payload (0x3019), whose records need the itemdata/characterdata tables to
+//! select their layout (see `entity_spawn.rs`). The wire-block shapes
+//! themselves (position, character state) are defined in
+//! `crate::agent::character_data`; this reader just decodes them
 //! `Option`-fashion so a malformed or truncated record fails safe (and keeps a
 //! byte offset for diagnostics) instead of erroring through `std::io`.
 
+use crate::agent::character_data::{ActiveBuff, EntityState, SpawnPosition};
+#[cfg(feature = "bevy")]
 use bevy::prelude::Component;
-use packets::agent::character_data::{ActiveBuff, EntityState, SpawnPosition};
 
 /// A player's guild affiliation, from the spawn record's guild block. Attached
 /// to the spawned entity so the nameplate can draw the guild line under the
@@ -15,7 +16,8 @@ use packets::agent::character_data::{ActiveBuff, EntityState, SpawnPosition};
 ///
 /// Only constructed for a **non-empty** guild name: guildless players are on
 /// the wire as an empty string, not as an absent block.
-#[derive(Component, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "bevy", derive(Component))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuildTag {
     pub name: String,
     /// The guild-granted nickname. Parsed and carried because the record

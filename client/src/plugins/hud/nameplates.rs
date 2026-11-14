@@ -19,7 +19,6 @@ use bevy::prelude::*;
 use bevy::ui::{UiTargetCamera, UiTransform, Val2};
 
 use crate::assets::FontAssets;
-use crate::net::reader::GuildTag;
 use crate::plugins::camera::PlayerCamera;
 use crate::plugins::config::nameplates::NameplateColors;
 use crate::plugins::cos::CosOwner;
@@ -32,6 +31,7 @@ use crate::plugins::net::stall::StallOwner;
 use crate::plugins::player::Player;
 use crate::plugins::settings::keymap::KEY_VIEW_DROP_ITEM;
 use crate::plugins::settings::options::GameOptions;
+use packets::agent::spawn_reader::GuildTag;
 
 /// Pooled nameplate nodes; labels beyond this many on screen at once are dropped.
 const POOL_SIZE: usize = 96;

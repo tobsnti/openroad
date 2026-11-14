@@ -3624,7 +3624,7 @@ empty_packet!(LogoutSuccess);
 // itemdata-dependent (a player's equipment list writes an extra byte only for
 // equipment items), the same reason `CharacterDataBody` is a raw passthrough, so
 // the data packet is carried unparsed and decoded in the client where itemdata
-// lives (see `client/src/net/entity_spawn.rs`).
+// lives (see `packets/src/agent/entity_spawn.rs`).
 
 /// [`GroupEntitySpawnBegin::kind`]: this batch adds entities.
 pub const GROUP_SPAWN: u8 = 1;
@@ -3644,7 +3644,7 @@ pub struct GroupEntitySpawnBegin {
 /// 0x3019 — the group spawn/despawn payload: `count` records (per
 /// [`GroupEntitySpawnBegin`]). For a spawn each record is a full entity; for a
 /// despawn each record is a bare `u32` unique id. Carried unparsed; the client
-/// decodes it with itemdata (see `client/src/net/entity_spawn.rs`).
+/// decodes it with itemdata (see `packets/src/agent/entity_spawn.rs`).
 #[derive(Message, Clone, Debug)]
 pub struct GroupEntitySpawnData {
     pub raw: Bytes,

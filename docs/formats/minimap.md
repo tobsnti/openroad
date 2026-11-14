@@ -98,7 +98,7 @@ RefObjCommon column 15 (`…, DecayTime(13), Country(14), Rarity(15), …`) is t
 rarity class: 0 normal, 1 champion, 3 unique, 4 giant. Verified:
 MOB_CH_TIGERWOMAN and MOB_OA_URUCHI carry 3, plain mobs 0. (The group-spawn
 packet also carries a per-spawn rarity byte after the monster record, still
-unverified — see `client/src/net/entity_spawn.rs`.)
+unverified — see `packets/src/agent/entity_spawn.rs`.)
 
 ## Dungeon tiles (`minimap_d`) — decoded (openroad, 2026-08-12)
 
