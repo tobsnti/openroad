@@ -16,6 +16,9 @@
 //! - `OPENROAD_TEXTDATA_DIR`: the user's textdata, for the reference data.
 //! - `BENCH_GATEWAY`, `BENCH_AGENT`: where to listen; the bench's ports
 //!   127.0.0.1:4011 and 4012 unless set.
+//! - `BENCH_AGENT_ADVERTISE`: the agent address the gateway tells clients
+//!   (0xA102), for a client that reaches the agent through a relay;
+//!   `BENCH_AGENT` unless set.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -65,7 +68,7 @@ fn run() -> Result<(), String> {
 
     let agent_listen = listen_on("BENCH_AGENT", 4012)?;
     let config = Config {
-        gateway: gateway(agent_listen),
+        gateway: gateway(address_or("BENCH_AGENT_ADVERTISE", agent_listen)?),
         gateway_listen: listen_on("BENCH_GATEWAY", 4011)?,
         agent_listen,
         handshake: HANDSHAKE,
@@ -334,10 +337,15 @@ fn var(name: &str) -> Result<String, String> {
 }
 
 fn listen_on(name: &str, port: u16) -> Result<SocketAddr, String> {
+    address_or(name, SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+}
+
+/// The address in the variable `name`, or `default` when it is not set.
+fn address_or(name: &str, default: SocketAddr) -> Result<SocketAddr, String> {
     match std::env::var(name) {
         Ok(address) => address
             .parse()
             .map_err(|_| format!("{name} is not an address: {address}")),
-        Err(_) => Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, port))),
+        Err(_) => Ok(default),
     }
 }

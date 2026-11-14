@@ -37,8 +37,9 @@ pub const GATEWAY_IDLE: Duration = Duration::from_secs(30);
 
 pub struct Config {
     /// What the gateway tells clients. Its capacity also caps the connections
-    /// each listener holds at once, since every one binds threads; the agent
-    /// port it announces is the agent listener's.
+    /// each listener holds at once, since every one binds threads. It
+    /// announces its own agent address; an agent port of 0 announces the port
+    /// the agent listener got.
     pub gateway: Gateway,
     pub gateway_listen: SocketAddr,
     pub agent_listen: SocketAddr,
@@ -130,7 +131,9 @@ pub fn start(
         agent: agent_listener.local_addr()?,
         commands: commands.clone(),
     };
-    config.gateway.agent_port = running.agent.port();
+    if config.gateway.agent_port == 0 {
+        config.gateway.agent_port = running.agent.port();
+    }
     let cap = usize::from(config.gateway.capacity);
     let commits = store_writer(store.clone());
     thread::spawn(move || simulate(world, inbox, commits, report));
