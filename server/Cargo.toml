@@ -17,6 +17,10 @@ path = "src/main.rs"
 argon2 = { version = "0.5", features = ["std"] }
 bytes = { workspace = true }
 packets = { path = "../packets" }
+# The store in PostgreSQL. Synchronous like the rest of the server; against
+# sqlx without macros, half the crates (62) and half the cold build time
+# (measured 2026-11-14, both clean under cargo deny).
+postgres = { version = "0.19", default-features = false }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde_json = "1"
 sro_macro = { path = "../sro_macro" }
