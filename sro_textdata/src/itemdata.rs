@@ -1,14 +1,22 @@
+//! `itemdata_*.txt`: one row per item, keyed by its ref id. Shared by the
+//! client and the server (decision 0017 of the studio); the Bevy asset derive
+//! is behind the `bevy` feature, as for `characterdata`.
 //!
-//! `dead_code` is allowed module-wide: the module models a file format, and parts of it have no consumer in the client yet.
+//! `dead_code` is allowed module-wide: the module models a file format, and
+//! parts of it have no consumer yet.
+#![allow(dead_code)]
+#[cfg(feature = "bevy")]
 use bevy::asset::Asset;
+#[cfg(feature = "bevy")]
 use bevy::prelude::TypePath;
 use std::collections::HashMap;
 use std::ops::{Deref, Index};
 
 #[derive(Debug, Clone)]
-pub struct ItemDataRow(pub(crate) Vec<String>);
+pub struct ItemDataRow(pub Vec<String>);
 
-#[derive(Asset, TypePath, Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(Asset, TypePath))]
+#[derive(Debug, Clone)]
 pub struct ItemData(pub HashMap<i32, ItemDataRow>);
 
 impl ItemData {

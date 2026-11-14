@@ -5,5 +5,8 @@
 //! `bevy` feature, which only the client turns on.
 
 pub mod characterdata;
+pub mod itemdata;
 pub mod npcpos;
 pub mod siegefortress;
+pub mod spawn;
+pub mod teleportbuilding;

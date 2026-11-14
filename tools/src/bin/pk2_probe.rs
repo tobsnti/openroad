@@ -104,7 +104,7 @@ const FIELDS: &[Field] = &[
     },
     Field {
         name: "itemdata.TypeId1",
-        cite: "client/src/assets/textdata/itemdata.rs:16 (col 9)",
+        cite: "sro_textdata/src/itemdata.rs:41 (col 9)",
         extract: Extract::TextColumn {
             file_stem: "itemdata",
             column: 9,
@@ -113,7 +113,7 @@ const FIELDS: &[Field] = &[
     },
     Field {
         name: "itemdata.TypeId2",
-        cite: "client/src/assets/textdata/itemdata.rs:17 (col 10)",
+        cite: "sro_textdata/src/itemdata.rs:42 (col 10)",
         extract: Extract::TextColumn {
             file_stem: "itemdata",
             column: 10,
@@ -122,7 +122,7 @@ const FIELDS: &[Field] = &[
     },
     Field {
         name: "itemdata.TypeId3",
-        cite: "client/src/assets/textdata/itemdata.rs:18 (col 11)",
+        cite: "sro_textdata/src/itemdata.rs:43 (col 11)",
         extract: Extract::TextColumn {
             file_stem: "itemdata",
             column: 11,
@@ -131,7 +131,7 @@ const FIELDS: &[Field] = &[
     },
     Field {
         name: "itemdata.TypeId4",
-        cite: "client/src/assets/textdata/itemdata.rs:19 (col 12)",
+        cite: "sro_textdata/src/itemdata.rs:44 (col 12)",
         extract: Extract::TextColumn {
             file_stem: "itemdata",
             column: 12,

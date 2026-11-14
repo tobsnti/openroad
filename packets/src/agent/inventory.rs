@@ -402,7 +402,7 @@ pub enum ItemUseRequest {
     /// user or a world entity: COS revive ("Grass of life", TID `3,3,1,6`),
     /// rent extension, reinforce, pet helper, nasrun extension
     /// (`3,3,13,{8,11,12,15,16}`). See
-    /// [`ItemDataRow::needs_target_slot`](../../../client/src/assets/textdata/itemdata.rs).
+    /// [`ItemDataRow::needs_target_slot`](../../../sro_textdata/src/itemdata.rs).
     ///
     /// ⚠️ **`[U]` — the tail is spec-derived, not recovered.** `u8 targetSlot`
     /// comes from Hyperbot's TID table (`docs/re/notes/item-use.md:78-92`),

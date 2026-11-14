@@ -393,7 +393,7 @@ fn play_repair_sound(
 /// keys the same classes by `TypeID4` numbers. Nothing in the shipped data
 /// joins the two — the join lives in the original's code. What *is* already
 /// committed here is the `TypeID4` legend of the weapon classes
-/// (`assets/textdata/itemdata.rs:318-330`, itself derived from the animation
+/// (`sro_textdata/src/itemdata.rs:442-454`, itself derived from the animation
 /// group names in the `.bsr` resources), so this maps legend name to the
 /// table's own spelling of the same class and goes no further: armour,
 /// accessories and the non-weapon rows (`HELM`, `RING`, `POTION`, …) are
