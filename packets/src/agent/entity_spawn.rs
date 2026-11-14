@@ -184,6 +184,9 @@ pub struct GroupSpawnParse {
     pub unresolved: Vec<u32>,
     /// What the parse could not act on, in order, for the caller to log.
     pub notes: Vec<SpawnNote>,
+    /// Where the reading stopped: the payload's length when every record was
+    /// read and no byte is left over.
+    pub end: usize,
 }
 
 /// A batch the parser did not read to its end, or a record it skipped. The
@@ -341,6 +344,7 @@ pub fn parse_group_spawn(
                 }
             }
         }
+        out.end = r.pos();
         return out;
     }
 
@@ -403,6 +407,7 @@ pub fn parse_group_spawn(
         }
         i += 1;
     }
+    out.end = r.pos();
     out
 }
 
