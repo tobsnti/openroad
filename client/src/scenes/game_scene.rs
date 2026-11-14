@@ -1526,7 +1526,7 @@ fn spawn_remote_entity(
                 equipment.iter().chain(avatar).copied(),
             );
         }
-        SpawnKind::Structure => {
+        SpawnKind::Structure { .. } => {
             // Teleport gate buildings have no characterdata rows (their
             // visuals are static map objects) but spawn as interactable
             // entities: create an invisible click anchor so the stone opens
@@ -1656,6 +1656,7 @@ fn spawn_remote_entity(
             pet_name,
             owner_name,
             owner_uid,
+            ..
         } => {
             if crate::plugins::cos::spawn::spawn_cos_entity(
                 commands,

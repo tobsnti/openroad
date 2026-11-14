@@ -75,6 +75,11 @@ pub enum SpawnKind {
         kind: CosKind,
         pet_name: Option<String>,
         owner_name: Option<String>,
+        /// The owner tail between the owner's name and `owner_uid`, by
+        /// position [U]: a byte, a second one except for a pick pet, and a
+        /// u32 for a Fellow. xBot's `PacketParser.cs:791-807` calls them job
+        /// type, PVP state and owner object id.
+        owner_bytes: Option<(u8, Option<u8>, Option<u32>)>,
         owner_uid: Option<u32>,
     },
     /// A dropped item; `amount` is the gold pile size (gold only). `name` is
@@ -90,8 +95,10 @@ pub enum SpawnKind {
         owner: Option<u32>,
     },
     /// A world structure (teleport gate building) — spawns as an invisible
-    /// click anchor.
-    Structure,
+    /// click anchor. `tail` is the record's last 12 bytes [U].
+    Structure {
+        tail: [u8; 12],
+    },
 }
 
 /// The bytes of a player record that the original client reads
@@ -546,12 +553,12 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
 /// `01 00 00 01 00 00 00 00 00 00 00 00` = ref 2094, uid 12, region 25000,
 /// (1254, -6, 1374), heading 0 — exactly the teleportbuilding.txt row's
 /// position. The tail's layout is unknown (no movement/state block fits in
-/// 12 bytes) and is skipped whole; the constant `01 00 00 01` prefix will
+/// 12 bytes) and is kept whole; the constant `01 00 00 01` prefix will
 /// flag any variant via the batch-abort diagnostics if other gates differ.
 fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip(12)?;
+    let tail = r.array()?;
     Some(SpawnedEntity {
         ref_id,
         unique_id,
@@ -563,7 +570,7 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
         spawn_rarity: None,
         talk_options: Vec::new(),
         interaction: None,
-        kind: SpawnKind::Structure,
+        kind: SpawnKind::Structure { tail },
     })
 }
 
@@ -747,19 +754,25 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
     let interaction = read_interaction(r, &mut talk_options)?;
     let mut pet_name = None;
     let mut owner_name = None;
+    let mut owner_bytes = None;
     let mut owner_uid = None;
     if kind != CosKind::Vehicle {
         if matches!(kind, CosKind::GrowthPet | CosKind::GrabPet) {
             pet_name = Some(r.string()?).filter(|n| !n.is_empty());
         }
         owner_name = Some(r.string()?).filter(|n| !n.is_empty());
-        let _job_type = r.u8()?;
-        if kind != CosKind::GrabPet {
-            let _pvp_state = r.u8()?;
-        }
-        if kind == CosKind::Fellow {
-            let _owner_obj_id = r.u32()?;
-        }
+        let first = r.u8()?;
+        let second = if kind != CosKind::GrabPet {
+            Some(r.u8()?)
+        } else {
+            None
+        };
+        let fellow = if kind == CosKind::Fellow {
+            Some(r.u32()?)
+        } else {
+            None
+        };
+        owner_bytes = Some((first, second, fellow));
         owner_uid = Some(r.u32()?);
     }
     Some(SpawnedEntity {
@@ -777,6 +790,7 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
             kind,
             pet_name,
             owner_name,
+            owner_bytes,
             owner_uid,
         },
     })
@@ -1507,7 +1521,12 @@ mod test {
             (gate.position.x, gate.position.y, gate.position.z),
             (1254.0, -6.0, 1374.0)
         );
-        assert_eq!(gate.kind, SpawnKind::Structure);
+        assert_eq!(
+            gate.kind,
+            SpawnKind::Structure {
+                tail: [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+            }
+        );
     }
 
     /// The shared NPC head of a COS record (uid + position/movement/state +
@@ -1553,6 +1572,7 @@ mod test {
                 kind: CosKind::Vehicle,
                 pet_name: None,
                 owner_name: None,
+                owner_bytes: None,
                 owner_uid: None,
             }
         );
@@ -1591,6 +1611,7 @@ mod test {
                 kind: CosKind::Transport,
                 pet_name: None,
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, Some(0xFF), None)),
                 owner_uid: Some(0x0102_0304),
             }
         );
@@ -1651,6 +1672,7 @@ mod test {
                 kind: CosKind::GrowthPet,
                 pet_name: Some("Rex".into()),
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, Some(0xFF), None)),
                 owner_uid: Some(1001),
             }
         );
@@ -1660,6 +1682,7 @@ mod test {
                 kind: CosKind::GrabPet,
                 pet_name: Some("Hoppel".into()),
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, None, None)),
                 owner_uid: Some(1001),
             }
         );
@@ -1669,6 +1692,7 @@ mod test {
                 kind: CosKind::Fellow,
                 pet_name: None,
                 owner_name: Some("GuildMate".into()),
+                owner_bytes: Some((0, Some(0xFF), Some(777))),
                 owner_uid: Some(1002),
             }
         );
