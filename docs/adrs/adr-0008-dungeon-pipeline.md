@@ -56,7 +56,7 @@ index, not a sector coordinate, and interiors live in a local frame reaching
 - **Wire format**: absolute `SpawnPosition` blocks never change shape;
   movement *destination* triples switch u16 → i32 keyed by the entity's
   **current** position region (xBot/go-sro rule), implemented in
-  `EntityMovement::read_with_region` and `Reader::skip_movement(region)`.
+  `EntityMovement::read_with_region` and `Reader::movement(region)`.
   The `dest_region > 0` presence gate is kept (the third-party sources conflict
   over whether the read is unconditional; ours stays gated until a capture settles it).
 
