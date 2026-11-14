@@ -21,7 +21,7 @@
 //! guild crest and `"A%u_%u_%u.crb"` (VA 0xde177c, used at 0x9a4887) for an
 //! alliance crest — a session global we have not identified, then the id and
 //! the crest revision, which are the wire fields we already read in the
-//! entity-spawn tail (`client/src/net/reader.rs:163`: crest rev, union id,
+//! entity-spawn tail (`packets/src/agent/spawn_reader.rs:165`: crest rev, union id,
 //! union crest rev) and in `GuildPlayerLog`. The same function allocates
 //! 0x100 bytes for the pixel buffer (0x7983ea), which is where the 256 below
 //! comes from independently of the MIT tool. The consumers that still draw

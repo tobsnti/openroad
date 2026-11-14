@@ -24,6 +24,9 @@
 
 use std::collections::HashMap;
 
+use sro_textdata::teleportbuilding;
+pub use sro_textdata::teleportbuilding::GateBuilding;
+
 #[derive(Debug, Clone, Default)]
 pub struct TeleportTable {
     /// Owner (NPC/building) characterdata ref id → teleporter id.
@@ -56,14 +59,6 @@ pub struct TeleportInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct GateBuilding {
-    /// `STORE_CH_GATE`-style codename — the npcchat/speech lookup key.
-    pub codename: String,
-    /// `SN_NPC_*_GATE` display key.
-    pub name_key: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct TeleportLink {
     pub destination: u32,
     /// Minimum level, when the link declares one (type-1 rows, min > 0).
@@ -79,22 +74,10 @@ impl TeleportTable {
     /// `teleportlink.txt`: `service|source|dest|0…|type|min|max|…`
     /// `teleportbuilding.txt`: `service|ref id|codename|kr|xxx|name_strid|…`
     pub fn parse(data: &str, links: &str, buildings: &str) -> Self {
-        let mut table = TeleportTable::default();
-        for line in buildings.lines() {
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 6 || fields[0].trim_start_matches('\u{feff}') != "1" {
-                continue;
-            }
-            if let Ok(owner) = fields[1].parse::<i32>() {
-                table.buildings.insert(
-                    owner,
-                    GateBuilding {
-                        codename: fields[2].to_string(),
-                        name_key: fields[5].to_string(),
-                    },
-                );
-            }
-        }
+        let mut table = TeleportTable {
+            buildings: teleportbuilding::parse(buildings),
+            ..TeleportTable::default()
+        };
         for line in data.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
             if fields.len() < 9 || fields[0].trim_start_matches('\u{feff}') != "1" {

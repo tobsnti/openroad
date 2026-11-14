@@ -30,13 +30,15 @@ use crate::assets::textdata::shops::{ShopLayout, ShopTable};
 use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
 use crate::assets::textdata::skilleffect::{SkillEffectTable, SkillEntry};
 use crate::assets::textdata::skillgroup::SkillGroupTable;
-use crate::assets::textdata::teleport::{TeleportInfo, TeleportLink, TeleportTable};
+use crate::assets::textdata::teleport::{GateBuilding, TeleportInfo, TeleportLink, TeleportTable};
 use crate::assets::textdata::uisystem::UiSystemText;
 use crate::assets::textdata::worldmap::WorldMapTable;
 use crate::assets::textdata::zonenames::ZoneNames;
 use crate::assets::textdata::zonesound::{ZoneSound, ZoneSoundTable};
 use crate::assets::textdata::Textdata;
 use crate::scenes::SceneState;
+use packets::agent::entity_spawn::{RefResolver, RefType};
+use sro_textdata::spawn::SpawnTables;
 
 #[derive(Default)]
 pub struct TextdataPlugin;
@@ -115,9 +117,8 @@ impl ClientItemData {
 }
 
 /// Lets the packets crate resolve an item's class from the client-held
-/// itemdata (same mapping as `net::entity_spawn::TextdataResolver`), so
-/// resolver-driven item parsing (inventory pickups) works with just the item
-/// table.
+/// itemdata, so resolver-driven item parsing (inventory pickups) works with
+/// just the item table; [`TextdataResolver`] hands its item lookups here.
 impl packets::agent::character_data::ItemClassResolver for ClientItemData {
     fn item_class(&self, ref_id: u32) -> packets::agent::character_data::ItemClass {
         use packets::agent::character_data::ItemClass;
@@ -127,6 +128,41 @@ impl packets::agent::character_data::ItemClassResolver for ClientItemData {
             Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
             _ => ItemClass::Unknown,
         }
+    }
+}
+
+/// The client's resources as [`SpawnTables`], the one mapping from a ref id
+/// to its spawn record that the client and the server share.
+pub struct TextdataResolver<'a> {
+    pub char_data: &'a ClientCharacterData,
+    pub item_data: &'a ClientItemData,
+    pub teleport: &'a ClientTeleport,
+}
+
+impl TextdataResolver<'_> {
+    fn tables(&self) -> SpawnTables<'_> {
+        SpawnTables {
+            characters: self.char_data.data(),
+            items: self.item_data.data(),
+            gates: self.teleport.buildings(),
+        }
+    }
+}
+
+impl RefResolver for TextdataResolver<'_> {
+    fn resolve(&self, ref_id: u32) -> RefType {
+        self.tables().resolve(ref_id)
+    }
+
+    fn item_is_equipment(&self, ref_id: u32) -> bool {
+        self.tables().item_is_equipment(ref_id)
+    }
+}
+
+/// The itemdata classification the 0x3013 parser in `packets` asks for.
+impl packets::agent::character_data::ItemClassResolver for TextdataResolver<'_> {
+    fn item_class(&self, ref_id: u32) -> packets::agent::character_data::ItemClass {
+        self.item_data.item_class(ref_id)
     }
 }
 
@@ -736,12 +772,9 @@ impl ClientTeleport {
         self.0.as_ref()
     }
 
-    /// Whether a spawn-record ref id is a gate building (teleportbuilding
-    /// row) — the spawn resolver's structure test.
-    pub fn is_gate_ref(&self, ref_id: i32) -> bool {
-        self.0
-            .as_ref()
-            .is_some_and(|table| table.buildings.contains_key(&ref_id))
+    /// The gate buildings by ref id, `None` until loaded.
+    pub fn buildings(&self) -> Option<&std::collections::HashMap<i32, GateBuilding>> {
+        self.0.as_ref().map(|table| &table.buildings)
     }
 }
 

@@ -4,6 +4,7 @@ pub mod barena;
 pub mod character_data;
 pub mod chat;
 pub(crate) mod cursor;
+pub mod entity_spawn;
 pub mod exchange;
 pub mod guide;
 pub mod guild;
@@ -20,6 +21,7 @@ pub mod party;
 pub mod pet;
 pub mod quest;
 pub mod siege;
+pub mod spawn_reader;
 pub mod stall;
 pub mod storage;
 

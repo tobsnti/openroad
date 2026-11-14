@@ -134,7 +134,7 @@ impl MonsterRarity {
 }
 
 /// The rarity class of a [`RemoteEntity::Item`] ground drop, from the 0x3015
-/// item record's rarity byte (`net/entity_spawn.rs::parse_item`).
+/// item record's rarity byte (`packets::agent::entity_spawn::parse_item`).
 ///
 /// It exists because a ground drop carries **no item body**: the spawn record
 /// has no opt level and no `mag_params`, so nothing else on the wire can say

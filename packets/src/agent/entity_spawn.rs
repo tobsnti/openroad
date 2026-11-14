@@ -6,10 +6,10 @@
 //! player record embeds an equipment ref-id list whose per-item width depends on
 //! whether each item is equipment, which needs itemdata. That is the same reason
 //! `CharacterDataBody` is a raw passthrough, so the whole payload is carried
-//! unparsed and decoded here, where the client's characterdata/itemdata tables
-//! live. Each record starts with a `ref_id` (u32); its type (player / NPC /
-//! monster / dropped item) is resolved from that id against those tables, which
-//! selects the per-record layout. Because records are variable-length and
+//! unparsed and decoded here, against the characterdata/itemdata tables the
+//! caller holds ([`RefResolver`]). Each record starts with a `ref_id` (u32); its
+//! type (player / NPC / monster / dropped item) is resolved from that id against
+//! those tables, which selects the per-record layout. Because records are variable-length and
 //! back-to-back, a mis-parse can't recover the next record boundary, so on any
 //! unknown type or short read we stop the batch and return what parsed so far
 //! (fail-safe, mirroring `character_data.rs`) rather than desync.
@@ -27,14 +27,15 @@
 
 use std::collections::HashMap;
 
-use packets::agent::character_data::{EntityState, ItemClass, ItemClassResolver};
-use packets::hexdump;
+use std::fmt::{self, Display, Formatter};
 
-use crate::net::reader::{GuildTag, Reader};
-use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientTeleport};
-use packets::agent::pet::CosKind;
+use crate::agent::character_data::EntityState;
+use crate::hexdump;
 
-pub use packets::agent::character_data::SpawnPosition;
+use crate::agent::pet::CosKind;
+use crate::agent::spawn_reader::{GuildTag, Reader};
+
+pub use crate::agent::character_data::SpawnPosition;
 
 /// The kind of a spawned entity, with the per-kind extras the spawn system uses.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +102,93 @@ pub struct GroupSpawnParse {
     /// table, so unrenderable. Kept for diagnostics — the entities *around*
     /// them are in `spawns` (#426).
     pub unresolved: Vec<u32>,
+    /// What the parse could not act on, in order, for the caller to log.
+    pub notes: Vec<SpawnNote>,
+}
+
+/// A batch the parser did not read to its end, or a record it skipped. The
+/// parser holds no logger, so it hands these back; `Display` is the line the
+/// caller logs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpawnNote {
+    /// The despawn list ended after `at` of its `count` ids.
+    DespawnTruncated { at: u16, count: u16 },
+    /// Record `index` is an NPC or a monster and nothing says which; the rest
+    /// of the batch is not read.
+    Undecided { index: u16, count: u16 },
+    /// Record `index` has a ref id in no client table; its `width` bytes,
+    /// derived from the payload, were skipped.
+    Skipped {
+        index: u16,
+        count: u16,
+        ref_id: u32,
+        width: usize,
+    },
+    /// Record `index` could not be read from `start` on (the parse stopped at
+    /// `stop`); the rest of the batch is not read. `record` is the payload from
+    /// `start`.
+    Stopped {
+        index: u16,
+        count: u16,
+        ref_id: Option<u32>,
+        ref_type: Option<RefType>,
+        start: usize,
+        stop: usize,
+        record: Vec<u8>,
+    },
+}
+
+impl Display for SpawnNote {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            SpawnNote::DespawnTruncated { at, count } => {
+                write!(
+                    f,
+                    "entity_spawn: despawn list truncated at {}/{}",
+                    at, count
+                )
+            }
+            SpawnNote::Undecided { index, count } => write!(
+                f,
+                "entity_spawn: record {}/{} is an NPC or a monster and no characterdata \
+                 says which; the batch ends on its last byte either way, or neither \
+                 way, so the rest of it is not read",
+                index, count,
+            ),
+            SpawnNote::Skipped {
+                index,
+                count,
+                ref_id,
+                width,
+            } => write!(
+                f,
+                "entity_spawn: record {}/{} ref_id={} is in no client table; \
+                 skipped its {} bytes (width derived from the payload) and kept \
+                 the rest of the batch",
+                index, count, ref_id, width,
+            ),
+            SpawnNote::Stopped {
+                index,
+                count,
+                ref_id,
+                ref_type,
+                start,
+                stop,
+                record,
+            } => write!(
+                f,
+                "entity_spawn: could not parse spawn record {}/{} ref_id={:?} type={:?}; \
+                 record started at {}, parse stopped at {}. record bytes: {}",
+                index,
+                count,
+                ref_id,
+                ref_type,
+                start,
+                stop,
+                hexdump(record, 192),
+            ),
+        }
+    }
 }
 
 /// What a record's leading `ref_id` resolves to, which selects the record parser.
@@ -130,79 +218,15 @@ pub enum RefType {
     Unknown,
 }
 
-/// Resolves entity/item ref ids to their type. Abstracted so the parser is
-/// unit-testable without the real textdata resources (see [`TextdataResolver`]).
+/// Resolves entity/item ref ids to their type. The tables live with the
+/// caller (the client's `TextdataResolver`), so the parser takes this lookup
+/// as a trait, and the tests a small one of their own.
 pub trait RefResolver {
     /// The type of an *entity* ref id (the record's leading id).
     fn resolve(&self, ref_id: u32) -> RefType;
     /// Whether an *item* ref id (inside a player's equipment list) is equipment,
     /// which decides its extra optimization-level byte.
     fn item_is_equipment(&self, ref_id: u32) -> bool;
-}
-
-/// [`RefResolver`] backed by the loaded characterdata/itemdata tables, plus
-/// the teleport table for gate buildings (whose refs live ONLY in
-/// teleportbuilding.txt — the Jangan dimensional gate, ref 2094, has no
-/// characterdata row and used to abort the whole spawn batch as `Unknown`).
-pub struct TextdataResolver<'a> {
-    pub char_data: &'a ClientCharacterData,
-    pub item_data: &'a ClientItemData,
-    pub teleport: &'a ClientTeleport,
-}
-
-impl RefResolver for TextdataResolver<'_> {
-    fn resolve(&self, ref_id: u32) -> RefType {
-        let id = ref_id as i32;
-        if let Some(item) = self.item_data.get(&id) {
-            return RefType::Item {
-                equipment: item.is_equipment(),
-                gold: item.is_gold(),
-            };
-        }
-        if let Some(ch) = self.char_data.get(&id) {
-            if ch.is_player() {
-                return RefType::Player;
-            }
-            if ch.is_monster() {
-                return RefType::Monster;
-            }
-            if let Some(kind) = ch.cos_kind() {
-                return RefType::Cos { kind };
-            }
-            // is_npc, plus any remaining uncategorized character-family row
-            // (quest clones 1/2/3/6..8, …), parses with the NPC record layout.
-            return RefType::Npc;
-        }
-        if self.teleport.is_gate_ref(id) {
-            return RefType::Structure;
-        }
-        RefType::Unknown
-    }
-
-    fn item_is_equipment(&self, ref_id: u32) -> bool {
-        self.item_data
-            .get(&(ref_id as i32))
-            .map(|i| i.is_equipment())
-            .unwrap_or(false)
-    }
-}
-
-/// The itemdata classification used by the CHARACTER_DATA parser in the
-/// `packets` crate (the table lives here in the client, so the parser takes
-/// this lookup as a trait).
-impl ItemClassResolver for TextdataResolver<'_> {
-    fn item_class(&self, ref_id: u32) -> ItemClass {
-        match self
-            .item_data
-            .get(&(ref_id as i32))
-            .and_then(|i| i.type_ids())
-        {
-            Some((3, 1, _, _)) => ItemClass::Equipment,
-            Some((3, 2, tid3, tid4)) => ItemClass::Container { tid3, tid4 },
-            Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
-            _ => ItemClass::Unknown,
-        }
-    }
 }
 
 /// Decode a group-spawn payload. `spawning` is the `kind` from
@@ -223,7 +247,7 @@ pub fn parse_group_spawn(
             match r.u32() {
                 Some(id) => out.despawns.push(id),
                 None => {
-                    bevy::log::warn!("entity_spawn: despawn list truncated at {}/{}", i, count);
+                    out.notes.push(SpawnNote::DespawnTruncated { at: i, count });
                     break;
                 }
             }
@@ -239,13 +263,7 @@ pub fn parse_group_spawn(
             Some(entity) => match settle_character(entity, &mut r, count - i - 1, &mut fit) {
                 Some(entity) => out.spawns.push(entity),
                 None => {
-                    bevy::log::warn!(
-                        "entity_spawn: record {}/{} is an NPC or a monster and no characterdata \
-                         says which; the batch ends on its last byte either way, or neither \
-                         way, so the rest of it is not read",
-                        i,
-                        count,
-                    );
+                    out.notes.push(SpawnNote::Undecided { index: i, count });
                     break;
                 }
             },
@@ -264,15 +282,12 @@ pub fn parse_group_spawn(
                         recover_unknown_record(raw, record_start, count - i - 1, &mut fit)
                             .filter(|resume| r.seek(*resume).is_some())
                     {
-                        bevy::log::warn!(
-                            "entity_spawn: record {}/{} ref_id={} is in no client table; \
-                             skipped its {} bytes (width derived from the payload) and kept \
-                             the rest of the batch",
-                            i,
+                        out.notes.push(SpawnNote::Skipped {
+                            index: i,
                             count,
                             ref_id,
-                            resume - record_start,
-                        );
+                            width: resume - record_start,
+                        });
                         out.unresolved.push(ref_id);
                         i += 1;
                         continue;
@@ -285,17 +300,15 @@ pub fn parse_group_spawn(
                     .get(record_start..record_start + 4)
                     .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
                 let ref_type = ref_id.map(|id| resolver.resolve(id));
-                bevy::log::warn!(
-                    "entity_spawn: could not parse spawn record {}/{} ref_id={:?} type={:?}; \
-                     record started at {}, parse stopped at {}. record bytes: {}",
-                    i,
+                out.notes.push(SpawnNote::Stopped {
+                    index: i,
                     count,
                     ref_id,
                     ref_type,
-                    record_start,
-                    r.pos(),
-                    hexdump(raw.get(record_start..).unwrap_or(&[]), 192),
-                );
+                    start: record_start,
+                    stop: r.pos(),
+                    record: raw.get(record_start..).unwrap_or(&[]).to_vec(),
+                });
                 break;
             }
         }
@@ -1019,6 +1032,14 @@ mod test {
         let parsed = parse_group_spawn(&body, false, 3, &res);
         assert_eq!(parsed.despawns, vec![10, 20, 30]);
         assert_eq!(parsed.spawns.len(), 0);
+        assert!(parsed.notes.is_empty());
+        // A list cut short keeps what it had and says where it ended.
+        let parsed = parse_group_spawn(&body[..10], false, 3, &res);
+        assert_eq!(parsed.despawns, vec![10, 20]);
+        assert_eq!(
+            parsed.notes,
+            [SpawnNote::DespawnTruncated { at: 2, count: 3 }]
+        );
     }
 
     #[test]
@@ -1041,6 +1062,15 @@ mod test {
             "keeps the record parsed before the bad one"
         );
         assert_eq!(parsed.spawns[0].unique_id, 11);
+        // The unknown record is the last one, so its width is simply the rest
+        // of the payload: it is skipped rather than ending the batch.
+        let skipped = SpawnNote::Skipped {
+            index: 1,
+            count: 2,
+            ref_id: 999999,
+            width: 44,
+        };
+        assert_eq!(parsed.notes, [skipped]);
     }
 
     /// Verbatim `packet_dump/0x3019.log` payload (2026-08-11 09:43:45.339Z,
@@ -1069,6 +1099,15 @@ mod test {
         let parsed = parse_group_spawn(LIVE_UNKNOWN_NPC_BATCH, true, 2, &res);
 
         assert_eq!(parsed.unresolved, vec![9252]);
+        assert!(matches!(
+            parsed.notes[..],
+            [SpawnNote::Skipped {
+                index: 0,
+                count: 2,
+                ref_id: 9252,
+                ..
+            }]
+        ));
         assert_eq!(parsed.spawns.len(), 1, "the record behind the unknown one");
         let npc = &parsed.spawns[0];
         assert_eq!(npc.ref_id, 3861);
@@ -1100,6 +1139,15 @@ mod test {
         let parsed = parse_group_spawn(&body, true, 1, &res);
         assert_eq!(parsed.spawns.len(), 0);
         assert_eq!(parsed.despawns.len(), 0);
+        assert!(matches!(
+            parsed.notes[..],
+            [SpawnNote::Stopped {
+                index: 0,
+                ref_id: Some(NPC_REF),
+                start: 0,
+                ..
+            }]
+        ));
     }
 
     #[test]

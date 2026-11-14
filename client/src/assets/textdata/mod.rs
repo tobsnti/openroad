@@ -40,7 +40,7 @@ pub mod decode;
 pub mod dungeoninfo;
 pub mod effectsound;
 pub mod gameguide;
-pub mod itemdata;
+pub use sro_textdata::itemdata;
 pub mod job;
 pub mod leveldata;
 pub mod magicoption;

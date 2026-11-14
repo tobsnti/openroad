@@ -33,7 +33,7 @@ re-issues of the same code names with rescaled stats (e.g. a second
 Rarity census across all `MOB_*` rows (all split files): 0 ×6924, 1 ×77,
 3 ×627, 4 ×1, 6 ×105, 7 ×91, 8 ×86. The 6/7/8 → `tw_icon_*` badge mapping in
 the target window is provisional; the spawn packet also carries a per-instance
-rarity byte (see `client/src/net/entity_spawn.rs`), which go-sro fills from
+rarity byte (see `packets/src/agent/entity_spawn.rs`), which go-sro fills from
 this column.
 
 Consumers: `CharacterDataRow::{name_key, type_ids, rarity, resource_path,
