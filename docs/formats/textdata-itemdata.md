@@ -5,7 +5,7 @@ ID range; `itemdata.txt` lists the split files). UTF-16LE, tab-separated, one
 row per item; column 0 (`Service`) is `1` when live. Keyed by column 1 (`ID`,
 the item `ref_id`). Columns verified against real v1.188 data (0-based indices,
 as used by `ItemdataFields` / `StatRange` in
-`client/src/assets/textdata/itemdata.rs`).
+`sro_textdata/src/itemdata.rs`).
 
 **Field count: 160, not "~161" (round 2, gamedata.md G13).** The server's `ItemData_*.txt` has
 **160** fields and no trailing tab; the client's `itemdata_*.txt` has the same 160 fields **plus a
@@ -14,7 +14,7 @@ trailing tab**, which naive tab-splitting reports as 161. Split to 160 and ignor
 are 104 and 118.)
 
 **Two shipping columns this doc does not list.** `PhyAbsorb`/`MagAbsorb` at cols **71/72** and
-**79/80** *are* parsed (`client/src/assets/textdata/itemdata.rs:64,86`) and rendered — re-grepped
+**79/80** *are* parsed (`sro_textdata/src/itemdata.rs:118-119,140-141`) and rendered — re-grepped
 at HEAD, still absent from the table below. A doc gap on a live path.
 
 ## Scalar columns

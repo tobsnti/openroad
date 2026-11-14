@@ -41,7 +41,7 @@ STAT_RANGE_ARM = re.compile(r"StatRange::(\w+)\s*=>\s*\((\d+)\s*,\s*(\d+)\)")
 
 # Our enum name -> (source file, table it describes).
 OUR_ENUMS = [
-    ("ItemdataFields", TEXTDATA / "itemdata.rs", "itemdata"),
+    ("ItemdataFields", ROOT / "sro_textdata" / "src" / "itemdata.rs", "itemdata"),
     ("ChardataFields", ROOT / "sro_textdata" / "src" / "characterdata.rs", "characterdata"),
     ("SkilldataFields", TEXTDATA / "skilldata.rs", "skilldata"),
 ]
