@@ -9,6 +9,7 @@ use std::path::Path;
 
 use sro_textdata::characterdata::CharacterDataRow;
 use sro_textdata::npcpos::{self, NpcPos};
+use sro_textdata::siegefortress::FortressTable;
 
 /// What the server takes from a characterdata row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,10 +23,12 @@ pub struct CharacterRef {
 pub struct RefData {
     characters: HashMap<u32, CharacterDataRow>,
     npcs: Vec<NpcPos>,
+    fortresses: FortressTable,
 }
 
 impl RefData {
-    /// Every `characterdata*.txt` under `textdata`, and `npcpos.txt`.
+    /// Every `characterdata*.txt` under `textdata`, `npcpos.txt` and
+    /// `siegefortress.txt`.
     pub fn load(textdata: &Path) -> std::io::Result<RefData> {
         let mut data = RefData::default();
         for entry in std::fs::read_dir(textdata)? {
@@ -39,6 +42,8 @@ impl RefData {
                 data.add_characters(&text(&std::fs::read(&path)?));
             } else if name == "npcpos.txt" {
                 data.add_npcs(&text(&std::fs::read(&path)?));
+            } else if name == "siegefortress.txt" {
+                data.add_fortresses(&text(&std::fs::read(&path)?));
             }
         }
         Ok(data)
@@ -71,6 +76,23 @@ impl RefData {
     pub fn is_npc(&self, ref_id: u32) -> bool {
         let row = self.characters.get(&ref_id);
         row.is_some_and(|row| matches!(row.type_ids(), Some((1, 2, 2, _))))
+    }
+
+    /// The rows of `siegefortress.txt`.
+    pub fn add_fortresses(&mut self, table: &str) {
+        self.fortresses.0.extend(FortressTable::parse(table).0);
+    }
+
+    /// Whether the original client reads a fortress's two bytes when an
+    /// entity of model `ref_id` is selected: for an NPC row and a TID1 4 row
+    /// whose fortress `siegefortress.txt` lists [V original handler].
+    pub fn in_listed_fortress(&self, ref_id: u32) -> bool {
+        let Some(row) = self.characters.get(&ref_id) else {
+            return false;
+        };
+        let typed = matches!(row.type_ids(), Some((1, 2, 2, _) | (4, _, _, _)));
+        let listed = |name: &str| self.fortresses.0.values().any(|f| f.codename == name);
+        typed && row.fortress().is_some_and(listed)
     }
 
     /// The characterdata row `ref_id`, as far as the server uses it.

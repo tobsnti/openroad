@@ -10,8 +10,8 @@
 
 use packets::Packet;
 
-use crate::world::{self, Reason, SessionId, World};
-use crate::{consignment, join, lobby, movement};
+use crate::world::{Reason, SessionId, World};
+use crate::{consignment, join, lobby, movement, npc};
 
 pub enum Handling {
     Locked {
@@ -30,10 +30,12 @@ pub fn handling(opcode: u16) -> Option<Handling> {
         0x7001 => Handling::Answer(join::join),
         0x7021 => Handling::Answer(movement::request),
         0x7007 => Handling::Answer(lobby::lobby),
+        0x7045 => Handling::Answer(npc::select),
         0x7046 => Handling::Locked {
-            answer: world::talk,
-            refusal: world::talk_refusal,
+            answer: npc::talk,
+            refusal: npc::talk_refusal,
         },
+        0x704B => Handling::Answer(npc::close),
         0x750E => Handling::Answer(consignment::list),
         _ => return None,
     })

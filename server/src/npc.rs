@@ -13,9 +13,12 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
+use packets::agent::prelude::{CloseTalkResponse, SelectEntityResponse, TalkResponse};
+use packets::Packet;
 use sro_macro::Serialize;
 
 use crate::store::Position;
+use crate::world::{Phase, Reason, SessionId, World};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Npc {
@@ -96,4 +99,84 @@ pub(crate) fn record(uid: u32, npc: &Npc) -> Bytes {
         }
     }
     b.freeze()
+}
+
+/// 0x7045. Selecting an NPC the client was shown is answered with what the
+/// original client reads for one [V original handler]: no vital mask, the
+/// NPC's options, the NPC byte 0, and for an NPC of a listed fortress two
+/// more bytes, 0, as the vSRO server sent for the Jangan smith
+/// [V capture, peer vSRO]. Selecting anything else is not handled yet.
+pub(crate) fn select(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
+    let Packet::SelectEntityRequest(request) = packet else {
+        unreachable!("0x7045 decodes to SelectEntityRequest");
+    };
+    let uid = request.unique_id;
+    let ref_id = shown(world, session, uid).ok_or(Reason::NotHandled)?;
+    let options = options(ref_id);
+    let mut tail = BytesMut::new();
+    tail.put_u8(0);
+    tail.put_u8(u8::try_from(options.len()).expect("a handful of options"));
+    tail.put_slice(options);
+    tail.put_u8(0);
+    if world.refdata().in_listed_fortress(ref_id) {
+        tail.put_u16_le(0);
+    }
+    let answer = SelectEntityResponse {
+        result: 1,
+        unique_id: uid,
+        tail: tail.freeze(),
+    };
+    world.send(session, Packet::SelectEntityResponse(answer));
+    Ok(())
+}
+
+/// 0x7046. Talking to an NPC the client was shown, about an option it offers,
+/// is answered `01` and the option, as the vSRO server answered
+/// [V capture, peer vSRO]; option 0x0C carries one byte more (A3). Anything
+/// else is refused.
+pub(crate) fn talk(world: &mut World, session: SessionId, packet: Packet) -> Packet {
+    let Packet::TalkRequest(request) = packet else {
+        unreachable!("0x7046 decodes to TalkRequest");
+    };
+    let option = request.talk_flag;
+    let offered = shown(world, session, request.unique_id)
+        .is_some_and(|ref_id| options(ref_id).contains(&option));
+    if !offered {
+        return talk_refusal();
+    }
+    let tail = match option {
+        0x0C => Bytes::from_static(&[0x0C, 0x00]),
+        _ => Bytes::copy_from_slice(&[option]),
+    };
+    Packet::TalkResponse(TalkResponse::Success { tail })
+}
+
+/// Code 0, which the client words as "invalid target" [V original handler].
+pub(crate) fn talk_refusal() -> Packet {
+    Packet::TalkResponse(TalkResponse::Failure(0))
+}
+
+/// 0x704B. Closing the talk with an NPC the client was shown is answered
+/// `01`, as the vSRO server answered [V capture, peer vSRO]. Anything else is
+/// not handled yet.
+pub(crate) fn close(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
+    let Packet::CloseTalkRequest(request) = packet else {
+        unreachable!("0x704B decodes to CloseTalkRequest");
+    };
+    shown(world, session, request.unique_id).ok_or(Reason::NotHandled)?;
+    world.send(
+        session,
+        Packet::CloseTalkResponse(CloseTalkResponse::Success),
+    );
+    Ok(())
+}
+
+/// The model of NPC `uid`, if the client of `session` is in the game and
+/// was shown it.
+fn shown(world: &World, session: SessionId, uid: u32) -> Option<u32> {
+    let Some(Phase::Game { .. }) = world.phase(session) else {
+        return None;
+    };
+    let npc = world.npc(uid)?;
+    world.knows(session, uid).then_some(npc.ref_id)
 }
