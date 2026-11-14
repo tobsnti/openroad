@@ -545,7 +545,7 @@ fn on_pet_mounted(
     pending.extend(reader.read().cloned().map(|msg| (msg, 0)));
 
     for (msg, age) in pending {
-        if !msg.success {
+        if msg.result != 1 {
             info!("cos: mount request rejected by server");
             continue;
         }
@@ -675,7 +675,7 @@ mod test {
 
     fn mount_ack(player_uid: u32, cos_uid: u32) -> PetPlayerMounted {
         PetPlayerMounted {
-            success: true,
+            result: 1,
             player_unique_id: Some(player_uid),
             is_mounting: Some(true),
             riding_unique_id: Some(cos_uid),
@@ -820,7 +820,7 @@ mod test {
         assert!(app.world().get::<PendingMount>(player).is_some());
 
         app.world_mut().write_message(PetPlayerMounted {
-            success: true,
+            result: 1,
             player_unique_id: Some(PLAYER_UID),
             is_mounting: Some(false),
             riding_unique_id: Some(LOCAL_UID),
@@ -986,7 +986,7 @@ mod test {
         app.world_mut().entity_mut(player).insert(NetworkId(42));
 
         app.world_mut().write_message(PetPlayerMounted {
-            success: true,
+            result: 1,
             player_unique_id: Some(42),
             is_mounting: Some(true),
             riding_unique_id: Some(LOCAL_UID),
@@ -999,7 +999,7 @@ mod test {
         // A dismount carries the transport uid too — it is not `None` here,
         // which is what the old 6-of-10-bytes read made it look like.
         app.world_mut().write_message(PetPlayerMounted {
-            success: true,
+            result: 1,
             player_unique_id: Some(42),
             is_mounting: Some(false),
             riding_unique_id: Some(LOCAL_UID),

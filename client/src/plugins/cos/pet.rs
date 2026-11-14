@@ -159,7 +159,7 @@ pub fn send_pet_attack_with_player(
 /// applied here.
 pub fn on_pet_action_response(mut reader: MessageReader<PetActionResponse>) {
     for msg in reader.read() {
-        if msg.success {
+        if msg.result == 1 {
             debug!(
                 "cos: 0x70C5 action {} accepted for uid {} (item {:?})",
                 msg.action, msg.unique_id, msg.item_gid
@@ -197,7 +197,7 @@ pub fn on_pet_acks(
         }
     }
     for msg in rename.read() {
-        if !msg.success {
+        if msg.result != 1 {
             warn!("cos: rename refused — error {:?}", msg.error_code);
         }
     }
@@ -210,7 +210,7 @@ pub fn on_pet_settings_response(
     mut state: ResMut<CosState>,
 ) {
     for msg in reader.read() {
-        if !msg.success {
+        if msg.result != 1 {
             warn!("cos: settings change refused — error {:?}", msg.error_code);
             continue;
         }
@@ -334,7 +334,7 @@ mod test {
             vec![pet(CosKind::GrowthPet, AttackPetSettings::OFFENSIVE)];
 
         app.world_mut().write_message(PetSettingsChangeResponse {
-            success: true,
+            result: 1,
             unique_id: Some(11),
             settings_type: Some(PET_SETTINGS_TYPE_GOLD),
             settings: Some(0),
@@ -346,7 +346,7 @@ mod test {
 
         // An ack for a COS we do not hold changes nothing.
         app.world_mut().write_message(PetSettingsChangeResponse {
-            success: true,
+            result: 1,
             unique_id: Some(999),
             settings_type: Some(PET_SETTINGS_TYPE_GOLD),
             settings: Some(AttackPetSettings::OFFENSIVE),
