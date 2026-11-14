@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use std::fmt::{self, Display, Formatter};
 
-use crate::agent::character_data::EntityState;
+use crate::agent::character_data::{EntityMovement, EntityState};
 use crate::hexdump;
 
 use crate::agent::pet::CosKind;
@@ -40,15 +40,34 @@ pub use crate::agent::character_data::SpawnPosition;
 /// The kind of a spawned entity, with the per-kind extras the spawn system uses.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpawnKind {
-    /// A remote player character; `equipment` are the equipped/avatar item
-    /// `(ref id, +N opt level)` pairs to attach. `riding_uid` is the unique id
-    /// of the COS the player is mounted on (`None` when on foot).
+    /// A remote player character. `equipment` and `avatar` are its equipped
+    /// and its avatar items, `(ref id, +N opt level)`, two lists as on the
+    /// wire. `riding_uid` is the unique id of the COS the player is mounted on
+    /// (`None` when on foot). `guild_id` and `guild_tail` complete the guild
+    /// block whose name and nick are [`SpawnedEntity::guild`].
     Player {
         equipment: Vec<(u32, u8)>,
+        avatar: Vec<(u32, u8)>,
         riding_uid: Option<u32>,
+        mask: Option<Mask>,
+        /// A mode of 4 brings the stall [V original handler].
+        interact_mode: u8,
+        /// Read when the interact mode is 4 [V original handler]: the stall's
+        /// title and a u32 [U].
+        stall: Option<(String, u32)>,
+        guild_id: u32,
+        /// [U]; go-sro's `WriteGuild` (DBAD, read only) names them crest
+        /// revision, union id, union crest revision and two flags.
+        guild_tail: [u8; 14],
+        bytes: PlayerBytes,
     },
     Npc,
-    Monster,
+    /// A monster; `extra` is the byte the original client reads after the
+    /// rarity of a thief or hunter monster (TypeID4 2 and 3)
+    /// [V original handler], its meaning [U].
+    Monster {
+        extra: Option<u8>,
+    },
     /// A COS (pet/mount/transport). `pet_name` is the owner-given name
     /// (attack/pick pets only); `owner_uid` links back to the summoner
     /// (absent on ride-only horses, which carry no owner tail at all).
@@ -56,15 +75,57 @@ pub enum SpawnKind {
         kind: CosKind,
         pet_name: Option<String>,
         owner_name: Option<String>,
+        /// The owner tail between the owner's name and `owner_uid`, by
+        /// position [U]: a byte, a second one except for a pick pet, and a
+        /// u32 for a Fellow. xBot's `PacketParser.cs:791-807` calls them job
+        /// type, PVP state and owner object id.
+        owner_bytes: Option<(u8, Option<u8>, Option<u32>)>,
         owner_uid: Option<u32>,
     },
-    /// A dropped item; `amount` is the gold pile size (gold only).
+    /// A dropped item; `amount` is the gold pile size (gold only). `name` is
+    /// the name an item of TypeID 3/3/8 or 3/3/9 carries
+    /// [V original handler]; the captured ones carry what looks like a
+    /// character's name [U]. `opt_level` is the plus of a piece of
+    /// equipment, `owner` the unique id of whom the drop belongs to
+    /// [V original handler].
     Item {
         amount: Option<u32>,
+        name: Option<String>,
+        opt_level: Option<u8>,
+        owner: Option<u32>,
     },
     /// A world structure (teleport gate building) — spawns as an invisible
-    /// click anchor.
-    Structure,
+    /// click anchor. `tail` is the record's last 12 bytes [U].
+    Structure {
+        tail: [u8; 12],
+    },
+}
+
+/// The bytes of a player record that the original client reads
+/// [V original handler] and nothing here interprets: their meanings are [U],
+/// so each is named by its place in the record.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlayerBytes {
+    /// The five bytes before the equipment.
+    pub head: [u8; 5],
+    /// The byte between the equipment and the avatar items.
+    pub between_lists: u8,
+    /// The three bytes after the name.
+    pub after_name: [u8; 3],
+    /// The byte after the riding flag.
+    pub after_riding: u8,
+    /// The bytes before and after the interact mode.
+    pub around_mode: [u8; 2],
+    /// The record's last two bytes.
+    pub tail: [u8; 2],
+}
+
+/// The mask a player wears [V original handler]: its ref id and, when the
+/// mask is a player model, a byte and a list of u32 values, meanings [U].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mask {
+    pub ref_id: u32,
+    pub model: Option<(u8, Vec<u32>)>,
 }
 
 /// One entity to spawn.
@@ -79,6 +140,9 @@ pub struct SpawnedEntity {
     /// non-player kind. The block is always on the wire for players — a
     /// guildless one just sends an empty name.
     pub guild: Option<GuildTag>,
+    /// Where a character is going, or which way it faces (characters only;
+    /// `None` for dropped items and gate buildings).
+    pub movement: Option<EntityMovement>,
     /// Life/motion/body states and movement speeds (characters only; `None`
     /// for dropped items, which carry no state block).
     pub state: Option<EntityState>,
@@ -88,9 +152,25 @@ pub struct SpawnedEntity {
     pub spawn_rarity: Option<u8>,
     /// Interaction option ids of a talkable NPC (empty for everything else) —
     /// the entries of its talk dialog (talk/store/storage/teleport…, see
-    /// `plugins::cursor::interactions::npcs::TalkOption`).
+    /// `plugins::cursor::interactions::npcs::TalkOption`). They are the
+    /// interaction block's list, read for its flag bit 2.
     pub talk_options: Vec<u8>,
+    /// The rest of the interaction block of an NPC, monster or COS record
+    /// (`None` for every other kind).
+    pub interaction: Option<Interaction>,
     pub kind: SpawnKind,
+}
+
+/// The interaction block as the original client reads it
+/// [V original handler]: a flag byte, then a text for bit 1, the talk options
+/// for bit 2 (kept in [`SpawnedEntity::talk_options`], the one place of that
+/// list) and for bit 4 a type byte (1 or 2) and a u32. The meanings of the
+/// text and of the typed value are [U].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Interaction {
+    pub flags: u8,
+    pub text: Option<String>,
+    pub typed_value: Option<(u8, u32)>,
 }
 
 /// The outcome of decoding a group-spawn payload.
@@ -104,6 +184,9 @@ pub struct GroupSpawnParse {
     pub unresolved: Vec<u32>,
     /// What the parse could not act on, in order, for the caller to log.
     pub notes: Vec<SpawnNote>,
+    /// Where the reading stopped: the payload's length when every record was
+    /// read and no byte is left over.
+    pub end: usize,
 }
 
 /// A batch the parser did not read to its end, or a record it skipped. The
@@ -195,21 +278,30 @@ impl Display for SpawnNote {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RefType {
     Player,
-    Monster,
+    /// A monster. `extra`: the original client reads one byte more after its
+    /// rarity for thief and hunter monsters (TypeID4 2 and 3)
+    /// [V original handler].
+    Monster {
+        extra: bool,
+    },
     Npc,
     /// An NPC or a monster, undecided: a resolver without characterdata (the
     /// headless net check) cannot tell them apart. The two records differ only
     /// by the monster's trailing rarity byte, so the rest of the batch has to
-    /// settle it (see `settle_character`).
+    /// settle it (see `settle_character`). A thief or hunter monster, one byte
+    /// longer still, is not among the readings: it needs characterdata.
     Character,
     /// A COS (characterdata `1/2/3/tid4`) — NPC record plus an owner tail.
     Cos {
         kind: CosKind,
     },
-    /// A dropped item, with the sub-shape needed to parse its record.
+    /// A dropped item, with the sub-shape needed to parse its record: its
+    /// head carries an opt level (equipment), a name (`named`, TypeID
+    /// 3/3/8 and 3/3/9) or a gold amount (gold), never two of them.
     Item {
         equipment: bool,
         gold: bool,
+        named: bool,
     },
     /// A gate building (teleportbuilding.txt ref) — a fixed structure record,
     /// not a character body.
@@ -252,6 +344,7 @@ pub fn parse_group_spawn(
                 }
             }
         }
+        out.end = r.pos();
         return out;
     }
 
@@ -314,6 +407,7 @@ pub fn parse_group_spawn(
         }
         i += 1;
     }
+    out.end = r.pos();
     out
 }
 
@@ -410,12 +504,59 @@ impl<'a, R: RefResolver> BatchFit<'a, R> {
     }
 }
 
+/// What a single spawn (0x3015) carries behind its record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SingleTail {
+    /// One byte behind a character record, its meaning [U]. The original
+    /// reads it behind a player, an NPC and a monster [V original handler];
+    /// behind a COS the captures show the same byte.
+    Figure(u8),
+    /// The drop source and, for a source of 5 or 6, the dropper's unique id
+    /// [V original handler].
+    Item { source: u8, dropper: Option<u32> },
+    /// Behind a gate building: not known [U], kept as it came.
+    Rest(Vec<u8>),
+}
+
+/// Decode a single-spawn payload (0x3015): one record as in a group payload,
+/// then its [`SingleTail`]. `None` when the record does not read or a byte is
+/// left over. Without characterdata an NPC and a monster are told apart by
+/// what is left behind the NPC reading: one byte for an NPC's tail, two for a
+/// monster's rarity and its tail.
+pub fn parse_single_spawn(
+    raw: &[u8],
+    resolver: &impl RefResolver,
+) -> Option<(SpawnedEntity, SingleTail)> {
+    let mut r = Reader::new(raw);
+    let mut entity = parse_spawn_record(&mut r, resolver)?;
+    let tail = match resolver.resolve(entity.ref_id) {
+        RefType::Item { .. } => {
+            let source = r.u8()?;
+            let dropper = match source {
+                5 | 6 => Some(r.u32()?),
+                _ => None,
+            };
+            SingleTail::Item { source, dropper }
+        }
+        RefType::Structure => SingleTail::Rest(r.take(raw.len() - r.pos())?.to_vec()),
+        RefType::Character if raw.len() - r.pos() == 2 => {
+            entity.spawn_rarity = Some(r.u8()?);
+            entity.kind = SpawnKind::Monster { extra: None };
+            SingleTail::Figure(r.u8()?)
+        }
+        _ => SingleTail::Figure(r.u8()?),
+    };
+    (r.pos() == raw.len()).then_some((entity, tail))
+}
+
 /// An undecided character record, read as an NPC by [`parse_spawn_record`],
 /// is settled by the rest of the batch: an NPC when only that reading lets the
 /// batch end on its last byte, a monster (rarity byte included) when only the
 /// one-byte-longer reading does. Anything else leaves it undecided (`None`):
 /// measured on our stub's batches (2026-11-11), seven NPCs in a row fit 64
 /// readings, and without characterdata nothing picks the true one.
+/// A thief or hunter monster, two bytes past the NPC reading, is not tried:
+/// the batch stops at it, undecided.
 fn settle_character<R: RefResolver>(
     mut entity: SpawnedEntity,
     r: &mut Reader,
@@ -430,7 +571,7 @@ fn settle_character<R: RefResolver>(
         (true, false) => Some(entity),
         (false, true) => {
             entity.spawn_rarity = Some(r.u8()?);
-            entity.kind = SpawnKind::Monster;
+            entity.kind = SpawnKind::Monster { extra: None };
             Some(entity)
         }
         _ => None,
@@ -441,12 +582,16 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
     let ref_id = r.u32()?;
     match resolver.resolve(ref_id) {
         RefType::Player => parse_player(r, ref_id, resolver),
-        RefType::Monster => parse_character(r, ref_id, true),
+        RefType::Monster { extra } => parse_character(r, ref_id, Some(extra)),
         // An undecided record is read as an NPC; whether a monster's rarity
         // byte follows is the batch's call (`settle_character`).
-        RefType::Npc | RefType::Character => parse_character(r, ref_id, false),
+        RefType::Npc | RefType::Character => parse_character(r, ref_id, None),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
-        RefType::Item { equipment, gold } => parse_item(r, ref_id, equipment, gold),
+        RefType::Item {
+            equipment,
+            gold,
+            named,
+        } => parse_item(r, ref_id, equipment, gold, named),
         RefType::Structure => parse_structure(r, ref_id),
         RefType::Unknown => None,
     }
@@ -458,53 +603,65 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
 /// `01 00 00 01 00 00 00 00 00 00 00 00` = ref 2094, uid 12, region 25000,
 /// (1254, -6, 1374), heading 0 — exactly the teleportbuilding.txt row's
 /// position. The tail's layout is unknown (no movement/state block fits in
-/// 12 bytes) and is skipped whole; the constant `01 00 00 01` prefix will
+/// 12 bytes) and is kept whole; the constant `01 00 00 01` prefix will
 /// flag any variant via the batch-abort diagnostics if other gates differ.
 fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip(12)?;
+    let tail = r.array()?;
     Some(SpawnedEntity {
         ref_id,
         unique_id,
         position,
         name: None,
         guild: None,
+        movement: None,
         state: None,
         spawn_rarity: None,
         talk_options: Vec::new(),
-        kind: SpawnKind::Structure,
+        interaction: None,
+        kind: SpawnKind::Structure { tail },
     })
 }
 
+/// A player record. A player in a job suit takes another path in the original
+/// client, which is not known [U]; it is read like any other here.
 fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Option<SpawnedEntity> {
-    // scale, hwan_level, pvp_cape, auto_invest_xp, base_inventory_size
-    r.skip(5)?;
+    let mut bytes = PlayerBytes {
+        head: r.array()?,
+        ..PlayerBytes::default()
+    };
     let mut equipment = Vec::new();
-    read_item_list(r, resolver, &mut equipment)?; // inventory (equipped gear)
-    let _avatar_slots = r.u8()?;
-    read_item_list(r, resolver, &mut equipment)?; // avatar items
-    let _has_mask = r.u8()?;
+    read_item_list(r, resolver, &mut equipment)?;
+    bytes.between_lists = r.u8()?;
+    let mut avatar = Vec::new();
+    read_item_list(r, resolver, &mut avatar)?;
+    let mask = read_mask(r, resolver)?;
 
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip_movement(position.region)?;
+    let movement = r.movement(position.region)?;
     let state = r.character_state()?;
     let name = r.string()?;
-    // job_type, job_level, pk_state
-    r.skip(3)?;
+    bytes.after_name = r.array()?;
     // A mounted player inserts its COS's unique id between the riding and
     // scroll flags ([S] xBot PacketParser.cs:744-747; the old flat skip(8)
     // desynced the batch by 4 bytes whenever a rider was in view).
-    let riding = r.u8()? != 0;
-    let _in_combat = r.u8()?;
+    // The original reads the COS id for a riding byte of 1 only.
+    let riding = r.u8()? == 1;
+    bytes.after_riding = r.u8()?;
     let riding_uid = if riding { Some(r.u32()?) } else { None };
-    // scroll, interact, unk
-    r.skip(3)?;
+    let before_mode = r.u8()?;
+    let interact_mode = r.u8()?;
+    bytes.around_mode = [before_mode, r.u8()?];
     // guildless players send an empty name here, not an absent block
-    let guild = r.guild()?;
-    // equipment_cooldown, pk_flag(0xFF)
-    r.skip(2)?;
+    let (guild, guild_id, guild_tail) = r.guild()?;
+    let stall = if interact_mode == 4 {
+        Some((r.string()?, r.u32()?))
+    } else {
+        None
+    };
+    bytes.tail = r.array()?;
 
     Some(SpawnedEntity {
         ref_id,
@@ -512,12 +669,21 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         position,
         name: Some(name),
         guild: (!guild.name.is_empty()).then_some(guild),
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity: None,
         talk_options: Vec::new(),
+        interaction: None,
         kind: SpawnKind::Player {
             equipment,
+            avatar,
             riding_uid,
+            mask,
+            interact_mode,
+            stall,
+            guild_id,
+            guild_tail,
+            bytes,
         },
     })
 }
@@ -526,6 +692,23 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
 /// `(ref id, opt level)` to `out`. Equipment items carry a trailing
 /// enhancement (+N opt) byte; non-equipment (avatar attachments without
 /// one) records 0.
+/// The mask flag and, when it is set, the [`Mask`].
+fn read_mask(r: &mut Reader, resolver: &impl RefResolver) -> Option<Option<Mask>> {
+    if r.u8()? == 0 {
+        return Some(None);
+    }
+    let ref_id = r.u32()?;
+    let model = if resolver.resolve(ref_id) == RefType::Player {
+        let byte = r.u8()?;
+        let count = r.u8()?;
+        let values = (0..count).map(|_| r.u32()).collect::<Option<Vec<_>>>()?;
+        Some((byte, values))
+    } else {
+        None
+    };
+    Some(Some(Mask { ref_id, model }))
+}
+
 fn read_item_list(
     r: &mut Reader,
     resolver: &impl RefResolver,
@@ -544,36 +727,62 @@ fn read_item_list(
     Some(())
 }
 
-fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<SpawnedEntity> {
-    let unique_id = r.u32()?;
-    let position = r.position()?;
-    r.skip_movement(position.region)?;
-    let state = r.character_state()?;
-    // Interaction options: a tag byte (0 = none), and for a talkable entity a
-    // `u8` option count followed by that many 1-byte option ids. (Verified
-    // against a live capture: tag=2, count=4, then 4 option bytes.)
-    let mut talk_options = Vec::new();
-    if r.u8()? != 0 {
-        let option_count = r.u8()?;
-        for _ in 0..option_count {
+/// The interaction block ([`Interaction`]); its talk options go to
+/// `talk_options`.
+fn read_interaction(r: &mut Reader, talk_options: &mut Vec<u8>) -> Option<Interaction> {
+    let flags = r.u8()?;
+    let text = if flags & 1 != 0 {
+        Some(r.string()?)
+    } else {
+        None
+    };
+    if flags & 2 != 0 {
+        let count = r.u8()?;
+        for _ in 0..count {
             talk_options.push(r.u8()?);
         }
     }
-    let spawn_rarity = if is_monster { Some(r.u8()?) } else { None };
+    let typed_value = if flags & 4 != 0 {
+        Some((r.u8()?, r.u32()?))
+    } else {
+        None
+    };
+    Some(Interaction {
+        flags,
+        text,
+        typed_value,
+    })
+}
+
+/// An NPC (`monster` None) or a monster: the NPC record plus the rarity, and
+/// for a thief or hunter monster one byte more.
+fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option<SpawnedEntity> {
+    let unique_id = r.u32()?;
+    let position = r.position()?;
+    let movement = r.movement(position.region)?;
+    let state = r.character_state()?;
+    let mut talk_options = Vec::new();
+    let interaction = read_interaction(r, &mut talk_options)?;
+    let (spawn_rarity, kind) = match monster {
+        Some(extra) => {
+            let rarity = r.u8()?;
+            let extra = if extra { Some(r.u8()?) } else { None };
+            (Some(rarity), SpawnKind::Monster { extra })
+        }
+        None => (None, SpawnKind::Npc),
+    };
     Some(SpawnedEntity {
         ref_id,
         unique_id,
         position,
         name: None,
         guild: None,
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity,
         talk_options,
-        kind: if is_monster {
-            SpawnKind::Monster
-        } else {
-            SpawnKind::Npc
-        },
+        interaction: Some(interaction),
+        kind,
     })
 }
 
@@ -588,31 +797,32 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
 fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip_movement(position.region)?;
+    let movement = r.movement(position.region)?;
     let state = r.character_state()?;
-    // The talk-options block is shared with NPCs (a summoned COS sends tag 0).
+    // The interaction block is shared with NPCs (a summoned COS sends flag 0).
     let mut talk_options = Vec::new();
-    if r.u8()? != 0 {
-        let option_count = r.u8()?;
-        for _ in 0..option_count {
-            talk_options.push(r.u8()?);
-        }
-    }
+    let interaction = read_interaction(r, &mut talk_options)?;
     let mut pet_name = None;
     let mut owner_name = None;
+    let mut owner_bytes = None;
     let mut owner_uid = None;
     if kind != CosKind::Vehicle {
         if matches!(kind, CosKind::GrowthPet | CosKind::GrabPet) {
             pet_name = Some(r.string()?).filter(|n| !n.is_empty());
         }
         owner_name = Some(r.string()?).filter(|n| !n.is_empty());
-        let _job_type = r.u8()?;
-        if kind != CosKind::GrabPet {
-            let _pvp_state = r.u8()?;
-        }
-        if kind == CosKind::Fellow {
-            let _owner_obj_id = r.u32()?;
-        }
+        let first = r.u8()?;
+        let second = if kind != CosKind::GrabPet {
+            Some(r.u8()?)
+        } else {
+            None
+        };
+        let fellow = if kind == CosKind::Fellow {
+            Some(r.u32()?)
+        } else {
+            None
+        };
+        owner_bytes = Some((first, second, fellow));
         owner_uid = Some(r.u32()?);
     }
     Some(SpawnedEntity {
@@ -621,21 +831,25 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
         position,
         name: None,
         guild: None,
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity: None,
         talk_options,
+        interaction: Some(interaction),
         kind: SpawnKind::Cos {
             kind,
             pet_name,
             owner_name,
+            owner_bytes,
             owner_uid,
         },
     })
 }
 
-/// Dropped item record: `ref u32, [amount u32 | upgrade u8], uid u32, pos,
-/// owner flag(+u32), rarity u8` — the owner a flagged optional, as in
-/// skrillax's `ItemSpawnData`.
+/// Dropped item record: `ref u32, [upgrade u8 | name s16 | amount u32], uid
+/// u32, pos, owner flag(+u32), rarity u8` — the owner a flagged optional, as
+/// in skrillax's `ItemSpawnData`; the name as the original client reads it for
+/// TypeID 3/3/8 and 3/3/9 [V original handler].
 ///
 /// The record ends at the rarity byte. A single-entity spawn (0x3015) follows
 /// it with a drop-source byte and, for sources 5 and 6 only, the dropper's uid
@@ -643,19 +857,25 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
 /// pile then a monster arrive as 30 + 55 bytes `[V capture, peer vSRO]`, see
 /// `a_group_drop_ends_at_its_rarity_byte`. The single frame's tail is left
 /// unread; nothing behind it in that frame needs it.
-fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Option<SpawnedEntity> {
-    let mut amount = None;
+fn parse_item(
+    r: &mut Reader,
+    ref_id: u32,
+    equipment: bool,
+    gold: bool,
+    named: bool,
+) -> Option<SpawnedEntity> {
+    let (mut amount, mut name, mut opt_level) = (None, None, None);
     if equipment {
-        r.skip(1)?; // upgrade / opt level
+        opt_level = Some(r.u8()?);
+    } else if named {
+        name = Some(r.string()?);
     } else if gold {
         amount = Some(r.u32()?);
     }
     let unique_id = r.u32()?;
     let position = r.position()?;
     // owner: flag byte + optional owner id
-    if r.u8()? != 0 {
-        r.skip(4)?;
-    }
+    let owner = if r.u8()? != 0 { Some(r.u32()?) } else { None };
     // The drop's rarity class, kept rather than skipped: it is the only thing
     // on the wire that says whether the pile is a plain, a "blue" (magic-option)
     // or a Seal-grade drop. A ground drop carries NO item body — no opt level,
@@ -669,10 +889,17 @@ fn parse_item(r: &mut Reader, ref_id: u32, equipment: bool, gold: bool) -> Optio
         position,
         name: None,
         guild: None,
+        movement: None,
         state: None,
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
-        kind: SpawnKind::Item { amount },
+        interaction: None,
+        kind: SpawnKind::Item {
+            amount,
+            name,
+            opt_level,
+            owner,
+        },
     })
 }
 
@@ -773,6 +1000,7 @@ mod test {
                 RefType::Item {
                     equipment: true,
                     gold: false,
+                    named: false,
                 },
             ),
             (
@@ -780,6 +1008,7 @@ mod test {
                 RefType::Item {
                     equipment: false,
                     gold: false,
+                    named: false,
                 },
             ),
         ]);
@@ -829,24 +1058,33 @@ mod test {
         assert_eq!(e.guild, None);
         assert_eq!(e.position.region, 0x60A8);
         assert_eq!(e.position.x, 1058.0);
-        assert_eq!(
-            e.kind,
-            SpawnKind::Player {
-                // the sword's +3 opt byte is captured; non-equipment has none
-                equipment: vec![(SWORD, 3), (NECKLACE, 0)],
-                riding_uid: None,
-            }
-        );
+        let SpawnKind::Player {
+            equipment,
+            riding_uid,
+            ..
+        } = &e.kind
+        else {
+            panic!("a player");
+        };
+        // the sword's +3 opt byte is captured; non-equipment has none
+        assert_eq!(equipment, &[(SWORD, 3), (NECKLACE, 0)]);
+        assert_eq!(*riding_uid, None);
         let state = e.state.as_ref().expect("characters carry a state block");
         assert_eq!(state.walk_speed, 16.0);
         assert_eq!(state.run_speed, 50.0);
+        // the movement block is kept: standing, facing its heading
+        let facing = e.movement.map(|m| (m.has_destination, m.angle));
+        assert_eq!(facing, Some((false, Some(12268))));
     }
 
     #[test]
     fn parses_npc_and_monster() {
         const NPC_REF: u32 = 1900;
         const MOB_REF: u32 = 2000;
-        let res = resolver(&[(NPC_REF, RefType::Npc), (MOB_REF, RefType::Monster)]);
+        let res = resolver(&[
+            (NPC_REF, RefType::Npc),
+            (MOB_REF, RefType::Monster { extra: false }),
+        ]);
 
         // NPC then monster in one batch, so the NPC's length must be exact for
         // the monster to parse.
@@ -868,8 +1106,75 @@ mod test {
         assert_eq!(parsed.spawns[0].kind, SpawnKind::Npc);
         assert_eq!(parsed.spawns[0].spawn_rarity, None);
         assert_eq!(parsed.spawns[1].unique_id, 22);
-        assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster);
+        assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster { extra: None });
         assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
+    }
+
+    /// The interaction block has three parts, one per flag bit; with only the
+    /// options read, an NPC carrying the other two would shift the record
+    /// behind it.
+    #[test]
+    fn an_interaction_block_reads_all_three_parts() {
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(NPC_REF, RefType::Npc)]);
+        let body = Body::default()
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(1 | 2 | 4)
+            .string("Hi") // bit 1
+            .u8(2) // bit 2: two options
+            .u8(1)
+            .u8(4)
+            .u8(2) // bit 4: type and value
+            .u32(0xBEEF)
+            .u32(NPC_REF)
+            .u32(12)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(0)
+            .0;
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let npc = &parsed.spawns[0];
+        let interaction = Interaction {
+            flags: 7,
+            text: Some("Hi".to_owned()),
+            typed_value: Some((2, 0xBEEF)),
+        };
+        assert_eq!(npc.interaction.as_ref(), Some(&interaction));
+        assert_eq!(npc.talk_options, [1, 4]);
+        assert_eq!(parsed.spawns[1].unique_id, 12);
+    }
+
+    /// A thief or hunter monster carries one byte more after its rarity; read
+    /// without it, the next record would start one byte early.
+    #[test]
+    fn a_thief_monster_reads_its_extra_byte() {
+        const THIEF_REF: u32 = 2001;
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[
+            (THIEF_REF, RefType::Monster { extra: true }),
+            (NPC_REF, RefType::Npc),
+        ]);
+        let body = Body::default()
+            .u32(THIEF_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0) // talk flag: none
+            .u8(1) // rarity
+            .u8(7) // the thief's extra byte
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(0)
+            .0;
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let thief = SpawnKind::Monster { extra: Some(7) };
+        assert_eq!(
+            (&parsed.spawns[0].kind, parsed.spawns[1].unique_id),
+            (&thief, 11)
+        );
     }
 
     /// A resolver without characterdata answers [`RefType::Character`] for
@@ -909,7 +1214,7 @@ mod test {
             read,
             vec![
                 (11, SpawnKind::Npc, None),
-                (22, SpawnKind::Monster, Some(1)),
+                (22, SpawnKind::Monster { extra: None }, Some(1)),
                 (33, SpawnKind::Npc, None),
             ]
         );
@@ -967,9 +1272,10 @@ mod test {
                 RefType::Item {
                     equipment: false,
                     gold: true,
+                    named: false,
                 },
             ),
-            (1933, RefType::Monster),
+            (1933, RefType::Monster { extra: false }),
         ]);
         let parsed = parse_group_spawn(&body, true, 2, &res);
         let read: Vec<_> = parsed
@@ -980,8 +1286,16 @@ mod test {
         assert_eq!(
             read,
             vec![
-                (0x161D0, SpawnKind::Item { amount: Some(95) }),
-                (0x1A0CA, SpawnKind::Monster)
+                (
+                    0x161D0,
+                    SpawnKind::Item {
+                        amount: Some(95),
+                        name: None,
+                        opt_level: None,
+                        owner: None,
+                    }
+                ),
+                (0x1A0CA, SpawnKind::Monster { extra: None })
             ]
         );
     }
@@ -994,6 +1308,7 @@ mod test {
             RefType::Item {
                 equipment: false,
                 gold: true,
+                named: false,
             },
         )]);
         // mirrors a live 0x3015 gold line, drop-source tail included; the
@@ -1018,11 +1333,175 @@ mod test {
         assert_eq!(parsed.spawns[0].unique_id, 77);
         assert_eq!(
             parsed.spawns[0].kind,
-            SpawnKind::Item { amount: Some(5000) }
+            SpawnKind::Item {
+                amount: Some(5000),
+                name: None,
+                opt_level: None,
+                owner: Some(4),
+            }
         );
         // the drop's rarity byte is kept, not skipped: it is the only source
         // for the drop label's colour (a ground drop carries no item body)
         assert_eq!(parsed.spawns[0].spawn_rarity, Some(0));
+    }
+
+    /// A single spawn ends behind its record's tail: one byte for a
+    /// character, the drop source and maybe the dropper for an item. A byte
+    /// left over is no single spawn.
+    #[test]
+    fn a_single_spawn_reads_its_tail() {
+        const MOB_REF: u32 = 2000;
+        const GOLD_REF: u32 = 1;
+        let gold = RefType::Item {
+            equipment: false,
+            gold: true,
+            named: false,
+        };
+        let res = resolver(&[
+            (MOB_REF, RefType::Monster { extra: false }),
+            (GOLD_REF, gold),
+        ]);
+        let monster = Body::default()
+            .u32(MOB_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0) // interaction
+            .u8(1) // rarity
+            .u8(3) // the tail
+            .0;
+        let (entity, tail) = parse_single_spawn(&monster, &res).expect("a monster");
+        assert_eq!((entity.unique_id, tail), (22, SingleTail::Figure(3)));
+        let longer = [&monster[..], &[0]].concat();
+        assert_eq!(parse_single_spawn(&longer, &res), None);
+
+        let drop = |source: u8, dropper: Option<u32>| {
+            let body = Body::default()
+                .u32(GOLD_REF)
+                .u32(95)
+                .u32(77)
+                .u16(0x60A8)
+                .f32(1.0)
+                .f32(2.0)
+                .f32(3.0)
+                .u16(0)
+                .u8(0) // no owner
+                .u8(0) // rarity
+                .u8(source);
+            match dropper {
+                Some(uid) => body.u32(uid).0,
+                None => body.0,
+            }
+        };
+        let tail = |body: Vec<u8>| parse_single_spawn(&body, &res).map(|(_, tail)| tail);
+        let from_a_monster = SingleTail::Item {
+            source: 5,
+            dropper: Some(0x147A8),
+        };
+        assert_eq!(tail(drop(5, Some(0x147A8))), Some(from_a_monster));
+        let plain = SingleTail::Item {
+            source: 1,
+            dropper: None,
+        };
+        assert_eq!(tail(drop(1, None)), Some(plain));
+    }
+
+    /// Without characterdata, what is left behind the NPC reading decides:
+    /// two bytes are a monster's rarity and its tail.
+    #[test]
+    fn an_undecided_single_spawn_is_settled_by_its_length() {
+        const REF: u32 = 2000;
+        let res = resolver(&[(REF, RefType::Character)]);
+        let head = Body::default()
+            .u32(REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0)
+            .0;
+        let npc = [&head[..], &[3]].concat();
+        let monster = [&head[..], &[1, 3]].concat();
+        let read = |body: &[u8]| {
+            parse_single_spawn(body, &res).map(|(e, tail)| (e.kind, e.spawn_rarity, tail))
+        };
+        assert_eq!(
+            read(&npc),
+            Some((SpawnKind::Npc, None, SingleTail::Figure(3)))
+        );
+        let mob = SpawnKind::Monster { extra: None };
+        assert_eq!(read(&monster), Some((mob, Some(1), SingleTail::Figure(3))));
+    }
+
+    /// A dropped piece of equipment keeps its plus and its owner.
+    #[test]
+    fn an_equipment_drop_keeps_its_plus_and_its_owner() {
+        const SWORD: u32 = 3632;
+        let res = resolver(&[(
+            SWORD,
+            RefType::Item {
+                equipment: true,
+                gold: false,
+                named: false,
+            },
+        )]);
+        let body = Body::default()
+            .u32(SWORD)
+            .u8(5) // +5
+            .u32(88) // unique id
+            .u16(0x60A8)
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0) // position
+            .u8(1) // an owner
+            .u32(0x1234)
+            .u8(2) // rarity
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let sword = SpawnKind::Item {
+            amount: None,
+            name: None,
+            opt_level: Some(5),
+            owner: Some(0x1234),
+        };
+        assert_eq!(parsed.spawns[0].kind, sword);
+    }
+
+    /// An item of TypeID 3/3/8 or 3/3/9 names someone between its ref and its
+    /// unique id; read as gold or plain, the name's bytes would be the uid.
+    /// A synthetic frame: the captured ones carry a real player's name.
+    #[test]
+    fn a_named_item_reads_its_name_before_the_unique_id() {
+        const BOX_REF: u32 = 3862;
+        let res = resolver(&[(
+            BOX_REF,
+            RefType::Item {
+                equipment: false,
+                gold: false,
+                named: true,
+            },
+        )]);
+        let body = Body::default()
+            .u32(BOX_REF)
+            .string("Someone")
+            .u32(88) // unique id
+            .u16(0x60A8)
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0) // position
+            .u8(0) // no owner
+            .u8(0) // rarity
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        assert_eq!(parsed.spawns[0].unique_id, 88);
+        let named = SpawnKind::Item {
+            amount: None,
+            name: Some("Someone".to_owned()),
+            opt_level: None,
+            owner: None,
+        };
+        assert_eq!(parsed.spawns[0].kind, named);
     }
 
     #[test]
@@ -1177,7 +1656,12 @@ mod test {
             (gate.position.x, gate.position.y, gate.position.z),
             (1254.0, -6.0, 1374.0)
         );
-        assert_eq!(gate.kind, SpawnKind::Structure);
+        assert_eq!(
+            gate.kind,
+            SpawnKind::Structure {
+                tail: [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+            }
+        );
     }
 
     /// The shared NPC head of a COS record (uid + position/movement/state +
@@ -1223,6 +1707,7 @@ mod test {
                 kind: CosKind::Vehicle,
                 pet_name: None,
                 owner_name: None,
+                owner_bytes: None,
                 owner_uid: None,
             }
         );
@@ -1261,6 +1746,7 @@ mod test {
                 kind: CosKind::Transport,
                 pet_name: None,
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, Some(0xFF), None)),
                 owner_uid: Some(0x0102_0304),
             }
         );
@@ -1321,6 +1807,7 @@ mod test {
                 kind: CosKind::GrowthPet,
                 pet_name: Some("Rex".into()),
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, Some(0xFF), None)),
                 owner_uid: Some(1001),
             }
         );
@@ -1330,6 +1817,7 @@ mod test {
                 kind: CosKind::GrabPet,
                 pet_name: Some("Hoppel".into()),
                 owner_name: Some("Owner".into()),
+                owner_bytes: Some((0, None, None)),
                 owner_uid: Some(1001),
             }
         );
@@ -1339,6 +1827,7 @@ mod test {
                 kind: CosKind::Fellow,
                 pet_name: None,
                 owner_name: Some("GuildMate".into()),
+                owner_bytes: Some((0, Some(0xFF), Some(777))),
                 owner_uid: Some(1002),
             }
         );
@@ -1420,13 +1909,125 @@ mod test {
 
         let parsed = parse_group_spawn(&body, true, 2, &res);
         assert_eq!(parsed.spawns.len(), 2, "rider + follower must both parse");
-        assert_eq!(
-            parsed.spawns[0].kind,
-            SpawnKind::Player {
-                equipment: vec![],
-                riding_uid: Some(4711),
-            }
-        );
+        let SpawnKind::Player { riding_uid, .. } = &parsed.spawns[0].kind else {
+            panic!("a player");
+        };
+        assert_eq!(*riding_uid, Some(4711));
+        assert_eq!(parsed.spawns[1].unique_id, 99);
+    }
+
+    /// Every byte of a player record is kept, the ones nothing interprets by
+    /// position, so a writer can give the record back as it came.
+    #[test]
+    fn a_player_record_keeps_every_byte() {
+        const PLAYER_REF: u32 = 1907;
+        const SWORD: u32 = 3632;
+        const HAT: u32 = 10971;
+        let equipment = RefType::Item {
+            equipment: true,
+            gold: false,
+            named: false,
+        };
+        let res = resolver(&[
+            (PLAYER_REF, RefType::Player),
+            (SWORD, equipment),
+            (HAT, equipment),
+        ]);
+        let body = Body::default()
+            .u32(PLAYER_REF)
+            .raw(&[1, 2, 3, 4, 5])
+            .u8(1)
+            .u32(SWORD)
+            .u8(7) // +7
+            .u8(6)
+            .u8(1)
+            .u32(HAT)
+            .u8(2)
+            .u8(0) // no mask
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Remote")
+            .raw(&[7, 8, 9])
+            .u8(0) // not riding
+            .u8(10)
+            .raw(&[11, 0, 12]) // around interact mode 0
+            .string("Guild")
+            .u32(13)
+            .string("Nick")
+            .raw(&[14; 14])
+            .raw(&[28, 29])
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let bytes = PlayerBytes {
+            head: [1, 2, 3, 4, 5],
+            between_lists: 6,
+            after_name: [7, 8, 9],
+            after_riding: 10,
+            around_mode: [11, 12],
+            tail: [28, 29],
+        };
+        let player = SpawnKind::Player {
+            equipment: vec![(SWORD, 7)],
+            avatar: vec![(HAT, 2)],
+            riding_uid: None,
+            mask: None,
+            interact_mode: 0,
+            stall: None,
+            guild_id: 13,
+            guild_tail: [14; 14],
+            bytes,
+        };
+        assert_eq!(parsed.spawns[0].kind, player);
+    }
+
+    /// A masked player in a stall carries both blocks the original reads for
+    /// them; a follower record proves the boundary.
+    #[test]
+    fn a_masked_player_in_a_stall_reads_both_blocks() {
+        const PLAYER_REF: u32 = 1907;
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(PLAYER_REF, RefType::Player), (NPC_REF, RefType::Npc)]);
+        let mut body = Body::default()
+            .u32(PLAYER_REF)
+            .raw(&[0u8; 5])
+            .u8(0) // no equipment
+            .u8(0) // the byte between the item lists
+            .u8(0) // no avatar items
+            .u8(1) // a mask
+            .u32(PLAYER_REF) // that is a player model
+            .u8(3)
+            .u8(2)
+            .u32(10)
+            .u32(20)
+            .u32(352808)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Seller")
+            .raw(&[0, 1, 0xFF]) // job type, job level, pk state
+            .u8(0) // not riding
+            .u8(0) // in combat
+            .raw(&[0, 4, 0]) // scroll, interact mode 4, unk
+            .string("") // guild block
+            .u32(0)
+            .string("")
+            .raw(&[0u8; 14])
+            .string("Cheap") // stall
+            .u32(77)
+            .u8(0)
+            .u8(0xFF)
+            .0;
+        body.extend_from_slice(&follower_npc(Body::default(), NPC_REF, 99).0);
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let SpawnKind::Player { mask, stall, .. } = &parsed.spawns[0].kind else {
+            panic!("a player");
+        };
+        let worn = Mask {
+            ref_id: PLAYER_REF,
+            model: Some((3, vec![10, 20])),
+        };
+        let title = ("Cheap".to_owned(), 77);
+        assert_eq!((mask.as_ref(), stall.as_ref()), (Some(&worn), Some(&title)));
         assert_eq!(parsed.spawns[1].unique_id, 99);
     }
 

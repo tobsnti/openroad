@@ -6,7 +6,7 @@
 //! `Option`-fashion so a malformed or truncated record fails safe (and keeps a
 //! byte offset for diagnostics) instead of erroring through `std::io`.
 
-use crate::agent::character_data::{ActiveBuff, EntityState, SpawnPosition};
+use crate::agent::character_data::{ActiveBuff, EntityMovement, EntityState, SpawnPosition};
 #[cfg(feature = "bevy")]
 use bevy::prelude::Component;
 
@@ -58,6 +58,11 @@ impl<'a> Reader<'a> {
         self.take(n).map(|_| ())
     }
 
+    /// The next `N` bytes.
+    pub fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
+        self.take(N)?.try_into().ok()
+    }
+
     pub fn u8(&mut self) -> Option<u8> {
         Some(self.take(1)?[0])
     }
@@ -91,25 +96,38 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Consume the movement block: `has_dest:u8, move_type:u8`, then either a
-    /// destination (region, and x/y/z when the destination region > 0) or a
-    /// standing turn (`u8, heading:u16`). The destination coordinates are u16
-    /// in the overworld and i32 in a dungeon, keyed by the entity's *current*
-    /// position region — read immediately before this block — not the
-    /// destination region (`docs/re/systems/dungeon-teleport-in.md`).
-    pub fn skip_movement(&mut self, current_region: u16) -> Option<()> {
-        let has_dest = self.u8()? != 0;
-        let _move_type = self.u8()?;
-        if has_dest {
+    /// The movement block ([`EntityMovement`]): `has_dest:u8, move_type:u8`,
+    /// then either a destination (region, and x/y/z when the destination
+    /// region > 0) or a standing turn (`u8, heading:u16`). The destination
+    /// coordinates are u16 in the overworld and i32 in a dungeon, keyed by the
+    /// entity's *current* position region — read immediately before this block
+    /// — not the destination region (`docs/re/systems/dungeon-teleport-in.md`).
+    pub fn movement(&mut self, current_region: u16) -> Option<EntityMovement> {
+        let has_destination = self.u8()? != 0;
+        let move_type = self.u8()?;
+        let mut movement = EntityMovement {
+            has_destination,
+            move_type,
+            ..Default::default()
+        };
+        if has_destination {
             let region = self.u16()?;
+            movement.dest_region = Some(region);
             if region > 0 {
-                let coord_width = if current_region & 0x8000 != 0 { 4 } else { 2 };
-                self.skip(3 * coord_width)?; // x, y, z
+                let dungeon = current_region & 0x8000 != 0;
+                let mut coord = || match dungeon {
+                    true => self.u32().map(|v| v as i32),
+                    false => self.u16().map(i32::from),
+                };
+                movement.dest_x = Some(coord()?);
+                movement.dest_y = Some(coord()?);
+                movement.dest_z = Some(coord()?);
             }
         } else {
-            self.skip(3)?; // unknown byte + heading:u16
+            movement.source = Some(self.u8()?);
+            movement.angle = Some(self.u16()?);
         }
-        Some(())
+        Some(movement)
     }
 
     /// Read the character-state block: `life, unk, motion, body` (4×u8),
@@ -144,8 +162,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Read the guild block: name string, guild id (u32), member-nick string,
-    /// then 14 bytes — crest revision, union id, union crest revision and two
-    /// flag bytes — that nothing consumes yet.
+    /// then 14 bytes that nothing consumes yet [U] (go-sro's `WriteGuild`
+    /// names them crest revision, union id, union crest revision and two flag
+    /// bytes). The name and nick come back as the [`GuildTag`], then the id
+    /// and the 14 bytes.
     ///
     /// The block is **always present**, guild or not: a guildless player sends
     /// a zero-length name and the same zeroed tail, so this is not conditional
@@ -158,12 +178,12 @@ impl<'a> Reader<'a> {
     /// against), corroborated field-for-field by the vSRO client-side parser.
     /// Closing it needs the guilded-player capture, `docs/re/CAPTURE_LIST.md`
     /// row A5.
-    pub fn guild(&mut self) -> Option<GuildTag> {
+    pub fn guild(&mut self) -> Option<(GuildTag, u32, [u8; 14])> {
         let name = self.string()?;
-        self.skip(4)?; // guild id
+        let id = self.u32()?;
         let granted_nick = self.string()?;
-        self.skip(14)?; // crest rev, union id, union crest rev, 2×u8 flags
-        Some(GuildTag { name, granted_nick })
+        let tail = self.array()?;
+        Some((GuildTag { name, granted_nick }, id, tail))
     }
 }
 
@@ -174,23 +194,25 @@ mod test {
     /// A trailing sentinel byte proves exactly the right number of coordinate
     /// bytes was consumed for each region kind.
     #[test]
-    fn skip_movement_widths() {
+    fn movement_widths() {
         // Overworld current region: 3 × u16 destination coords.
         let mut b: Vec<u8> = vec![1, 0];
         b.extend_from_slice(&0x60A8u16.to_le_bytes());
-        b.extend_from_slice(&[0; 6]);
+        b.extend_from_slice(&[1, 0, 2, 0, 3, 0]);
         b.push(0xEE);
         let mut r = Reader::new(&b);
-        r.skip_movement(0x60A8).unwrap();
+        let m = r.movement(0x60A8).unwrap();
+        assert_eq!((m.dest_x, m.dest_y, m.dest_z), (Some(1), Some(2), Some(3)));
         assert_eq!(r.u8(), Some(0xEE));
 
         // Dungeon current region: 3 × i32 destination coords.
         let mut b: Vec<u8> = vec![1, 0];
         b.extend_from_slice(&0x8001u16.to_le_bytes());
-        b.extend_from_slice(&[0; 12]);
+        b.extend_from_slice(&(-5i32).to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
         b.push(0xEE);
         let mut r = Reader::new(&b);
-        r.skip_movement(0x8001).unwrap();
+        assert_eq!(r.movement(0x8001).unwrap().dest_x, Some(-5));
         assert_eq!(r.u8(), Some(0xEE));
 
         // Destination region 0: no coordinate triple at all.
@@ -198,13 +220,14 @@ mod test {
         b.extend_from_slice(&0u16.to_le_bytes());
         b.push(0xEE);
         let mut r = Reader::new(&b);
-        r.skip_movement(0x8001).unwrap();
+        assert_eq!(r.movement(0x8001).unwrap().dest_x, None);
         assert_eq!(r.u8(), Some(0xEE));
 
         // Standing turn: source byte + heading, independent of region kind.
         let b: Vec<u8> = vec![0, 1, 1, 0xEC, 0x2F, 0xEE];
         let mut r = Reader::new(&b);
-        r.skip_movement(0x8001).unwrap();
+        let m = r.movement(0x8001).unwrap();
+        assert_eq!((m.source, m.angle), (Some(1), Some(0x2FEC)));
         assert_eq!(r.u8(), Some(0xEE));
     }
 }
