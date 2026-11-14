@@ -50,9 +50,9 @@ use crate::assets::textdata::characterdata::CharacterData;
 use crate::assets::textdata::decode::decode_textdata;
 use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::teleport::TeleportTable;
-use crate::net::entity_spawn::{
-    parse_group_spawn, RefResolver, RefType, SpawnKind, TextdataResolver,
-};
+use crate::net::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
+use crate::net::log_spawn_notes;
+use crate::plugins::textdata::TextdataResolver;
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -768,10 +768,12 @@ fn netcheck_select_target(
                 .group_count
                 .map(|count| parse_group_spawn(&d.raw, true, count, &game_data.resolver()))
         })
+        .inspect(log_spawn_notes)
         .collect();
     let single_spawns: Vec<_> = reader
         .read()
         .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver()))
+        .inspect(log_spawn_notes)
         .collect();
     // Remember every candidate; choose when the local position is known.
     // Measured 2026-11-09: the spawn batch and the join land in the same frame,
@@ -952,6 +954,7 @@ fn netcheck_pick_up_loot(
     };
     for spawn in reader.read() {
         let parsed = parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver());
+        log_spawn_notes(&parsed);
         let Some(uid) = parsed
             .spawns
             .iter()

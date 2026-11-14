@@ -18,3 +18,12 @@ fn module_identification_frame() -> SilkroadFrame {
         data: payload,
     }
 }
+
+/// Logs what the spawn parser noted, one warning each, under the parser's own
+/// log target: these are the lines it logged itself before the notes became
+/// data, and the bench counts them by text.
+pub fn log_spawn_notes(parsed: &entity_spawn::GroupSpawnParse) {
+    for note in &parsed.notes {
+        bevy::log::warn!(target: "client::net::entity_spawn", "{note}");
+    }
+}
