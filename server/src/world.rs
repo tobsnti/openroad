@@ -24,7 +24,7 @@ use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::sight;
-use crate::store::{AccountId, Character, Position, Store};
+use crate::store::{AccountId, Changes, Character, Position, Store};
 use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
@@ -68,15 +68,9 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Player {
     pub session: SessionId,
-    pub name: String,
-    pub position: Position,
-    pub hp: u32,
-    pub mp: u32,
-    /// The characterdata row of its model.
-    pub ref_id: u32,
-    /// Height and build, a nibble each.
-    pub scale: u8,
-    pub inventory_size: u8,
+    /// The character as the store keeps it, kept current while it is in the
+    /// world (its position, for one) and written back when it leaves.
+    pub character: Character,
     /// World units per second, the model's.
     pub walk_speed: f32,
     pub run_speed: f32,
@@ -153,6 +147,8 @@ pub struct World {
     npcs_in: HashMap<u16, Vec<u32>>,
     /// Rows of `npcpos.txt` that name no NPC model (`crate::npc`).
     skipped_npc_rows: usize,
+    /// What the store has to write, in order (`take_commits`).
+    commits: Vec<Changes>,
     tickets: HashMap<u32, Ticket>,
     last_session: u32,
     last_uid: u32,
@@ -171,6 +167,7 @@ impl World {
             npcs: BTreeMap::new(),
             npcs_in: HashMap::new(),
             skipped_npc_rows: 0,
+            commits: Vec::new(),
             tickets: HashMap::new(),
             last_session: 0,
             last_uid: 0,
@@ -259,7 +256,8 @@ impl World {
         id
     }
 
-    /// The session ends; whoever was shown its character is told it left.
+    /// The session ends; whoever was shown its character is told it left,
+    /// and the character as it left is due to the store.
     pub fn disconnect(&mut self, session: SessionId) {
         self.sessions.remove(&session);
         let gone: Vec<u32> = self
@@ -269,11 +267,22 @@ impl World {
             .map(|(uid, _)| *uid)
             .collect();
         for uid in gone {
-            self.players.remove(&uid);
+            let Some(player) = self.players.remove(&uid) else {
+                continue;
+            };
+            self.commits.push(Changes {
+                characters: vec![player.character],
+            });
             for observer in self.observers(uid) {
                 self.hide(observer, uid);
             }
         }
+    }
+
+    /// What the store has to write, oldest first. The runtime hands it to the
+    /// storage thread, so the step never waits for the store.
+    pub fn take_commits(&mut self) -> Vec<Changes> {
+        std::mem::take(&mut self.commits)
     }
 
     /// One client frame, as the transport cut it out of the stream.
@@ -434,9 +443,9 @@ impl World {
         self.step += 1;
         let mut crossed = Vec::new();
         for (uid, player) in &mut self.players {
-            let region = player.position.region;
+            let region = player.character.position.region;
             movement::advance(player);
-            if player.position.region != region {
+            if player.character.position.region != region {
                 crossed.push(*uid);
             }
         }

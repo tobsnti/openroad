@@ -87,7 +87,7 @@ fn joined(ready: bool) -> (World, SessionId, u32) {
 }
 
 fn x_of(world: &World, uid: u32) -> f32 {
-    world.player(uid).unwrap().position.x
+    world.player(uid).unwrap().character.position.x
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn a_walk_across_the_region_border_ends_in_the_next_region() {
     for _ in 0..(970 * STEPS_PER_SECOND).div_ceil(50) {
         world.step();
     }
-    let at = world.player(uid).unwrap().position;
+    let at = world.player(uid).unwrap().character.position;
     assert_eq!((at.region, at.x, at.z), (REGION + 1, 19.0, 1419.0));
     assert_eq!(world.player(uid).unwrap().walk, None);
 }
