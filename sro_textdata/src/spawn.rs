@@ -36,7 +36,8 @@ impl RefResolver for SpawnTables<'_> {
                 return RefType::Player;
             }
             if ch.is_monster() {
-                return RefType::Monster;
+                let extra = matches!(ch.type_ids(), Some((1, 2, 1, 2 | 3)));
+                return RefType::Monster { extra };
             }
             if let Some(kind) = ch.cos_kind() {
                 return RefType::Cos { kind };
@@ -84,7 +85,11 @@ mod test {
             ),
             (
                 1933,
-                CharacterDataRow(row(1933, "MOB_CH_MANGNYANG", [1, 2, 1, 0])),
+                CharacterDataRow(row(1933, "MOB_CH_MANGNYANG", [1, 2, 1, 1])),
+            ),
+            (
+                5000,
+                CharacterDataRow(row(5000, "MOB_EU_THIEF_NPC_0001", [1, 2, 1, 2])),
             ),
             (
                 2003,
@@ -120,7 +125,8 @@ mod test {
             named,
         };
         assert_eq!(tables.resolve(1907), RefType::Player);
-        assert_eq!(tables.resolve(1933), RefType::Monster);
+        assert_eq!(tables.resolve(1933), RefType::Monster { extra: false });
+        assert_eq!(tables.resolve(5000), RefType::Monster { extra: true });
         assert_eq!(tables.resolve(2003), RefType::Npc);
         let horse = CosKind::from_type_id4(1).expect("tid4 1 is a COS");
         assert_eq!(tables.resolve(3), RefType::Cos { kind: horse });

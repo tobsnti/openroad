@@ -48,7 +48,12 @@ pub enum SpawnKind {
         riding_uid: Option<u32>,
     },
     Npc,
-    Monster,
+    /// A monster; `extra` is the byte the original client reads after the
+    /// rarity of a thief or hunter monster (TypeID4 2 and 3)
+    /// [V original handler], its meaning [U].
+    Monster {
+        extra: Option<u8>,
+    },
     /// A COS (pet/mount/transport). `pet_name` is the owner-given name
     /// (attack/pick pets only); `owner_uid` links back to the summoner
     /// (absent on ride-only horses, which carry no owner tail at all).
@@ -199,12 +204,18 @@ impl Display for SpawnNote {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RefType {
     Player,
-    Monster,
+    /// A monster. `extra`: the original client reads one byte more after its
+    /// rarity for thief and hunter monsters (TypeID4 2 and 3)
+    /// [V original handler].
+    Monster {
+        extra: bool,
+    },
     Npc,
     /// An NPC or a monster, undecided: a resolver without characterdata (the
     /// headless net check) cannot tell them apart. The two records differ only
     /// by the monster's trailing rarity byte, so the rest of the batch has to
-    /// settle it (see `settle_character`).
+    /// settle it (see `settle_character`). A thief or hunter monster, one byte
+    /// longer still, is not among the readings: it needs characterdata.
     Character,
     /// A COS (characterdata `1/2/3/tid4`) — NPC record plus an owner tail.
     Cos {
@@ -423,6 +434,8 @@ impl<'a, R: RefResolver> BatchFit<'a, R> {
 /// one-byte-longer reading does. Anything else leaves it undecided (`None`):
 /// measured on our stub's batches (2026-11-11), seven NPCs in a row fit 64
 /// readings, and without characterdata nothing picks the true one.
+/// A thief or hunter monster, two bytes past the NPC reading, is not tried:
+/// the batch stops at it, undecided.
 fn settle_character<R: RefResolver>(
     mut entity: SpawnedEntity,
     r: &mut Reader,
@@ -437,7 +450,7 @@ fn settle_character<R: RefResolver>(
         (true, false) => Some(entity),
         (false, true) => {
             entity.spawn_rarity = Some(r.u8()?);
-            entity.kind = SpawnKind::Monster;
+            entity.kind = SpawnKind::Monster { extra: None };
             Some(entity)
         }
         _ => None,
@@ -448,10 +461,10 @@ fn parse_spawn_record(r: &mut Reader, resolver: &impl RefResolver) -> Option<Spa
     let ref_id = r.u32()?;
     match resolver.resolve(ref_id) {
         RefType::Player => parse_player(r, ref_id, resolver),
-        RefType::Monster => parse_character(r, ref_id, true),
+        RefType::Monster { extra } => parse_character(r, ref_id, Some(extra)),
         // An undecided record is read as an NPC; whether a monster's rarity
         // byte follows is the batch's call (`settle_character`).
-        RefType::Npc | RefType::Character => parse_character(r, ref_id, false),
+        RefType::Npc | RefType::Character => parse_character(r, ref_id, None),
         RefType::Cos { kind } => parse_cos(r, ref_id, kind),
         RefType::Item {
             equipment,
@@ -555,7 +568,9 @@ fn read_item_list(
     Some(())
 }
 
-fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<SpawnedEntity> {
+/// An NPC (`monster` None) or a monster: the NPC record plus the rarity, and
+/// for a thief or hunter monster one byte more.
+fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
     r.skip_movement(position.region)?;
@@ -570,7 +585,14 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
             talk_options.push(r.u8()?);
         }
     }
-    let spawn_rarity = if is_monster { Some(r.u8()?) } else { None };
+    let (spawn_rarity, kind) = match monster {
+        Some(extra) => {
+            let rarity = r.u8()?;
+            let extra = if extra { Some(r.u8()?) } else { None };
+            (Some(rarity), SpawnKind::Monster { extra })
+        }
+        None => (None, SpawnKind::Npc),
+    };
     Some(SpawnedEntity {
         ref_id,
         unique_id,
@@ -580,11 +602,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, is_monster: bool) -> Option<Spaw
         state: Some(state),
         spawn_rarity,
         talk_options,
-        kind: if is_monster {
-            SpawnKind::Monster
-        } else {
-            SpawnKind::Npc
-        },
+        kind,
     })
 }
 
@@ -868,7 +886,10 @@ mod test {
     fn parses_npc_and_monster() {
         const NPC_REF: u32 = 1900;
         const MOB_REF: u32 = 2000;
-        let res = resolver(&[(NPC_REF, RefType::Npc), (MOB_REF, RefType::Monster)]);
+        let res = resolver(&[
+            (NPC_REF, RefType::Npc),
+            (MOB_REF, RefType::Monster { extra: false }),
+        ]);
 
         // NPC then monster in one batch, so the NPC's length must be exact for
         // the monster to parse.
@@ -890,8 +911,39 @@ mod test {
         assert_eq!(parsed.spawns[0].kind, SpawnKind::Npc);
         assert_eq!(parsed.spawns[0].spawn_rarity, None);
         assert_eq!(parsed.spawns[1].unique_id, 22);
-        assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster);
+        assert_eq!(parsed.spawns[1].kind, SpawnKind::Monster { extra: None });
         assert_eq!(parsed.spawns[1].spawn_rarity, Some(1));
+    }
+
+    /// A thief or hunter monster carries one byte more after its rarity; read
+    /// without it, the next record would start one byte early.
+    #[test]
+    fn a_thief_monster_reads_its_extra_byte() {
+        const THIEF_REF: u32 = 2001;
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[
+            (THIEF_REF, RefType::Monster { extra: true }),
+            (NPC_REF, RefType::Npc),
+        ]);
+        let body = Body::default()
+            .u32(THIEF_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0) // talk flag: none
+            .u8(1) // rarity
+            .u8(7) // the thief's extra byte
+            .u32(NPC_REF)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(0)
+            .0;
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let thief = SpawnKind::Monster { extra: Some(7) };
+        assert_eq!(
+            (&parsed.spawns[0].kind, parsed.spawns[1].unique_id),
+            (&thief, 11)
+        );
     }
 
     /// A resolver without characterdata answers [`RefType::Character`] for
@@ -931,7 +983,7 @@ mod test {
             read,
             vec![
                 (11, SpawnKind::Npc, None),
-                (22, SpawnKind::Monster, Some(1)),
+                (22, SpawnKind::Monster { extra: None }, Some(1)),
                 (33, SpawnKind::Npc, None),
             ]
         );
@@ -992,7 +1044,7 @@ mod test {
                     named: false,
                 },
             ),
-            (1933, RefType::Monster),
+            (1933, RefType::Monster { extra: false }),
         ]);
         let parsed = parse_group_spawn(&body, true, 2, &res);
         let read: Vec<_> = parsed
@@ -1010,7 +1062,7 @@ mod test {
                         name: None
                     }
                 ),
-                (0x1A0CA, SpawnKind::Monster)
+                (0x1A0CA, SpawnKind::Monster { extra: None })
             ]
         );
     }
