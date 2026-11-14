@@ -58,7 +58,7 @@ fn joined(ready: bool) -> (World, SessionId, u32) {
     (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
     refdata.add_characters(&row.join("\t"));
     let mut world = World::new(Arc::new(store), refdata);
-    let token = world.admit(account, "admin").unwrap();
+    let token = world.admit(account, "admin", vec![hero()]).unwrap();
     let s = world.connect();
     let login = AgentLoginRequest {
         token,

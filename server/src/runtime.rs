@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::gateway::{Gateway, GatewayConnection, Shard};
-use crate::store::{self, AccountId, Store};
+use crate::store::{self, AccountId, Character, Store};
 use crate::tick::STEP;
 use crate::transport::{frame, Transport};
 use crate::world::{Event, SessionId, World};
@@ -126,6 +126,7 @@ enum Command {
     Admit {
         account: AccountId,
         username: String,
+        characters: Vec<Character>,
         reply: Sender<Option<u32>>,
     },
     Query(Box<dyn FnOnce(&World) + Send>),
@@ -192,9 +193,10 @@ fn apply(world: &mut World, writers: &mut HashMap<SessionId, Sender<Vec<u8>>>, c
         Command::Admit {
             account,
             username,
+            characters,
             reply,
         } => {
-            let _ = reply.send(world.admit(account, &username));
+            let _ = reply.send(world.admit(account, &username, characters));
         }
         Command::Query(ask) => ask(world),
     }
@@ -351,11 +353,15 @@ impl Shard for Link {
         self.ask(Command::Online).unwrap_or(0)
     }
 
+    /// The account's characters are read here, on the gateway's thread, so
+    /// the simulation never waits for the store.
     fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
         let username = username.to_owned();
+        let characters = self.store.characters(account);
         self.ask(|reply| Command::Admit {
             account,
             username,
+            characters,
             reply,
         })
         .flatten()

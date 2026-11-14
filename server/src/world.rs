@@ -24,7 +24,7 @@ use crate::outbox::{Frame, Outbox};
 use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::sight;
-use crate::store::{AccountId, Position, Store};
+use crate::store::{AccountId, Character, Position, Store};
 use crate::tick::STEPS_PER_SECOND;
 use crate::wirelog::{Dir, WireLog};
 
@@ -116,10 +116,12 @@ pub enum Phase {
     Closed,
 }
 
-/// What the gateway hands over for one login: whose it is, under which name.
+/// What the gateway hands over for one login: whose it is, under which name,
+/// and the account's characters, read where the password was checked.
 pub(crate) struct Ticket {
     pub account: AccountId,
     pub username: String,
+    pub characters: Vec<Character>,
 }
 
 struct Session {
@@ -130,6 +132,8 @@ struct Session {
     since: u64,
     /// The other characters' ids its client has been shown.
     known: BTreeSet<u32>,
+    /// The account's characters, from its ticket on.
+    characters: Vec<Character>,
 }
 
 /// The original client sends the agent login right after the handshake, 0.05
@@ -215,14 +219,21 @@ impl World {
 
     /// Let `account` in after the gateway checked its password: the returned
     /// token is good for one login as `username`. `None` while the account has
-    /// a session on the agent.
-    pub fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
+    /// a session on the agent. The caller reads the account's `characters`
+    /// from the store, so the step never waits for it.
+    pub fn admit(
+        &mut self,
+        account: AccountId,
+        username: &str,
+        characters: Vec<Character>,
+    ) -> Option<u32> {
         if self.connected(account) {
             return None;
         }
         let ticket = Ticket {
             account,
             username: username.to_owned(),
+            characters,
         };
         loop {
             let token = OsRng.next_u32();
@@ -242,6 +253,7 @@ impl World {
             log: WireLog::open("agent"),
             since: self.step,
             known: BTreeSet::new(),
+            characters: Vec::new(),
         };
         self.sessions.insert(id, session);
         id
@@ -470,6 +482,19 @@ impl World {
 
     pub(crate) fn take_ticket(&mut self, token: u32) -> Option<Ticket> {
         self.tickets.remove(&token)
+    }
+
+    /// The characters of `session`'s account, as its ticket brought them.
+    pub(crate) fn characters(&self, session: SessionId) -> &[Character] {
+        self.sessions
+            .get(&session)
+            .map_or(&[], |s| s.characters.as_slice())
+    }
+
+    pub(crate) fn hold_characters(&mut self, session: SessionId, characters: Vec<Character>) {
+        if let Some(s) = self.sessions.get_mut(&session) {
+            s.characters = characters;
+        }
     }
 
     pub(crate) fn store(&self) -> &dyn Store {

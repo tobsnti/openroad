@@ -10,7 +10,7 @@ use packets::agent::prelude::{
 };
 use packets::Packet;
 use server::refdata::RefData;
-use server::store::{login, Character, MemoryStore, Position};
+use server::store::{login, Character, MemoryStore, Position, Store};
 use server::world::{Phase, SessionId, World};
 
 const REGION: u16 = 25000;
@@ -101,7 +101,9 @@ fn send(world: &mut World, session: SessionId, packet: Packet) {
 /// Hero in the game; what the session was sent before 0x3012 is dropped.
 fn enter((world, store): &mut (World, Arc<MemoryStore>)) -> (SessionId, u32) {
     let account = login(store.as_ref(), "a", "a").unwrap();
-    let token = world.admit(account, "a").unwrap();
+    let token = world
+        .admit(account, "a", store.characters(account))
+        .unwrap();
     let s = world.connect();
     let login = AgentLoginRequest {
         token,
