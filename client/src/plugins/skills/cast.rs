@@ -25,13 +25,15 @@ use crate::plugins::combat::{
 };
 use crate::plugins::effects::spawn::DelayedEffect;
 use crate::plugins::effects::OneShotEffect;
+use crate::plugins::error_text::{self, error_line};
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
 use crate::plugins::net::entities::EntityVitals;
 use crate::plugins::player::Player;
 use crate::plugins::skills::book::SkillBook;
 use crate::plugins::skills::status::{apply_status_effects, IncapacitatedFilter};
 use crate::plugins::skills::{EquippedWeapon, LocalCombat};
-use crate::plugins::textdata::{ClientSkillData, ClientSkillEffects};
+use crate::plugins::textdata::{ClientSkillData, ClientSkillEffects, ClientUiStrings};
 
 /// Ask to cast a skill (by skilldata id) at an optional target entity.
 /// Emitted by the underbar; consumed by [`dispatch_casts`].
@@ -997,6 +999,22 @@ pub struct CastLookups<'w, 's> {
     children: Query<'w, 's, &'static Children>,
     busy_wrappers: crate::plugins::player::BusyWrappers<'w, 's>,
     liveness: crate::plugins::combat::TargetLiveness<'w, 's>,
+}
+
+/// A refused skill or attack, told the way the original tells it: `code` is a
+/// category-4 error ([`error_text::SKILL_USE`]) and becomes one chat line; a
+/// code the original has no text for stays silent. One line per refusal, as
+/// in the original; a held key is one request, so holding it cannot flood.
+pub(crate) fn show_skill_refusal(
+    code: u16,
+    ui: Option<&ClientUiStrings>,
+    history: Option<&mut ChatHistory>,
+) {
+    let default_ui = ClientUiStrings::default();
+    let line = error_line(error_text::SKILL_USE, code, ui.unwrap_or(&default_ui));
+    if let (Some(line), Some(history)) = (line, history) {
+        history.push(ChatLine::system(line));
+    }
 }
 
 /// Turn [`CastRequest`]s into either the 0x7074 packet (online) or the local

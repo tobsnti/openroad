@@ -55,6 +55,35 @@ pub const INTERACTION: &[ErrorRow] = &[
     },
 ];
 
+/// Category 4 — a skill or attack refused, by the server's failed 0xB070
+/// `[V original handler]`. The rows are the codes a vSRO server refused
+/// actions with `[V capture, peer vSRO]`; cooldown (0x3005) is one of them and
+/// has no text in the original. The original shows MP, weapon and obstacle
+/// refusals in its warning banner rather than the chat; error_text has one
+/// channel, so they are chat lines.
+pub const SKILL_USE: &[ErrorRow] = &[
+    ErrorRow {
+        code: 0x3004,
+        key: "UIIT_SKILL_USE_FAIL_NOTENOUGHMP",
+        fallback: "Cannot use due to insufficient MP",
+    },
+    ErrorRow {
+        code: 0x3006,
+        key: "UIIT_SKILL_USE_FAIL_WRONGTARGET",
+        fallback: "Invalid target",
+    },
+    ErrorRow {
+        code: 0x300F,
+        key: "UIIT_SKILL_USE_FAIL_BROKEN_WEAPON",
+        fallback: "Cannot attack because the weapon is broken",
+    },
+    ErrorRow {
+        code: 0x3010,
+        key: "UIIT_SKILL_USE_FAIL_PATH_INTERRUPTED",
+        fallback: "Cannot attack due to an obstacle.",
+    },
+];
+
 /// The line for `code` in `category`, or `None` where the original says
 /// nothing.
 pub fn error_line(category: &[ErrorRow], code: u16, ui: &ClientUiStrings) -> Option<String> {
