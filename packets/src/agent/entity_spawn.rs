@@ -29,7 +29,7 @@ use std::collections::HashMap;
 
 use std::fmt::{self, Display, Formatter};
 
-use crate::agent::character_data::EntityState;
+use crate::agent::character_data::{EntityMovement, EntityState};
 use crate::hexdump;
 
 use crate::agent::pet::CosKind;
@@ -100,6 +100,9 @@ pub struct SpawnedEntity {
     /// non-player kind. The block is always on the wire for players — a
     /// guildless one just sends an empty name.
     pub guild: Option<GuildTag>,
+    /// Where a character is going, or which way it faces (characters only;
+    /// `None` for dropped items and gate buildings).
+    pub movement: Option<EntityMovement>,
     /// Life/motion/body states and movement speeds (characters only; `None`
     /// for dropped items, which carry no state block).
     pub state: Option<EntityState>,
@@ -522,6 +525,7 @@ fn parse_structure(r: &mut Reader, ref_id: u32) -> Option<SpawnedEntity> {
         position,
         name: None,
         guild: None,
+        movement: None,
         state: None,
         spawn_rarity: None,
         talk_options: Vec::new(),
@@ -543,7 +547,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
 
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip_movement(position.region)?;
+    let movement = r.movement(position.region)?;
     let state = r.character_state()?;
     let name = r.string()?;
     // job_type, job_level, pk_state
@@ -574,6 +578,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
         position,
         name: Some(name),
         guild: (!guild.name.is_empty()).then_some(guild),
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity: None,
         talk_options: Vec::new(),
@@ -658,7 +663,7 @@ fn read_interaction(r: &mut Reader, talk_options: &mut Vec<u8>) -> Option<Intera
 fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip_movement(position.region)?;
+    let movement = r.movement(position.region)?;
     let state = r.character_state()?;
     let mut talk_options = Vec::new();
     let interaction = read_interaction(r, &mut talk_options)?;
@@ -676,6 +681,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option
         position,
         name: None,
         guild: None,
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity,
         talk_options,
@@ -695,7 +701,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option
 fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    r.skip_movement(position.region)?;
+    let movement = r.movement(position.region)?;
     let state = r.character_state()?;
     // The interaction block is shared with NPCs (a summoned COS sends flag 0).
     let mut talk_options = Vec::new();
@@ -723,6 +729,7 @@ fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity
         position,
         name: None,
         guild: None,
+        movement: Some(movement),
         state: Some(state),
         spawn_rarity: None,
         talk_options,
@@ -781,6 +788,7 @@ fn parse_item(
         position,
         name: None,
         guild: None,
+        movement: None,
         state: None,
         spawn_rarity: Some(rarity),
         talk_options: Vec::new(),
@@ -957,6 +965,9 @@ mod test {
         let state = e.state.as_ref().expect("characters carry a state block");
         assert_eq!(state.walk_speed, 16.0);
         assert_eq!(state.run_speed, 50.0);
+        // the movement block is kept: standing, facing its heading
+        let facing = e.movement.map(|m| (m.has_destination, m.angle));
+        assert_eq!(facing, Some((false, Some(12268))));
     }
 
     #[test]
