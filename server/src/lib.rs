@@ -18,6 +18,7 @@ mod lobby;
 mod movement;
 pub mod npc;
 pub mod outbox;
+pub mod pg_store;
 pub mod refdata;
 pub mod registry;
 pub mod runtime;
