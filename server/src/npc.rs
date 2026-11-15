@@ -77,7 +77,7 @@ pub(crate) fn record(uid: u32, npc: &Npc) -> Bytes {
         ..Default::default()
     };
     standing
-        .write_with_region(&mut b, at.region)
+        .write(&mut b)
         .expect("a standing block names its source and angle");
     let state = EntityState {
         life_state: 1,

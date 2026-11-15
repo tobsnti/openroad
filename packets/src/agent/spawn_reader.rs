@@ -96,39 +96,12 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// The movement block ([`EntityMovement`]): `has_dest:u8, move_type:u8`,
-    /// then either a destination (region, and x/y/z when the destination
-    /// region > 0) or a standing turn (`u8, heading:u16`). The destination
-    /// coordinates are u16 in the overworld and i32 in a dungeon, keyed by the
-    /// entity's *current* position region, read immediately before this block.
-    /// The original keys the width on the destination region and always reads
-    /// the three coordinates [V original handler]; that correction comes on
-    /// its own.
-    pub fn movement(&mut self, current_region: u16) -> Option<EntityMovement> {
-        let has_destination = self.u8()? != 0;
-        let move_type = self.u8()?;
-        let mut movement = EntityMovement {
-            has_destination,
-            move_type,
-            ..Default::default()
-        };
-        if has_destination {
-            let region = self.u16()?;
-            movement.dest_region = Some(region);
-            if region > 0 {
-                let dungeon = current_region & 0x8000 != 0;
-                let mut coord = || match dungeon {
-                    true => self.u32().map(|v| v as i32),
-                    false => self.u16().map(i32::from),
-                };
-                movement.dest_x = Some(coord()?);
-                movement.dest_y = Some(coord()?);
-                movement.dest_z = Some(coord()?);
-            }
-        } else {
-            movement.source = Some(self.u8()?);
-            movement.angle = Some(self.u16()?);
-        }
+    /// The movement block, read by [`EntityMovement::read`], the one reader
+    /// of this block.
+    pub fn movement(&mut self) -> Option<EntityMovement> {
+        let mut cursor = std::io::Cursor::new(self.buf.get(self.pos..)?);
+        let movement = EntityMovement::read(&mut cursor).ok()?;
+        self.pos += cursor.position() as usize;
         Some(movement)
     }
 
@@ -189,43 +162,41 @@ impl<'a> Reader<'a> {
 mod test {
     use super::*;
 
-    /// A trailing sentinel byte proves exactly the right number of coordinate
-    /// bytes was consumed for each region kind.
+    /// The reader moves on by exactly the block's bytes: a trailing sentinel
+    /// is the next byte, for a destination of either width and for a turn.
     #[test]
-    fn movement_widths() {
-        // Overworld current region: 3 × u16 destination coords.
+    fn movement_reads_exactly_its_block() {
+        // An overworld destination: 3 × u16.
         let mut b: Vec<u8> = vec![1, 0];
         b.extend_from_slice(&0x60A8u16.to_le_bytes());
         b.extend_from_slice(&[1, 0, 2, 0, 3, 0]);
         b.push(0xEE);
         let mut r = Reader::new(&b);
-        let m = r.movement(0x60A8).unwrap();
+        let m = r.movement().unwrap();
         assert_eq!((m.dest_x, m.dest_y, m.dest_z), (Some(1), Some(2), Some(3)));
         assert_eq!(r.u8(), Some(0xEE));
 
-        // Dungeon current region: 3 × i32 destination coords.
+        // A dungeon destination: 3 × i32.
         let mut b: Vec<u8> = vec![1, 0];
         b.extend_from_slice(&0x8001u16.to_le_bytes());
         b.extend_from_slice(&(-5i32).to_le_bytes());
         b.extend_from_slice(&[0; 8]);
         b.push(0xEE);
         let mut r = Reader::new(&b);
-        assert_eq!(r.movement(0x8001).unwrap().dest_x, Some(-5));
+        assert_eq!(r.movement().unwrap().dest_x, Some(-5));
         assert_eq!(r.u8(), Some(0xEE));
 
-        // Destination region 0: no coordinate triple at all.
-        let mut b: Vec<u8> = vec![1, 0];
-        b.extend_from_slice(&0u16.to_le_bytes());
-        b.push(0xEE);
-        let mut r = Reader::new(&b);
-        assert_eq!(r.movement(0x8001).unwrap().dest_x, None);
-        assert_eq!(r.u8(), Some(0xEE));
-
-        // Standing turn: source byte + heading, independent of region kind.
+        // A standing turn: source byte + heading.
         let b: Vec<u8> = vec![0, 1, 1, 0xEC, 0x2F, 0xEE];
         let mut r = Reader::new(&b);
-        let m = r.movement(0x8001).unwrap();
+        let m = r.movement().unwrap();
         assert_eq!((m.source, m.angle), (Some(1), Some(0x2FEC)));
         assert_eq!(r.u8(), Some(0xEE));
+
+        // A short block fails and moves nothing.
+        let b: Vec<u8> = vec![1, 0, 0xA8];
+        let mut r = Reader::new(&b);
+        assert_eq!(r.movement(), None);
+        assert_eq!(r.pos(), 0);
     }
 }

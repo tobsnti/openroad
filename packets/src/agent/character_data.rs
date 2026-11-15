@@ -443,14 +443,13 @@ pub struct SpawnPosition {
     pub heading: u16,
 }
 
-/// The movement block: either a destination or a standing turn. The
-/// destination triple is 2 bytes per component in the overworld and 4 bytes in
-/// a dungeon, keyed by the entity's *current* `SpawnPosition.region` — not the
-/// `dest_region` field that precedes it (xBot/go-sro rule; the dest region can
-/// legitimately be 0). The derive can't branch on external context, so this is
-/// read via [`EntityMovement::read_with_region`]. The `dest_region > 0`
-/// presence gate matches our captures; xBot reads the triple unconditionally —
-/// an unresolved source conflict (`docs/re/systems/dungeon-teleport-in.md` §9).
+/// The movement block: either a destination or a standing turn, read as the
+/// original client reads it [V original handler]. A destination's region is
+/// followed by three coordinates, u16 each when the region's bit 15 is clear
+/// (the overworld) and i32 each when it is set (a dungeon), a region of 0
+/// included. The width branches on a field of the block itself, which the
+/// derive cannot express, so the block is read by [`EntityMovement::read`].
+/// The spawn records and CHARACTER_DATA (0x3013) both read it there.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EntityMovement {
     pub has_destination: bool,
@@ -465,12 +464,8 @@ pub struct EntityMovement {
 }
 
 impl EntityMovement {
-    /// Read the movement block; `current_region` (the entity's own position
-    /// region, read just before this block) selects the coordinate width.
-    pub fn read_with_region<T: Read + ReadBytesExt>(
-        reader: &mut T,
-        current_region: u16,
-    ) -> Result<Self, SerializationError> {
+    /// Read the movement block.
+    pub fn read<T: Read + ReadBytesExt>(reader: &mut T) -> Result<Self, SerializationError> {
         let has_destination = u8::read_from(reader)? != 0;
         let move_type = u8::read_from(reader)?;
         let mut movement = EntityMovement {
@@ -481,18 +476,16 @@ impl EntityMovement {
         if has_destination {
             let dest_region = u16::read_from(reader)?;
             movement.dest_region = Some(dest_region);
-            if dest_region > 0 {
-                let mut coord = || -> Result<i32, SerializationError> {
-                    if is_dungeon(current_region) {
-                        i32::read_from(reader)
-                    } else {
-                        Ok(u16::read_from(reader)? as i32)
-                    }
-                };
-                movement.dest_x = Some(coord()?);
-                movement.dest_y = Some(coord()?);
-                movement.dest_z = Some(coord()?);
-            }
+            let mut coord = || -> Result<i32, SerializationError> {
+                if is_dungeon(dest_region) {
+                    i32::read_from(reader)
+                } else {
+                    Ok(u16::read_from(reader)? as i32)
+                }
+            };
+            movement.dest_x = Some(coord()?);
+            movement.dest_y = Some(coord()?);
+            movement.dest_z = Some(coord()?);
         } else {
             movement.source = Some(u8::read_from(reader)?);
             movement.angle = Some(u16::read_from(reader)?);
@@ -922,11 +915,10 @@ pub fn parse_character_info(
         ..Default::default()
     };
     if let Some((spawn, after_position)) = scan_character_data(raw, expected_unique_id) {
-        let current_region = spawn.region;
         fallback.spawn = Some(spawn);
         let mut cursor = Cursor::new(raw);
         cursor.set_position(after_position as u64);
-        if let Ok(movement) = EntityMovement::read_with_region(&mut cursor, current_region) {
+        if let Ok(movement) = EntityMovement::read(&mut cursor) {
             if let Ok(state) = EntityState::read_from(&mut cursor) {
                 if state_plausible(&state) {
                     fallback.movement = Some(movement);
@@ -1185,11 +1177,7 @@ fn forward_parse(
 
     let ref_id = info.stats.as_ref().map(|s| s.ref_id).unwrap_or(0);
     info.spawn = Some(stage!("spawn position", read_tail_spawn(cursor, ref_id)));
-    let current_region = info.spawn.as_ref().map(|s| s.region).unwrap_or(0);
-    info.movement = Some(stage!(
-        "movement",
-        EntityMovement::read_with_region(cursor, current_region)
-    ));
+    info.movement = Some(stage!("movement", EntityMovement::read(cursor)));
     info.state = Some(stage!("state", EntityState::read_from(cursor)));
     info.name = Some(stage!("name", read_string(cursor)));
     info.job = Some(stage!("job", JobInfo::read_from(cursor)));
@@ -1490,7 +1478,7 @@ pub fn write_character_info(
     }
     .serialize_to(&mut buf);
     need(&info.movement, "movement")?
-        .write_with_region(&mut buf, spawn.region)
+        .write(&mut buf)
         .ok_or(MissingSection("movement"))?;
     need(&info.state, "state")?.serialize_to(&mut buf);
     write_string(&mut buf, need(&info.name, "name")?);
@@ -1618,21 +1606,19 @@ impl ActiveQuest {
 }
 
 impl EntityMovement {
-    /// The block as [`Self::read_with_region`] reads it; `None` when a field
-    /// the flags call for is missing.
-    pub fn write_with_region(&self, buf: &mut BytesMut, current_region: u16) -> Option<()> {
+    /// The block as [`Self::read`] reads it; `None` when a field the flags
+    /// call for is missing.
+    pub fn write(&self, buf: &mut BytesMut) -> Option<()> {
         buf.put_u8(u8::from(self.has_destination));
         buf.put_u8(self.move_type);
         if self.has_destination {
             let region = self.dest_region?;
             buf.put_u16_le(region);
-            if region > 0 {
-                for coord in [self.dest_x?, self.dest_y?, self.dest_z?] {
-                    if is_dungeon(current_region) {
-                        buf.put_i32_le(coord);
-                    } else {
-                        buf.put_u16_le(coord as u16);
-                    }
+            for coord in [self.dest_x?, self.dest_y?, self.dest_z?] {
+                if is_dungeon(region) {
+                    buf.put_i32_le(coord);
+                } else {
+                    buf.put_u16_le(coord as u16);
                 }
             }
         } else {
@@ -1738,7 +1724,7 @@ mod test {
         }
         b.push(0xEE); // sentinel: must not be consumed
         let mut cursor = Cursor::new(b.as_slice());
-        let m = EntityMovement::read_with_region(&mut cursor, 0x60A8).unwrap();
+        let m = EntityMovement::read(&mut cursor).unwrap();
         assert_eq!(m.dest_region, Some(0x60A8));
         assert_eq!(
             (m.dest_x, m.dest_y, m.dest_z),
@@ -1749,7 +1735,7 @@ mod test {
 
     #[test]
     fn movement_dest_coords_are_int_in_dungeon() {
-        // Current position region selects the width (bit 15 set → i32), and
+        // The destination region selects the width (bit 15 set → i32), and
         // dungeon-local destinations are large and can be negative
         // (GATE_JINSI_02x01_03 = -10468, 0, 5596 in teleportdata).
         let mut b: Vec<u8> = vec![1, 0];
@@ -1759,7 +1745,7 @@ mod test {
         }
         b.push(0xEE);
         let mut cursor = Cursor::new(b.as_slice());
-        let m = EntityMovement::read_with_region(&mut cursor, 0x8007).unwrap();
+        let m = EntityMovement::read(&mut cursor).unwrap();
         assert_eq!(
             (m.dest_x, m.dest_y, m.dest_z),
             (Some(-10468), Some(0), Some(5596))
@@ -1767,23 +1753,26 @@ mod test {
         assert_eq!(cursor.position() as usize, b.len() - 1);
     }
 
+    /// A destination region of 0 is a region like any other: three u16
+    /// coordinates follow it.
     #[test]
-    fn movement_dest_region_zero_suppresses_coords() {
+    fn a_destination_region_of_0_still_carries_three_coordinates() {
         let mut b: Vec<u8> = vec![1, 0];
         b.extend_from_slice(&0u16.to_le_bytes());
+        b.extend_from_slice(&[1, 0, 2, 0, 3, 0]);
         b.push(0xEE);
         let mut cursor = Cursor::new(b.as_slice());
-        let m = EntityMovement::read_with_region(&mut cursor, 0x8001).unwrap();
+        let m = EntityMovement::read(&mut cursor).unwrap();
         assert_eq!(m.dest_region, Some(0));
-        assert_eq!(m.dest_x, None);
-        assert_eq!(cursor.position(), 4);
+        assert_eq!((m.dest_x, m.dest_y, m.dest_z), (Some(1), Some(2), Some(3)));
+        assert_eq!(cursor.position() as usize, b.len() - 1);
     }
 
     #[test]
     fn movement_standing_turn() {
         let b: Vec<u8> = vec![0, 1, 1, 0xEC, 0x2F];
         let mut cursor = Cursor::new(b.as_slice());
-        let m = EntityMovement::read_with_region(&mut cursor, 0x60A8).unwrap();
+        let m = EntityMovement::read(&mut cursor).unwrap();
         assert!(!m.has_destination);
         assert_eq!(m.source, Some(1));
         assert_eq!(m.angle, Some(0x2FEC));
