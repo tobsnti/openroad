@@ -1043,9 +1043,10 @@ mod test {
             .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
             // name
             .string("Remote")
-            // job_type, job_level, pk_state, transport, in_combat, scroll, interact, unk
+            // three bytes after the name, riding 0, a byte, interact mode 0
+            // between two bytes
             .raw(&[0, 1, 0xFF, 0, 0, 0, 0, 0])
-            // guild: empty name, guild id, empty nick, 3×u32 + 2×u8
+            // guild: empty name, the u32 behind it, empty nick, 14 bytes
             .string("")
             .u32(0)
             .string("")

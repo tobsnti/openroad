@@ -136,10 +136,10 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Read the guild block: name string, guild id (u32), member-nick string,
-    /// then 14 bytes that nothing consumes yet [U] (go-sro's `WriteGuild`
-    /// names them crest revision, union id, union crest revision and two flag
-    /// bytes). The name and nick come back as the [`GuildTag`], then the u32
+    /// Read the guild block: name string, a u32, nick string, then 14 bytes.
+    /// The u32 and the 14 bytes are [U]; go-sro's `WriteGuild` calls them the
+    /// guild id, crest revision, union id, union crest revision and two flag
+    /// bytes. The name and nick come back as the [`GuildTag`], then the u32
     /// behind the name and the 14 bytes.
     ///
     /// The block is **always present**, guild or not: a guildless player sends
