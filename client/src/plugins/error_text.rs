@@ -55,6 +55,59 @@ pub const INTERACTION: &[ErrorRow] = &[
     },
 ];
 
+/// Category 4 — a skill or attack refused, by the server's failed 0xB070 or by
+/// the client's own checks before a cast goes out; the original raises both
+/// through this category `[V original handler]`. The rows are the codes a vSRO
+/// server refused actions with `[V capture, peer vSRO]` and the ones our cast
+/// gates raise; cooldown (0x3005) is in the capture and has no text in the
+/// original. The original shows MP, HP, weapon and obstacle refusals in its
+/// warning banner rather than the chat; error_text has one channel, so they
+/// are chat lines.
+pub const SKILL_USE: &[ErrorRow] = &[
+    ErrorRow {
+        code: SKILL_NOT_ENOUGH_MP,
+        key: "UIIT_SKILL_USE_FAIL_NOTENOUGHMP",
+        fallback: "Cannot use due to insufficient MP",
+    },
+    ErrorRow {
+        code: 0x3006,
+        key: "UIIT_SKILL_USE_FAIL_WRONGTARGET",
+        fallback: "Invalid target",
+    },
+    ErrorRow {
+        code: SKILL_WRONG_WEAPON,
+        key: "UIIT_SKILL_USE_FAIL_WRONGWEAPON",
+        fallback: "You wear equipment which prohibits you from using the selected skill.",
+    },
+    ErrorRow {
+        code: 0x300F,
+        key: "UIIT_SKILL_USE_FAIL_BROKEN_WEAPON",
+        fallback: "Cannot attack because the weapon is broken",
+    },
+    ErrorRow {
+        code: 0x3010,
+        key: "UIIT_SKILL_USE_FAIL_PATH_INTERRUPTED",
+        fallback: "Cannot attack due to an obstacle.",
+    },
+    ErrorRow {
+        code: SKILL_NO_TARGET,
+        key: "UIIT_SKILL_USE_FAIL_NONESELECTETARGET",
+        fallback: "The target is not selected.",
+    },
+    ErrorRow {
+        code: SKILL_NOT_ENOUGH_HP,
+        key: "UIIT_SKILL_USE_FAIL_NOTENOUGHHP",
+        fallback: "Cannot use due to insufficient HP",
+    },
+];
+
+/// The category-4 codes our cast gates raise: the ones the original's server
+/// (MP, HP, weapon) or its own client check (no target) gives the same refusal.
+pub const SKILL_NOT_ENOUGH_MP: u16 = 0x3004;
+pub const SKILL_WRONG_WEAPON: u16 = 0x300D;
+pub const SKILL_NO_TARGET: u16 = 0x3011;
+pub const SKILL_NOT_ENOUGH_HP: u16 = 0x3013;
+
 /// The line for `code` in `category`, or `None` where the original says
 /// nothing.
 pub fn error_line(category: &[ErrorRow], code: u16, ui: &ClientUiStrings) -> Option<String> {

@@ -23,6 +23,7 @@ use crate::commands::SpawnedFromResource;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
 use crate::plugins::effects::EffectCommandsExt;
+use crate::plugins::hud::chat::model::ChatHistory;
 use crate::plugins::hud::death::PlayerDeath;
 use crate::plugins::hud::player_mini_info::PlayerVitals;
 use crate::plugins::net::agent::AgentConnection;
@@ -31,10 +32,11 @@ use crate::plugins::net::entities::{
 };
 use crate::plugins::player::{Player, PlayerCommands, PlayerMoveOrder};
 use crate::plugins::skills::cast::{
-    resolve_online_swing, CastInstanceInfo, CastInstances, LocalCastEnded, PendingSwing,
-    RunningSwings, SkillCooldowns, SkillSwing, SkillSwingTimings, SwingTiming,
+    resolve_online_swing, show_skill_refusal, CastInstanceInfo, CastInstances, LocalCastEnded,
+    PendingSwing, RunningSwings, SkillCooldowns, SkillSwing, SkillSwingTimings, SwingTiming,
 };
 use crate::plugins::skills::EquippedWeapon;
+use crate::plugins::textdata::ClientUiStrings;
 use crate::scenes::SceneState;
 
 /// Order to start auto-attacking a world entity (double-click / re-click on
@@ -309,6 +311,7 @@ impl Plugin for CombatPlugin {
                     // server's absolute values or the prediction stacks on a
                     // number that already contains it — see `VitalsSet`.
                     on_object_action_update.in_set(VitalsSet::Predicted),
+                    show_action_refusals,
                     on_entity_state_update,
                     on_character_died,
                     on_entity_level_up,
@@ -486,6 +489,20 @@ fn on_object_action_response(mut reader: MessageReader<ObjectActionResponse>) {
                 "combat: unknown 0xB074 shape (result {result} tail {}) — capture for decode",
                 hex(tail)
             ),
+        }
+    }
+}
+
+/// A failed 0xB070 tells the player why, in the original's words: its code is
+/// a category-4 error ([`crate::plugins::error_text::SKILL_USE`]).
+fn show_action_refusals(
+    mut updates: MessageReader<ObjectActionUpdate>,
+    ui: Option<Res<ClientUiStrings>>,
+    mut history: Option<ResMut<ChatHistory>>,
+) {
+    for update in updates.read() {
+        if let ObjectActionUpdate::Failure { error } = update {
+            show_skill_refusal(*error, ui.as_deref(), history.as_deref_mut());
         }
     }
 }
@@ -1534,5 +1551,28 @@ mod tests {
         // claiming again (e.g. a stray duplicate) is a no-op, not a panic
         timings.claim(42, 100);
         assert!(timings.get(100).is_none());
+    }
+
+    /// A failed 0xB070 becomes one chat line read from the player's data; a
+    /// cooldown (0x3005), which the original shows no text for, adds none.
+    #[test]
+    fn a_refused_action_is_told_in_the_originals_words() {
+        let mut app = App::new();
+        app.add_message::<ObjectActionUpdate>()
+            .init_resource::<ChatHistory>()
+            .insert_resource(ClientUiStrings::from_rows(&[(
+                "UIIT_SKILL_USE_FAIL_NOTENOUGHMP",
+                "MP too low (fixture)",
+            )]))
+            .add_systems(Update, show_action_refusals);
+        for error in [0x3004, 0x3005] {
+            app.world_mut()
+                .write_message(ObjectActionUpdate::Failure { error });
+        }
+        app.update();
+
+        let history = app.world().resource::<ChatHistory>();
+        let lines: Vec<_> = history.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(lines, ["MP too low (fixture)"]);
     }
 }

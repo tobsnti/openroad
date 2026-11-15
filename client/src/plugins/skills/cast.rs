@@ -25,13 +25,17 @@ use crate::plugins::combat::{
 };
 use crate::plugins::effects::spawn::DelayedEffect;
 use crate::plugins::effects::OneShotEffect;
+use crate::plugins::error_text::{
+    self, error_line, SKILL_NOT_ENOUGH_HP, SKILL_NOT_ENOUGH_MP, SKILL_NO_TARGET, SKILL_WRONG_WEAPON,
+};
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
 use crate::plugins::hud::player_mini_info::PlayerVitals;
 use crate::plugins::net::entities::EntityVitals;
 use crate::plugins::player::Player;
 use crate::plugins::skills::book::SkillBook;
 use crate::plugins::skills::status::{apply_status_effects, IncapacitatedFilter};
 use crate::plugins::skills::{EquippedWeapon, LocalCombat};
-use crate::plugins::textdata::{ClientSkillData, ClientSkillEffects};
+use crate::plugins::textdata::{ClientSkillData, ClientSkillEffects, ClientUiStrings};
 
 /// Ask to cast a skill (by skilldata id) at an optional target entity.
 /// Emitted by the underbar; consumed by [`dispatch_casts`].
@@ -999,6 +1003,22 @@ pub struct CastLookups<'w, 's> {
     liveness: crate::plugins::combat::TargetLiveness<'w, 's>,
 }
 
+/// A refused skill or attack, told the way the original tells it: `code` is a
+/// category-4 error ([`error_text::SKILL_USE`]) and becomes one chat line; a
+/// code the original has no text for stays silent. One line per refusal, as
+/// in the original; a held key is one request, so holding it cannot flood.
+pub(crate) fn show_skill_refusal(
+    code: u16,
+    ui: Option<&ClientUiStrings>,
+    history: Option<&mut ChatHistory>,
+) {
+    let default_ui = ClientUiStrings::default();
+    let line = error_line(error_text::SKILL_USE, code, ui.unwrap_or(&default_ui));
+    if let (Some(line), Some(history)) = (line, history) {
+        history.push(ChatLine::system(line));
+    }
+}
+
 /// Turn [`CastRequest`]s into either the 0x7074 packet (online) or the local
 /// simulation pipeline (offline, [`LocalCombat`] present).
 #[allow(clippy::too_many_arguments)]
@@ -1023,6 +1043,8 @@ pub fn dispatch_casts(
         ResMut<PredictedCasts>,
     ),
     mut swings: MessageWriter<SkillSwing>,
+    ui: Option<Res<ClientUiStrings>>,
+    mut history: Option<ResMut<ChatHistory>>,
     mut commands: Commands,
 ) {
     let CastLookups {
@@ -1051,7 +1073,8 @@ pub fn dispatch_casts(
                 // (0x7074 reject 0x05), and vanilla starts the cooldown when
                 // the skill fires, not at the keypress (the server may first
                 // walk us into range). Pre-execution re-presses just re-send
-                // 0x7074; the server arbitrates.
+                // 0x7074; the server arbitrates. A press on cooldown gets no
+                // line: the original shows none (0x3005 has no text).
                 let now = time.elapsed_secs_f64();
                 if !cooldowns.ready(request.skill_id, now) {
                     info!("skills: {} still on cooldown", row.code_name());
@@ -1229,6 +1252,7 @@ pub fn dispatch_casts(
                     "skills: {} requires weapon class {w1}/{w2}, wielding {equipped}",
                     row.code_name()
                 );
+                show_skill_refusal(SKILL_WRONG_WEAPON, ui.as_deref(), history.as_deref_mut());
                 continue;
             }
         }
@@ -1246,10 +1270,12 @@ pub fn dispatch_casts(
                 row.mp_cost(),
                 player_vitals.mp
             );
+            show_skill_refusal(SKILL_NOT_ENOUGH_MP, ui.as_deref(), history.as_deref_mut());
             continue;
         }
         if row.hp_cost() > 0 && player_vitals.hp <= row.hp_cost() {
             info!("skills: {} would drain all HP", row.code_name());
+            show_skill_refusal(SKILL_NOT_ENOUGH_HP, ui.as_deref(), history.as_deref_mut());
             continue;
         }
 
@@ -1276,6 +1302,11 @@ pub fn dispatch_casts(
                 Some(target) => Some(target),
                 None => {
                     info!("skills: {} needs a target", row.code_name());
+                    // The original's text covers nothing selected; what it
+                    // shows for a dead target is `[U]`, so that stays logged.
+                    if request.target.is_none() {
+                        show_skill_refusal(SKILL_NO_TARGET, ui.as_deref(), history.as_deref_mut());
+                    }
                     continue;
                 }
             }
@@ -2847,5 +2878,57 @@ mod tests {
         // a skill with no reuse delay can never be on cooldown
         assert_eq!(replay_remaining_ms(5_000, 0), 0);
         assert_eq!(replay_remaining_ms(0, 3_000), 0);
+    }
+
+    /// Offline the cast gates speak the original's words: a skill costing more
+    /// MP than the player has, and an attack with nothing selected, each add
+    /// one chat line read from the player's data.
+    #[test]
+    fn a_refused_cast_is_told_in_the_originals_words() {
+        let mut attack = vec![String::new(); 119];
+        attack[8] = "2".into(); // castable
+        attack[29] = "1".into(); // targets enemy monsters
+        let mut costly = attack.clone();
+        costly[53] = "10".into(); // MP cost, the player has 0
+        let mut app = App::new();
+        app.insert_resource(LocalCombat::default())
+            .insert_resource(ClientSkillData::from_rows([
+                (1, SkillDataRow(costly)),
+                (2, SkillDataRow(attack)),
+            ]))
+            .insert_resource(ClientUiStrings::from_rows(&[
+                ("UIIT_SKILL_USE_FAIL_NOTENOUGHMP", "MP too low (fixture)"),
+                (
+                    "UIIT_SKILL_USE_FAIL_NONESELECTETARGET",
+                    "No target (fixture)",
+                ),
+            ]))
+            .init_resource::<Time>()
+            .init_resource::<ClientSkillEffects>()
+            .init_resource::<SkillBook>()
+            .init_resource::<EquippedWeapon>()
+            .init_resource::<PlayerVitals>()
+            .init_resource::<SkillCooldowns>()
+            .init_resource::<AutoAttackResume>()
+            .init_resource::<ActiveAttack>()
+            .init_resource::<ActionSlot>()
+            .init_resource::<ChainCast>()
+            .init_resource::<PredictedCasts>()
+            .init_resource::<ChatHistory>()
+            .add_message::<CastRequest>()
+            .add_message::<SkillSwing>()
+            .add_systems(Update, dispatch_casts);
+        app.world_mut().spawn(Player);
+        for skill_id in [1, 2] {
+            app.world_mut().write_message(CastRequest {
+                skill_id,
+                target: None,
+            });
+        }
+        app.update();
+
+        let history = app.world().resource::<ChatHistory>();
+        let lines: Vec<_> = history.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(lines, ["MP too low (fixture)", "No target (fixture)"]);
     }
 }

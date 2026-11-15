@@ -187,6 +187,14 @@ impl ClientSkillData {
     pub fn data(&self) -> Option<&SkillData> {
         self.0.as_ref()
     }
+
+    /// Test-only table built from explicit rows.
+    #[cfg(test)]
+    pub(crate) fn from_rows(
+        rows: impl IntoIterator<Item = (i32, crate::assets::textdata::skilldata::SkillDataRow)>,
+    ) -> Self {
+        Self(Some(SkillData(rows.into_iter().collect())))
+    }
 }
 
 #[derive(Resource, Default)]
