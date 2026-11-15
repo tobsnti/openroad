@@ -190,11 +190,11 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     assert_eq!(at, (&json!(25000), &json!(969.0), &json!(1419.0)));
     assert_eq!(admin(&server.admin, "loot")["ok"], false);
 
-    // Movement comes with S6.3: until then the frame is reported, not answered.
-    let walk = [0x01, 0xA8, 0x61, 0xC9, 0x03, 0x00, 0x00, 0x8B, 0x05];
-    client.send(0x7021, &walk, false);
+    // Selecting an entity comes with the NPCs: until then the frame is
+    // reported, not answered.
+    client.send(0x7045, &[0x01, 0x10, 0x00, 0x00], false);
     let rejected = event(&server.events, "c2s.rejected");
-    let expected = json!({"uid": joined["uid"], "op": "0x7021", "len": 9, "reason": "not_handled"});
+    let expected = json!({"uid": joined["uid"], "op": "0x7045", "len": 4, "reason": "not_handled"});
     let fields = ["uid", "op", "len", "reason"].map(|k| (k, rejected[k].clone()));
     assert_eq!(Value::from_iter(fields), expected);
 

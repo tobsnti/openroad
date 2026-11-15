@@ -61,7 +61,8 @@ impl Shard for World {
     }
 
     fn admit(&mut self, account: AccountId, username: &str) -> Option<u32> {
-        World::admit(self, account, username)
+        let characters = self.store().characters(account);
+        World::admit(self, account, username, characters)
     }
 }
 
@@ -75,7 +76,8 @@ pub struct Gateway {
     pub shard_id: u16,
     pub shard_name: String,
     pub capacity: u16,
-    /// Where the agent listens.
+    /// Where clients find the agent: where it listens, or the address of a
+    /// relay in front of it.
     pub agent_ip: String,
     pub agent_port: u16,
 }
@@ -102,16 +104,17 @@ impl GatewayConnection {
         self.closed
     }
 
-    /// One client frame and its answer. A frame that is not exactly a gateway
-    /// request closes the connection: before the login there is nothing to
-    /// keep.
+    /// One client frame and its answer, if it gets one. A frame that is not
+    /// exactly a gateway request closes the connection: before the login there
+    /// is nothing to keep. A heartbeat (0x2002) keeps it and gets no answer, as
+    /// on the agent (`lobby::keep_alive`).
     pub fn receive(
         &mut self,
         gateway: &Gateway,
         shard: &mut dyn Shard,
         opcode: u16,
         body: Bytes,
-    ) -> Result<Frame, Reason> {
+    ) -> Result<Option<Frame>, Reason> {
         if self.closed {
             return Err(Reason::NotHandled);
         }
@@ -143,12 +146,13 @@ impl GatewayConnection {
             Ok(Packet::LoginRequest(request)) => {
                 Packet::LoginResponse(self.login(gateway, shard, request))
             }
+            Ok(Packet::KeepAlive(_)) => return Ok(None),
             Ok(_) => return Err(self.close(Reason::NotHandled)),
             Err(verdict) => return Err(self.close(reason_of(verdict))),
         };
         let (opcode, body) = answer.into_serialize();
         self.log.record(Dir::S2c, opcode, &body);
-        Ok(Frame { opcode, body })
+        Ok(Some(Frame { opcode, body }))
     }
 
     fn close(&mut self, reason: Reason) -> Reason {

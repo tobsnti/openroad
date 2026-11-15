@@ -14,6 +14,13 @@ use crate::world::{Phase, Reason, SessionId, World};
 
 /// 0x2001. The agent names itself as the original does: `AgentServer` and a
 /// zero [V capture, peer vSRO].
+/// A heartbeat (0x2002) is taken in every phase and not answered, as by the
+/// original: its game server has no handler for it [V original server], and
+/// no capture carries an s2c 0x2002 [V capture, peer vSRO].
+pub(crate) fn keep_alive(_: &mut World, _: SessionId, _: Packet) -> Result<(), Reason> {
+    Ok(())
+}
+
 pub(crate) fn identify(world: &mut World, session: SessionId, _: Packet) -> Result<(), Reason> {
     if world.phase(session) != Some(Phase::Title) {
         return Err(Reason::NotHandled);
@@ -39,6 +46,7 @@ pub(crate) fn login(world: &mut World, session: SessionId, packet: Packet) -> Re
     }
     let (result, error_code, phase) = match world.take_ticket(request.token) {
         Some(ticket) if ticket.username == request.username => {
+            world.hold_characters(session, ticket.characters);
             (1, None, Phase::Lobby(ticket.account))
         }
         _ => (2, Some(1), Phase::Closed),
@@ -59,14 +67,13 @@ pub(crate) fn lobby(world: &mut World, session: SessionId, packet: Packet) -> Re
     let Packet::CharacterSelectionActionRequest(request) = packet else {
         unreachable!("0x7007 decodes to CharacterSelectionActionRequest");
     };
-    let (Some(Phase::Lobby(account)), CharacterSelectionAction::List) =
+    let (Some(Phase::Lobby(_)), CharacterSelectionAction::List) =
         (world.phase(session), request.action)
     else {
         return Err(Reason::NotHandled);
     };
     let characters: Vec<LobbyCharacter> = world
-        .store()
-        .characters(account)
+        .characters(session)
         .iter()
         .map(lobby_character)
         .collect();

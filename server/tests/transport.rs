@@ -13,7 +13,11 @@ const IDENT: &[u8] = b"\x09\x00SR_Client\x00";
 const LOGIN: &[u8] = b"secret login";
 
 fn connected(split: usize) -> (Transport, Client) {
-    let (mut server, opening) = Transport::open();
+    connected_on(Transport::open(), split)
+}
+
+/// The handshake on a transport that has sent its `opening`.
+fn connected_on((mut server, opening): (Transport, Vec<u8>), split: usize) -> (Transport, Client) {
     let (client, answer) = Client::answer(&opening);
     let challenge = feed(&mut server, &answer, split);
     assert!(challenge.frames.is_empty());
@@ -61,6 +65,43 @@ fn a_frame_glued_behind_the_handshake_is_read_with_the_session_key() {
     .concat();
     let frames = server.receive(&glued).unwrap().frames;
     assert_eq!(frames, [(0x6102, Bytes::from_static(LOGIN))]);
+}
+
+/// The opening's seeds are bytes; a draw over the whole `u32` would leave
+/// this range in all but one of 2^24 openings.
+#[test]
+fn the_opening_carries_both_seeds_as_bytes() {
+    for _ in 0..1000 {
+        let (_, opening) = Transport::open();
+        let (_, body) = common::single(&opening);
+        let seed = |at: usize| u32::from_le_bytes(body[at..at + 4].try_into().unwrap());
+        assert!(
+            seed(9) <= 0xFF && seed(13) <= 0xFF,
+            "{:#x} {:#x}",
+            seed(9),
+            seed(13)
+        );
+    }
+}
+
+/// On the edge seeds, 0 included, the client's sequence and CRC bytes are the
+/// ones the server checks for, frame after frame.
+#[test]
+fn a_client_on_the_edge_seeds_gets_its_frames_through() {
+    for (sequence_seed, crc_seed) in [0, 1, 255]
+        .into_iter()
+        .flat_map(|s| [(s, 0), (s, 1), (s, 255)])
+    {
+        let (mut server, client) = connected_on(Transport::seeded(sequence_seed, crc_seed), 4096);
+        let stream = [
+            client.send(0x2001, IDENT, false),
+            client.send(0x6102, LOGIN, true),
+            client.send(0x2002, &[], false),
+        ]
+        .concat();
+        let frames = feed(&mut server, &stream, 4096).frames;
+        assert_eq!(frames.len(), 3, "seeds {sequence_seed} {crc_seed}");
+    }
 }
 
 #[test]

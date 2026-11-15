@@ -19,12 +19,13 @@ use packets::agent::character_data::{
 };
 use packets::agent::prelude::{
     CelestialPosition, CharacterDataBegin, CharacterDataBody, CharacterDataEnd,
-    CharacterJoinResponse,
+    CharacterJoinResponse, CharacterStatsUpdate,
 };
 use packets::Packet;
 
 use crate::clock::{game_time, server_time};
 use crate::refdata::CharacterRef;
+use crate::sight;
 use crate::store::{AccountId, Character};
 use crate::world::{Event, Phase, Player, Reason, SessionId, World};
 
@@ -42,7 +43,7 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
     let Some(Phase::Lobby(account)) = world.phase(session) else {
         return Err(Reason::NotHandled);
     };
-    let characters = world.store().characters(account);
+    let characters = world.characters(session).to_vec();
     let Some(character) = characters.iter().find(|c| c.name == request.character_name) else {
         world.send(session, refusal(NOT_THE_ACCOUNTS));
         return Ok(());
@@ -77,10 +78,10 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
     world.send(session, Packet::CelestialPosition(time));
     let player = Player {
         session,
-        name: character.name.clone(),
-        position: character.position,
-        hp: character.hp,
-        mp: character.mp,
+        character: character.clone(),
+        walk_speed: speeds.walk_speed,
+        run_speed: speeds.run_speed,
+        walk: None,
     };
     world.add_player(uid, player);
     world.enter(session, Phase::Joining { account, uid });
@@ -93,8 +94,34 @@ pub(crate) fn game_ready(world: &mut World, session: SessionId, _: Packet) -> Re
         return Err(Reason::NotHandled);
     };
     world.enter(session, Phase::Game { account, uid });
+    if let Some(values) = world.player(uid).map(|p| values(&p.character)) {
+        world.send(session, Packet::CharacterStatsUpdate(values));
+    }
+    sight::update(world, uid);
     world.report(Event::Joined { session, uid });
     Ok(())
+}
+
+/// The character's values (0x303D), which the vSRO server sends after the
+/// entry [V capture, peer vSRO: 388 frames]; without them the original
+/// client shows its HP and MP as 0/0. There are no items and no formulas for
+/// attack, defence, hit and parry yet, so these are 0 [U], and the maximum HP
+/// and MP are the stored ones, as if the character entered in full [U].
+fn values(c: &Character) -> CharacterStatsUpdate {
+    CharacterStatsUpdate {
+        phys_attack_min: 0,
+        phys_attack_max: 0,
+        mag_attack_min: 0,
+        mag_attack_max: 0,
+        phys_defense: 0,
+        mag_defense: 0,
+        hit_rate: 0,
+        parry_rate: 0,
+        max_hp: c.hp,
+        max_mp: c.mp,
+        strength: c.strength,
+        intelligence: c.intellect,
+    }
 }
 
 fn refusal(code: u16) -> Packet {

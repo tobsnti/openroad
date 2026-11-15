@@ -8,7 +8,7 @@ use packets::agent::prelude::AgentLoginRequest;
 use packets::gateway::{
     NoticeRequest, PatchRequest, ShardListPingRequest, ShardListRequest, ShardListResponse,
 };
-use packets::global::ModuleIdentification;
+use packets::global::{KeepAlive, ModuleIdentification};
 use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
 use server::gateway::{Gateway, GatewayConnection};
@@ -43,6 +43,7 @@ fn ask(
 ) -> Result<(u16, Vec<u8>), Reason> {
     let (opcode, body) = packet.into_serialize();
     let frame = conn.receive(&gateway(), world, opcode, body)?;
+    let frame = frame.expect("a request is answered");
     Ok((frame.opcode, frame.body.to_vec()))
 }
 
@@ -175,4 +176,20 @@ fn a_frame_that_is_not_exactly_a_gateway_request_ends_the_connection() {
     let longer = conn.receive(&gateway(), &mut world, 0x6101, Bytes::from_static(&[0]));
     assert_eq!(longer.err(), Some(Reason::DecodeError));
     assert!(conn.closed());
+}
+
+/// The original client sends heartbeats from its first frames on; one closed
+/// the gateway before (measured). It is taken, unanswered, and the connection
+/// stays.
+#[test]
+fn a_heartbeat_is_taken_and_keeps_the_connection() {
+    let mut world = world();
+    let mut conn = GatewayConnection::open();
+    let (opcode, body) = Packet::KeepAlive(KeepAlive).into_serialize();
+    let taken = conn.receive(&gateway(), &mut world, opcode, body);
+    assert!(matches!(taken, Ok(None)), "{taken:?}");
+    assert!(!conn.closed());
+    let notices = NoticeRequest { content_id: 22 };
+    let answer = ask(&mut conn, &mut world, Packet::NoticeRequest(notices));
+    assert_eq!(answer, Ok((0xA104, vec![0x00])));
 }

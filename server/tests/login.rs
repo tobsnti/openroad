@@ -6,10 +6,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
 use packets::agent::prelude::*;
-use packets::global::ModuleIdentification;
+use packets::global::{KeepAlive, ModuleIdentification};
 use packets::Packet;
 use server::refdata::RefData;
-use server::store::{login, Character, MemoryStore, Position};
+use server::store::{login, AccountId, Character, MemoryStore, Position};
 use server::world::{Event, Phase, Reason, SessionId, World};
 
 fn hero() -> Character {
@@ -59,7 +59,9 @@ fn admitted() -> (World, u32) {
     let mut refdata = RefData::default();
     refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
     let mut world = World::new(Arc::new(store), refdata);
-    let ticket = world.admit(account, "admin").expect("no agent session yet");
+    let ticket = world
+        .admit(account, "admin", vec![hero()])
+        .expect("no agent session yet");
     (world, ticket)
 }
 
@@ -173,7 +175,8 @@ impl ItemClassResolver for NoItems {
 
 /// The record parses as the client reads it, carries the stored level the
 /// lobby shows too, and nothing follows it until the client's 0x3012: a chat
-/// frame in that window crashes the original client.
+/// frame in that window crashes the original client. Then the character's
+/// values follow; without them the original shows HP and MP as 0/0.
 #[test]
 fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     let (mut world, ticket) = admitted();
@@ -197,10 +200,30 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     assert_eq!(info.stats.map(|stats| stats.level), Some(hero().level));
 
     world.receive(s, 0x3012, Bytes::new());
-    assert!(frames(&mut world, s).is_empty());
+    // Then only the character's values: no items and formulas yet, the
+    // stored HP and MP as the maximum.
+    let values = CharacterStatsUpdate {
+        phys_attack_min: 0,
+        phys_attack_max: 0,
+        mag_attack_min: 0,
+        mag_attack_max: 0,
+        phys_defense: 0,
+        mag_defense: 0,
+        hit_rate: 0,
+        parry_rate: 0,
+        max_hp: 489,
+        max_mp: 489,
+        strength: 29,
+        intelligence: 29,
+    };
+    let (opcode, body) = Packet::CharacterStatsUpdate(values).into_serialize();
+    assert_eq!(frames(&mut world, s), [(opcode, body.to_vec())]);
     assert!(matches!(world.phase(s), Some(Phase::Game { uid: u, .. }) if u == uid));
     assert_eq!(world.take_events(), [Event::Joined { session: s, uid }]);
-    let players: Vec<_> = world.players().map(|(u, p)| (u, p.name.as_str())).collect();
+    let players: Vec<_> = world
+        .players()
+        .map(|(u, p)| (u, p.character.name.as_str()))
+        .collect();
     assert_eq!(players, [(uid, "Hero")]);
     world.disconnect(s);
     assert_eq!(world.players().count(), 0);
@@ -243,4 +266,75 @@ fn the_speeds_come_from_the_users_table() {
         .character(hero().ref_id)
         .expect("the model is in the table");
     assert_eq!((speeds.walk_speed, speeds.run_speed), (16.0, 50.0));
+}
+
+/// Every phase takes a heartbeat and stays silent: before the login, in the
+/// lobby and in the game. Nothing is answered, and nothing is reported as
+/// rejected.
+#[test]
+fn a_heartbeat_is_taken_and_left_unanswered_in_every_phase() {
+    let (mut world, ticket) = admitted();
+    let s = world.connect();
+    let beat = |world: &mut World| {
+        send(world, s, Packet::KeepAlive(KeepAlive));
+        assert!(frames(world, s).is_empty(), "{:?}", world.phase(s));
+    };
+    beat(&mut world);
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    frames(&mut world, s);
+    beat(&mut world);
+    let join = CharacterJoinRequest {
+        character_name: "Hero".to_owned(),
+    };
+    send(&mut world, s, Packet::CharacterJoinRequest(join));
+    world.receive(s, 0x3012, Bytes::new());
+    frames(&mut world, s);
+    assert!(matches!(world.phase(s), Some(Phase::Game { .. })));
+    beat(&mut world);
+    assert!(world
+        .take_events()
+        .iter()
+        .all(|e| !matches!(e, Event::Rejected { .. })));
+}
+
+/// The consignment listing (0x750E), which the original client asks for
+/// after the entry: success with no rows, as the vSRO server answered. Before
+/// the game it is not handled.
+#[test]
+fn the_consignment_listing_is_empty() {
+    let (mut world, ticket) = admitted();
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    frames(&mut world, s);
+    world.receive(s, 0x750E, Bytes::new());
+    assert!(frames(&mut world, s).is_empty());
+    join(&mut world, s, "Hero");
+    world.receive(s, 0x3012, Bytes::new());
+    frames(&mut world, s);
+    world.receive(s, 0x750E, Bytes::new());
+    assert_eq!(frames(&mut world, s), [(0xB50E, vec![0x01, 0x00])]);
+}
+
+/// The step does not read the store: the lobby lists, and the join finds, the
+/// characters the ticket brought. Here the store has none.
+#[test]
+fn the_lobby_and_the_join_use_the_characters_of_the_ticket() {
+    let mut refdata = RefData::default();
+    refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
+    let mut world = World::new(Arc::new(MemoryStore::default()), refdata);
+    let ticket = world.admit(AccountId(1), "admin", vec![hero()]).unwrap();
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    frames(&mut world, s);
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    let listed = frames(&mut world, s);
+    let name = b"\x04\x00Hero";
+    assert!(
+        listed[0].1.windows(name.len()).any(|w| w == name),
+        "{listed:?}"
+    );
+    join(&mut world, s, "Hero");
+    assert_eq!(frames(&mut world, s)[0], (0xB001, vec![0x01]));
 }

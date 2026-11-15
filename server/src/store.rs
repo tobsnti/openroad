@@ -1,10 +1,13 @@
 //! What outlives a session, behind one seam (ADR 0013 §7).
 //!
 //! Accounts and characters are read through [`Store`]: [`MemoryStore`] for
-//! tests, a Postgres store later, which is then queried off the simulation
-//! step. Passwords exist only as argon2id hashes. Checking one costs tens of
-//! milliseconds by design, so [`login`] belongs where the gateway checks a
-//! password, never in a step.
+//! tests, a Postgres store later. The simulation step never reads the store:
+//! the gateway reads an account's characters where it checks the password,
+//! and they travel with the ticket (`World::admit`). Passwords exist only as
+//! argon2id hashes. Checking one costs tens of milliseconds by design, so
+//! [`login`] belongs where the gateway checks a password, never in a step.
+
+use std::sync::{Mutex, MutexGuard};
 
 use argon2::password_hash::{PasswordHash, SaltString};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
@@ -47,11 +50,21 @@ pub struct Position {
     pub heading: u16,
 }
 
+/// What one accepted action changed, written as a whole or not at all
+/// (ADR 0013 §7): a trade changes two characters at once. A character is
+/// named by its name, which is unique.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Changes {
+    pub characters: Vec<Character>,
+}
+
 pub trait Store {
     /// The account `username` names, with its password hash (PHC string).
     fn account(&self, username: &str) -> Option<(AccountId, String)>;
     /// The characters of `account`, in the order the lobby lists them.
     fn characters(&self, account: AccountId) -> Vec<Character>;
+    /// Writes `changes` in one go; on an error nothing of it was written.
+    fn commit(&self, changes: &Changes) -> Result<(), String>;
 }
 
 /// The account `username` names, if `password` is its password.
@@ -73,7 +86,7 @@ pub fn hash_password(password: &str) -> String {
 
 #[derive(Default)]
 pub struct MemoryStore {
-    accounts: Vec<Account>,
+    accounts: Mutex<Vec<Account>>,
 }
 
 struct Account {
@@ -90,30 +103,54 @@ impl MemoryStore {
         password: &str,
         characters: Vec<Character>,
     ) -> AccountId {
-        self.accounts.push(Account {
+        let accounts = self.accounts.get_mut().expect("no store user panicked");
+        accounts.push(Account {
             username: username.to_owned(),
             password_hash: hash_password(password),
             characters,
         });
-        AccountId(self.accounts.len() as u32)
+        AccountId(accounts.len() as u32)
     }
 
-    fn get(&self, account: AccountId) -> Option<&Account> {
-        self.accounts.get(account.0.checked_sub(1)? as usize)
+    fn accounts(&self) -> MutexGuard<'_, Vec<Account>> {
+        self.accounts.lock().expect("no store user panicked")
     }
 }
 
 impl Store for MemoryStore {
     fn account(&self, username: &str) -> Option<(AccountId, String)> {
-        let index = self.accounts.iter().position(|a| a.username == username)?;
+        let accounts = self.accounts();
+        let index = accounts.iter().position(|a| a.username == username)?;
         let account = AccountId(index as u32 + 1);
-        Some((account, self.accounts[index].password_hash.clone()))
+        Some((account, accounts[index].password_hash.clone()))
     }
 
     fn characters(&self, account: AccountId) -> Vec<Character> {
-        self.get(account)
+        let index = account.0.checked_sub(1).map(|i| i as usize);
+        let accounts = self.accounts();
+        index
+            .and_then(|i| accounts.get(i))
             .map(|a| a.characters.clone())
             .unwrap_or_default()
+    }
+
+    fn commit(&self, changes: &Changes) -> Result<(), String> {
+        let mut accounts = self.accounts();
+        let mut slots = Vec::with_capacity(changes.characters.len());
+        for changed in &changes.characters {
+            let slot = accounts.iter().enumerate().find_map(|(a, account)| {
+                let c = account
+                    .characters
+                    .iter()
+                    .position(|c| c.name == changed.name)?;
+                Some((a, c))
+            });
+            slots.push(slot.ok_or_else(|| format!("no character {}", changed.name))?);
+        }
+        for ((a, c), changed) in slots.into_iter().zip(&changes.characters) {
+            accounts[a].characters[c] = changed.clone();
+        }
+        Ok(())
     }
 }
 
@@ -130,5 +167,52 @@ mod tests {
         assert_eq!(login(&store, "nobody", "secret"), None);
         let (_, hash) = store.account("admin").expect("the account exists");
         assert!(hash.starts_with("$argon2id$"), "stored as {hash}");
+    }
+
+    fn named(name: &str) -> Character {
+        Character {
+            name: name.to_owned(),
+            ref_id: 1907,
+            scale: 34,
+            level: 1,
+            exp: 0,
+            skill_exp: 0,
+            gold: 0,
+            skill_points: 0,
+            strength: 20,
+            intellect: 20,
+            stat_points: 0,
+            hp: 200,
+            mp: 200,
+            inventory_size: 45,
+            masteries: Vec::new(),
+            position: Position {
+                region: 25000,
+                x: 969.0,
+                y: 0.0,
+                z: 1419.0,
+                heading: 0,
+            },
+        }
+    }
+
+    /// A commit is all or nothing: one character the store does not know
+    /// keeps the other's change out too.
+    #[test]
+    fn a_commit_writes_all_of_it_or_nothing() {
+        let mut store = MemoryStore::default();
+        let admin = store.add_account("admin", "secret", vec![named("Hero")]);
+        let mut moved = named("Hero");
+        moved.position.x = 1119.0;
+        let both = Changes {
+            characters: vec![moved.clone(), named("Nobody")],
+        };
+        assert_eq!(store.commit(&both), Err("no character Nobody".to_owned()));
+        assert_eq!(store.characters(admin), [named("Hero")]);
+        let one = Changes {
+            characters: vec![moved.clone()],
+        };
+        assert_eq!(store.commit(&one), Ok(()));
+        assert_eq!(store.characters(admin), [moved]);
     }
 }
