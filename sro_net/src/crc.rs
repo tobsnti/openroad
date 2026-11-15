@@ -5,22 +5,14 @@
 // handshake's CRC seed picks which sub-table a session uses. So entry `i` only
 // ever matters to sessions seeded with `i`.
 //
-// The entries are the standard CRC-32 (IEEE, poly 0xEDB88320) table values —
-// public-domain mathematics — with index 0 replaced by 0x968BD6B1 (a zero
-// polynomial would make sub-table 0 degenerate, so that substitution looks
-// deliberate).
-//
-// ⚠ SUSPECTED TRANSCRIPTION ERRORS. 37 further entries differ from the standard
-// table by one or two bits each — e.g. index 255 reads 0x2D02ED8D where the
-// standard table's well-known final entry is 0x2D02EF8D. Single-nibble deltas
-// scattered through an otherwise byte-exact 256-entry table are the signature of
-// hand transcription, not of a deliberate variant. If that reading is right,
-// every session whose handshake CRC seed lands on one of those 37 indices
-// computes wrong CRCs — an intermittent, ~14%-of-sessions connection failure.
-// This has NOT been changed: it alters wire behaviour and wants a capture
-// against a real server to settle. Affected indices: 18, 19, 55, 58, 73, 88,
+// The entries are the original client's table, byte for byte, and the
+// original server carries the same 1,024 bytes `[V original handler]`. Against
+// the standard CRC-32 table (IEEE, poly 0xEDB88320) they differ at index 0
+// (0x968BD6B1) and in 37 more entries by a bit or two (18, 19, 55, 58, 73, 88,
 // 121, 123, 125, 145, 175, 176, 177, 182, 184, 192, 193, 198, 199, 200, 208,
-// 216, 217, 240..246, 248, 250..255.
+// 216, 217, 240..246, 248, 250..255). Those are not transcription errors, as
+// this comment once suspected: both ends compute with this table, so
+// "correcting" it to the standard one would break the wire.
 //
 // See `security.rs` for the provenance of the surrounding protocol description.
 
