@@ -52,6 +52,7 @@ use crate::plugins::hud::context_menu::{
 use crate::plugins::hud::exchange;
 use crate::plugins::hud::scale::hud_scale;
 use crate::plugins::hud::system_message::model::format_template;
+use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{DisplayName, NetworkId, RemoteEntity};
 use crate::plugins::net::party::PartyAction;
@@ -364,7 +365,11 @@ pub fn send_target_menu_trace(
 /// its unbuilt rows). "Invite party", "Exchange" and "Trace" are wired (see
 /// [`send_target_menu_party_invite`], [`send_target_menu_exchange_invite`] and
 /// [`send_target_menu_trace`]) and are therefore not reported here.
-pub fn log_target_menu_actions(mut actions: MessageReader<TargetMenuAction>) {
+pub fn report_unwired_target_actions(
+    mut actions: MessageReader<TargetMenuAction>,
+    ui_strings: Res<ClientUiStrings>,
+    mut unavailable: MessageWriter<Unavailable>,
+) {
     for action in actions.read() {
         if matches!(
             action.action,
@@ -372,10 +377,8 @@ pub fn log_target_menu_actions(mut actions: MessageReader<TargetMenuAction>) {
         ) {
             continue;
         }
-        info!(
-            "target menu: {:?} on {:?} has no wire path yet",
-            action.action, action.target
-        );
+        let (key, fallback) = action.action.label();
+        unavailable.write(Unavailable(ui_strings.get_or(key, fallback).to_string()));
     }
 }
 
@@ -465,7 +468,7 @@ impl Plugin for TargetMenuPlugin {
                     send_target_menu_party_invite,
                     send_target_menu_exchange_invite,
                     send_target_menu_trace,
-                    log_target_menu_actions,
+                    report_unwired_target_actions,
                 )
                     .chain()
                     .run_if(in_state(SceneState::GameWorld)),

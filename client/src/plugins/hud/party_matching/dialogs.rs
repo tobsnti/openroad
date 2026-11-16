@@ -18,8 +18,8 @@
 //! - **Auto has no opcode.** None of the ten registered matching opcodes
 //!   carries a race preference or an auto verb, yet the original ships
 //!   `UIIT_MSG_PARTYMATCH_AUTO_PROGRESS` and `_AUTO_FAILURE`, so the flow
-//!   exists. Confirm therefore logs its intent and sends nothing; guessing a
-//!   packet here is how a server drops the connection.
+//!   exists. Confirm therefore tells the player so and sends nothing; guessing
+//!   a packet here is how a server drops the connection.
 //! - **ReqJoin's Level / Race / Position / Guild** come from the applicant's
 //!   member record, which is presence-masked — so they render only when the
 //!   server's mask actually named them, and stay blank otherwise rather than
@@ -47,6 +47,7 @@ use crate::plugins::hud::party::model::effective_setup;
 use crate::plugins::hud::party::ui::PartyWindowRequest;
 use crate::plugins::hud::party_matching::model::{MatchDialog, PartyMatchState};
 use crate::plugins::hud::scale::{hud_scale, text_px};
+use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::party::{PartyCreateSetup, PartyRoster};
 use crate::plugins::textdata::{ClientMasteryData, ClientUiStrings};
@@ -55,6 +56,10 @@ use crate::plugins::ui_v2::style::{ImageButtonStyle, TargetColor};
 const ART_COMMON: &str = "media://interface/ifcommon/";
 const ART_PARTY: &str = "media://interface/party/";
 const ART_FRAME: &str = "media://interface/frame/";
+
+/// The board's "Auto match" button text, which is also what the auto dialog's
+/// confirm calls itself while it has no wire path.
+pub const AUTO_MATCH: (&str, &str) = ("UIIT_CTL_PARTYMATCH_PSEARCH_AUTOMATCHING", "Auto match");
 
 // --- Register / Auto shared geometry ----------------------------------------
 
@@ -1217,6 +1222,7 @@ fn on_purpose_option(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn on_dialog_button(
     activate: On<Activate>,
     buttons: Query<&DialogButton>,
@@ -1227,6 +1233,8 @@ fn on_dialog_button(
     roster: Option<Res<PartyRoster>>,
     pending: Option<Res<PartyCreateSetup>>,
     title: Query<&EditableText, With<PartyTitleInput>>,
+    ui_strings: Res<ClientUiStrings>,
+    mut unavailable: MessageWriter<Unavailable>,
 ) {
     let Ok(button) = buttons.get(activate.entity) else {
         return;
@@ -1281,12 +1289,10 @@ fn on_dialog_button(
         DialogButton::AutoOk => {
             // UNKNOWN: no registered opcode carries an auto verb or a race
             // preference. Sending a guess is what makes a vSRO server drop the
-            // connection, so this records the intent and stops.
-            warn!(
-                "party match: auto-match confirm has no wire opcode (purpose={}, race={:?}) — \
-                 capture 0x706x while the original client confirms this dialog to resolve it",
-                state.form.purpose, state.form.race
-            );
+            // connection, so this says so and stops; a capture of 0x706x while
+            // the original client confirms this dialog would resolve it.
+            let (key, fallback) = AUTO_MATCH;
+            unavailable.write(Unavailable(ui_strings.get_or(key, fallback).to_string()));
             state.dialog = MatchDialog::None;
         }
         DialogButton::JoinAccept | DialogButton::JoinDecline => {

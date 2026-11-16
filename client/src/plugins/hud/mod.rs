@@ -80,6 +80,7 @@ pub mod target_menu;
 pub mod target_window;
 pub mod toast;
 pub mod ui_parking;
+pub mod unavailable;
 pub mod underbar;
 pub mod window_positions;
 pub mod world_anchor;
@@ -202,6 +203,9 @@ impl Plugin for HudPlugin {
                 // Not a window: parks closed windows' content out of the UI
                 // tree so Bevy's per-frame UI passes skip it.
                 ui_parking::UiParkingPlugin,
+                // Not a window: the one reader that tells the player a control
+                // does nothing in openroad yet.
+                unavailable::UnavailablePlugin,
             ),
         ));
     }

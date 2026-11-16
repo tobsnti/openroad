@@ -71,6 +71,7 @@ use crate::plugins::hud::modal_dialog::{
 };
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::system_message::model::format_template;
+use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::{DisplayName, NetworkEntities};
 use crate::plugins::options_game::toggle_on;
@@ -170,15 +171,15 @@ fn opens_a_box(petition: u8) -> bool {
     )
 }
 
-/// A one-line name for an arm we decode but do not host, so an unanswered
-/// invite is visible instead of silent. **Ours** — the original has no such
-/// line, because it hosts every arm.
-fn unhosted_arm_notice(petition: u8) -> &'static str {
+/// The name of an arm we decode but do not host, so an unanswered invite is
+/// visible instead of silent. **Ours**: `textuisystem.txt` has a noun for the
+/// party arm alone (`UIIT_STT_INVITE_PARTY_SIGN`), none for these.
+fn unhosted_arm_label(petition: u8) -> &'static str {
     match petition {
-        PETITION_GUILD => "A guild invitation arrived, but it is not wired yet.",
-        PETITION_UNION => "An alliance invitation arrived, but it is not wired yet.",
-        PETITION_ACADEMY => "An academy invitation arrived, but it is not wired yet.",
-        _ => "An invitation arrived in a form this client does not know yet.",
+        PETITION_GUILD => "Guild invitation",
+        PETITION_UNION => "Alliance invitation",
+        PETITION_ACADEMY => "Academy invitation",
+        _ => "Invitation",
     }
 }
 
@@ -236,6 +237,7 @@ pub fn on_game_invite(
     mut history: ResMut<ChatHistory>,
     options: Res<GameOptions>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut unavailable: MessageWriter<Unavailable>,
 ) {
     for invite in reader.read() {
         let GameInvite::Petition(petition) = invite else {
@@ -265,7 +267,7 @@ pub fn on_game_invite(
             continue;
         }
         if !opens_a_box(petition.petition) {
-            history.push(ChatLine::system(unhosted_arm_notice(petition.petition)));
+            unavailable.write(Unavailable(unhosted_arm_label(petition.petition).into()));
             continue;
         }
         if pending.0.is_some() {
@@ -705,6 +707,7 @@ mod test {
                 .init_resource::<PendingPetition>()
                 .init_resource::<ChatHistory>()
                 .add_message::<GameInvite>()
+                .add_message::<Unavailable>()
                 .add_systems(Update, on_game_invite);
             app.world_mut()
                 .write_message(GameInvite::Petition(petition(kind, Some(0))));
@@ -821,7 +824,7 @@ mod test {
         );
         for arm in [PETITION_GUILD, PETITION_UNION, PETITION_ACADEMY, 0x7F] {
             assert!(!opens_a_box(arm), "arm {arm} must not open a box yet");
-            assert!(!unhosted_arm_notice(arm).is_empty());
+            assert!(!unhosted_arm_label(arm).is_empty());
         }
     }
 
@@ -891,6 +894,7 @@ mod test {
         })
         .add_message::<GameInvite>()
         .add_message::<ExchangeCanceled>()
+        .add_message::<Unavailable>()
         .add_systems(
             Update,
             (

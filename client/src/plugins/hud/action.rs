@@ -50,6 +50,7 @@ use crate::plugins::hud::exchange::ui::spawn_subframe;
 use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
+use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::RemoteMovement;
 use crate::plugins::player::Player;
@@ -212,12 +213,15 @@ pub struct ActionWindowState {
 pub struct ActionWindowRoot;
 
 /// A slot, identified the way the original cannot: by panel and grid index.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct ActionSlot {
     pub panel: ActionPanel,
     pub index: usize,
     /// The action bound to it by `actionwnddata.txt`, if any.
     pub command_id: Option<u32>,
+    /// That action's own text: its `actionwnddata.txt` key through
+    /// `textuisystem.txt`. Empty for an unassigned slot.
+    pub label: String,
 }
 
 pub fn spawn_action_window(
@@ -301,6 +305,9 @@ pub fn spawn_action_window(
                         panel: spec.panel,
                         index,
                         command_id: command.map(|c| c.command_id),
+                        label: command
+                            .map(|c| ui_strings.get_or(&c.text_key, &c.text_key).to_string())
+                            .unwrap_or_default(),
                     },
                     Name::from(format!(
                         "Action slot {}",
@@ -472,6 +479,7 @@ fn on_slot_activate(
     mut pickups: MessageWriter<PickupOrder>,
     player: Query<&RemoteMovement, With<Player>>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut unavailable: MessageWriter<Unavailable>,
 ) {
     let Ok(slot) = slots.get(activate.entity) else {
         return;
@@ -510,10 +518,7 @@ fn on_slot_activate(
         }
         SlotVerb::OnTarget(verb) => verb,
         SlotVerb::Unwired => {
-            debug!(
-                "action window: {:?} slot {} (command {id}) not wired yet",
-                slot.panel, slot.index
-            );
+            unavailable.write(Unavailable(slot.label.clone()));
             return;
         }
     };
@@ -827,7 +832,8 @@ mod test {
         app.init_resource::<SelectedEntity>()
             .add_message::<TargetMenuAction>()
             .add_message::<AttackOrder>()
-            .add_message::<PickupOrder>();
+            .add_message::<PickupOrder>()
+            .add_message::<Unavailable>();
         let target = if select {
             let e = app.world_mut().spawn_empty().id();
             app.world_mut().resource_mut::<SelectedEntity>().0 = Some(e);
@@ -841,6 +847,7 @@ mod test {
                 panel: ActionPanel::CharacterControl,
                 index: 0,
                 command_id: Some(command_id),
+                label: String::new(),
             })
             .observe(on_slot_activate)
             .id();

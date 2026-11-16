@@ -47,6 +47,7 @@ use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::party::model::PartyWindowState;
 use crate::plugins::hud::party_matching::model::PartyMatchState;
 use crate::plugins::hud::scale::text_px;
+use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::system_window::{spawn_system_window, SystemWindow};
 use crate::plugins::textdata::ClientUiStrings;
 use crate::plugins::ui_v2::style::ImageButtonStyle;
@@ -379,8 +380,8 @@ fn spawn_menu_popup(
 /// close the popup behind it — so the dispatch is one `match` on the authored
 /// id rather than one `if` per row, and the despawn is written once. An arm
 /// returns whether the row had a target at all: the rows whose window does not
-/// exist yet fall to `_`, log, and leave the popup up, which is the honest
-/// rendering of the backlog this popup indexes.
+/// exist yet fall to `_`, say so by their own text, and leave the popup up,
+/// which is the honest rendering of the backlog this popup indexes.
 #[allow(clippy::too_many_arguments)]
 fn on_row_activate(
     activate: On<Activate>,
@@ -398,6 +399,7 @@ fn on_row_activate(
     mut party_match_state: ResMut<PartyMatchState>,
     mut community: ResMut<CommunityState>,
     mut autopotion: ResMut<AutoPotionState>,
+    mut unavailable: MessageWriter<Unavailable>,
     mut commands: Commands,
 ) {
     let Ok(MenuRow(id)) = rows.get(activate.entity) else {
@@ -439,7 +441,9 @@ fn on_row_activate(
         _ => false,
     };
     if !handled {
-        debug!("underbar menu: row id {id} has no window in openroad yet");
+        if let Some((.., key, fallback)) = ROWS.iter().find(|(row, ..)| row == id) {
+            unavailable.write(Unavailable(ui_strings.get_or(key, fallback).to_string()));
+        }
         return;
     }
     // the popup closes behind the row it opened
@@ -595,5 +599,44 @@ mod test {
             ROWS.len(),
             "every drawn row is either wired or listed as unwired"
         );
+    }
+
+    /// A row without a window says so by its own text — the player's row, not
+    /// our fallback — through the real click; a wired row says nothing.
+    #[test]
+    fn an_unwired_row_says_so_by_its_own_text() {
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::asset::AssetPlugin::default(),
+        ))
+        .insert_resource(ClientUiStrings::from_rows(&[(
+            "UIIT_STT_TC_MACHING_TITLE",
+            "Guardian Matching, from the data",
+        )]))
+        .init_resource::<AcademyWindowState>()
+        .init_resource::<AlchemyState>()
+        .init_resource::<ActionWindowState>()
+        .init_resource::<CollectionWindowState>()
+        .init_resource::<PartyWindowState>()
+        .init_resource::<PartyMatchState>()
+        .init_resource::<CommunityState>()
+        .init_resource::<AutoPotionState>()
+        .add_message::<Unavailable>();
+        let mut click = |id: u32| -> Vec<String> {
+            let row = app
+                .world_mut()
+                .spawn(MenuRow(id))
+                .observe(on_row_activate)
+                .id();
+            app.world_mut().trigger(Activate { entity: row });
+            app.world_mut()
+                .resource_mut::<Messages<Unavailable>>()
+                .drain()
+                .map(|said| said.0)
+                .collect()
+        };
+        assert_eq!(click(102), ["Guardian Matching, from the data"]);
+        assert!(click(PARTY_ROW_ID).is_empty());
     }
 }

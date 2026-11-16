@@ -51,7 +51,7 @@ use sro_net::frame::SilkroadFrame;
 use crate::plugins::config::chat::parse_argb;
 use crate::plugins::config::ClientConfig;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
-use crate::plugins::hud::party_matching::dialogs::PROGRESS_TIMEOUT_SECS;
+use crate::plugins::hud::party_matching::dialogs::{AUTO_MATCH, PROGRESS_TIMEOUT_SECS};
 use crate::plugins::hud::party_matching::model::{
     MatchDialog, MatchSort, PartyMatchState, ReloadMatchList, MATCH_ROWS,
 };
@@ -591,12 +591,7 @@ pub fn spawn_match_window(
                 "UIIT_STT_GET_WHISPER",
                 "Whisper",
             ),
-            (
-                MatchAction::AutoMatch,
-                219.0,
-                "UIIT_CTL_PARTYMATCH_PSEARCH_AUTOMATCHING",
-                "Auto match",
-            ),
+            (MatchAction::AutoMatch, 219.0, AUTO_MATCH.0, AUTO_MATCH.1),
             (
                 MatchAction::Register,
                 440.0,
