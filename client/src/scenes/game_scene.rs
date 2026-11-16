@@ -35,7 +35,7 @@ use packets::hexdump;
 
 use crate::assets::bmt::sheen::ShineColor;
 use crate::net::connection::SilkroadConnection;
-use crate::net::log_spawn_notes;
+use crate::net::{log_spawn_notes, read_single_spawn};
 use crate::plugins::camera::{
     despawn_cinematic_camera, spawn_game_camera, CinematicCamera, CinematicCamera2, PlayerCamera,
 };
@@ -1302,38 +1302,31 @@ fn on_single_spawn(
             item_data: &item_data,
             teleport: &teleport,
         };
-        let parsed = parse_group_spawn(&msg.raw, true, 1, &resolver);
-        log_spawn_notes(&parsed);
-        if parsed.spawns.is_empty() {
-            // unknown ref id or a record-layout mismatch — keep the evidence
-            warn!(
-                "network: single spawn parsed to nothing — capture: {}",
-                hexdump(&msg.raw, 96)
-            );
+        // One record and the tail only a single spawn has; its own reader
+        // takes both, so the frame is read to its end.
+        let Some(entity) = read_single_spawn(&msg.raw, &resolver) else {
+            continue;
+        };
+        // skip ourselves and anything already spawned
+        if Some(entity.unique_id) == local.unique_id || entities.get(entity.unique_id).is_some() {
+            continue;
         }
-        for entity in parsed.spawns {
-            // skip ourselves and anything already spawned
-            if Some(entity.unique_id) == local.unique_id || entities.get(entity.unique_id).is_some()
-            {
-                continue;
-            }
-            debug!(
-                "network: single spawn uid={} ref={}",
-                entity.unique_id, entity.ref_id
-            );
-            spawn_remote_entity(
-                &mut commands,
-                &asset_server,
-                &char_data,
-                &item_data,
-                &rare_effects,
-                &names,
-                &ui_strings,
-                &teleport,
-                &origin,
-                entity,
-            );
-        }
+        debug!(
+            "network: single spawn uid={} ref={}",
+            entity.unique_id, entity.ref_id
+        );
+        spawn_remote_entity(
+            &mut commands,
+            &asset_server,
+            &char_data,
+            &item_data,
+            &rare_effects,
+            &names,
+            &ui_strings,
+            &teleport,
+            &origin,
+            entity,
+        );
     }
 }
 

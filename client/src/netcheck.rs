@@ -50,7 +50,7 @@ use crate::assets::textdata::characterdata::CharacterData;
 use crate::assets::textdata::decode::decode_textdata;
 use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::teleport::TeleportTable;
-use crate::net::log_spawn_notes;
+use crate::net::{log_spawn_notes, read_single_spawn};
 use crate::plugins::textdata::TextdataResolver;
 use packets::agent::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
@@ -769,10 +769,12 @@ fn netcheck_select_target(
         })
         .inspect(log_spawn_notes)
         .collect();
+    // A single spawn is read with its own reader: its record has a tail the
+    // group frame lacks, and without game data that tail is what tells an NPC
+    // from a monster (read as a one-record batch, an NPC came out a monster).
     let single_spawns: Vec<_> = reader
         .read()
-        .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver()))
-        .inspect(log_spawn_notes)
+        .filter_map(|spawn| read_single_spawn(&spawn.raw, &game_data.resolver()))
         .collect();
     // Remember every candidate; choose when the local position is known.
     // Measured 2026-11-09: the spawn batch and the join land in the same frame,
@@ -785,8 +787,7 @@ fn netcheck_select_target(
     // to be candidates as soon as they parsed.
     for entity in single_spawns
         .iter()
-        .chain(group_spawns.iter())
-        .flat_map(|parsed| parsed.spawns.iter())
+        .chain(group_spawns.iter().flat_map(|parsed| parsed.spawns.iter()))
         .filter(|entity| entity.unique_id != 0 && matches!(entity.kind, SpawnKind::Monster { .. }))
     {
         driver.candidates.push((
@@ -952,14 +953,9 @@ fn netcheck_pick_up_loot(
         return;
     };
     for spawn in reader.read() {
-        let parsed = parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver());
-        log_spawn_notes(&parsed);
-        let Some(uid) = parsed
-            .spawns
-            .iter()
-            .map(|entity| entity.unique_id)
-            .find(|&uid| uid != 0 && Some(uid) != driver.selected_uid)
-        else {
+        let Some(dropped) = read_single_spawn(&spawn.raw, &game_data.resolver()).filter(|entity| {
+            entity.unique_id != 0 && Some(entity.unique_id) != driver.selected_uid
+        }) else {
             // Say so instead of skipping quietly: a drop this harness cannot
             // classify parses to nothing, and its uid cannot be read from the
             // raw bytes either — a gold record carries its amount between the
@@ -984,14 +980,7 @@ fn netcheck_pick_up_loot(
         // leaves the player ~150 away from where the mob died — so the pickup
         // was refused with `picked=false` and the chain proved only that the
         // request arrives, not that it works.
-        let Some(drop_pos) = parsed
-            .spawns
-            .iter()
-            .find(|e| e.unique_id == uid)
-            .map(|e| e.position.clone())
-        else {
-            continue;
-        };
+        let (uid, drop_pos) = (dropped.unique_id, dropped.position);
         if let Err(e) = conn.get_sender().send(
             Packet::from(MovementRequest::ToLocation {
                 region: drop_pos.region,
@@ -1168,6 +1157,43 @@ mod tests {
             read(VSRO_MONSTERS, 3, &data.resolver()),
         ];
         assert_eq!(got, two_npcs_three_monsters());
+    }
+
+    /// A single spawn (0x3015) is one record and a tail byte, and without game
+    /// data that tail is what decides: one byte behind the NPC reading is an
+    /// NPC's tail, two are a monster's rarity and its tail. Read as a
+    /// one-record batch instead, the NPC came out a monster and the monster
+    /// undecided, so the driver aimed at the NPC. The records are the first of
+    /// each captured group above.
+    #[test]
+    fn a_single_spawn_without_game_data_makes_only_the_monster_a_target() {
+        let mut app = App::new();
+        app.add_message::<SingleEntitySpawn>()
+            .add_message::<GroupEntitySpawnBegin>()
+            .add_message::<GroupEntitySpawnData>()
+            .insert_resource(ActionDriver {
+                enabled: true,
+                ..Default::default()
+            })
+            .insert_resource(GameData(None))
+            .add_systems(Update, netcheck_select_target);
+        for (group, count) in [(VSRO_NPCS, 2), (VSRO_MONSTERS, 3)] {
+            let group = bytes(group);
+            // the records of each group are of one length
+            let mut raw = group[..group.len() / count].to_vec();
+            raw.push(0); // the single spawn's tail
+            app.world_mut()
+                .write_message(SingleEntitySpawn { raw: raw.into() });
+        }
+        app.update();
+        let targets: Vec<u32> = app
+            .world()
+            .resource::<ActionDriver>()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.0)
+            .collect();
+        assert_eq!(targets, [106_615]);
     }
 
     /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
