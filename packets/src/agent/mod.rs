@@ -22,6 +22,7 @@ pub mod pet;
 pub mod quest;
 pub mod siege;
 pub mod spawn_reader;
+pub mod spawn_writer;
 pub mod stall;
 pub mod storage;
 
