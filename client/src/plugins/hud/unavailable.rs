@@ -25,7 +25,8 @@ fn report_unavailable(mut reader: MessageReader<Unavailable>, mut history: ResMu
         let label = label.trim_end_matches(['.', ' ']);
         info!("not hooked up in openroad yet: {label}");
         // Ours (ADR 0009; the data has no such sentence). It names the control,
-        // not the feature: several work elsewhere (the Q key, `/stall`, `$name`).
+        // not the feature, which can exist elsewhere (the Free PvP panel shows
+        // itself in Free PvP mode).
         let line = format!("{label}: not hooked up in openroad yet.");
         if !history.iter().any(|told| told.text == line) {
             history.push(ChatLine::system(line));

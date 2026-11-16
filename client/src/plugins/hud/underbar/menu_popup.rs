@@ -26,12 +26,12 @@
 //! icons sit further left still, outside the rows: that overhang is the
 //! family's idiom, reproduced in `targetmenu.2dt` too, not a defect to fix.
 //!
-//! Nine rows have a target that exists in openroad today (System, Action,
-//! Alchemy, Collection, Party, Party Matching, Community, Guild and Auto
-//! Potion). The rest stay visible but inert on purpose — the popup is the
-//! discoverability surface for the unbuilt-window backlog, so hiding them
-//! would hide the backlog.
+//! A row whose target exists in openroad reaches it the way the game already
+//! does (a window's `open` flag, the request `/Stall` sends). The rest stay
+//! visible but inert on purpose — the popup is the discoverability surface for
+//! the unbuilt-window backlog, so hiding them would hide the backlog.
 
+use bevy::ecs::system::SystemParam;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
@@ -46,7 +46,9 @@ use crate::plugins::hud::community::model::{CommunityPage, CommunityState};
 use crate::plugins::hud::game_window::abs_node;
 use crate::plugins::hud::party::model::PartyWindowState;
 use crate::plugins::hud::party_matching::model::PartyMatchState;
+use crate::plugins::hud::quest::QuestWindowState;
 use crate::plugins::hud::scale::text_px;
+use crate::plugins::hud::stall::owner::OpenStallCommand;
 use crate::plugins::hud::unavailable::Unavailable;
 use crate::plugins::system_window::{spawn_system_window, SystemWindow};
 use crate::plugins::textdata::ClientUiStrings;
@@ -206,22 +208,22 @@ pub const ROWS: [(u32, f32, &str, &str, &str); 14] = [
     ),
 ];
 
-/// The rows whose target window exists in our tree today.
+/// The rows whose target exists in our tree today.
 const SYSTEM_ROW_ID: u32 = 126;
 /// `UIIT_STT_TOGGLE_ENCHANT` — "Alchemy ( Y )", the alchemy box (#333).
-const ALCHEMY_ROW_ID: u32 = 114;
+pub const ALCHEMY_ROW_ID: u32 = 114;
 /// The Action row (`ub_new_icon_action`) — a 4th-gen menu entry pointing at the
 /// classic-generation `ifaction.txt` panel (#475).
 const ACTION_ROW_ID: u32 = 105;
 /// The Collection book row (`ub_new_icon_collection`, #537).
 const COLLECTION_ROW_ID: u32 = 104;
+/// `UIIT_CTL_TC_SHORTKEY_L` — the academy member panel.
+pub const ACADEMY_ROW_ID: u32 = 99;
 /// "Party ( P )" — the roster page. Its caption already names the key, so the
 /// row and `KeyParty` toggle the same state.
-/// `UIIT_CTL_TC_SHORTKEY_L` — the academy member panel.
-const ACADEMY_ROW_ID: u32 = 99;
 const PARTY_ROW_ID: u32 = 83;
 /// "Party Matching(E)" — the LFG board.
-const PARTY_MATCH_ROW_ID: u32 = 93;
+pub const PARTY_MATCH_ROW_ID: u32 = 93;
 /// "Community ( U )" — the shell the bar's own Community button also opens.
 const COMMUNITY_ROW_ID: u32 = 108;
 /// "Guild ( U )" — the same shell forced onto its guild page: vanilla's guild
@@ -230,7 +232,12 @@ const COMMUNITY_ROW_ID: u32 = 108;
 const GUILD_ROW_ID: u32 = 96;
 /// "Auto Potion (T)" — the panel already bound to `KeyAutoPotion` (3024), whose
 /// own doc names this row as vanilla's opener for it.
-const AUTO_POTION_ROW_ID: u32 = 123;
+pub const AUTO_POTION_ROW_ID: u32 = 123;
+/// "Quest ( Q )" — the quest list, the state `KeyQuest` toggles.
+const QUEST_ROW_ID: u32 = 111;
+/// `UIIT_CTL_OPEN_STORE` — "Stall". Opening your own stall is a request
+/// (`0x70B1`), not a window flag, so the row sends what `/Stall` sends.
+pub const STALL_ROW_ID: u32 = 117;
 
 #[derive(Component)]
 pub struct MenuPopupRoot;
@@ -374,14 +381,66 @@ fn spawn_menu_popup(
     });
 }
 
-/// Activate a row.
-///
-/// Every wired row does the same two things — flip a window's `open` flag, then
-/// close the popup behind it — so the dispatch is one `match` on the authored
-/// id rather than one `if` per row, and the despawn is written once. An arm
-/// returns whether the row had a target at all: the rows whose window does not
-/// exist yet fall to `_`, say so by their own text, and leave the popup up,
-/// which is the honest rendering of the backlog this popup indexes.
+/// The rows' targets as one parameter: an observer takes at most the sixteen
+/// parameters Bevy implements, and the action window's slots for the same
+/// windows run [`Self::activate`] too (`hud::action`), so each target is
+/// written once for both entry points.
+#[derive(SystemParam)]
+pub struct MenuRowTargets<'w> {
+    academy: ResMut<'w, AcademyWindowState>,
+    alchemy: ResMut<'w, AlchemyState>,
+    action: ResMut<'w, ActionWindowState>,
+    collection: ResMut<'w, CollectionWindowState>,
+    party: ResMut<'w, PartyWindowState>,
+    party_match: ResMut<'w, PartyMatchState>,
+    community: ResMut<'w, CommunityState>,
+    autopotion: ResMut<'w, AutoPotionState>,
+    quest: ResMut<'w, QuestWindowState>,
+    open_stall: MessageWriter<'w, OpenStallCommand>,
+}
+
+impl MenuRowTargets<'_> {
+    /// Run row `id`'s target and return whether it has one. Nearly every row
+    /// flips a window's `open` flag, so the dispatch is one `match` on the
+    /// authored id rather than one `if` per row.
+    pub fn activate(&mut self, id: u32) -> bool {
+        match id {
+            ACADEMY_ROW_ID => toggle(&mut self.academy.open),
+            PARTY_ROW_ID => toggle(&mut self.party.open),
+            PARTY_MATCH_ROW_ID => toggle(&mut self.party_match.open),
+            COLLECTION_ROW_ID => toggle(&mut self.collection.open),
+            ACTION_ROW_ID => toggle(&mut self.action.open),
+            COMMUNITY_ROW_ID => toggle(&mut self.community.open),
+            GUILD_ROW_ID => {
+                // vanilla's Guild button is the Community shell on its guild
+                // page, so the row picks the page before flipping the shell
+                self.community.page = CommunityPage::Guild;
+                toggle(&mut self.community.open)
+            }
+            AUTO_POTION_ROW_ID => toggle(&mut self.autopotion.open),
+            QUEST_ROW_ID => toggle(&mut self.quest.open),
+            ALCHEMY_ROW_ID => {
+                // the only toggle with a teardown: closing the box drops what
+                // was staged in it
+                self.alchemy.open = !self.alchemy.open;
+                if !self.alchemy.open {
+                    self.alchemy.clear();
+                }
+                true
+            }
+            STALL_ROW_ID => {
+                // `/Stall` without a title, so the vanilla default title
+                self.open_stall.write(OpenStallCommand { title: None });
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Activate a row, then close the popup behind it, so the despawn is written
+/// once. A row without a target says so by its own text and leaves the popup
+/// up, which is the honest rendering of the backlog this popup indexes.
 #[allow(clippy::too_many_arguments)]
 fn on_row_activate(
     activate: On<Activate>,
@@ -391,14 +450,7 @@ fn on_row_activate(
     cameras: Query<Entity, With<Camera2d>>,
     asset_server: Res<AssetServer>,
     ui_strings: Res<ClientUiStrings>,
-    mut academy_state: ResMut<AcademyWindowState>,
-    mut alchemy: ResMut<AlchemyState>,
-    mut action_state: ResMut<ActionWindowState>,
-    mut collection_state: ResMut<CollectionWindowState>,
-    mut party_state: ResMut<PartyWindowState>,
-    mut party_match_state: ResMut<PartyMatchState>,
-    mut community: ResMut<CommunityState>,
-    mut autopotion: ResMut<AutoPotionState>,
+    mut targets: MenuRowTargets,
     mut unavailable: MessageWriter<Unavailable>,
     mut commands: Commands,
 ) {
@@ -406,28 +458,6 @@ fn on_row_activate(
         return;
     };
     let handled = match *id {
-        ACADEMY_ROW_ID => toggle(&mut academy_state.open),
-        PARTY_ROW_ID => toggle(&mut party_state.open),
-        PARTY_MATCH_ROW_ID => toggle(&mut party_match_state.open),
-        COLLECTION_ROW_ID => toggle(&mut collection_state.open),
-        ACTION_ROW_ID => toggle(&mut action_state.open),
-        COMMUNITY_ROW_ID => toggle(&mut community.open),
-        GUILD_ROW_ID => {
-            // vanilla's Guild button is the Community shell on its guild page,
-            // so the row picks the page before flipping the shell
-            community.page = CommunityPage::Guild;
-            toggle(&mut community.open)
-        }
-        AUTO_POTION_ROW_ID => toggle(&mut autopotion.open),
-        ALCHEMY_ROW_ID => {
-            // the only toggle with a teardown: closing the box drops what was
-            // staged in it
-            alchemy.open = !alchemy.open;
-            if !alchemy.open {
-                alchemy.clear();
-            }
-            true
-        }
         SYSTEM_ROW_ID => {
             // the one row whose target is a spawned window rather than a state
             // flag, so its "close" is a despawn
@@ -438,7 +468,7 @@ fn on_row_activate(
             }
             true
         }
-        _ => false,
+        row => targets.activate(row),
     };
     if !handled {
         if let Some((.., key, fallback)) = ROWS.iter().find(|(row, ..)| row == id) {
@@ -460,7 +490,7 @@ fn toggle(open: &mut bool) -> bool {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
 
     /// The client rect is DERIVED from the piece size, not transcribed: all
@@ -547,16 +577,15 @@ mod test {
         assert!(ROW_X + ROW_W > FRAME_RECT.2 - PIECE);
     }
 
-    /// The nine wired rows against their authored string keys, and the five
-    /// that are still inert. The ids are the authored ones, so a row moving in
-    /// the list cannot silently repoint a target — and a future wiring cannot
-    /// land without this test noticing, because the inert set is asserted too.
+    /// The wired rows against their authored string keys, and the ones that
+    /// are still inert. The ids are the authored ones, so a row moving in the
+    /// list cannot silently repoint a target — and a future wiring cannot land
+    /// without this test noticing, because the inert set is asserted too.
     ///
-    /// Row 117 (Stall) counts as inert on purpose rather than for lack of a
-    /// `StallState.open` to flip: opening your own stall is a protocol act
-    /// (`0x70B1` create), not a window toggle, so a menu row that only flipped
-    /// the flag would show an un-created shell
-    /// (`docs/re/ui/hud-stall-window.md` §4).
+    /// Row 117 (Stall) is wired through the request `/Stall` sends, not through
+    /// `StallState.open`: opening your own stall is a protocol act (`0x70B1`
+    /// create), and a row that only flipped the flag would show an un-created
+    /// shell (`docs/re/ui/hud-stall-window.md` §4).
     #[test]
     fn only_the_wired_rows_have_targets() {
         let wired = [
@@ -570,6 +599,8 @@ mod test {
             (COMMUNITY_ROW_ID, 108, "UIIT_STT_TOGGLE_COMMUNITY"),
             (GUILD_ROW_ID, 96, "UIIT_STT_TOGGLE_GUILD"),
             (AUTO_POTION_ROW_ID, 123, "UIIT_STT_TOGGLE_AUTOPOTION"),
+            (QUEST_ROW_ID, 111, "UIIT_STT_TOGGLE_QUEST"),
+            (STALL_ROW_ID, 117, "UIIT_CTL_OPEN_STORE"),
         ];
         for (id, authored, key) in wired {
             assert_eq!(id, authored, "wired row id");
@@ -579,13 +610,12 @@ mod test {
         // Community and Guild are two rows onto one resource, which is correct:
         // vanilla's Guild button opens the Community window on its guild page.
         assert_ne!(COMMUNITY_ROW_ID, GUILD_ROW_ID);
-        // Guardian Matching, Quest, Craft and Stall have no window. Academy
-        // left this list when the member panel landed; the row now toggles it.
-        let unwired = [102, 111, 115, 117];
+        // Guardian Matching and Craft have no target in openroad yet.
+        let unwired = [102, 115];
         for id in unwired {
             assert!(
                 !wired.iter().any(|(wired, ..)| *wired == id),
-                "row {id} has no window in openroad yet"
+                "row {id} has no target in openroad yet"
             );
             assert!(ROWS.iter().any(|(row, ..)| *row == id), "row {id} is drawn");
         }
@@ -601,10 +631,27 @@ mod test {
         );
     }
 
-    /// A row without a window says so by its own text — the player's row, not
-    /// our fallback — through the real click; a wired row says nothing.
+    /// Every resource [`MenuRowTargets`] reaches. The action window's slot
+    /// tests run the same targets, so they take the same set.
+    pub(crate) fn init_row_targets(app: &mut App) {
+        app.init_resource::<AcademyWindowState>()
+            .init_resource::<AlchemyState>()
+            .init_resource::<ActionWindowState>()
+            .init_resource::<CollectionWindowState>()
+            .init_resource::<PartyWindowState>()
+            .init_resource::<PartyMatchState>()
+            .init_resource::<CommunityState>()
+            .init_resource::<AutoPotionState>()
+            .init_resource::<QuestWindowState>()
+            .add_message::<OpenStallCommand>();
+    }
+
+    /// Through the real click: a row without a target says so by its own text
+    /// — the player's row, not our fallback — and a wired row reaches its
+    /// target and says nothing. Quest flips the state the Q key flips, Stall
+    /// writes the message `/Stall` writes.
     #[test]
-    fn an_unwired_row_says_so_by_its_own_text() {
+    fn a_row_reaches_its_target_or_says_so_by_its_own_text() {
         let mut app = App::new();
         app.add_plugins((
             bevy::app::TaskPoolPlugin::default(),
@@ -614,15 +661,8 @@ mod test {
             "UIIT_STT_TC_MACHING_TITLE",
             "Guardian Matching, from the data",
         )]))
-        .init_resource::<AcademyWindowState>()
-        .init_resource::<AlchemyState>()
-        .init_resource::<ActionWindowState>()
-        .init_resource::<CollectionWindowState>()
-        .init_resource::<PartyWindowState>()
-        .init_resource::<PartyMatchState>()
-        .init_resource::<CommunityState>()
-        .init_resource::<AutoPotionState>()
         .add_message::<Unavailable>();
+        init_row_targets(&mut app);
         let mut click = |id: u32| -> Vec<String> {
             let row = app
                 .world_mut()
@@ -638,5 +678,14 @@ mod test {
         };
         assert_eq!(click(102), ["Guardian Matching, from the data"]);
         assert!(click(PARTY_ROW_ID).is_empty());
+        assert!(click(QUEST_ROW_ID).is_empty());
+        assert!(click(STALL_ROW_ID).is_empty());
+        assert!(app.world().resource::<QuestWindowState>().open);
+        let sent: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<OpenStallCommand>>()
+            .drain()
+            .collect();
+        assert_eq!(sent, [OpenStallCommand { title: None }]);
     }
 }
