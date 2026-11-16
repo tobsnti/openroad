@@ -2,13 +2,15 @@
 
 Status: layout decoded from the client parser and its byte-array unit tests
 (`packets/src/agent/entity_spawn.rs`), calibrated against live vSRO 1.188 captures.
-The player and NPC records (incl. the interaction-option list) are
-capture-verified; the monster rarity tail and the dropped-item drop-source tail
-are cross-referenced with skrillax's `silkroad-protocol` and corrected against
-`packet_dump/0x3015.log` (2026-07-24); the gate-building record is verified
-against 40 identical captures of the Jangan dimensional gate. Fields the parser
-skips without interpreting are marked *(unverified)* — their names are inferred,
-not observed.
+The item, monster, NPC and player records (but a player in a job suit) are read
+as the original client reads them [V original handler], with two named
+exceptions: the movement block's width rule and the width of a buff entry (see
+Open questions). The COS owner tail and the gate building's tail rest on xBot and
+the captures, not on the original's handler; character rows outside player,
+monster, NPC and COS are read as NPCs. Every record is kept whole; fields nothing
+interprets are named by their place in the record and marked [U]. An opt-in
+census reads every captured 0x3015 and 0x3019 to its last byte (see Open
+questions).
 
 All five opcodes are **S→C** (`0x3xxx`). Direction is confirmed by the macro's
 section comment and the range convention in `docs/protocol/opcodes.md`.
@@ -19,7 +21,7 @@ The framing structs live in `packets/src/agent/ingame.rs`
 `EntityMovement`, `EntityState`, `ActiveBuff`) live in
 `packets/src/agent/character_data.rs`. The record payload is carried **unparsed**
 at dispatch and decoded in `packets/src/agent/entity_spawn.rs`
-(`parse_group_spawn`) with the bounds-checked reader in
+(`parse_group_spawn`, `parse_single_spawn` for 0x3015) with the bounds-checked reader in
 `packets/src/agent/spawn_reader.rs`, because a record's shape depends on the client's
 itemdata/characterdata tables (the same reason `CharacterDataBody` (0x3013) is a
 raw passthrough — see [`net-character-data-0x3013.md`](net-character-data-0x3013.md)).
@@ -63,7 +65,7 @@ entity (remote players, NPCs, monsters, item drops) as a batch:
 | `0x3017` | GroupEntitySpawnBegin | `kind:u8, count:u16` | `kind` = `GROUP_SPAWN` (1) or `GROUP_DESPAWN` (2). Trailing bytes after `count` are ignored on decode (some servers append unknown fields). |
 | `0x3019` | GroupEntitySpawnData | `count` × record | Spawn → one full entity record per entity (layout below). Despawn → `count` × bare `u32` unique id. |
 | `0x3018` | GroupEntitySpawnEnd | *(empty)* | Resets the client's pending-batch state. |
-| `0x3015` | SingleEntitySpawn | exactly one 0x3019 **spawn** record | A single entity entering view outside a batch (monster respawn, a player walking into range). Decoded with `parse_group_spawn(raw, spawning=true, count=1)`. |
+| `0x3015` | SingleEntitySpawn | one **spawn** record and its tail | A single entity entering view outside a batch (monster respawn, a player walking into range). The tail is a byte behind a character, and behind an item the drop source and, for a source of 5 or 6, the dropper's uid. `parse_single_spawn` reads it; the client still decodes it with `parse_group_spawn(raw, spawning=true, count=1)`. |
 | `0x3016` | SingleEntityDespawn | `unique_id:u32` | A single entity leaving view. |
 
 The client resolves `count`/`kind` from the preceding `GroupEntitySpawnBegin`
@@ -78,12 +80,15 @@ and the resolved type selects the per-record parser:
 
 | Resolves via | Type | Record parser |
 |---|---|---|
-| itemdata, `is_equipment()` | Item (equipment) | `parse_item` (equipment arm) |
-| itemdata, `is_gold()` | Item (gold) | `parse_item` (gold arm) |
-| itemdata, other | Item (other drop) | `parse_item` (plain arm) |
+| itemdata, `is_equipment()` | Item (equipment) | `parse_item` (opt level) |
+| itemdata, TypeID 3/3/8 or 3/3/9 | Item (named) | `parse_item` (name) |
+| itemdata, `is_gold()` | Item (gold) | `parse_item` (amount) |
+| itemdata, other | Item (other drop) | `parse_item` (plain) |
 | characterdata, `is_player()` | Player | `parse_player` |
-| characterdata, `is_monster()` | Monster | `parse_character(is_monster=true)` |
-| characterdata, other | NPC | `parse_character(is_monster=false)` |
+| characterdata, `is_monster()` | Monster | `parse_character(monster: Some(extra))`, `extra` for TypeID4 2 or 3 |
+| characterdata, `cos_kind()` | COS | `parse_cos` |
+| characterdata, other | NPC | `parse_character(monster: None)` |
+| no characterdata loaded | Character (NPC or monster) | `parse_character(monster: None)`, settled by the batch |
 | teleportbuilding.txt gate ref | Structure | `parse_structure` |
 | not found anywhere | Unknown | skip that record if its width is derivable, else **stop the batch** |
 
@@ -125,14 +130,20 @@ These three blocks recur inside the character-bearing records and are read by
 | +0x0A | z | f32 |
 | +0x0E | heading | u16 |
 
-**Movement** (variable, `EntityMovement`; the client skips it — it does not drive
-remote motion yet):
+**Movement** (variable, `EntityMovement`; the reader keeps it in
+`SpawnedEntity::movement`, the client does not drive remote motion from it yet):
 
 ```text
 has_dest:u8, move_type:u8
-  has_dest != 0 : dest_region:u16, [dest_region > 0: dest_x:u16, dest_y:u16, dest_z:u16]
-  has_dest == 0 : source:u8, angle:u16          (source 0 = spinning, 1 = sky/key-walk)
+  has_dest != 0 : dest_region:u16, [dest_region > 0: 3 × u16 in the overworld, 3 × i32 in a dungeon]
+  has_dest == 0 : source:u8, angle:u16
 ```
+
+The width follows the entity's current region here. The original keys it on the
+destination region and reads the three coordinates whatever that region is
+[V original handler]. The captures do not decide between the two: no captured
+record has a destination region of 0 or a dungeon bit. The correction comes on
+its own, with the second reader of this block in `character_data.rs`.
 
 **Character-state** (variable, `EntityState`): life/motion/body states, the three
 movement speeds, and a buff list.
@@ -143,6 +154,9 @@ walk_speed:f32, run_speed:f32, hwan_speed:f32,
 buff_count:u8, buff_count × { ref_skill_id:u32, duration:u32 }
 ```
 
+A buff entry is read as 8 bytes; its width in the original depends on skilldata
+[U]. All 138 captured buffs are 8 bytes, all of skill 39110.
+
 ## Spawn records by kind
 
 Offsets are from the record's own start. A record is fixed-width only up to its
@@ -152,56 +166,48 @@ first variable block (marked ► below); everything after runs sequentially.
 
 ```text
 ref_id:u32
-scale:u8, hwan_level:u8, pvp_cape:u8, auto_invest_xp:u8, base_inventory_size:u8   (unverified names)
+5 × u8   (meanings [U])
 ► inventory (equipped gear):  count:u8, count × { ref_id:u32, [item is equipment: opt_level:u8] }
-avatar_slots:u8
+between_lists:u8
 ► avatar items:               count:u8, count × { ref_id:u32, [item is equipment: opt_level:u8] }
-has_mask:u8
+mask:u8, [mask != 0: mask_ref:u32, [mask_ref is a player model: u8, count:u8, count × u32]]
 unique_id:u32
 position (16 B)
 movement (variable)
 character-state (variable)
 name:string
-job_type:u8, job_level:u8, pk_state:u8, riding:u8, in_combat:u8, [riding: riding_uid:u32], scroll:u8, interact:u8, unk:u8   (names unverified; the conditional riding_uid is [S] from xBot PacketParser.cs:744-747, promoted by F7)
-guild: name:string, guild_id:u32, member_nick:string, 14 B (crest_rev:u32, union_id:u32, union_crest_rev:u32, is_friendly:u8, siege_authority:u8)   (UNVERIFIED — see below)
-equipment_cooldown:u8, pk_flag:u8 (0xFF)
+3 × u8, riding:u8, u8, [riding == 1: riding_uid:u32], u8, interact_mode:u8, u8   (meanings [U] except riding and interact_mode)
+guild: name:string, u32, nick:string, 14 B   (the u32 and the 14 B [U]; go-sro names them guild id, crest rev, union id, union crest rev and two flags)
+[interact_mode == 4: stall_title:string, u32]
+2 × u8
 ```
 
-**The guild block has never been observed.** `packet_dump/0x3019.log` contains
-no player spawn record at all — no name string and no player ref id appears in
-any of its 182 payloads (nor in `0x3015.log`), so the guild read has never run
-against real bytes. Its layout comes from go-sro's `WriteGuild` — the server
-these dumps were captured against — corroborated field-for-field by the vSRO
-client-side parser, which also names the 14-byte tail (the earlier "3×u32
-crest/union revs" label was wrong: it is crest-rev, union-id, union-crest-rev).
-Tagged `[S]`, not `[V]`.
+**The captured players are all guildless.** The captures hold 199 player
+records (117 single, 82 in groups); the census reads each to its last byte, and
+none of them names a guild. A guilded player's block is read as go-sro's
+`WriteGuild` writes it [U].
 
 The block is **not** conditional on guild membership: a guildless player sends a
-zero-length name plus the same zeroed tail. There is a conditional in this region,
-but it is **job mode** — a player wearing job equipment omits everything after the
-guild name (vSRO `hasJobMode()`, go-sro's spec `if(Inventory.ContainsJobEquipment == false)`).
-We do not implement that branch: go-sro never emits it, so it cannot be tested
-locally.
+zero-length name plus the same zeroed tail. The original client takes another
+path for a player in a job suit; what it reads there is not known [U] (go-sro's
+spec writes nothing after the guild name then). The reader reads such a record
+like any other.
 
-Fixed head:
+The original client reads the mask block, the stall at interact mode 4 and the
+riding uid for a riding byte of 1 exactly as above [V original handler]. The
+reader keeps every byte: the two item lists apart (`equipment`, `avatar`), the
+mask, the riding byte, the interact mode and the stall, the guild block's u32
+and its 14-byte tail, and the bytes nothing interprets by position
+(`PlayerBytes`).
 
-| Offset | Field | Type | Notes |
-|---|---|---|---|
-| +0x00 | ref_id | u32 | characterdata player ref |
-| +0x04 | scale | u8 | *(unverified)* |
-| +0x05 | hwan_level | u8 | *(unverified)* |
-| +0x06 | pvp_cape | u8 | *(unverified)* |
-| +0x07 | auto_invest_xp | u8 | *(unverified)* |
-| +0x08 | base_inventory_size | u8 | *(unverified)* |
-| +0x09 | inventory count | u8 | ► variable from here |
-
-The two item lists are **equipment ref ids only** — the client keeps them (as
-`SpawnKind::Player { equipment }`) to attach the avatar's visible gear. An item's
-per-entry width depends on itemdata: an *equipment* item carries a trailing
-`opt_level:u8`, a non-equipment item does not. This itemdata dependency is why
+The two item lists are kept apart (`SpawnKind::Player { equipment, avatar }`); the
+client attaches both for the visible gear. An item's per-entry width depends on
+itemdata: an *equipment* item carries a trailing `opt_level:u8`, a
+non-equipment item does not. For the avatar list the original reads the byte for
+TypeID 3/1/13 and 3/1/14 only; every captured avatar item is 3/1/13. This itemdata dependency is why
 the whole payload is decoded client-side rather than in the `packets` crate.
 
-### NPC (`parse_character`, `is_monster = false`)
+### NPC (`parse_character`, `monster: None`)
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
@@ -210,54 +216,61 @@ the whole payload is decoded client-side rather than in the `packets` crate.
 | +0x08 | position | 16 B | region +0x08 … heading +0x16 |
 | +0x18 | movement | variable | ► |
 | — | character-state | variable | |
-| — | interact_tag | u8 | 0 = no interaction |
-| — | [tag ≠ 0] option_count | u8 | number of option ids |
-| — | [tag ≠ 0] option_count × option_id | u8 each | talk/store/storage/teleport dialog entries |
+| — | interaction flags | u8 | bits 1, 2, 4 select the parts below |
+| — | [bit 1] text | string | meaning [U] |
+| — | [bit 2] option_count, option_count × option_id | u8, u8 each | talk/store/storage/teleport dialog entries |
+| — | [bit 4] type, value | u8, u32 | type 1 or 2; meanings [U] |
 
-The interaction list (`tag byte, then u8 count + that many 1-byte option ids`) is
-capture-verified (tag = 2, count = 4, then 4 option bytes). Its length **must** be
+The interaction block is read by its flag bits as the original client reads it
+[V original handler]; the option list (bit 2) is also capture-verified (flags = 2,
+count = 4, then 4 option bytes). `talk_options` keeps the list,
+`SpawnedEntity::interaction` the flags and the other two parts. Its length **must** be
 consumed exactly or the following record desyncs. The client stores the ids on
 `NpcTalkOptions` but treats them as advisory only — playtests showed they are not
 a reliable dialog-option list (city guards advertise trade-ish bits), so the
 dialog derives its real options from the shop/teleport/speech tables.
 
-### Monster (`parse_character`, `is_monster = true`)
+### Monster (`parse_character`, `monster: Some(extra)`)
 
-Identical to the NPC record, plus a trailing per-instance rarity byte:
+Identical to the NPC record, plus a trailing per-instance rarity byte, and for a
+thief or hunter monster (characterdata TypeID4 2 or 3) one byte more
+[V original handler]:
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | … | *(NPC record layout above)* | | |
 | — | spawn_rarity | u8 | per-instance rarity class (see below) |
+| — | [TypeID4 2 or 3] extra | u8 | meaning [U] |
 
 ### Item drop (`parse_item`)
 
 ```text
 ref_id:u32
-[equipment item: opt_level:u8]  |  [gold item: amount:u32]  |  [other: nothing]
+[equipment item: opt_level:u8]  |  [TypeID 3/3/8 or 3/3/9: name:string]  |  [gold item: amount:u32]  |  [other: nothing]
 unique_id:u32
 position (16 B)
-owner_flag:u8, [owner_flag != 0: owner_jid:u32]
+owner_flag:u8, [owner_flag != 0: owner:u32]
 rarity:u8
-drop_source:u8, dropper_uid:u32
+[0x3015 only: drop_source:u8, [drop_source 5 or 6: dropper_uid:u32]]
 ```
 
 | Offset | Field | Type | Notes |
 |---|---|---|---|
 | +0x00 | ref_id | u32 | itemdata ref |
-| +0x04 | opt_level **or** amount | u8 / u32 | present only for equipment (`u8`) or gold (`u32`); absent otherwise. ► |
+| +0x04 | opt_level **or** name **or** amount | u8 / string / u32 | present only for equipment (`u8`), TypeID 3/3/8 or 3/3/9 (`string`) or gold (`u32`); absent otherwise. ► |
 | — | unique_id | u32 | |
 | — | position | 16 B | no movement/state block for a drop |
 | — | owner_flag | u8 | 0 = free-for-all pickup |
-| — | [owner_flag ≠ 0] owner_jid | u32 | reserving player's job/char id |
+| — | [owner_flag ≠ 0] owner | u32 | meaning [U] |
 | — | rarity | u8 | item rarity |
-| — | drop_source | u8 | how it dropped |
-| — | dropper_uid | u32 | uid of the entity that dropped it |
+| — | [0x3015 only] drop_source | u8 | meaning [U] |
+| — | [0x3015 only, source 5 or 6] dropper_uid | u32 | |
 
-Only gold's `amount` is surfaced (`SpawnKind::Item { amount }`); the drop-source
-tail (`rarity, drop_source, dropper_uid`) is present on **every** dropped item,
-gold included — confirmed against `packet_dump/0x3015.log` (2026-07-24). The
-owner block is skrillax's `ItemSpawnData` shape (owner as a flagged optional).
+The record ends at the rarity byte [V original handler]; a single spawn
+(0x3015) follows it with the drop source and, for a source of 5 or 6 only, the
+dropper's uid, which `parse_single_spawn` reads (`SingleTail::Item`). The
+reader keeps the amount, the name, the opt level and the owner
+(`SpawnKind::Item`).
 
 ### Structure — teleport gate building (`parse_structure`)
 
@@ -270,7 +283,7 @@ otherwise abort the batch as `Unknown`.
 | +0x00 | ref_id | u32 | teleportbuilding.txt gate ref |
 | +0x04 | unique_id | u32 | |
 | +0x08 | position | 16 B | matches the teleportbuilding.txt row exactly |
-| +0x18 | tail | 12 B | **layout unknown**, skipped whole (see open questions) |
+| +0x18 | tail | 12 B | **layout unknown**, kept whole (`SpawnKind::Structure { tail }`) |
 
 ## Despawn payload
 
@@ -305,14 +318,17 @@ but keys the badge off characterdata.
   observed constant.
 - **Player `pk_state` / `pvp_cape`** — inside the skipped blocks; names inferred,
   not decoded (see open questions).
-- **Item `owner_flag` / `owner_jid`** — pickup reservation (0 = free-for-all).
+- **Item `owner_flag` / `owner`** — a u32 behind a set flag, meaning [U].
 
 ## Open questions
 
-- **Player skipped fields.** The 5-byte head (`scale, hwan_level, pvp_cape,
-  auto_invest_xp, base_inventory_size`) and the 8-byte block after the name
-  (`job_type, job_level, pk_state, transport, in_combat, scroll, interact, unk`)
-  are consumed by width only; the field names are inferred and unverified.
+- **Player fields without a meaning.** The 5-byte head, the byte between the
+  item lists, the three bytes after the name, the byte after the riding flag,
+  the bytes around the interact mode and the last two bytes are kept by their
+  place in the record (`PlayerBytes`); their meanings are [U].
+- **Players in a job suit.** The original client takes another path for a
+  player wearing a job suit; it is not known [U]. The reader reads such a
+  record like any other.
 - **Player mount/transport.** `parse_player` now models the conditional: a set
   riding flag inserts `riding_uid:u32` before the scroll byte, mirroring
   CHARACTER_DATA's (0x3013) `transport_flag`/`transport_id` pair. [S] from
@@ -328,11 +344,25 @@ but keys the badge off characterdata.
   unconsumed and desyncing every later record in the batch.
 - **Structure tail.** The gate record's 12-byte tail
   (`01 00 00 01 00 00 00 00 00 00 00 00` in every capture) has no known layout —
-  no movement/state block fits in 12 bytes — and is skipped whole. Non-Jangan
+  no movement/state block fits in 12 bytes — and is kept whole. Non-Jangan
   gates would surface any variant via the batch-abort diagnostics.
-- **Interaction tag values.** Only `tag = 0` (none) and `tag = 2` (talk) are
-  observed; other tag values, and the meaning of the individual option ids, are
-  unverified. The client already treats the option ids as advisory.
+- **Interaction flags.** The reader follows the original's three flag bits;
+  the captures show only flags 0 and 2. The text (bit 1), the typed value
+  (bit 4) and the meaning of the individual option ids are [U]. The client
+  already treats the option ids as advisory.
+- **Movement width.** The width rule above differs from the original's (keyed on
+  the current region, coordinates only for a destination region > 0); the
+  captures do not decide it. The correction comes on its own.
+- **Buff entries.** Read as 8 bytes; the original's width depends on skilldata
+  [U].
+- **Flags kept as yes or no.** The mask flag, the owner flag and `has_dest` are
+  kept as yes or no, an empty guild name drops the nick, and strings are read
+  as UTF-8 with replacement. Every captured flag is 0 or 1 and every captured
+  name is ASCII, so the captures read and write back unchanged.
+- **Census.** `cargo test -p sro_textdata --test spawn_census -- --ignored`
+  reads every captured 0x3015 and 0x3019 under `OPENROAD_PACKET_DUMP_DIR` with
+  the tables under `OPENROAD_TEXTDATA_DIR` and asserts that each reads to its
+  last byte.
 - **Monster rarity tail vs status note.** `parse_item`'s own comment records a
   2026-07-24 capture verification of the drop tail, while the module-header
   comment still lists the monster rarity tail and dropped-item branch as

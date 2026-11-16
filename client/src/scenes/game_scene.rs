@@ -1463,7 +1463,9 @@ fn spawn_remote_entity(
     match &entity.kind {
         SpawnKind::Player {
             equipment,
+            avatar,
             riding_uid,
+            ..
         } => {
             let Some(row) = char_data.get(&(entity.ref_id as i32)) else {
                 warn!(
@@ -1521,10 +1523,10 @@ fn spawn_remote_entity(
                 item_data,
                 rare_effects,
                 parent,
-                equipment.iter().copied(),
+                equipment.iter().chain(avatar).copied(),
             );
         }
-        SpawnKind::Structure => {
+        SpawnKind::Structure { .. } => {
             // Teleport gate buildings have no characterdata rows (their
             // visuals are static map objects) but spawn as interactable
             // entities: create an invisible click anchor so the stone opens
@@ -1554,7 +1556,7 @@ fn spawn_remote_entity(
                 Visibility::default(),
             ));
         }
-        SpawnKind::Npc | SpawnKind::Monster => {
+        SpawnKind::Npc | SpawnKind::Monster { .. } => {
             let Some(row) = char_data.get(&(entity.ref_id as i32)) else {
                 warn!(
                     "network: no characterdata for remote entity ref {}",
@@ -1562,7 +1564,7 @@ fn spawn_remote_entity(
                 );
                 return;
             };
-            let (marker, label) = if matches!(entity.kind, SpawnKind::Monster) {
+            let (marker, label) = if matches!(entity.kind, SpawnKind::Monster { .. }) {
                 (RemoteEntity::Monster, "monster")
             } else {
                 (RemoteEntity::Npc, "npc")
@@ -1654,6 +1656,7 @@ fn spawn_remote_entity(
             pet_name,
             owner_name,
             owner_uid,
+            ..
         } => {
             if crate::plugins::cos::spawn::spawn_cos_entity(
                 commands,
@@ -1678,7 +1681,7 @@ fn spawn_remote_entity(
                 warn!("network: no characterdata for COS ref {}", entity.ref_id);
             }
         }
-        SpawnKind::Item { amount } => {
+        SpawnKind::Item { amount, .. } => {
             // Items don't move, so no RemoteMovement. Ground drops render the
             // itemdata *drop* model (gold piles / category drop bags) rather
             // than the inventory model, which is "xxx" for etc items; when a

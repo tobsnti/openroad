@@ -602,6 +602,7 @@ impl RefResolver for HeadlessResolver {
             return RefType::Item {
                 equipment: false,
                 gold: true,
+                named: false,
             };
         }
         RefType::Character
@@ -788,7 +789,7 @@ fn netcheck_select_target(
         .iter()
         .chain(group_spawns.iter())
         .flat_map(|parsed| parsed.spawns.iter())
-        .filter(|entity| entity.unique_id != 0 && entity.kind == SpawnKind::Monster)
+        .filter(|entity| entity.unique_id != 0 && matches!(entity.kind, SpawnKind::Monster { .. }))
     {
         driver.candidates.push((
             entity.unique_id,
@@ -1141,9 +1142,9 @@ mod tests {
         assert_eq!(
             read,
             vec![
-                (0x2001, SpawnKind::Monster),
-                (0x2002, SpawnKind::Monster),
-                (0x2003, SpawnKind::Monster)
+                (0x2001, SpawnKind::Monster { extra: None }),
+                (0x2002, SpawnKind::Monster { extra: None }),
+                (0x2003, SpawnKind::Monster { extra: None })
             ]
         );
 
