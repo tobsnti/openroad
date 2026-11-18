@@ -28,12 +28,12 @@
 
 use bevy::log::warn;
 use bevy::prelude::Resource;
-use chrono::SecondsFormat;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DUMP_DIR: &str = "packet_dump";
 /// Subdirectory of [`DUMP_DIR`] holding the client → server direction.
@@ -77,7 +77,7 @@ impl PacketDump {
         }
         let line = format!(
             "{} {peer} client={}\n",
-            chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            utc_millis(SystemTime::now()),
             crate::plugins::dev::build_info::build_label()
         );
         let written = std::fs::create_dir_all(&self.root).and_then(|()| {
@@ -128,7 +128,7 @@ impl PacketDump {
             self.files.insert((subdir, opcode), file);
         }
         let mut line = String::with_capacity(32 + data.len() * 2);
-        line.push_str(&chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
+        line.push_str(&utc_millis(SystemTime::now()));
         line.push(' ');
         for byte in data {
             let _ = write!(line, "{byte:02x}");
@@ -143,9 +143,47 @@ impl PacketDump {
     }
 }
 
+/// `at` in RFC 3339, UTC, with milliseconds — `2026-08-10T18:19:22.552Z`, the
+/// stamp every dump line and session line starts with and the dump readers
+/// parse. The civil date comes from the days since 1970 by Howard Hinnant's
+/// `civil_from_days` (public domain), so the dump needs no date crate.
+fn utc_millis(at: SystemTime) -> String {
+    let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = since.as_secs();
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3_600,
+        rem / 60 % 60,
+        rem % 60,
+        since.subsec_millis()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stamp is the one chrono wrote (`to_rfc3339_opts(Millis, true)`):
+    /// three fraction digits always, `Z`, across a leap day and a year end.
+    #[test]
+    fn the_stamp_is_rfc3339_utc_with_milliseconds() {
+        let at = |ms| utc_millis(UNIX_EPOCH + std::time::Duration::from_millis(ms));
+        assert_eq!(at(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(at(1_786_385_962_552), "2026-08-10T18:19:22.552Z");
+        assert_eq!(at(1_709_251_199_999), "2024-02-29T23:59:59.999Z");
+        assert_eq!(at(951_868_800_000), "2000-03-01T00:00:00.000Z");
+        assert_eq!(at(1_767_225_599_001), "2025-12-31T23:59:59.001Z");
+    }
 
     /// `0x2001` (and the login opcodes) travel in both directions, so a shared
     /// per-opcode file would interleave request and response bodies and make
