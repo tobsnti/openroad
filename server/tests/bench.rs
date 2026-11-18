@@ -9,10 +9,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest};
+use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, LobbyCharacter, LobbyItem};
 use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
 use serde_json::{json, Value};
+use server::refdata::RefData;
 
 mod common;
 use common::Wire;
@@ -159,16 +160,20 @@ fn enter_agent(agent: SocketAddr, token: u32, user: &str) -> Wire {
     client
 }
 
-/// The names of the characters the agent lists for a logged-in client.
-fn listed(client: &mut Wire) -> Vec<String> {
+/// The characters the agent lists for a logged-in client.
+fn lobby(client: &mut Wire) -> Vec<LobbyCharacter> {
     client.send(0x7007, &[0x02], false);
     let (opcode, body) = client.recv();
     let Ok(Packet::CharacterSelectionActionResponse(list)) = Packet::deserialize(opcode, body)
     else {
         panic!("0xB007 decodes");
     };
-    let characters = list.characters.expect("a list").characters;
-    characters.into_iter().map(|c| c.name).collect()
+    list.characters.expect("a list").characters
+}
+
+/// The names of the characters the agent lists for a logged-in client.
+fn listed(client: &mut Wire) -> Vec<String> {
+    lobby(client).into_iter().map(|c| c.name).collect()
 }
 
 #[test]
@@ -213,26 +218,56 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     let _ = std::fs::remove_file(fixture);
 }
 
+/// What the server says when `wrong` ends it: exit 2 and a message, not a
+/// panic. Waits for the end up to 10 s, like [`event`]: a server that takes
+/// the fixture runs on.
+fn ended_by(name: &str, wrong: &Value) -> String {
+    let fixture = fixture_file(name, wrong);
+    let mut server = start(name, &fixture, None);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the server took the fixture"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    let mut pipe = server.child.stderr.take().unwrap();
+    std::io::Read::read_to_string(&mut pipe, &mut stderr).unwrap();
+    let _ = std::fs::remove_file(fixture);
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    stderr
+}
+
 /// A value the server cannot use ends it with a message that names the entry
 /// it came from, not with a panic.
 #[test]
 fn a_wrong_fixture_value_ends_the_server_with_its_key() {
     let mut wrong = bench_fixture();
     wrong["charakter_b"]["ref"] = json!("x");
-    let fixture = fixture_file("wrong", &wrong);
-    let mut server = start("wrong", &fixture, None);
-    let status = server.child.wait().unwrap();
-    let mut stderr = String::new();
-    let mut pipe = server.child.stderr.take().unwrap();
-    std::io::Read::read_to_string(&mut pipe, &mut stderr).unwrap();
-    assert_eq!(status.code(), Some(2), "{stderr}");
+    let stderr = ended_by("wrong", &wrong);
     assert!(stderr.contains("charakter_b.ref"), "{stderr}");
-    assert!(!stderr.contains("panicked"), "{stderr}");
-    let _ = std::fs::remove_file(fixture);
+}
+
+/// A worn item the user's itemdata does not hold ends the server the same
+/// way, naming the entry and the code name.
+#[test]
+fn an_unknown_worn_item_ends_the_server_with_its_key() {
+    let mut wrong = bench_fixture();
+    wrong["charakter"]["ausruestung"] = json!([{"platz": 6, "codename": "ITEM_NOWHERE"}]);
+    let stderr = ended_by("unknown-item", &wrong);
+    let key = "charakter.ausruestung[0].codename ITEM_NOWHERE";
+    assert!(stderr.contains(key), "{stderr}");
 }
 
 /// The bench's own fixture: both of its accounts log in and list their
-/// characters.
+/// characters, wearing the items the fixture names, in slot order, as the
+/// user's itemdata numbers them.
 #[test]
 #[ignore = "needs the bench's files: OPENROAD_BENCH_FIXTURE=<startwelt.json> \
             OPENROAD_TEXTDATA_DIR=<textdata> cargo test -p server --test bench -- --ignored"]
@@ -240,6 +275,7 @@ fn the_benchs_own_fixture_starts_the_server() {
     let fixture = PathBuf::from(std::env::var("OPENROAD_BENCH_FIXTURE").unwrap());
     let textdata = PathBuf::from(std::env::var("OPENROAD_TEXTDATA_DIR").unwrap());
     let entries: Value = serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    let refdata = RefData::load(&textdata).unwrap();
     let server = start("own", &fixture, Some(&textdata));
     let ready = event(&server.events, "ready");
     for (konto, charakter) in [("konto", "charakter"), ("konto_b", "charakter_b")] {
@@ -250,9 +286,23 @@ fn the_benchs_own_fixture_starts_the_server() {
             .unwrap();
         let agent = token(address(&ready, "gateway"), user, password);
         let mut client = enter_agent(address(&ready, "agent"), agent, user);
-        assert_eq!(
-            listed(&mut client),
-            [entries[charakter]["name"].as_str().unwrap()]
-        );
+        // A list the suffixed entry names replaces the unsuffixed one's.
+        let named = |field: &str| -> Vec<u32> {
+            let list = entries[charakter].get(field);
+            let list = list.unwrap_or(&entries["charakter"][field]);
+            let mut worn: Vec<(u64, u32)> = Vec::new();
+            for w in list.as_array().unwrap() {
+                let id = refdata.item_named(w["codename"].as_str().unwrap());
+                worn.push((w["platz"].as_u64().unwrap(), id.unwrap()));
+            }
+            worn.sort_unstable();
+            worn.into_iter().map(|(_, id)| id).collect()
+        };
+        let ids = |items: &[LobbyItem]| -> Vec<u32> { items.iter().map(|i| i.id).collect() };
+        let shown: Vec<_> = (lobby(&mut client).iter())
+            .map(|c| (c.name.clone(), ids(&c.char_items), ids(&c.avatar_items)))
+            .collect();
+        let name = entries[charakter]["name"].as_str().unwrap().to_owned();
+        assert_eq!(shown, [(name, named("ausruestung"), named("avatar"))]);
     }
 }

@@ -6,7 +6,8 @@
 //! - `BENCH_FIXTURE`: the start world. Each `konto<suffix>` (`konto`,
 //!   `konto_b`) becomes an account with `charakter<suffix>` as its character.
 //!   As the fixture's own rule says, a suffixed entry names only what differs:
-//!   it is laid over its unsuffixed one.
+//!   it is laid over its unsuffixed one. A character wears the items its
+//!   `ausruestung` and `avatar` name by itemdata code name.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
 //!   `player.joined`, `c2s.rejected`, `session.opened` (a handshake's seeds)
@@ -23,12 +24,14 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::ops::RangeInclusive;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use packets::agent::character_data::{ItemClass, ItemClassResolver};
 use serde_json::{json, Map, Value};
 use server::gateway::Gateway;
 use server::refdata::RefData;
@@ -53,11 +56,12 @@ fn run() -> Result<(), String> {
     let fixture = fs::read_to_string(&path).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
     let fixture: Value =
         serde_json::from_str(&fixture).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
-    let store = accounts(&fixture, start_position(&var("BENCH_START_POS")?)?)?;
-    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
     let textdata = var("OPENROAD_TEXTDATA_DIR")?;
     let refdata = RefData::load(Path::new(&textdata))
         .map_err(|e| format!("OPENROAD_TEXTDATA_DIR {textdata}: {e}"))?;
+    let start = start_position(&var("BENCH_START_POS")?)?;
+    let store = accounts(&fixture, start, &refdata)?;
+    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
     let events = var("BENCH_EVENTS")?;
     let events = OpenOptions::new()
         .create(true)
@@ -106,7 +110,7 @@ fn run() -> Result<(), String> {
 }
 
 /// Every `konto<suffix>` of the fixture with its `charakter<suffix>`.
-fn accounts(fixture: &Value, start: Position) -> Result<MemoryStore, String> {
+fn accounts(fixture: &Value, start: Position, refdata: &RefData) -> Result<MemoryStore, String> {
     let entries = fixture
         .as_object()
         .ok_or("BENCH_FIXTURE is not a JSON object")?;
@@ -115,7 +119,8 @@ fn accounts(fixture: &Value, start: Position) -> Result<MemoryStore, String> {
         let suffix = &key["konto".len()..];
         let account = laid_over(entries, "konto", key)?;
         let name = format!("charakter{suffix}");
-        let character = character(&laid_over(entries, "charakter", &name)?, &name, start)?;
+        let entry = laid_over(entries, "charakter", &name)?;
+        let character = character(&entry, &name, start, refdata)?;
         let user = text(&account, key, "name")?;
         store.add_account(user, text(&account, key, "passwort")?, vec![character]);
     }
@@ -277,8 +282,14 @@ fn gateway(agent: SocketAddr) -> Gateway {
 /// The fixture's character `key`. What the fixture does not name is set to
 /// what the captured vSRO records carry [V capture, peer vSRO: 243 records]:
 /// height and build 0x22 for this model, 109 inventory slots, the seven
-/// Chinese masteries at level 0. Its bag (`tasche`) waits for the inventory.
-fn character(c: &Value, key: &str, position: Position) -> Result<Character, String> {
+/// Chinese masteries at level 0. It wears its `ausruestung` and `avatar`
+/// ([`worn`]); its bag (`tasche`) waits for the inventory.
+fn character(
+    c: &Value,
+    key: &str,
+    position: Position,
+    refdata: &RefData,
+) -> Result<Character, String> {
     Ok(Character {
         name: text(c, key, "name")?.to_owned(),
         ref_id: number(c, key, "ref")?,
@@ -298,9 +309,52 @@ fn character(c: &Value, key: &str, position: Position) -> Result<Character, Stri
             .map(|id| (id, 0))
             .to_vec(),
         position,
-        equipment: Vec::new(),
-        avatar: Vec::new(),
+        equipment: worn(c, key, "ausruestung", refdata, 0..=7)?,
+        avatar: worn(c, key, "avatar", refdata, 0..=4)?,
     })
+}
+
+/// The items the fixture's character `key` wears under `field`: each a slot
+/// (`platz`) and an itemdata code name (`codename`). No list wears nothing. A
+/// code name the user's itemdata does not hold, an item that is no equipment,
+/// or a slot out of `slots` or taken twice ends the server, naming the entry.
+/// Inventory slots end at 7, the last the lobby and the spawn show [V capture,
+/// peer vSRO], so that each item worn can be seen; avatar slots at 4, the
+/// last of the five the record announces.
+fn worn(
+    c: &Value,
+    key: &str,
+    field: &str,
+    refdata: &RefData,
+    slots: RangeInclusive<u8>,
+) -> Result<Vec<(u8, u32)>, String> {
+    let Some(list) = c.get(field) else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or(format!("BENCH_FIXTURE {key}.{field} is not a list"))?;
+    let mut worn: Vec<(u8, u32)> = Vec::new();
+    for (i, entry) in list.iter().enumerate() {
+        let at = format!("{key}.{field}[{i}]");
+        let slot: u8 = number(entry, &at, "platz")?;
+        if !slots.contains(&slot) || worn.iter().any(|(taken, _)| *taken == slot) {
+            return Err(format!(
+                "BENCH_FIXTURE {at}.platz {slot} is no free slot of {slots:?}"
+            ));
+        }
+        let code = text(entry, &at, "codename")?;
+        let ref_id = refdata.item_named(code).ok_or(format!(
+            "BENCH_FIXTURE {at}.codename {code} is in no itemdata table"
+        ))?;
+        if refdata.items().item_class(ref_id) != ItemClass::Equipment {
+            return Err(format!(
+                "BENCH_FIXTURE {at}.codename {code} is no equipment"
+            ));
+        }
+        worn.push((slot, ref_id));
+    }
+    Ok(worn)
 }
 
 fn start_position(text: &str) -> Result<Position, String> {
