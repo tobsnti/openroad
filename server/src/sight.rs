@@ -11,12 +11,13 @@
 
 use std::collections::BTreeSet;
 
-use bytes::{BufMut, Bytes, BytesMut};
-use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
+use bytes::Bytes;
+use packets::agent::character_data::{EntityMovement, EntityState};
+use packets::agent::entity_spawn::{PlayerBytes, SingleTail, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::SingleEntitySpawn;
+use packets::agent::spawn_writer::{write_group_spawn, write_single_spawn};
 use packets::region::{is_dungeon, region_id, sector};
 use packets::Packet;
-use sro_macro::Serialize;
 
 use crate::movement::in_region;
 use crate::npc;
@@ -44,8 +45,9 @@ pub(crate) fn update(world: &mut World, uid: u32) {
             continue;
         };
         if near {
-            world.show(me.session, other, spawn(other, &player));
-            world.show(player.session, uid, spawn(uid, &me));
+            let (theirs, mine) = (spawn(world, other, &player), spawn(world, uid, &me));
+            world.show(me.session, other, theirs);
+            world.show(player.session, uid, mine);
         } else {
             world.hide(me.session, other);
             world.hide(player.session, uid);
@@ -63,10 +65,16 @@ pub(crate) fn update(world: &mut World, uid: u32) {
         .filter(|uid| !near.contains(uid))
         .collect();
     world.hide_group(me.session, gone);
+    let tables = world.refdata().spawn_tables();
+    let record = |uid: u32, npc: &npc::Npc| -> Bytes {
+        write_group_spawn(&[npc::entity(uid, npc)], &tables)
+            .expect("a placed NPC has an NPC's model (World::new)")
+            .into()
+    };
     let new: Vec<(u32, Bytes)> = near
         .into_iter()
         .filter(|uid| !world.knows(me.session, *uid))
-        .filter_map(|uid| world.npc(uid).map(|n| (uid, npc::record(uid, n))))
+        .filter_map(|uid| world.npc(uid).map(|n| (uid, record(uid, n))))
         .collect();
     world.show_group(me.session, new);
 }
@@ -92,30 +100,26 @@ fn in_sight(a: u16, b: u16) -> bool {
     around(a).contains(&b)
 }
 
-/// The single spawn (0x3015) of a character, in the order the original
-/// client reads it [V original handler]. What the server holds no state for
-/// yet is empty (gear, mask, mount, guild, stall) or carries what the vSRO
+/// The movement block of a character standing, facing `heading`, as the vSRO
+/// server sends it [V capture, peer vSRO].
+pub(crate) fn standing(heading: u16) -> EntityMovement {
+    EntityMovement {
+        has_destination: false,
+        move_type: 1,
+        source: Some(0),
+        angle: Some(heading),
+        ..Default::default()
+    }
+}
+
+/// The single spawn (0x3015) of a character. What the server holds no state
+/// for yet is empty (gear, mask, mount, guild, stall) or carries what the vSRO
 /// server sends for an ordinary player [V capture, peer vSRO: 0x3015 player
-/// records]: alive, 5 avatar slots, job level 1, Hwan speed 100, PK flag
-/// 0xFF, last byte 1.
-fn spawn(uid: u32, p: &Player) -> Packet {
+/// records]: alive, Hwan speed 100, 5 avatar slots; before the equipment the
+/// model's scale, three bytes 0 and the inventory size; behind the name 0, 1
+/// and 0; PK flag 0xFF; last byte 1.
+fn spawn(world: &World, uid: u32, p: &Player) -> Packet {
     let c = &p.character;
-    let at = c.position;
-    let mut b = BytesMut::new();
-    b.put_u32_le(c.ref_id);
-    // Height and build, Hwan level, PVP cape, auto-invest, inventory size.
-    b.put_slice(&[c.scale, 0, 0, 0, c.inventory_size]);
-    // No gear; an avatar section of 5 slots with none worn; no mask.
-    b.put_slice(&[0, 5, 0, 0]);
-    b.put_u32_le(uid);
-    let position = SpawnPosition {
-        region: at.region,
-        x: at.x,
-        y: at.y,
-        z: at.z,
-        heading: at.heading,
-    };
-    position.serialize_to(&mut b);
     let movement = match p.walk.map(|walk| in_region(walk.to)) {
         Some((region, to)) => EntityMovement {
             has_destination: true,
@@ -126,38 +130,53 @@ fn spawn(uid: u32, p: &Player) -> Packet {
             dest_z: Some(to.z as i32),
             ..Default::default()
         },
-        None => EntityMovement {
-            has_destination: false,
-            move_type: 1,
-            source: Some(0),
-            angle: Some(at.heading),
-            ..Default::default()
+        None => standing(c.position.heading),
+    };
+    let entity = SpawnedEntity {
+        ref_id: c.ref_id,
+        unique_id: uid,
+        position: c.position.into(),
+        name: Some(c.name.clone()),
+        guild: None,
+        movement: Some(movement),
+        state: Some(EntityState {
+            life_state: 1,
+            unk: 0,
+            motion_state: 0,
+            body_state: 0,
+            walk_speed: p.walk_speed,
+            run_speed: p.run_speed,
+            hwan_speed: 100.0,
+            buffs: Vec::new(),
+        }),
+        spawn_rarity: None,
+        talk_options: Vec::new(),
+        interaction: None,
+        kind: SpawnKind::Player {
+            equipment: Vec::new(),
+            avatar: Vec::new(),
+            riding: 0,
+            riding_uid: None,
+            mask: None,
+            interact_mode: 0,
+            stall: None,
+            guild_after_name: 0,
+            guild_tail: [0; 14],
+            bytes: PlayerBytes {
+                head: [c.scale, 0, 0, 0, c.inventory_size],
+                between_lists: 5,
+                after_name: [0, 1, 0],
+                after_riding: 0,
+                around_mode: [0, 0],
+                tail: [0, 0xFF],
+            },
         },
     };
-    movement
-        .write(&mut b)
-        .expect("each form names the fields it writes");
-    let state = EntityState {
-        life_state: 1,
-        unk: 0,
-        motion_state: 0,
-        body_state: 0,
-        walk_speed: p.walk_speed,
-        run_speed: p.run_speed,
-        hwan_speed: 100.0,
-        buffs: Vec::new(),
-    };
-    state.serialize_to(&mut b);
-    let name = u16::try_from(c.name.len()).expect("a name fits its u16 length");
-    b.put_u16_le(name);
-    b.put_slice(c.name.as_bytes());
-    // Job type and level, PK state; not riding, not fighting; no scroll,
-    // interaction or the byte after it.
-    b.put_slice(&[0, 1, 0, 0, 0, 0, 0, 0]);
-    // The guild block of a character without one: name, id, nick, crest,
-    // union id and crest, two flags.
-    b.put_slice(&[0; 2 + 4 + 2 + 4 + 4 + 4 + 1 + 1]);
-    // Equipment cooldown; PK flag 0xFF; the last byte of a single spawn.
-    b.put_slice(&[0, 0xFF, 1]);
-    Packet::SingleEntitySpawn(SingleEntitySpawn { raw: b.freeze() })
+    let raw = write_single_spawn(
+        &entity,
+        &SingleTail::Figure(1),
+        &world.refdata().spawn_tables(),
+    )
+    .expect("a character in the world has a player's model (join)");
+    Packet::SingleEntitySpawn(SingleEntitySpawn { raw: raw.into() })
 }

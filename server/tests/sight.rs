@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use packets::agent::entity_spawn::{parse_single_spawn, SingleTail, SpawnKind};
 use packets::agent::prelude::{
     AgentLoginRequest, CharacterJoinRequest, ChatRequest, MovementRequest,
 };
@@ -50,12 +51,23 @@ fn world() -> (World, Arc<MemoryStore>) {
     store.add_account("b", "b", vec![character("Kiro", REGION)]);
     store.add_account("c", "c", vec![character("Far", REGION + 2)]);
     store.add_account("d", "d", vec![character("Next", REGION + 1)]);
+    let store = Arc::new(store);
+    (World::new(store.clone(), refdata()), store)
+}
+
+/// The model 1907: a player's (type ids 1/1), with its walk and run speeds.
+fn refdata() -> RefData {
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    (row[1], row[9], row[10], row[46], row[47]) = (
+        "1907".into(),
+        "1".into(),
+        "1".into(),
+        "16".into(),
+        "50".into(),
+    );
     refdata.add_characters(&row.join("\t"));
-    let store = Arc::new(store);
-    (World::new(store.clone(), refdata), store)
+    refdata
 }
 
 fn send(world: &mut World, session: SessionId, packet: Packet) {
@@ -150,6 +162,22 @@ fn two_characters_in_one_region_are_shown_to_each_other() {
         (body.len(), &body[body.len() - 2..]),
         (90 + 4, &[0xFF, 0x01][..])
     );
+}
+
+/// The spawn comes from the shared writer: the spawn reader in `packets`
+/// reads it back as the character, to its last byte.
+#[test]
+fn a_spawn_reads_back_as_the_character() {
+    let mut shard = world();
+    let (a, _) = enter(&mut shard, "a", "Hero");
+    let (_, kiro) = enter(&mut shard, "b", "Kiro");
+    let to_a = opcodes(&mut shard.0, a);
+    let tables = refdata();
+    let (entity, tail) =
+        parse_single_spawn(&to_a[0].1, &tables.spawn_tables()).expect("Kiro's spawn reads");
+    let read = (entity.unique_id, entity.name.as_deref(), tail);
+    assert_eq!(read, (kiro, Some("Kiro"), SingleTail::Figure(1)));
+    assert!(matches!(entity.kind, SpawnKind::Player { .. }));
 }
 
 #[test]

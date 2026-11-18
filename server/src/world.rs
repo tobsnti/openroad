@@ -58,7 +58,8 @@ pub enum Event {
     Closed(SessionId),
     /// The session fell too far behind and was cut off.
     Overflowed(SessionId),
-    /// A character's model has no reference-data row; its join was refused.
+    /// A character's model has no player row in the reference data; its
+    /// join was refused.
     NoRefData { session: SessionId, ref_id: u32 },
     /// The client has loaded the world (0x3012): its character is in the game.
     Joined { session: SessionId, uid: u32 },

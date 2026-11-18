@@ -42,11 +42,13 @@ fn hero() -> Character {
     }
 }
 
-/// A characterdata line with the model's id and speeds, at the columns the
-/// game's table has them (`docs/formats/textdata-characterdata.md` §3).
+/// A characterdata line of a player's model (type ids 1/1) with the model's
+/// id and speeds, at the columns the game's table has them
+/// (`docs/formats/textdata-characterdata.md` §3).
 fn character_row(ref_id: u32, walk: f32, run: f32) -> String {
     let mut cols = vec![String::from("0"); 48];
-    (cols[1], cols[46], cols[47]) = (ref_id.to_string(), walk.to_string(), run.to_string());
+    (cols[1], cols[9], cols[10]) = (ref_id.to_string(), "1".into(), "1".into());
+    (cols[46], cols[47]) = (walk.to_string(), run.to_string());
     cols.join("\t")
 }
 
@@ -238,6 +240,39 @@ fn only_a_character_of_the_account_enters() {
     world.take_frames(s);
     join(&mut world, s, "Nobody");
     assert_eq!(frames(&mut world, s), [(0xB001, vec![0x02, 0x0D, 0x04])]);
+    assert!(matches!(world.phase(s), Some(Phase::Lobby(_))));
+}
+
+/// A character whose model is no player's in the reference data could not be
+/// spawned as one, so its join is refused like one whose model has no row.
+#[test]
+fn a_character_whose_model_is_no_players_is_refused() {
+    let mut store = MemoryStore::default();
+    store.add_account("admin", "secret", vec![hero()]);
+    let account = login(&store, "admin", "secret").expect("the seeded password logs in");
+    let mut refdata = RefData::default();
+    // the hero's model id and speeds, with an NPC's type ids (1/2/2)
+    let mut npc: Vec<String> = character_row(hero().ref_id, 16.0, 50.0)
+        .split('\t')
+        .map(String::from)
+        .collect();
+    (npc[10], npc[11]) = ("2".into(), "2".into());
+    refdata.add_characters(&npc.join("\t"));
+    let mut world = World::new(Arc::new(store), refdata);
+    let ticket = world
+        .admit(account, "admin", vec![hero()])
+        .expect("no agent session yet");
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    world.take_frames(s);
+    join(&mut world, s, "Hero");
+    assert_eq!(frames(&mut world, s), [(0xB001, vec![0x02, 0x15, 0x04])]);
+    let refused = Event::NoRefData {
+        session: s,
+        ref_id: hero().ref_id,
+    };
+    assert!(world.take_events().contains(&refused));
     assert!(matches!(world.phase(s), Some(Phase::Lobby(_))));
 }
 

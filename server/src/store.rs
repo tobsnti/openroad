@@ -11,6 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use argon2::password_hash::{PasswordHash, SaltString};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use packets::agent::character_data::SpawnPosition;
 use rand_core::OsRng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,6 +49,18 @@ pub struct Position {
     pub y: f32,
     pub z: f32,
     pub heading: u16,
+}
+
+impl From<Position> for SpawnPosition {
+    fn from(p: Position) -> Self {
+        SpawnPosition {
+            region: p.region,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            heading: p.heading,
+        }
+    }
 }
 
 /// What one accepted action changed, written as a whole or not at all
