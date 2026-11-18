@@ -14,8 +14,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use packets::agent::character_data::{
-    write_character_info, CharacterStats, CollectionBook, EntityMovement, EntityState, ItemClass,
-    ItemClassResolver, JobInfo, Mastery, ParsedCharacterData, ParsedCharacterInfo, PlayerExtras,
+    write_character_info, CharacterStats, CollectionBook, EntityMovement, EntityState,
+    EquipmentData, InventoryItem, ItemTypeData, JobInfo, Mastery, ParsedCharacterData,
+    ParsedCharacterInfo, PlayerExtras, RentInfo,
 };
 use packets::agent::prelude::{
     CelestialPosition, CharacterDataBegin, CharacterDataBody, CharacterDataEnd,
@@ -24,7 +25,7 @@ use packets::agent::prelude::{
 use packets::Packet;
 
 use crate::clock::{game_time, server_time};
-use crate::refdata::CharacterRef;
+use crate::refdata::{CharacterRef, RefData};
 use crate::sight;
 use crate::store::{AccountId, Character};
 use crate::world::{Event, Phase, Player, Reason, SessionId, World};
@@ -55,8 +56,9 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
         return Ok(());
     };
     let uid = world.next_uid();
-    let info = record(character, uid, speeds, account);
-    let raw = write_character_info(&info, &NoItems).expect("the record has every section");
+    let info = record(character, uid, speeds, account, world.refdata());
+    let raw = write_character_info(&info, world.refdata().items())
+        .expect("the record has every section, and the bench lets only equipment be worn");
     let (day, hour, minute) = game_time(world.steps());
     let joined = CharacterJoinResponse {
         result: 1,
@@ -132,12 +134,25 @@ fn refusal(code: u16) -> Packet {
     Packet::CharacterJoinResponse(refused)
 }
 
-/// The server holds no items yet, so no item class is ever asked for.
-struct NoItems;
-
-impl ItemClassResolver for NoItems {
-    fn item_class(&self, _: u32) -> ItemClass {
-        ItemClass::Unknown
+/// A worn item as a new one of its kind, as the vSRO server sends such an
+/// item [V capture, peer vSRO: 2751 worn items in 240 records]: no rent (all),
+/// plus 0, variance 0 and no magic options (most), the durability its
+/// itemdata starts it with, and the two binding lists empty (all).
+fn worn_item(slot: u8, ref_id: u32, refdata: &RefData) -> InventoryItem {
+    InventoryItem {
+        slot,
+        rent: RentInfo::default(),
+        ref_id,
+        data: ItemTypeData::Equipment(EquipmentData {
+            opt_level: 0,
+            variance: 0,
+            durability: refdata.new_durability(ref_id),
+            mag_params: Vec::new(),
+            socket_tag: 1,
+            sockets: Vec::new(),
+            elixir_tag: 2,
+            adv_elixirs: Vec::new(),
+        }),
     }
 }
 
@@ -146,6 +161,7 @@ fn record(
     uid: u32,
     speeds: CharacterRef,
     account: AccountId,
+    refdata: &RefData,
 ) -> ParsedCharacterInfo {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -231,12 +247,20 @@ fn record(
         unk_list: Vec::new(), // 243 of 243 carry none
     };
     let masteries = c.masteries.iter();
+    let worn = |items: &[(u8, u32)]| -> Vec<InventoryItem> {
+        let mut items = items.to_vec();
+        items.sort_unstable();
+        items
+            .into_iter()
+            .map(|(slot, ref_id)| worn_item(slot, ref_id, refdata))
+            .collect()
+    };
     ParsedCharacterInfo {
         stats: Some(stats),
         inventory_size: Some(c.inventory_size),
-        inventory: Some(Vec::new()),
+        inventory: Some(worn(&c.equipment)),
         avatar_inventory_size: Some(5), // 243 of 243
-        avatar_items: Some(Vec::new()),
+        avatar_items: Some(worn(&c.avatar)),
         masteries: Some(
             masteries
                 .map(|&(id, level)| Mastery { id, level })

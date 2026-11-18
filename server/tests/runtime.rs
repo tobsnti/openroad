@@ -46,6 +46,8 @@ fn hero() -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 

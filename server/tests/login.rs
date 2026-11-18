@@ -4,13 +4,19 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
+use packets::agent::character_data::{
+    parse_character_info, EquipmentData, InventoryItem, ItemClass, ItemClassResolver, ItemTypeData,
+    RentInfo,
+};
 use packets::agent::prelude::*;
 use packets::global::{KeepAlive, ModuleIdentification};
 use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, AccountId, Character, MemoryStore, Position};
 use server::world::{Event, Phase, Reason, SessionId, World};
+
+mod common;
+use common::item_row;
 
 fn hero() -> Character {
     Character {
@@ -39,6 +45,8 @@ fn hero() -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
@@ -229,6 +237,88 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     assert_eq!(players, [(uid, "Hero")]);
     world.disconnect(s);
     assert_eq!(world.players().count(), 0);
+}
+
+/// The hero's model, a sword (durability 62 to 76), a heavy armour's body
+/// (48 to 59) and an avatar flag, as the user's itemdata has them.
+fn refdata_with_items() -> RefData {
+    let mut refdata = RefData::default();
+    refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
+    for (id, code, tid, durability) in [
+        (3632, "ITEM_CH_SWORD_01_A_DEF", [3, 1, 6, 2], (62, 76)),
+        (3637, "ITEM_CH_M_HEAVY_01_BA_A_DEF", [3, 1, 3, 3], (48, 59)),
+        (
+            5893,
+            "ITEM_ETC_E051021_BLUEDRAGON_BUNTING_M",
+            [3, 1, 13, 4],
+            (0, 0),
+        ),
+    ] {
+        refdata.add_items(&item_row(id, code, tid, durability));
+    }
+    refdata
+}
+
+/// A character wearing a sword, an armour's body and an avatar flag shows
+/// them in the lobby list, and its record (0x3013) carries them in slot order
+/// as new items: no rent, plus 0, variance 0, the durability its itemdata
+/// starts it with, no options.
+#[test]
+fn a_character_wears_its_items_in_the_lobby_and_in_its_record() {
+    let mut worn = hero();
+    (worn.equipment, worn.avatar) = (vec![(6, 3632), (1, 3637)], vec![(0, 5893)]);
+    let mut store = MemoryStore::default();
+    store.add_account("admin", "secret", vec![worn.clone()]);
+    let account = login(&store, "admin", "secret").expect("the seeded password logs in");
+    let mut world = World::new(Arc::new(store), refdata_with_items());
+    let ticket = world
+        .admit(account, "admin", vec![worn])
+        .expect("no agent session yet");
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.take_frames(s);
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    let (opcode, body) = frames(&mut world, s).remove(0);
+    let Ok(Packet::CharacterSelectionActionResponse(list)) =
+        Packet::deserialize(opcode, Bytes::from(body))
+    else {
+        panic!("a lobby list");
+    };
+    let lobby = &list.characters.expect("the list").characters[0];
+    let shown =
+        |items: &[LobbyItem]| -> Vec<(u32, u8)> { items.iter().map(|i| (i.id, i.plus)).collect() };
+    let listed = (shown(&lobby.char_items), shown(&lobby.avatar_items));
+    assert_eq!(listed, (vec![(3637, 0), (3632, 0)], vec![(5893, 0)]));
+
+    join(&mut world, s, "Hero");
+    let out = frames(&mut world, s);
+    let Some(Phase::Joining { uid, .. }) = world.phase(s) else {
+        panic!("the session is joining");
+    };
+    let items = refdata_with_items();
+    let info = parse_character_info(&out[2].1, Some(uid), items.items());
+    assert!(info.fully_parsed, "failed at {:?}", info.failed_stage);
+    let new = |slot, ref_id, durability| InventoryItem {
+        slot,
+        rent: RentInfo::default(),
+        ref_id,
+        data: ItemTypeData::Equipment(EquipmentData {
+            opt_level: 0,
+            variance: 0,
+            durability,
+            mag_params: Vec::new(),
+            socket_tag: 1,
+            sockets: Vec::new(),
+            elixir_tag: 2,
+            adv_elixirs: Vec::new(),
+        }),
+    };
+    let worn = (info.inventory, info.avatar_items);
+    let expected = (
+        vec![new(1, 3637, 48), new(6, 3632, 62)],
+        vec![new(0, 5893, 0)],
+    );
+    assert_eq!(worn, (Some(expected.0), Some(expected.1)));
 }
 
 #[test]

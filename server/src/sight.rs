@@ -112,12 +112,13 @@ pub(crate) fn standing(heading: u16) -> EntityMovement {
     }
 }
 
-/// The single spawn (0x3015) of a character. What the server holds no state
-/// for yet is empty (gear, mask, mount, guild, stall) or carries what the vSRO
-/// server sends for an ordinary player [V capture, peer vSRO: 0x3015 player
-/// records]: alive, Hwan speed 100, 5 avatar slots; before the equipment the
-/// model's scale, three bytes 0 and the inventory size; behind the name 0, 1
-/// and 0; PK flag 0xFF; last byte 1.
+/// The single spawn (0x3015) of a character, with the items it wears as
+/// [`crate::store::Character::shown_equipment`] lists them. What the server
+/// holds no state for yet is empty (mask, mount, guild, stall) or carries what
+/// the vSRO server sends for an ordinary player [V capture, peer vSRO: 0x3015
+/// player records]: alive, Hwan speed 100, 5 avatar slots; before the
+/// equipment the model's scale, three bytes 0 and the inventory size; behind
+/// the name 0, 1 and 0; PK flag 0xFF; last byte 1.
 fn spawn(world: &World, uid: u32, p: &Player) -> Packet {
     let c = &p.character;
     let movement = match p.walk.map(|walk| in_region(walk.to)) {
@@ -153,8 +154,8 @@ fn spawn(world: &World, uid: u32, p: &Player) -> Packet {
         talk_options: Vec::new(),
         interaction: None,
         kind: SpawnKind::Player {
-            equipment: Vec::new(),
-            avatar: Vec::new(),
+            equipment: c.shown_equipment(),
+            avatar: c.shown_avatar(),
             riding: 0,
             riding_uid: None,
             mask: None,

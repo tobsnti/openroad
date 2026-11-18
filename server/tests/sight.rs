@@ -12,6 +12,12 @@ use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position, Store};
 use server::world::{Event, Phase, Reason, SessionId, World};
+use sro_textdata::characterdata::CharacterData;
+use sro_textdata::itemdata::ItemData;
+use sro_textdata::spawn::SpawnTables;
+
+mod common;
+use common::item_row;
 
 const REGION: u16 = 25000;
 
@@ -39,6 +45,8 @@ fn character(name: &str, region: u16) -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
@@ -56,8 +64,7 @@ fn world() -> (World, Arc<MemoryStore>) {
 }
 
 /// The model 1907: a player's (type ids 1/1), with its walk and run speeds.
-fn refdata() -> RefData {
-    let mut refdata = RefData::default();
+fn model_row() -> String {
     let mut row = vec![String::from("0"); 48];
     (row[1], row[9], row[10], row[46], row[47]) = (
         "1907".into(),
@@ -66,7 +73,25 @@ fn refdata() -> RefData {
         "16".into(),
         "50".into(),
     );
-    refdata.add_characters(&row.join("\t"));
+    row.join("\t")
+}
+
+/// Three items to wear: a sword, a heavy armour's body and an avatar flag.
+fn item_rows() -> String {
+    let items = [
+        (3632, "ITEM_CH_SWORD_01_A_DEF", [3, 1, 6, 2]),
+        (3637, "ITEM_CH_M_HEAVY_01_BA_A_DEF", [3, 1, 3, 3]),
+        (5893, "ITEM_ETC_E051021_BLUEDRAGON_BUNTING_M", [3, 1, 13, 4]),
+    ];
+    items
+        .map(|(id, code, tid)| item_row(id, code, tid, (0, 0)))
+        .join("\n")
+}
+
+fn refdata() -> RefData {
+    let mut refdata = RefData::default();
+    refdata.add_characters(&model_row());
+    refdata.add_items(&item_rows());
     refdata
 }
 
@@ -178,6 +203,40 @@ fn a_spawn_reads_back_as_the_character() {
     let read = (entity.unique_id, entity.name.as_deref(), tail);
     assert_eq!(read, (kiro, Some("Kiro"), SingleTail::Figure(1)));
     assert!(matches!(entity.kind, SpawnKind::Player { .. }));
+}
+
+/// A spawn names the items the character wears, its inventory slots in slot
+/// order and each with plus 0. It is read as the client reads it, with tables
+/// of its own: whether a plus byte follows an item is the item table's to say,
+/// and the server's tables could agree with a writer that leaves it out.
+#[test]
+fn a_spawn_shows_the_items_the_character_wears() {
+    let mut store = MemoryStore::default();
+    store.add_account("a", "a", vec![character("Hero", REGION)]);
+    let mut kiro = character("Kiro", REGION);
+    (kiro.equipment, kiro.avatar) = (vec![(6, 3632), (1, 3637)], vec![(0, 5893)]);
+    store.add_account("b", "b", vec![kiro]);
+    let store = Arc::new(store);
+    let mut shard = (World::new(store.clone(), refdata()), store);
+    let (a, _) = enter(&mut shard, "a", "Hero");
+    enter(&mut shard, "b", "Kiro");
+    let to_a = opcodes(&mut shard.0, a);
+    let characters = CharacterData::parse_shard(&model_row());
+    let items = ItemData::parse_shard(&item_rows());
+    let client = SpawnTables {
+        characters: Some(&characters),
+        items: Some(&items),
+        gates: None,
+    };
+    let (entity, _) = parse_single_spawn(&to_a[0].1, &client).expect("Kiro's spawn reads");
+    let SpawnKind::Player {
+        equipment, avatar, ..
+    } = entity.kind
+    else {
+        panic!("a player");
+    };
+    let worn = (equipment, avatar);
+    assert_eq!(worn, (vec![(3637, 0), (3632, 0)], vec![(5893, 0)]));
 }
 
 #[test]

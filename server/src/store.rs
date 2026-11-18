@@ -39,6 +39,37 @@ pub struct Character {
     /// Mastery id and level.
     pub masteries: Vec<(u32, u8)>,
     pub position: Position,
+    /// The items the character wears: inventory slot (0 to 12) and itemdata
+    /// ref, and the avatar items it wears: avatar slot and ref. Static for
+    /// now: nothing moves an item yet, and the PostgreSQL store does not keep
+    /// them.
+    pub equipment: Vec<(u8, u32)>,
+    pub avatar: Vec<(u8, u32)>,
+}
+
+impl Character {
+    /// The worn items the lobby list (0xB007) and the spawn (0x3015) show,
+    /// with their plus: the inventory slots 0 to 7 in slot order, as the vSRO
+    /// server lists them [V capture, peer vSRO: 323 lobby characters and 117
+    /// player spawns, 6 to 8 items each, none from slot 8 or above]. A static
+    /// item has plus 0.
+    pub fn shown_equipment(&self) -> Vec<(u32, u8)> {
+        let mut worn: Vec<(u8, u32)> = self
+            .equipment
+            .iter()
+            .copied()
+            .filter(|(slot, _)| *slot < 8)
+            .collect();
+        worn.sort_unstable();
+        worn.into_iter().map(|(_, ref_id)| (ref_id, 0)).collect()
+    }
+
+    /// The worn avatar items, in slot order, each with plus 0.
+    pub fn shown_avatar(&self) -> Vec<(u32, u8)> {
+        let mut worn = self.avatar.clone();
+        worn.sort_unstable();
+        worn.into_iter().map(|(_, ref_id)| (ref_id, 0)).collect()
+    }
 }
 
 /// Where a character stands: region, coordinates within it, and heading.
@@ -206,6 +237,8 @@ mod tests {
                 z: 1419.0,
                 heading: 0,
             },
+            equipment: Vec::new(),
+            avatar: Vec::new(),
         }
     }
 

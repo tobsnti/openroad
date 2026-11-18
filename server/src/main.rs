@@ -298,6 +298,8 @@ fn character(c: &Value, key: &str, position: Position) -> Result<Character, Stri
             .map(|id| (id, 0))
             .to_vec(),
         position,
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     })
 }
 
