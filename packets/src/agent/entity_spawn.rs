@@ -914,6 +914,7 @@ fn parse_item(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::agent::spawn_writer::{write_group_despawn, write_group_spawn, write_single_spawn};
     use std::collections::HashMap;
 
     /// A resolver driven by an explicit ref-id → type map (unknown ids resolve
@@ -2217,5 +2218,235 @@ mod test {
             Some("Ironclad")
         );
         assert_eq!(parsed.spawns[1].guild, None);
+    }
+
+    /// Every record kind, read and written back, gives the same bytes: the
+    /// reader keeps every byte, and the writer lays them out as the tables
+    /// say.
+    #[test]
+    fn every_record_kind_writes_back_as_it_was_read() {
+        const NPC: u32 = 1900;
+        const THIEF: u32 = 2001;
+        const PLAYER: u32 = 1907;
+        const SWORD: u32 = 3632;
+        const AVATAR: u32 = 23988;
+        const HORSE: u32 = 2137;
+        const WOLF: u32 = 6106;
+        const RABBIT: u32 = 10365;
+        const GUARD: u32 = 2100;
+        const GOLD: u32 = 1;
+        const BOX: u32 = 3862;
+        const GATE: u32 = 2094;
+        let item = |equipment, gold, named| RefType::Item {
+            equipment,
+            gold,
+            named,
+        };
+        let cos = |kind| RefType::Cos { kind };
+        let res = resolver(&[
+            (NPC, RefType::Npc),
+            (THIEF, RefType::Monster { extra: true }),
+            (PLAYER, RefType::Player),
+            (SWORD, item(true, false, false)),
+            (AVATAR, item(true, false, false)),
+            (HORSE, cos(CosKind::Vehicle)),
+            (WOLF, cos(CosKind::GrowthPet)),
+            (RABBIT, cos(CosKind::GrabPet)),
+            (GUARD, cos(CosKind::Fellow)),
+            (GOLD, item(false, true, false)),
+            (BOX, item(false, false, true)),
+            (GATE, RefType::Structure),
+        ]);
+        let drop_head = |body: Body, ref_id: u32| body.u32(ref_id);
+        let drop_tail =
+            |body: Body, uid: u32| body.u32(uid).u16(0x60A8).f32(1.0).f32(2.0).f32(3.0).u16(0);
+        let mut body = Body::default()
+            // an NPC with all three interaction parts
+            .u32(NPC)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(7)
+            .string("Hi")
+            .u8(2)
+            .u8(1)
+            .u8(4)
+            .u8(2)
+            .u32(0xBEEF)
+            // a thief monster: rarity, then its extra byte
+            .u32(THIEF)
+            .u32(12)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0)
+            .u8(1)
+            .u8(9)
+            // a masked, mounted player in a stall, equipped, with an avatar item
+            .u32(PLAYER)
+            .raw(&[1, 2, 3, 4, 5])
+            .u8(1)
+            .u32(SWORD)
+            .u8(7)
+            .u8(6)
+            .u8(1)
+            .u32(AVATAR)
+            .u8(2)
+            .u8(1)
+            .u32(PLAYER)
+            .u8(3)
+            .u8(2)
+            .u32(10)
+            .u32(20)
+            .u32(13)
+            .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
+            .string("Seller")
+            .raw(&[7, 8, 9])
+            .u8(1) // riding
+            .u8(10)
+            .u32(4711)
+            .raw(&[11, 4, 12]) // interact mode 4
+            .string("Guild")
+            .u32(14)
+            .string("Nick")
+            .raw(&[15; 14])
+            .string("Cheap")
+            .u32(77)
+            .raw(&[28, 29]);
+        // a COS of every kind but the transport (see its own test)
+        body = body.raw(&cos_head(HORSE, 21).0);
+        body = body
+            .raw(&cos_head(WOLF, 22).0)
+            .string("Rex")
+            .string("Owner")
+            .u8(0)
+            .u8(0xFF)
+            .u32(1001);
+        body = body
+            .raw(&cos_head(RABBIT, 23).0)
+            .string("Hoppel")
+            .string("Owner")
+            .u8(0)
+            .u32(1001);
+        body = body
+            .raw(&cos_head(GUARD, 24).0)
+            .string("Mate")
+            .u8(0)
+            .u8(0xFF)
+            .u32(777)
+            .u32(1002);
+        // a sword with an owner, a gold pile, a named box
+        body = drop_tail(drop_head(body, SWORD).u8(5), 31)
+            .u8(1)
+            .u32(0x1234)
+            .u8(2);
+        body = drop_tail(drop_head(body, GOLD).u32(95), 32).u8(0).u8(0);
+        body = drop_tail(drop_head(body, BOX).string("Someone"), 33)
+            .u8(0)
+            .u8(0);
+        // a gate building
+        let body = body
+            .u32(GATE)
+            .u32(41)
+            .u16(0x61A8)
+            .f32(1254.0)
+            .f32(-6.0)
+            .f32(1374.0)
+            .u16(0)
+            .raw(&[1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+            .0;
+        let parsed = parse_group_spawn(&body, true, 11, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        assert_eq!(parsed.end, body.len());
+        assert_eq!(write_group_spawn(&parsed.spawns, &res), Some(body));
+
+        let ids = [7, 8, 9];
+        let despawn = write_group_despawn(&ids);
+        assert_eq!(parse_group_spawn(&despawn, false, 3, &res).despawns, ids);
+    }
+
+    /// The interaction's flags announce its parts: options they do not
+    /// announce are not written.
+    #[test]
+    fn options_are_written_only_when_the_flags_announce_them() {
+        const NPC: u32 = 1900;
+        let res = resolver(&[(NPC, RefType::Npc)]);
+        let body = Body::default()
+            .u32(NPC)
+            .u32(11)
+            .pos_move_state(0x60A8, 1.0, 2.0, 3.0, 0)
+            .u8(2) // flags: options
+            .u8(2)
+            .u8(1)
+            .u8(4)
+            .0;
+        let mut npc = parse_group_spawn(&body, true, 1, &res).spawns.remove(0);
+        assert_eq!(write_group_spawn(&[npc.clone()], &res), Some(body.clone()));
+        npc.interaction = Some(Interaction::default());
+        let unannounced = [&body[..body.len() - 4], &[0]].concat();
+        assert_eq!(write_group_spawn(&[npc], &res), Some(unannounced));
+    }
+
+    /// A single spawn writes back with its tail; an entity whose ref id no
+    /// table knows has no layout to write.
+    #[test]
+    fn a_single_spawn_writes_back_with_its_tail() {
+        const MOB_REF: u32 = 2000;
+        let res = resolver(&[(MOB_REF, RefType::Monster { extra: false })]);
+        let monster = Body::default()
+            .u32(MOB_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0)
+            .u8(1)
+            .u8(3)
+            .0;
+        let (mut entity, tail) = parse_single_spawn(&monster, &res).expect("a monster");
+        assert_eq!(write_single_spawn(&entity, &tail, &res), Some(monster));
+        entity.ref_id = 9999;
+        assert_eq!(write_single_spawn(&entity, &tail, &res), None);
+    }
+
+    /// The writer writes what the entity holds and makes nothing up: a value
+    /// the record calls for that the entity lacks means no record.
+    #[test]
+    fn a_record_lacking_a_value_it_calls_for_is_not_written() {
+        const MOB_REF: u32 = 2000;
+        let res = resolver(&[(MOB_REF, RefType::Monster { extra: false })]);
+        let body = Body::default()
+            .u32(MOB_REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0)
+            .u8(1)
+            .0;
+        let monster = parse_group_spawn(&body, true, 1, &res).spawns.remove(0);
+        assert_eq!(write_group_spawn(&[monster.clone()], &res), Some(body));
+        let lacking = [
+            SpawnedEntity {
+                spawn_rarity: None,
+                ..monster.clone()
+            },
+            SpawnedEntity {
+                movement: None,
+                ..monster.clone()
+            },
+            SpawnedEntity {
+                interaction: None,
+                ..monster.clone()
+            },
+            SpawnedEntity {
+                interaction: Some(Interaction {
+                    flags: 1,
+                    text: None,
+                    typed_value: None,
+                }),
+                ..monster
+            },
+        ];
+        for entity in lacking {
+            assert_eq!(
+                write_group_spawn(&[entity.clone()], &res),
+                None,
+                "{entity:?}"
+            );
+        }
     }
 }

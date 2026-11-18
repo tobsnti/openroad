@@ -1,8 +1,9 @@
-//! Opt-in census of the spawn reader against the user's own captures: every
-//! captured single spawn (0x3015) and every group (0x3017 begin + 0x3019
-//! data) that can be paired with its begin must read to its last byte with
-//! the user's own tables. Needs `OPENROAD_TEXTDATA_DIR` (the textdata folder)
-//! and `OPENROAD_PACKET_DUMP_DIR` (a `packet_dump` folder; every `0x3015.log`
+//! Opt-in census of the spawn reader and writer against the user's own
+//! captures: every captured single spawn (0x3015) and every group (0x3017
+//! begin + 0x3019 data) that can be paired with its begin must read to its
+//! last byte with the user's own tables, and write back to the same bytes.
+//! Needs `OPENROAD_TEXTDATA_DIR` (the textdata folder) and
+//! `OPENROAD_PACKET_DUMP_DIR` (a `packet_dump` folder; every `0x3015.log`
 //! and `0x3019.log` below it counts):
 //!
 //! `cargo test -p sro_textdata --test spawn_census -- --ignored --nocapture`
@@ -18,8 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use packets::agent::entity_spawn::{
-    parse_group_spawn, parse_single_spawn, RefResolver, RefType, SpawnNote,
+    parse_group_spawn, parse_single_spawn, RefResolver, RefType, SpawnKind, SpawnNote,
+    SpawnedEntity,
 };
+use packets::agent::spawn_writer::{write_group_despawn, write_group_spawn, write_single_spawn};
 use sro_textdata::characterdata::CharacterData;
 use sro_textdata::itemdata::ItemData;
 use sro_textdata::spawn::SpawnTables;
@@ -73,9 +76,27 @@ fn folders_with(dir: &Path, file: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Players written back to the same bytes, those of them with equipment, and
+/// those with avatar items.
+#[derive(Default)]
+struct Players(usize, usize, usize);
+
+impl Players {
+    fn count(&mut self, entity: &SpawnedEntity) {
+        if let SpawnKind::Player {
+            equipment, avatar, ..
+        } = &entity.kind
+        {
+            self.0 += 1;
+            self.1 += usize::from(!equipment.is_empty());
+            self.2 += usize::from(!avatar.is_empty());
+        }
+    }
+}
+
 #[test]
 #[ignore = "needs OPENROAD_TEXTDATA_DIR and OPENROAD_PACKET_DUMP_DIR"]
-fn every_captured_spawn_reads_to_its_last_byte() {
+fn every_captured_spawn_reads_to_its_last_byte_and_writes_back() {
     let textdata = std::env::var("OPENROAD_TEXTDATA_DIR").expect("OPENROAD_TEXTDATA_DIR");
     let dumps =
         PathBuf::from(std::env::var("OPENROAD_PACKET_DUMP_DIR").expect("OPENROAD_PACKET_DUMP_DIR"));
@@ -102,9 +123,10 @@ fn every_captured_spawn_reads_to_its_last_byte() {
         gates: Some(&gates),
     };
     let mut failed = Vec::new();
+    let (mut single_players, mut group_players) = (Players::default(), Players::default());
 
     let mut singles = HashSet::new();
-    let (mut unknown_ref, mut single_read) = (0, 0);
+    let (mut unknown_ref, mut single_read, mut single_written) = (0, 0, 0);
     let mut folders = Vec::new();
     folders_with(&dumps, "0x3015.log", &mut folders);
     for folder in &folders {
@@ -117,8 +139,14 @@ fn every_captured_spawn_reads_to_its_last_byte() {
                 .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
             if ref_id.map(|id| tables.resolve(id)) == Some(RefType::Unknown) {
                 unknown_ref += 1;
-            } else if parse_single_spawn(&body, &tables).is_some() {
+            } else if let Some((entity, tail)) = parse_single_spawn(&body, &tables) {
                 single_read += 1;
+                if write_single_spawn(&entity, &tail, &tables).as_ref() == Some(&body) {
+                    single_written += 1;
+                    single_players.count(&entity);
+                } else {
+                    failed.push(format!("0x3015 written back {} {ts}", folder.display()));
+                }
             } else {
                 failed.push(format!("0x3015 {} {ts}", folder.display()));
             }
@@ -126,7 +154,8 @@ fn every_captured_spawn_reads_to_its_last_byte() {
     }
 
     let mut groups = HashSet::new();
-    let (mut paired, mut unpaired, mut group_read, mut group_skipped) = (0, 0, 0, 0);
+    let (mut paired, mut unpaired, mut group_skipped) = (0, 0, 0);
+    let (mut group_read, mut group_written) = (0, 0);
     let mut folders = Vec::new();
     folders_with(&dumps, "0x3019.log", &mut folders);
     for folder in &folders {
@@ -162,19 +191,43 @@ fn every_captured_spawn_reads_to_its_last_byte() {
                 failed.push(format!("0x3019 {} {ts}", folder.display()));
             } else if parsed.notes.is_empty() {
                 group_read += 1;
+                let written = match spawning {
+                    true => write_group_spawn(&parsed.spawns, &tables),
+                    false => Some(write_group_despawn(&parsed.despawns)),
+                };
+                if written.as_ref() == Some(body) {
+                    group_written += 1;
+                    parsed.spawns.iter().for_each(|e| group_players.count(e));
+                } else {
+                    failed.push(format!("0x3019 written back {} {ts}", folder.display()));
+                }
             } else {
                 group_skipped += 1;
             }
         }
     }
 
-    println!("0x3015: {} distinct frames, {single_read} read to their last byte, {unknown_ref} with a ref id in no table", singles.len());
+    println!(
+        "0x3015: {} distinct frames, {single_read} read to their last byte, {single_written} of \
+         them written back to the same bytes, {unknown_ref} with a ref id in no table",
+        singles.len()
+    );
     println!(
         "0x3019: {} distinct frames, {paired} paired with their begin, {group_read} of them read to \
-         their last byte, {group_skipped} to their last byte past a record whose ref id is in no \
-         table, {unpaired} not paired",
+         their last byte, {group_written} of these written back to the same bytes, \
+         {group_skipped} to their last byte past a record whose ref id is in no table (no layout \
+         to write), {unpaired} not paired",
         groups.len()
     );
+    for (source, Players(read, equipped, avatar)) in [
+        ("in 0x3015", &single_players),
+        ("in 0x3019", &group_players),
+    ] {
+        println!(
+            "players {source}: {read} written back, {equipped} with equipment, \
+             {avatar} with avatar items"
+        );
+    }
     assert!(
         single_read + group_read > 0,
         "no frame read below {}",
@@ -182,8 +235,18 @@ fn every_captured_spawn_reads_to_its_last_byte() {
     );
     assert!(
         failed.is_empty(),
-        "{} not read to their last byte:\n{}",
+        "{} not read to their last byte or not written back:\n{}",
         failed.len(),
         failed.join("\n")
+    );
+    // Nothing else runs a player's two item lists end to end (the test
+    // bench's players carry none), so the round trip has to cover them.
+    assert!(
+        group_players.1 > 0,
+        "no captured group holds a player with equipment: the round trip misses it"
+    );
+    assert!(
+        group_players.2 > 0,
+        "no captured group holds a player with avatar items: the round trip misses them"
     );
 }
