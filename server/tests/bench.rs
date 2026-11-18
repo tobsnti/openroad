@@ -41,7 +41,14 @@ fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
     let own = dir.join("textdata");
     std::fs::create_dir_all(&own).unwrap();
     let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    // A player's model (type ids 1/1) with its walk and run speeds.
+    (row[1], row[9], row[10], row[46], row[47]) = (
+        "1907".into(),
+        "1".into(),
+        "1".into(),
+        "16".into(),
+        "50".into(),
+    );
     std::fs::write(own.join("characterdata_test.txt"), row.join("\t")).unwrap();
     let (events, admin) = (dir.join("events.jsonl"), dir.join("admin.sock"));
     let child = Command::new(env!("CARGO_BIN_EXE_openroad-server"))

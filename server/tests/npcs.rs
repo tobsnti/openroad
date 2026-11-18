@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use packets::agent::entity_spawn::{parse_group_spawn, SpawnKind};
 use packets::agent::prelude::{
     AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest,
     SelectEntityRequest, TalkRequest,
@@ -83,14 +84,26 @@ fn hero() -> Character {
 fn world() -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("a", "a", vec![hero()]);
+    let store = Arc::new(store);
+    (World::new(store.clone(), refdata()), store)
+}
+
+/// The model 1907, a player's (type ids 1/1) with its walk and run speeds,
+/// the rows of [`model_rows`] and the NPCs of [`NPCPOS`].
+fn refdata() -> RefData {
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    (row[1], row[9], row[10], row[46], row[47]) = (
+        "1907".into(),
+        "1".into(),
+        "1".into(),
+        "16".into(),
+        "50".into(),
+    );
     refdata.add_characters(&row.join("\t"));
     model_rows(&mut refdata);
     refdata.add_npcs(NPCPOS);
-    let store = Arc::new(store);
-    (World::new(store.clone(), refdata), store)
+    refdata
 }
 
 fn send(world: &mut World, session: SessionId, packet: Packet) {
@@ -203,6 +216,30 @@ fn a_character_entering_sees_the_npcs_around_it_in_one_group() {
     let world = &mut shard.0;
     let expected = vec![uid_of(world, 2003), uid_of(world, 2013)];
     assert_eq!(group(&frames(world, s)), (1, expected));
+}
+
+/// The group comes from the shared writer: the spawn reader in `packets`
+/// reads it back as the NPCs, with their options, to its last byte.
+#[test]
+fn the_npc_group_reads_back_as_the_npcs() {
+    let mut shard = world();
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let (smith, warehouse) = (uid_of(world, 2003), uid_of(world, 2013));
+    let seen = frames(world, s);
+    let data = &seen[1].1;
+    let parsed = parse_group_spawn(data, true, 2, &refdata().spawn_tables());
+    assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+    let read: Vec<_> = parsed
+        .spawns
+        .iter()
+        .map(|e| (e.unique_id, e.kind.clone(), e.talk_options.clone()))
+        .collect();
+    let expected = vec![
+        (smith, SpawnKind::Npc, vec![0x01, 0x02, 0x04, 0x20]),
+        (warehouse, SpawnKind::Npc, vec![0x01, 0x03]),
+    ];
+    assert_eq!((read, parsed.end), (expected, data.len()));
 }
 
 /// One region east, the NPC two regions east comes into sight; back home it

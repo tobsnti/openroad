@@ -1,15 +1,17 @@
 //! Reference data from the game's own tables, so that values like a
 //! character's speeds come from the user's data rather than from code. The
-//! rows are `sro_textdata`'s, the type the client reads them with, so each
-//! column is named in one place; this module only finds and splits the files.
-//! Only what the server uses so far is read.
+//! tables are `sro_textdata`'s, the types the client reads them with, so each
+//! column is named in one place and a spawn record's layout is decided by the
+//! same mapping as in the client ([`SpawnTables`]); this module only finds
+//! the files. Only what the server uses so far is read.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use sro_textdata::characterdata::CharacterDataRow;
+use sro_textdata::characterdata::{CharacterData, CharacterDataRow};
 use sro_textdata::npcpos::{self, NpcPos};
 use sro_textdata::siegefortress::FortressTable;
+use sro_textdata::spawn::SpawnTables;
 
 /// What the server takes from a characterdata row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,11 +21,20 @@ pub struct CharacterRef {
     pub run_speed: f32,
 }
 
-#[derive(Default)]
 pub struct RefData {
-    characters: HashMap<u32, CharacterDataRow>,
+    characters: CharacterData,
     npcs: Vec<NpcPos>,
     fortresses: FortressTable,
+}
+
+impl Default for RefData {
+    fn default() -> Self {
+        RefData {
+            characters: CharacterData(HashMap::new()),
+            npcs: Vec::new(),
+            fortresses: FortressTable::default(),
+        }
+    }
 }
 
 impl RefData {
@@ -49,16 +60,27 @@ impl RefData {
         Ok(data)
     }
 
-    /// The rows of one characterdata table. As in the client's loader, a row
-    /// has more than ten columns and its id in the second; the index file
+    /// The rows of one characterdata table, read by the client's loader: a
+    /// row has more than ten columns and its id in the second; the index file
     /// `characterdata.txt` only names the others.
     pub fn add_characters(&mut self, table: &str) {
-        for line in table.lines() {
-            let cols: Vec<String> = line.split('\t').map(String::from).collect();
-            let id = cols.get(1).and_then(|id| id.trim().parse().ok());
-            if let (true, Some(id)) = (cols.len() > 10, id) {
-                self.characters.insert(id, CharacterDataRow(cols));
-            }
+        self.characters
+            .0
+            .extend(CharacterData::parse_shard(table).0);
+    }
+
+    fn row(&self, ref_id: u32) -> Option<&CharacterDataRow> {
+        self.characters.0.get(&i32::try_from(ref_id).ok()?)
+    }
+
+    /// The tables a spawn record's layout depends on, for the spawn writer.
+    /// The server sends no dropped items and no gate buildings yet, so their
+    /// tables are not read.
+    pub fn spawn_tables(&self) -> SpawnTables<'_> {
+        SpawnTables {
+            characters: Some(&self.characters),
+            items: None,
+            gates: None,
         }
     }
 
@@ -74,7 +96,7 @@ impl RefData {
     /// Whether `ref_id` is an NPC's model: a characterdata row with the type
     /// ids 1/2/2.
     pub fn is_npc(&self, ref_id: u32) -> bool {
-        let row = self.characters.get(&ref_id);
+        let row = self.row(ref_id);
         row.is_some_and(|row| matches!(row.type_ids(), Some((1, 2, 2, _))))
     }
 
@@ -87,7 +109,7 @@ impl RefData {
     /// entity of model `ref_id` is selected: for an NPC row and a TID1 4 row
     /// whose fortress `siegefortress.txt` lists [V original handler].
     pub fn in_listed_fortress(&self, ref_id: u32) -> bool {
-        let Some(row) = self.characters.get(&ref_id) else {
+        let Some(row) = self.row(ref_id) else {
             return false;
         };
         let typed = matches!(row.type_ids(), Some((1, 2, 2, _) | (4, _, _, _)));
@@ -95,9 +117,11 @@ impl RefData {
         typed && row.fortress().is_some_and(listed)
     }
 
-    /// The characterdata row `ref_id`, as far as the server uses it.
+    /// The characterdata row `ref_id` of a player's model, as far as the
+    /// server uses it; `None` for a row that is no player's (type ids 1/1),
+    /// whose spawn record a player's would not be.
     pub fn character(&self, ref_id: u32) -> Option<CharacterRef> {
-        let row = self.characters.get(&ref_id)?;
+        let row = self.row(ref_id).filter(|row| row.is_player())?;
         let (walk_speed, run_speed) = (row.walk_speed()?, row.run_speed()?);
         Some(CharacterRef {
             walk_speed,
