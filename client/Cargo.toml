@@ -29,7 +29,6 @@ bevy_tweening = { git = "https://github.com/djeedai/bevy_tweening", rev = "2341b
 bytes = { workspace = true }
 byteorder = { workspace = true }
 bytemuck = "1.13.1"
-chrono = "0.4"
 config = { version = "0.14", features = ["yaml"] }
 ddsfile = "0.6.0"
 encoding = {version = "0.2"}
