@@ -135,7 +135,7 @@ fn spawn(uid: u32, p: &Player) -> Packet {
         },
     };
     movement
-        .write_with_region(&mut b, at.region)
+        .write(&mut b)
         .expect("each form names the fields it writes");
     let state = EntityState {
         life_state: 1,

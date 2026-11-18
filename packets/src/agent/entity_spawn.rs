@@ -647,7 +647,7 @@ fn parse_player(r: &mut Reader, ref_id: u32, resolver: &impl RefResolver) -> Opt
 
     let unique_id = r.u32()?;
     let position = r.position()?;
-    let movement = r.movement(position.region)?;
+    let movement = r.movement()?;
     let state = r.character_state()?;
     let name = r.string()?;
     bytes.after_name = r.array()?;
@@ -767,7 +767,7 @@ fn read_interaction(r: &mut Reader, talk_options: &mut Vec<u8>) -> Option<Intera
 fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    let movement = r.movement(position.region)?;
+    let movement = r.movement()?;
     let state = r.character_state()?;
     let mut talk_options = Vec::new();
     let interaction = read_interaction(r, &mut talk_options)?;
@@ -805,7 +805,7 @@ fn parse_character(r: &mut Reader, ref_id: u32, monster: Option<bool>) -> Option
 fn parse_cos(r: &mut Reader, ref_id: u32, kind: CosKind) -> Option<SpawnedEntity> {
     let unique_id = r.u32()?;
     let position = r.position()?;
-    let movement = r.movement(position.region)?;
+    let movement = r.movement()?;
     let state = r.character_state()?;
     // The interaction block is shared with NPCs (a summoned COS sends flag 0).
     let mut talk_options = Vec::new();
@@ -1043,9 +1043,10 @@ mod test {
             .pos_move_state(0x60A8, 1058.0, -7.68, 1426.0, 12268)
             // name
             .string("Remote")
-            // job_type, job_level, pk_state, transport, in_combat, scroll, interact, unk
+            // three bytes after the name, riding 0, a byte, interact mode 0
+            // between two bytes
             .raw(&[0, 1, 0xFF, 0, 0, 0, 0, 0])
-            // guild: empty name, guild id, empty nick, 3×u32 + 2×u8
+            // guild: empty name, the u32 behind it, empty nick, 14 bytes
             .string("")
             .u32(0)
             .string("")
@@ -1176,6 +1177,61 @@ mod test {
             .map(|e| (e.unique_id, e.talk_options.len()))
             .collect();
         assert_eq!(read, [(11, 0), (12, 0), (13, 0)]);
+    }
+
+    /// The destination's region, not the entity's own, selects the width of
+    /// the coordinates: an NPC standing in the overworld with a destination in
+    /// a dungeon region carries three i32, and the record behind it reads.
+    #[test]
+    fn the_destination_region_selects_the_coordinate_width() {
+        const NPC_REF: u32 = 1900;
+        let res = resolver(&[(NPC_REF, RefType::Npc)]);
+        let mut body = Body::default()
+            .u32(NPC_REF)
+            .u32(11)
+            .u16(0x60A8) // an overworld position
+            .f32(1.0)
+            .f32(2.0)
+            .f32(3.0)
+            .u16(0)
+            .u8(1) // a destination
+            .u8(1)
+            .u16(0x8001) // in a dungeon region
+            .u32(-5i32 as u32)
+            .u32(6)
+            .u32(7)
+            .raw(&[1, 0, 0, 0])
+            .f32(16.0)
+            .f32(50.0)
+            .f32(100.0)
+            .u8(0) // no buffs
+            .u8(0) // interaction
+            .0;
+        body.extend_from_slice(&follower_npc(Body::default(), NPC_REF, 12).0);
+        let parsed = parse_group_spawn(&body, true, 2, &res);
+        assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+        let to = parsed.spawns[0].movement.and_then(|m| m.dest_x);
+        assert_eq!((to, parsed.spawns[1].unique_id), (Some(-5), 12));
+    }
+
+    /// A record nothing decides reads nothing: without characterdata, an NPC
+    /// or monster record that ends the batch on neither reading leaves it
+    /// undecided, rather than something being invented.
+    #[test]
+    fn an_undecided_record_reads_nothing() {
+        const REF: u32 = 2000;
+        let res = resolver(&[(REF, RefType::Character)]);
+        let body = Body::default()
+            .u32(REF)
+            .u32(22)
+            .pos_move_state(0x60A8, 4.0, 5.0, 6.0, 0)
+            .u8(0) // interaction
+            .u8(1)
+            .u8(1) // two bytes past the NPC reading, one past the monster's
+            .0;
+        let parsed = parse_group_spawn(&body, true, 1, &res);
+        assert!(parsed.spawns.is_empty());
+        assert_eq!(parsed.notes, [SpawnNote::Undecided { index: 0, count: 1 }]);
     }
 
     /// A thief or hunter monster carries one byte more after its rarity; read

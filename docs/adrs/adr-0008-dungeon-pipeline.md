@@ -54,11 +54,13 @@ index, not a sector coordinate, and interiors live in a local frame reaching
   dungeon frame (ADR-0006 amendment) — the multiple-of-1920 invariant only
   serves the terrain splat shader, which never draws inside a dungeon.
 - **Wire format**: absolute `SpawnPosition` blocks never change shape;
-  movement *destination* triples switch u16 → i32 keyed by the entity's
-  **current** position region (xBot/go-sro rule), implemented in
-  `EntityMovement::read_with_region` and `Reader::movement(region)`.
-  The `dest_region > 0` presence gate is kept (the third-party sources conflict
-  over whether the read is unconditional; ours stays gated until a capture settles it).
+  movement *destination* triples switch u16 → i32 by bit 15 of the
+  **destination** region, and three coordinates follow every destination,
+  a region of 0 included. Amended 2026-11-15: this is the original client's
+  reading [V original handler]; the earlier rule (keyed by the entity's
+  current region, after xBot and go-sro, with no coordinates for a
+  destination region of 0) is gone. One reader, `EntityMovement::read`,
+  serves the spawn records and CHARACTER_DATA.
 
 ## Out of scope / follow-ups
 

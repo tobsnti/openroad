@@ -3,9 +3,8 @@
 Status: layout decoded from the client parser and its byte-array unit tests
 (`packets/src/agent/entity_spawn.rs`), calibrated against live vSRO 1.188 captures.
 The item, monster, NPC and player records (but a player in a job suit) are read
-as the original client reads them [V original handler], with two named
-exceptions: the movement block's width rule and the width of a buff entry (see
-Open questions). The COS owner tail and the gate building's tail rest on xBot and
+as the original client reads them [V original handler], with one named
+exception: the width of a buff entry (see Open questions). The COS owner tail and the gate building's tail rest on xBot and
 the captures, not on the original's handler; character rows outside player,
 monster, NPC and COS are read as NPCs. Every record is kept whole; fields nothing
 interprets are named by their place in the record and marked [U]. An opt-in
@@ -135,15 +134,17 @@ These three blocks recur inside the character-bearing records and are read by
 
 ```text
 has_dest:u8, move_type:u8
-  has_dest != 0 : dest_region:u16, [dest_region > 0: 3 × u16 in the overworld, 3 × i32 in a dungeon]
+  has_dest != 0 : dest_region:u16, 3 × u16 (dest_region bit 15 clear) or 3 × i32 (bit 15 set)
   has_dest == 0 : source:u8, angle:u16
 ```
 
-The width follows the entity's current region here. The original keys it on the
-destination region and reads the three coordinates whatever that region is
-[V original handler]. The captures do not decide between the two: no captured
-record has a destination region of 0 or a dungeon bit. The correction comes on
-its own, with the second reader of this block in `character_data.rs`.
+As the original client reads it [V original handler]: the destination region's
+bit 15 selects the width, and three coordinates follow every destination, a
+region of 0 included. One reader, `EntityMovement::read`, serves the spawn
+records and CHARACTER_DATA (0x3013). No captured record has a destination
+region of 0 or one that differs from the entity's own in bit 15, so the
+captures read the same under the earlier rule (the entity's own region, no
+coordinates for a destination region of 0).
 
 **Character-state** (variable, `EntityState`): life/motion/body states, the three
 movement speeds, and a buff list.
@@ -350,9 +351,6 @@ but keys the badge off characterdata.
   the captures show only flags 0 and 2. The text (bit 1), the typed value
   (bit 4) and the meaning of the individual option ids are [U]. The client
   already treats the option ids as advisory.
-- **Movement width.** The width rule above differs from the original's (keyed on
-  the current region, coordinates only for a destination region > 0); the
-  captures do not decide it. The correction comes on its own.
 - **Buff entries.** Read as 8 bytes; the original's width depends on skilldata
   [U].
 - **Flags kept as yes or no.** The mask flag, the owner flag and `has_dest` are

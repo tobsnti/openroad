@@ -582,12 +582,10 @@ impl RefResolver for SpawnResolver<'_> {
 
 /// The [`RefResolver`] without game data. Without characterdata it
 /// cannot tell an NPC from a monster and says so (`RefType::Character`), so a
-/// record is read only where the batch's length settles it — measured on our
-/// stub's batches, it does for monsters and does not for NPCs. It used to
-/// answer "monster" for every ref, and an NPC record is one byte shorter: at the
-/// Jangan town centre (2026-11-11) the first NPC shifted the rest of its batch
-/// and five garbage entities came out. Player records still cannot be read
-/// without itemdata.
+/// record is read only where the batch's length settles it; measured over the
+/// captured vSRO groups of NPCs or monsters (2026-11-16, 1207 frames), every
+/// one settles and reads as the tables read it. Player records still cannot be
+/// read without itemdata.
 struct HeadlessResolver;
 
 impl RefResolver for HeadlessResolver {
@@ -1102,92 +1100,74 @@ mod tests {
         v
     }
 
-    /// One character record the way our stub writes it: standing, alive,
-    /// default speeds, no buffs; an NPC ends in one talk option, a monster in
-    /// no options and its rarity byte.
-    fn character_record(ref_id: u32, uid: u32, x: f32, z: f32, npc: bool) -> Vec<u8> {
-        let mut v = ref_id.to_le_bytes().to_vec();
-        v.extend(id_and_position(uid, 25_000, x, 0.0, z));
-        v.extend([0, 1, 0, 0, 0]); // standing
-        v.extend([1, 0, 0, 0]); // life, unk, motion, body
-        for speed in [12.0f32, 33.0, 100.0] {
-            v.extend(speed.to_le_bytes());
-        }
-        v.push(0); // no buffs
-        v.extend(if npc { &[2u8, 1, 2][..] } else { &[0u8, 1][..] });
-        v
-    }
+    /// Two NPCs, 100 bytes (`packet_dump/0x3019.log`, 2026-08-10T18:19:22.552Z).
+    const VSRO_NPCS: &str = "dd070000b8000000a861333375447f6f02c252487744b540000100b540010000\
+        0000000000000000000000c8420002020103de070000b9000000a86166167544\
+        7f6f02c2294c7744b540000100b5400100000000000000000000000000c84200\
+        02020103";
 
-    /// Two batches our stub sent on 2026-11-11, rebuilt byte for byte: three
-    /// monsters at the bench's default spot, and the seven NPCs of the Jangan
-    /// town centre. The monsters settle and are read. The NPCs do not — read as
-    /// monsters, the first one shifted the batch and five garbage entities came
-    /// out — so nothing is read from that batch rather than something invented.
-    #[test]
-    fn headless_spawns_are_read_only_where_the_batch_decides() {
-        let monsters: Vec<u8> = [
-            (0x2001, 669.0, 269.0),
-            (0x2002, 1269.0, 269.0),
-            (0x2003, 969.0, 369.0),
-        ]
-        .into_iter()
-        .flat_map(|(uid, x, z)| character_record(1933, uid, x, z, false))
-        .collect();
-        let parsed = parse_group_spawn(&monsters, true, 3, &HeadlessResolver);
-        let read: Vec<_> = parsed
-            .spawns
-            .iter()
-            .map(|e| (e.unique_id, e.kind.clone()))
-            .collect();
-        assert_eq!(
-            read,
-            vec![
-                (0x2001, SpawnKind::Monster { extra: None }),
-                (0x2002, SpawnKind::Monster { extra: None }),
-                (0x2003, SpawnKind::Monster { extra: None })
-            ]
-        );
+    /// Three walking monsters, 165 bytes (`packet_dump/0x3019.log`,
+    /// 2026-08-11T09:44:05.799Z).
+    const VSRO_MONSTERS: &str = "8d07000077a00100a860220ba04458a89cc162f43d44676c0100a8600005edff\
+        f70201000000000000410000b0410000c84200020105008d070000bba00100a8\
+        60985dae44bf4423c284d03d448bcb0100a8607205d8fff70201000000000000\
+        410000b0410000c84200020105008d070000d1a00100a8608bc6a944c7bff5c1\
+        acae45445b5a0100a8604e05e2ff160301000000000000410000b0410000c842\
+        0002010500";
 
-        let npcs = town_centre_npcs();
-        assert_eq!(npcs.len(), 343);
-        assert!(parse_group_spawn(&npcs, true, 7, &HeadlessResolver)
-            .spawns
-            .is_empty());
-    }
-
-    /// The seven NPCs our stub spawns at the Jangan town centre, 343 bytes.
-    fn town_centre_npcs() -> Vec<u8> {
-        let refs = [2003u32, 2004, 2009, 2005, 2008, 2013, 2017];
-        let spots = [
-            (1019.0f32, 1419.0f32),
-            (919.0, 1419.0),
-            (969.0, 1469.0),
-            (1069.0, 1319.0),
-            (869.0, 1319.0),
-            (819.0, 1369.0),
-            (1119.0, 1369.0),
-        ];
-        (0x1001u32..)
-            .zip(refs.into_iter().zip(spots))
-            .flat_map(|(uid, (ref_id, (x, z)))| character_record(ref_id, uid, x, z, true))
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect()
     }
 
-    /// With the user's own tables the town centre reads as seven NPCs — the
-    /// batch the fallback has to leave unread.
+    /// `(unique id, kind)` of each record `resolver` reads from a group.
+    fn read(hex: &str, count: u16, resolver: &impl RefResolver) -> Vec<(u32, SpawnKind)> {
+        parse_group_spawn(&bytes(hex), true, count, resolver)
+            .spawns
+            .into_iter()
+            .map(|e| (e.unique_id, e.kind))
+            .collect()
+    }
+
+    fn two_npcs_three_monsters() -> [Vec<(u32, SpawnKind)>; 2] {
+        let monster = SpawnKind::Monster { extra: None };
+        [
+            vec![(184, SpawnKind::Npc), (185, SpawnKind::Npc)],
+            vec![
+                (106_615, monster.clone()),
+                (106_683, monster.clone()),
+                (106_705, monster),
+            ],
+        ]
+    }
+
+    /// Two groups a vSRO server sent, read without the game tables: each
+    /// settles on its length and reads as the tables read it. Measured over
+    /// every captured vSRO group of NPCs or monsters (2026-11-16, 1207 frames),
+    /// each settles so; a record nothing settles reads nothing
+    /// (`entity_spawn::test::an_undecided_record_reads_nothing`).
+    #[test]
+    fn headless_spawns_are_read_only_where_the_batch_decides() {
+        let got = [
+            read(VSRO_NPCS, 2, &HeadlessResolver),
+            read(VSRO_MONSTERS, 3, &HeadlessResolver),
+        ];
+        assert_eq!(got, two_npcs_three_monsters());
+    }
+
+    /// With the user's own tables the same two groups read the same.
     #[test]
     #[ignore = "reads the user's Media.pk2 (SRO_PK2_PATH, SRO_PATH or ./assets)"]
-    fn with_game_data_the_town_centre_reads_as_npcs() {
+    fn with_game_data_the_captured_groups_read_the_same() {
         let data = GameData::load();
         assert!(data.0.is_some(), "no game data could be read");
-        let parsed = parse_group_spawn(&town_centre_npcs(), true, 7, &data.resolver());
-        let read: Vec<_> = parsed
-            .spawns
-            .iter()
-            .map(|e| (e.unique_id, e.kind.clone()))
-            .collect();
-        let expected: Vec<_> = (0x1001..=0x1007).map(|uid| (uid, SpawnKind::Npc)).collect();
-        assert_eq!(read, expected);
+        let got = [
+            read(VSRO_NPCS, 2, &data.resolver()),
+            read(VSRO_MONSTERS, 3, &data.resolver()),
+        ];
+        assert_eq!(got, two_npcs_three_monsters());
     }
 
     /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
