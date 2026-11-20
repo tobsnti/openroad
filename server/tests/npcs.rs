@@ -609,12 +609,17 @@ fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
         );
         Point { x, y: 0.0, z }
     };
+    // What the hero was sent about this monster; the others near it wander.
     let walk = |world: &mut World, to| {
         assert!(world.walk_monster(far, to));
         while world.monster(far).unwrap().walk.is_some() {
             world.step();
         }
+        let about = |f: &(u16, Bytes)| f.0 != 0xB021 || f.1[..4] == far.to_le_bytes();
         frames(world, s)
+            .into_iter()
+            .filter(about)
+            .collect::<Vec<_>>()
     };
     let seen = walk(world, point(REGION + 1, 1800.0));
     let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
@@ -649,4 +654,66 @@ fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
         (seen[1].1.clone(), gone.0),
         (Bytes::from_static(&[2, 1, 0]), gone.1)
     );
+}
+
+/// Monsters near the hero wander: in the first minute each takes a few
+/// steps, each at most 111 units long and ending at most 250 units from its
+/// row, at least 9.2 s apart; the Tiger Woman, walking 20 units a second,
+/// rests most of that time. The monster two regions away, which nobody sees,
+/// does not move.
+#[test]
+fn monsters_near_a_character_wander_around_their_rows() {
+    let mut shard = monster_world();
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    frames(world, s);
+    let in_world = |region: u16, x: f32, z: f32| {
+        let (sx, sz) = sector(region);
+        (
+            f32::from(sx) * REGION_SIZE + x,
+            f32::from(sz) * REGION_SIZE + z,
+        )
+    };
+    let placed = |world: &World, x: f32, z: f32| {
+        let uid = world.monsters().find(|(_, m)| m.position.x == x).unwrap().0;
+        (uid, in_world(REGION, x, z))
+    };
+    let near = [placed(world, 900.0, 1400.0), placed(world, 1000.0, 1500.0)];
+    let far = world
+        .monsters()
+        .find(|(_, m)| m.position.x == 100.0)
+        .unwrap()
+        .0;
+    let mut moves: Vec<(u32, u64, (f32, f32))> = Vec::new();
+    for step in 0..60 * 30 {
+        world.step();
+        for (opcode, body) in frames(world, s) {
+            let Ok(Packet::MovementResponse(m)) = Packet::deserialize(opcode, body) else {
+                continue;
+            };
+            moves.push((
+                m.unique_id,
+                step,
+                in_world(m.region, m.x as f32, m.z as f32),
+            ));
+        }
+    }
+    let dist = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).hypot(a.1 - b.1);
+    for (uid, home) in near {
+        let mine: Vec<(u64, (f32, f32))> = (moves.iter())
+            .filter(|m| m.0 == uid)
+            .map(|m| (m.1, m.2))
+            .collect();
+        assert!(mine.len() >= 2, "{uid}: {mine:?}");
+        let mut from = (0, home);
+        for (step, to) in mine {
+            // The destinations are whole units on the wire.
+            assert!(dist(to, home) <= 250.0 + 1.0, "{to:?}");
+            assert!(dist(from.1, to) <= 111.0 + 1.0, "{from:?} {to:?}");
+            assert!(from.0 == 0 || step - from.0 >= 276, "{from:?} {step}");
+            from = (step, to);
+        }
+    }
+    let unmoved = world.monster(far).unwrap();
+    assert_eq!((unmoved.walk, unmoved.position.x), (None, 100.0));
 }

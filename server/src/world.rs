@@ -20,7 +20,7 @@ use packets::region::is_dungeon;
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
-use crate::monster::Monster;
+use crate::monster::{self, Monster};
 use crate::movement;
 use crate::npc::Npc;
 use crate::outbox::{Frame, Outbox};
@@ -28,7 +28,7 @@ use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::sight;
 use crate::store::{AccountId, Changes, Character, Position, Store};
-use crate::tick::STEPS_PER_SECOND;
+use crate::tick::{fires, AI_STEPS, STEPS_PER_SECOND};
 use crate::wirelog::{Dir, WireLog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -216,6 +216,8 @@ impl World {
             position,
             hp,
             walk: None,
+            home: position,
+            rest_until: self.step + monster::rest(),
         };
         self.monsters.insert(uid, monster);
         Some(uid)
@@ -274,6 +276,10 @@ impl World {
 
     pub fn monster(&self, uid: u32) -> Option<&Monster> {
         self.monsters.get(&uid)
+    }
+
+    pub(crate) fn monster_mut(&mut self, uid: u32) -> Option<&mut Monster> {
+        self.monsters.get_mut(&uid)
     }
 
     pub fn monsters(&self) -> impl Iterator<Item = (u32, &Monster)> {
@@ -547,6 +553,9 @@ impl World {
         }
         for (uid, from) in crossed {
             sight::monster_crossed(self, uid, from);
+        }
+        if fires(self.step, AI_STEPS) {
+            monster::think(self);
         }
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self

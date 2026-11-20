@@ -121,7 +121,7 @@ fn placed_record(world: &World, uid: u32) -> Bytes {
 
 /// The regions a character in `region` sees: its own and, in the overworld,
 /// the eight around it.
-fn around(region: u16) -> Vec<u16> {
+pub(crate) fn around(region: u16) -> Vec<u16> {
     if is_dungeon(region) {
         return vec![region];
     }
