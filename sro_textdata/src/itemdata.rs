@@ -12,6 +12,8 @@ use bevy::prelude::TypePath;
 use std::collections::HashMap;
 use std::ops::{Deref, Index};
 
+use packets::agent::character_data::{ItemClass, ItemClassResolver};
+
 #[derive(Debug, Clone)]
 pub struct ItemDataRow(pub Vec<String>);
 
@@ -31,6 +33,21 @@ impl ItemData {
                 .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, ItemDataRow(l))))
                 .collect(),
         )
+    }
+}
+
+/// An item's class, read from its type ids, for the readers and writers in
+/// `packets` that pick an item record's shape by it (0x3013's inventory, a
+/// pickup): one mapping for the client and the server.
+impl ItemClassResolver for ItemData {
+    fn item_class(&self, ref_id: u32) -> ItemClass {
+        let row = i32::try_from(ref_id).ok().and_then(|id| self.get(&id));
+        match row.and_then(|row| row.type_ids()) {
+            Some((3, 1, _, _)) => ItemClass::Equipment,
+            Some((3, 2, tid3, tid4)) => ItemClass::Container { tid3, tid4 },
+            Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
+            _ => ItemClass::Unknown,
+        }
     }
 }
 
@@ -486,6 +503,30 @@ mod test {
         fields[11] = tid.2.to_string();
         fields[12] = tid.3.to_string();
         ItemDataRow(fields)
+    }
+
+    #[test]
+    fn an_items_class_follows_its_type_ids() {
+        let items = ItemData(HashMap::from([
+            (1, typed_row((3, 1, 6, 2))),
+            (2, typed_row((3, 2, 1, 2))),
+            (3, typed_row((3, 3, 1, 1))),
+            (4, typed_row((1, 2, 2, 0))),
+        ]));
+        let container = ItemClass::Container { tid3: 1, tid4: 2 };
+        let expendable = ItemClass::Expendable { tid3: 1, tid4: 1 };
+        let classes = [1, 2, 3, 4, 5].map(|id| items.item_class(id));
+        let unknown = ItemClass::Unknown;
+        assert_eq!(
+            classes,
+            [
+                ItemClass::Equipment,
+                container,
+                expendable,
+                unknown,
+                unknown
+            ]
+        );
     }
 
     #[test]

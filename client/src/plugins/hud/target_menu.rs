@@ -27,15 +27,18 @@
 //! offsets below are that reading, expressed against our own panel.
 //!
 //! The five verbs are emitted as [`TargetMenuAction`] messages and each needs
-//! its own wire path. "Invite party" has one now
+//! its own path. "Invite party" has one now
 //! ([`send_target_menu_party_invite`] → `net::party::PartyAction`) and so does
-//! "Exchange" ([`send_target_menu_exchange_invite`] → 0x7081); whisper and
-//! friend still do not, and inventing one here would be a guess.
+//! "Exchange" ([`send_target_menu_exchange_invite`] → 0x7081); "Whisper" opens
+//! the chat's whisper input ([`open_target_menu_whisper`]). Friend still has
+//! none, and inventing one here would be a guess.
 //! The menu stays honest about what exists — it opens, it is localized, it
 //! names the action — and the wiring is a separate issue per verb.
 
+use bevy::input_focus::InputFocus;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::text::EditableText;
 use bevy::window::PrimaryWindow;
 
 use packets::agent::prelude::{ActionCommand, ActionTarget, ObjectActionRequest};
@@ -44,7 +47,9 @@ use packets::Packet;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
-use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
+use crate::plugins::hud::chat::input::prefill_whisper_input;
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
+use crate::plugins::hud::chat::ui::ChatInputBox;
 use crate::plugins::hud::context_menu::{
     close_context_menus, spawn_context_menu, ContextMenuItem, ContextMenuOwner, ContextMenuRoot,
     ContextMenuRow,
@@ -360,11 +365,36 @@ pub fn send_target_menu_trace(
     }
 }
 
-/// Until each verb has a wire path, name the picked action so the menu is
+/// "Whisper" — the chat input, addressed to the target and focused, through
+/// the function the chat itself uses when a sender's name is clicked. Nothing
+/// is sent: the player types the line.
+pub fn open_target_menu_whisper(
+    mut actions: MessageReader<TargetMenuAction>,
+    names: Query<&DisplayName>,
+    mut focus: ResMut<InputFocus>,
+    mut chat: ResMut<ChatState>,
+    mut input: Query<(Entity, &mut EditableText), With<ChatInputBox>>,
+) {
+    for action in actions.read() {
+        if action.action != TargetAction::Whisper {
+            continue;
+        }
+        match names.get(action.target) {
+            Ok(name) => prefill_whisper_input(&name.0, &mut focus, &mut chat, &mut input),
+            Err(_) => warn!(
+                "target menu: whisper on {:?}, which has no name",
+                action.target
+            ),
+        }
+    }
+}
+
+/// Until each verb has a path, name the picked action so the menu is
 /// observable and the backlog is visible (the under-bar menu does the same for
-/// its unbuilt rows). "Invite party", "Exchange" and "Trace" are wired (see
-/// [`send_target_menu_party_invite`], [`send_target_menu_exchange_invite`] and
-/// [`send_target_menu_trace`]) and are therefore not reported here.
+/// its unbuilt rows). "Invite party", "Exchange", "Trace" and "Whisper" are
+/// wired (see [`send_target_menu_party_invite`],
+/// [`send_target_menu_exchange_invite`], [`send_target_menu_trace`] and
+/// [`open_target_menu_whisper`]) and are therefore not reported here.
 pub fn report_unwired_target_actions(
     mut actions: MessageReader<TargetMenuAction>,
     ui_strings: Res<ClientUiStrings>,
@@ -373,7 +403,10 @@ pub fn report_unwired_target_actions(
     for action in actions.read() {
         if matches!(
             action.action,
-            TargetAction::InviteParty | TargetAction::Exchange | TargetAction::Trace
+            TargetAction::InviteParty
+                | TargetAction::Exchange
+                | TargetAction::Trace
+                | TargetAction::Whisper
         ) {
             continue;
         }
@@ -395,6 +428,7 @@ pub fn cleanup_target_menu(
 #[cfg(test)]
 mod test {
     use super::*;
+    use bevy::text::TextEdit;
 
     /// The rows render in y order, which is neither id order nor record order —
     /// this is the file's own trap, so pin it.
@@ -443,6 +477,47 @@ mod test {
         assert!(MENU_DX > 0.0 && MENU_DX < TARGET_FRAME_W);
         assert!(MENU_DY < 36.0);
     }
+
+    /// "Whisper" opens the chat input addressed to the target, as a click on a
+    /// sender's name in the chat does, and says nothing; "Add friend", which
+    /// has no path, still says so.
+    #[test]
+    fn whisper_opens_the_chat_input_and_add_friend_still_says_so() {
+        let mut app = App::new();
+        app.init_resource::<InputFocus>()
+            .init_resource::<ChatState>()
+            .init_resource::<ClientUiStrings>()
+            .add_message::<TargetMenuAction>()
+            .add_message::<Unavailable>()
+            .add_systems(
+                Update,
+                (open_target_menu_whisper, report_unwired_target_actions),
+            );
+        let input = app
+            .world_mut()
+            .spawn((ChatInputBox, EditableText::new("")))
+            .id();
+        let target = app.world_mut().spawn(DisplayName("Alice".into())).id();
+        for action in [TargetAction::Whisper, TargetAction::AddFriend] {
+            app.world_mut()
+                .write_message(TargetMenuAction { target, action });
+        }
+        app.update();
+
+        let text = app.world().get::<EditableText>(input).unwrap();
+        assert_eq!(
+            text.pending_edits.last(),
+            Some(&TextEdit::Insert("$Alice ".into()))
+        );
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
+        let said: Vec<String> = app
+            .world_mut()
+            .resource_mut::<Messages<Unavailable>>()
+            .drain()
+            .map(|said| said.0)
+            .collect();
+        assert_eq!(said, ["Add friend"]);
+    }
 }
 
 /// Self-registration for the target right-click menu (#448) (#558). The HUD registry holds one line per
@@ -468,6 +543,7 @@ impl Plugin for TargetMenuPlugin {
                     send_target_menu_party_invite,
                     send_target_menu_exchange_invite,
                     send_target_menu_trace,
+                    open_target_menu_whisper,
                     report_unwired_target_actions,
                 )
                     .chain()

@@ -31,9 +31,7 @@
 //!
 //! The two pet grids are the same widget twice (byte-identical 4x2 blocks that
 //! differ only in x), and neither has any row in `actionwnddata.txt`: their
-//! content is server-supplied, so they render empty here. Slots are inert for
-//! now — issuing a command needs the wire path, which is not part of this
-//! change; hovering names the action so the panel is still readable.
+//! content is server-supplied, so they render empty here.
 
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button};
@@ -51,6 +49,10 @@ use crate::plugins::hud::game_window::{abs_node, spawn_game_window};
 use crate::plugins::hud::scale::{hud_scale, text_px};
 use crate::plugins::hud::target_menu::{TargetAction, TargetMenuAction};
 use crate::plugins::hud::unavailable::Unavailable;
+use crate::plugins::hud::underbar::menu_popup::{
+    MenuRowTargets, ACADEMY_ROW_ID, ALCHEMY_ROW_ID, AUTO_POTION_ROW_ID, PARTY_MATCH_ROW_ID,
+    STALL_ROW_ID,
+};
 use crate::plugins::net::agent::AgentConnection;
 use crate::plugins::net::entities::RemoteMovement;
 use crate::plugins::player::Player;
@@ -344,14 +346,13 @@ pub fn spawn_action_window(
 // `actionwnddata.txt` command ids, verified against the player's own file
 // (`server_dep/silkroad/textdata/actionwnddata.txt`, 26 rows, UTF-16LE,
 // `id \t panel \t name \t text key \t icon \t group \t index`). Only the ids
-// whose wire path already exists are named here; the file's own text key is
+// whose path already exists are named here; the file's own text key is
 // quoted beside each so a reader can find the row.
 //
-// The four below need **no new opcode**: two are discriminants of the `0x7074`
-// envelope the combat plugin already sends, two go to senders the target menu
-// already owns. Everything else in the window needs its own opcode first —
-// `0x704F` (1000 sit/stand, 1001 walk/run) and `0x3091` (4000..=4006 emotes)
-// are the two next wire slices, each with its own ledger row.
+// Each goes where its verb already goes elsewhere in the HUD — combat's
+// orders, a target-menu sender, an under-bar menu row. The window sends only
+// the self requests (`0x704F`, and `0x3091` for the emotes) itself, because
+// nothing else sends them.
 
 /// 1000 `UIIT_CTL_TOG_SIT_STAND_TT` — `0x704F`, a true toggle: the same byte
 /// goes out for sitting down and for getting up, so it needs no local state.
@@ -376,6 +377,22 @@ pub const ACTION_COMMAND_PARTY: u32 = 1007;
 /// [`PickupOrder`].
 pub const ACTION_COMMAND_AUTO_GET: u32 = 1008;
 
+// The five below open what an under-bar menu row opens, so each runs that row
+// (`SlotVerb::MenuRow`). The data ties them: 1009, 1014 and 1016 carry the
+// row's own text key, 1010 and 1012 the key their window is titled with
+// (`alchemy/ui.rs`, `autopotion/ui.rs`).
+
+/// 1009 `UIIT_CTL_OPEN_STORE` — the Stall row.
+pub const ACTION_COMMAND_STALL: u32 = 1009;
+/// 1010 `UIIT_CTL_ALCHEMYBOX` — the Alchemy row.
+pub const ACTION_COMMAND_ALCHEMY: u32 = 1010;
+/// 1012 `UIIT_PAG_MACROPOTION_TITLE` — the Auto Potion row.
+pub const ACTION_COMMAND_AUTO_POTION: u32 = 1012;
+/// 1014 `UIIT_CTL_TC_SHORTKEY_L` — the Academy row.
+pub const ACTION_COMMAND_ACADEMY: u32 = 1014;
+/// 1016 `UIIT_STT_TOGGLE_PARTYMATCH` — the Party Matching row.
+pub const ACTION_COMMAND_PARTY_MATCHING: u32 = 1016;
+
 /// What a slot does when it is clicked, as a function of its command id.
 ///
 /// Total on purpose: an id with no wire path is [`SlotVerb::Unwired`] and
@@ -387,6 +404,8 @@ pub enum SlotVerb {
     OnTarget(TargetVerb),
     /// Acts on the player's own character, so it needs no selection.
     OnSelf(SelfVerb),
+    /// Does what the under-bar menu row with this id does.
+    MenuRow(u32),
     /// Named by `actionwnddata.txt`, no wire path yet.
     Unwired,
 }
@@ -430,6 +449,11 @@ pub fn verb_for(command_id: u32) -> SlotVerb {
         ACTION_COMMAND_EXCHANGE => SlotVerb::OnTarget(TargetVerb::Exchange),
         ACTION_COMMAND_PARTY => SlotVerb::OnTarget(TargetVerb::Party),
         ACTION_COMMAND_AUTO_GET => SlotVerb::OnTarget(TargetVerb::Pickup),
+        ACTION_COMMAND_STALL => SlotVerb::MenuRow(STALL_ROW_ID),
+        ACTION_COMMAND_ALCHEMY => SlotVerb::MenuRow(ALCHEMY_ROW_ID),
+        ACTION_COMMAND_AUTO_POTION => SlotVerb::MenuRow(AUTO_POTION_ROW_ID),
+        ACTION_COMMAND_ACADEMY => SlotVerb::MenuRow(ACADEMY_ROW_ID),
+        ACTION_COMMAND_PARTY_MATCHING => SlotVerb::MenuRow(PARTY_MATCH_ROW_ID),
         // 4000..=4006. The code is not the slot order, so it comes from
         // `EMOTE_CODES` rather than from arithmetic on the id.
         id => match EmoteRequest::for_command(id) {
@@ -469,7 +493,10 @@ fn send_self(
 /// points each.
 ///
 /// All five need the current selection, and a slot with none says so rather
-/// than sending a targetless packet the server would refuse.
+/// than sending a targetless packet the server would refuse. A slot for a
+/// window the under-bar menu opens runs that menu row
+/// ([`MenuRowTargets::activate`]), so the window has one toggle, not two.
+#[allow(clippy::too_many_arguments)]
 fn on_slot_activate(
     activate: On<Activate>,
     slots: Query<&ActionSlot>,
@@ -479,6 +506,7 @@ fn on_slot_activate(
     mut pickups: MessageWriter<PickupOrder>,
     player: Query<&RemoteMovement, With<Player>>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
+    mut menu: MenuRowTargets,
     mut unavailable: MessageWriter<Unavailable>,
 ) {
     let Ok(slot) = slots.get(activate.entity) else {
@@ -517,6 +545,10 @@ fn on_slot_activate(
             return;
         }
         SlotVerb::OnTarget(verb) => verb,
+        SlotVerb::MenuRow(row) => {
+            menu.activate(row);
+            return;
+        }
         SlotVerb::Unwired => {
             unavailable.write(Unavailable(slot.label.clone()));
             return;
@@ -682,7 +714,9 @@ pub fn cleanup_action_window(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::plugins::hud::alchemy::model::AlchemyState;
     use crate::plugins::hud::chat::model::ChatState;
+    use crate::plugins::hud::underbar::menu_popup::test::init_row_targets;
 
     /// The panel was built, registered and reachable only from the under-bar
     /// menu: `A` was offered by the Key Map tab and did nothing. It must also
@@ -834,6 +868,7 @@ mod test {
             .add_message::<AttackOrder>()
             .add_message::<PickupOrder>()
             .add_message::<Unavailable>();
+        init_row_targets(&mut app);
         let target = if select {
             let e = app.world_mut().spawn_empty().id();
             app.world_mut().resource_mut::<SelectedEntity>().0 = Some(e);
@@ -949,11 +984,16 @@ mod test {
             (1006, SlotVerb::OnTarget(TargetVerb::Exchange)),
             (1007, SlotVerb::OnTarget(TargetVerb::Party)),
             (1008, SlotVerb::OnTarget(TargetVerb::Pickup)),
+            // the menu rows by their authored `nifundermenubar.2dt` button ids
+            (1009, SlotVerb::MenuRow(117)),
+            (1010, SlotVerb::MenuRow(114)),
+            (1012, SlotVerb::MenuRow(123)),
+            (1014, SlotVerb::MenuRow(99)),
+            (1016, SlotVerb::MenuRow(93)),
         ] {
             assert_eq!(verb_for(id), want, "command {id}");
         }
-        // Authored rows with no wire path yet: 1000/1001 need 0x704F, the
-        // emotes 0x3091, 1004/1014..=1017 nothing we have sourced.
+        // The two self requests, both 0x704F.
         for (id, want) in [
             (1000, SlotVerb::OnSelf(SelfVerb::SitStand)),
             (1001, SlotVerb::OnSelf(SelfVerb::Gait)),
@@ -968,12 +1008,33 @@ mod test {
                 "command {id}"
             );
         }
-        // Authored rows with no sourced send path at all. 5000 sits in the
-        // emote panel but is the COS charm, not an emote — it must not pick up
-        // a neighbour's code.
-        for id in [1004, 1009, 1014, 1017, 5000] {
+        // Authored rows with no sourced path at all. 1017 opens the Free PvP
+        // panel (`UIIT_STT_FRPVP_ON`), and openroad's panel has no opener: it
+        // shows while the server's `free_pvp` byte says so (`free_pvp.rs`).
+        // 5000 sits in the emote panel but is the COS charm, not an emote — it
+        // must not pick up a neighbour's code.
+        for id in [1004, 1015, 1017, 5000] {
             assert_eq!(verb_for(id), SlotVerb::Unwired, "command {id}");
         }
+    }
+
+    /// A slot for a window the under-bar menu opens runs that menu row (the
+    /// row's own targets are pinned in `menu_popup`) and says nothing; a slot
+    /// with no path still says so.
+    #[test]
+    fn a_window_slot_runs_its_menu_row() {
+        let said = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Messages<Unavailable>>()
+                .drain()
+                .count()
+        };
+        let (mut app, _) = app_with_slot(ACTION_COMMAND_ALCHEMY, false);
+        assert!(app.world().resource::<AlchemyState>().open);
+        assert_eq!(said(&mut app), 0);
+        // 1004 "Auto Run"
+        let (mut app, _) = app_with_slot(1004, false);
+        assert_eq!(said(&mut app), 1);
     }
 }
 

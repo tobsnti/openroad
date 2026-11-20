@@ -118,16 +118,13 @@ impl ClientItemData {
 
 /// Lets the packets crate resolve an item's class from the client-held
 /// itemdata, so resolver-driven item parsing (inventory pickups) works with
-/// just the item table; [`TextdataResolver`] hands its item lookups here.
+/// just the item table; [`TextdataResolver`] hands its item lookups here. The
+/// mapping is sro_textdata's, the one the server uses too.
 impl packets::agent::character_data::ItemClassResolver for ClientItemData {
     fn item_class(&self, ref_id: u32) -> packets::agent::character_data::ItemClass {
         use packets::agent::character_data::ItemClass;
-        match self.get(&(ref_id as i32)).and_then(|i| i.type_ids()) {
-            Some((3, 1, _, _)) => ItemClass::Equipment,
-            Some((3, 2, tid3, tid4)) => ItemClass::Container { tid3, tid4 },
-            Some((3, 3, tid3, tid4)) => ItemClass::Expendable { tid3, tid4 },
-            _ => ItemClass::Unknown,
-        }
+        self.data()
+            .map_or(ItemClass::Unknown, |items| items.item_class(ref_id))
     }
 }
 
