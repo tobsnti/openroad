@@ -11,9 +11,8 @@
 //!     `when`-conditional field with no presence flag;
 //!   * `ChatUpdate`'s sender is a u32 unique id for proximity channels
 //!     (All/AllGM/NPC), a name string for the rest, and absent for notices —
-//!     modeled as a discriminated enum on the leading chat-type byte. Unknown
-//!     chat types fail decode with `UnknownVariation` and are logged/dropped
-//!     by the receive pipeline.
+//!     modeled as a discriminated enum on the leading chat-type byte. A chat
+//!     type without a variant of its own reads as `ChatUpdate::Other`.
 
 use crate::Message;
 
@@ -99,6 +98,16 @@ pub enum ChatUpdate {
     Npc { sender_id: u32, message: String },
     #[sro_packet(value = 16)]
     Academy { sender: String, message: String },
+    /// Every other chat type (8 and 14 among them): the original reads two
+    /// strings for every type but 1, 3, 7 and 13 `[V original handler]`, so
+    /// these are read whole, named like the two-string channels above. Which
+    /// channel such a type is, is [U].
+    #[sro_packet(other)]
+    Other {
+        kind: u8,
+        sender: String,
+        message: String,
+    },
 }
 
 /// 0x302D — server → client chat restriction (mute) for `seconds`.
@@ -233,10 +242,25 @@ mod tests {
         assert_eq!(back.as_ref(), body.as_slice());
     }
 
+    /// Chat types 8 and 14 have no variant of their own; the frame the
+    /// original reads for them, type + two strings, round-trips whole.
     #[test]
-    fn chat_update_unknown_type_fails_decode() {
-        let bytes = Bytes::from_static(&[0x2A, 0x00, 0x00]);
-        assert!(ChatUpdate::try_from(bytes).is_err());
+    fn chat_update_other_types_read_two_strings() {
+        for kind in [8, 14] {
+            let body = [kind, 0x03, 0x00, b'F', b'o', b'o', 0x02, 0x00, b'h', b'i'];
+            let update = ChatUpdate::try_from(Bytes::copy_from_slice(&body)).unwrap();
+            assert_eq!(
+                update,
+                ChatUpdate::Other {
+                    kind,
+                    sender: "Foo".to_string(),
+                    message: "hi".to_string(),
+                }
+            );
+            assert_eq!(update.byte_size(), body.len());
+            let back: Bytes = update.into();
+            assert_eq!(back.as_ref(), &body);
+        }
     }
 
     #[test]

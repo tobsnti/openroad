@@ -9,6 +9,8 @@
 //! id to compare against the local `NetworkId`, while party/guild/union/…
 //! give only a name, so those compare against the local `DisplayName`.
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use packets::agent::chat::{ChatResponse, ChatRestriction, ChatUpdate};
@@ -25,6 +27,7 @@ use super::model::{
 };
 
 /// Apply 0x3026: append incoming chat lines to the shared history.
+#[allow(clippy::too_many_arguments)]
 pub fn on_chat_update(
     mut reader: MessageReader<ChatUpdate>,
     entities: Res<NetworkEntities>,
@@ -33,6 +36,7 @@ pub fn on_chat_update(
     mut history: ResMut<ChatHistory>,
     mut state: ResMut<ChatState>,
     mut toasts: MessageWriter<ShowToast>,
+    mut unshown: Local<HashSet<u8>>,
 ) {
     for msg in reader.read() {
         // raw-variant log to diagnose server-side channel quirks (e.g. local
@@ -112,6 +116,17 @@ pub fn on_chat_update(
             ChatUpdate::Union { sender, message } => named(ChatLineKind::Union, sender, message),
             ChatUpdate::Academy { sender, message } => {
                 named(ChatLineKind::Academy, sender, message)
+            }
+            ChatUpdate::Other { kind, .. } => {
+                // Read whole, but which channel this type is, is [U], so it is
+                // not shown: the first of each type warns, repeats go to
+                // debug, neither with the text.
+                if unshown.insert(*kind) {
+                    warn!("chat: 0x3026 type {kind} has no channel here, not shown; repeats log at debug");
+                } else {
+                    debug!("chat: 0x3026 type {kind} not shown");
+                }
+                continue;
             }
         };
         history.push(line);
