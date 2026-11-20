@@ -11,6 +11,7 @@
 
 mod chat;
 pub mod clock;
+pub mod combat;
 mod consignment;
 pub mod gateway;
 pub mod handshake;

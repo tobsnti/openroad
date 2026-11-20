@@ -20,6 +20,7 @@ use packets::region::is_dungeon;
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
+use crate::combat::{self, Attack};
 use crate::monster::{self, Monster};
 use crate::movement;
 use crate::npc::Npc;
@@ -79,6 +80,7 @@ pub struct Player {
     pub walk_speed: f32,
     pub run_speed: f32,
     pub walk: Option<Walk>,
+    pub attack: Option<Attack>,
 }
 
 /// A walk in world coordinates (it may cross regions): from where, to where,
@@ -132,6 +134,8 @@ struct Session {
     known: BTreeSet<u32>,
     /// The account's characters, from its ticket on.
     characters: Vec<Character>,
+    /// The entity its client selected last.
+    selected: Option<u32>,
 }
 
 /// The original client sends the agent login right after the handshake, 0.05
@@ -161,8 +165,11 @@ pub struct World {
     last_uid: u32,
     step: u64,
     events: Vec<Event>,
-    /// The world's chance: the monsters' wander steps and rests.
+    /// The world's chance: the monsters' wander steps and rests, the damage.
     chance: fastrand::Rng,
+    /// The last action instance (0xB070), counted up per swing as the vSRO
+    /// server does [V capture, peer vSRO: 5853 to 5899 over 47 swings].
+    last_action: u32,
 }
 
 impl World {
@@ -189,6 +196,7 @@ impl World {
             step: 0,
             events: Vec::new(),
             chance: fastrand::Rng::with_seed(seed),
+            last_action: 0,
         };
         for row in placed {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
@@ -294,6 +302,34 @@ impl World {
         &mut self.chance
     }
 
+    pub(crate) fn next_action(&mut self) -> u32 {
+        self.last_action += 1;
+        self.last_action
+    }
+
+    /// Whether a character attacks the monster `uid`.
+    pub(crate) fn attacked(&self, uid: u32) -> bool {
+        let at = |p: &Player| p.attack.is_some_and(|a| a.target == uid);
+        self.players.values().any(at)
+    }
+
+    /// `session`'s client selected `uid`.
+    pub(crate) fn select(&mut self, session: SessionId, uid: u32) {
+        if let Some(s) = self.sessions.get_mut(&session) {
+            s.selected = Some(uid);
+        }
+    }
+
+    /// The sessions whose clients have `uid` selected.
+    pub(crate) fn selecting(&self, uid: u32) -> Vec<SessionId> {
+        let selects = |(_, s): &(&SessionId, &Session)| s.selected == Some(uid);
+        self.sessions
+            .iter()
+            .filter(selects)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     pub fn monsters(&self) -> impl Iterator<Item = (u32, &Monster)> {
         self.monsters.iter().map(|(uid, monster)| (*uid, monster))
     }
@@ -348,6 +384,7 @@ impl World {
             since: self.step,
             known: BTreeSet::new(),
             characters: Vec::new(),
+            selected: None,
         };
         self.sessions.insert(id, session);
         id
@@ -566,6 +603,7 @@ impl World {
         for (uid, from) in crossed {
             sight::monster_crossed(self, uid, from);
         }
+        combat::step(self);
         if fires(self.step, AI_STEPS) {
             monster::think(self);
         }

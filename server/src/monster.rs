@@ -144,7 +144,8 @@ pub(crate) fn think(world: &mut World) {
             .monster(monster.ref_id)
             .map_or(0.0, |d| d.walk_speed);
         let idle = monster.walk.is_none() && monster.rest_until <= now;
-        if !idle || speed <= 0.0 || is_dungeon(monster.position.region) {
+        let still = monster.hp == 0 || world.attacked(uid);
+        if !idle || still || speed <= 0.0 || is_dungeon(monster.position.region) {
             continue;
         }
         let to = wander_step(monster.position, monster.home, world.chance());

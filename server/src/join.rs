@@ -84,6 +84,7 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
         walk_speed: speeds.walk_speed,
         run_speed: speeds.run_speed,
         walk: None,
+        attack: None,
     };
     world.add_player(uid, player);
     world.enter(session, Phase::Joining { account, uid });
