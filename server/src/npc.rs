@@ -7,9 +7,9 @@
 //! 12,110 are monsters and 12 name models that are not in the client's data
 //! (the user's characterdata). The original client reads a monster's record
 //! with more bytes [V original handler], and what is not in the client's data
-//! is not sent to it. So only NPC models (`RefData::is_npc`) are placed; the
-//! other rows are counted and skipped, and monsters come with their own
-//! system.
+//! is not sent to it. So only NPC models (`RefData::is_npc`) are placed here;
+//! monsters stand with their own record ([`crate::monster`]), and the rest is
+//! counted and skipped.
 
 use bytes::{BufMut, Bytes, BytesMut};
 use packets::agent::character_data::EntityState;
@@ -17,9 +17,9 @@ use packets::agent::entity_spawn::{Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::{CloseTalkResponse, SelectEntityResponse, TalkResponse};
 use packets::Packet;
 
-use crate::sight;
 use crate::store::Position;
 use crate::world::{Phase, Reason, SessionId, World};
+use crate::{monster, sight};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Npc {
@@ -90,12 +90,18 @@ pub(crate) fn entity(uid: u32, npc: &Npc) -> SpawnedEntity {
 /// original client reads for one [V original handler]: no vital mask, the
 /// NPC's options, the NPC byte 0, and for an NPC of a listed fortress two
 /// more bytes, 0, as the vSRO server sent for the Jangan smith
-/// [V capture, peer vSRO]. Selecting anything else is not handled yet.
+/// [V capture, peer vSRO]. A monster the client was shown answers with its HP
+/// ([`monster::selection`]). Selecting anything else is not handled yet.
 pub(crate) fn select(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
     let Packet::SelectEntityRequest(request) = packet else {
         unreachable!("0x7045 decodes to SelectEntityRequest");
     };
     let uid = request.unique_id;
+    let monster = world.monster(uid).filter(|_| sees(world, session, uid));
+    if let Some(answer) = monster.map(|m| monster::selection(uid, m)) {
+        world.send(session, Packet::SelectEntityResponse(answer));
+        return Ok(());
+    }
     let ref_id = shown(world, session, uid).ok_or(Reason::NotHandled)?;
     let options = options(ref_id);
     let mut tail = BytesMut::new();
@@ -159,9 +165,11 @@ pub(crate) fn close(world: &mut World, session: SessionId, packet: Packet) -> Re
 /// The model of NPC `uid`, if the client of `session` is in the game and
 /// was shown it.
 fn shown(world: &World, session: SessionId, uid: u32) -> Option<u32> {
-    let Some(Phase::Game { .. }) = world.phase(session) else {
-        return None;
-    };
     let npc = world.npc(uid)?;
-    world.knows(session, uid).then_some(npc.ref_id)
+    sees(world, session, uid).then_some(npc.ref_id)
+}
+
+/// Whether the client of `session` is in the game and was shown `uid`.
+fn sees(world: &World, session: SessionId, uid: u32) -> bool {
+    matches!(world.phase(session), Some(Phase::Game { .. })) && world.knows(session, uid)
 }

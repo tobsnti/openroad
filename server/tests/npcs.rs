@@ -1,10 +1,11 @@
-//! NPCs in-process: placed from the reference data, seen in groups by the
-//! characters around them.
+//! NPCs and monsters in-process: placed from the reference data, seen in
+//! groups by the characters around them.
 
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::entity_spawn::{parse_group_spawn, SpawnKind};
+use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
+use packets::agent::entity_spawn::{parse_group_spawn, Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::{
     AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest,
     SelectEntityRequest, TalkRequest,
@@ -13,31 +14,30 @@ use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position, Store};
 use server::world::{Phase, SessionId, World};
+use sro_textdata::characterdata::CharacterData;
+use sro_textdata::spawn::SpawnTables;
 
 const REGION: u16 = 25000;
 
 /// Rows as `npcpos.txt` has them: the smith in the start region (4 options),
 /// a warehouse one region east (2 options), an NPC without options two
-/// regions east, one in a dungeon; and, not placed, a monster in the start
-/// region and a model characterdata does not have.
+/// regions east, one in a dungeon; and, not placed, a model characterdata
+/// does not have. Monsters have tests of their own (`tests/monsters.rs`).
 const NPCPOS: &str = "2003\t25000\t332.73001\t0.0\t1406.7\r\n\
                       2013\t25001\t980.79999\t-32.43\t989.13\r\n\
                       2028\t25002\t100.0\t0.0\t100.0\r\n\
                       15004\t-32764\t100.0\t0.0\t200.0\r\n\
-                      1933\t25000\t900.0\t0.0\t1400.0\r\n\
                       9252\t25000\t950.0\t0.0\t1400.0\r\n";
 
 /// The models' characterdata rows as far as the server reads them: the type
-/// ids, NPC (1/2/2) for the four NPCs and monster (1/2/1) for 1933, and the
-/// fortress column, which names Jangan for the smith only; and Jangan's row
-/// of `siegefortress.txt`.
+/// ids, NPC (1/2/2) for the four NPCs, and the fortress column, which names
+/// Jangan for the smith only; and Jangan's row of `siegefortress.txt`.
 fn model_rows(refdata: &mut RefData) {
     for (ref_id, tid3, fortress) in [
         ("2003", "2", "FORTRESS_JANGAN"),
         ("2013", "2", "xxx"),
         ("2028", "2", "xxx"),
         ("15004", "2", "xxx"),
-        ("1933", "1", "xxx"),
     ] {
         let mut row = vec![String::from("0"); 60];
         (row[1], row[9], row[10], row[11], row[55]) = (
@@ -84,15 +84,26 @@ fn hero() -> Character {
 }
 
 fn world() -> (World, Arc<MemoryStore>) {
+    world_with(refdata())
+}
+
+fn world_with(refdata: RefData) -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("a", "a", vec![hero()]);
     let store = Arc::new(store);
-    (World::new(store.clone(), refdata()), store)
+    (World::new(store.clone(), refdata), store)
 }
 
-/// The model 1907, a player's (type ids 1/1) with its walk and run speeds,
-/// the rows of [`model_rows`] and the NPCs of [`NPCPOS`].
+/// The hero's model, the rows of [`model_rows`] and the NPCs of [`NPCPOS`].
 fn refdata() -> RefData {
+    let mut refdata = hero_model();
+    model_rows(&mut refdata);
+    refdata.add_npcs(NPCPOS);
+    refdata
+}
+
+/// The model 1907, a player's (type ids 1/1) with its walk and run speeds.
+fn hero_model() -> RefData {
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
     (row[1], row[9], row[10], row[46], row[47]) = (
@@ -103,9 +114,40 @@ fn refdata() -> RefData {
         "50".into(),
     );
     refdata.add_characters(&row.join("\t"));
-    model_rows(&mut refdata);
-    refdata.add_npcs(NPCPOS);
     refdata
+}
+
+/// Monster rows as `npcpos.txt` has them: a Mangnyang and a Tiger Woman in
+/// the start region, a Mangnyang two regions east.
+const MONSTERPOS: &str = "1933\t25000\t900.0\t0.0\t1400.0\r\n\
+                          1954\t25000\t1000.0\t0.0\t1500.0\r\n\
+                          1933\t25002\t100.0\t0.0\t100.0\r\n";
+
+/// The monsters' characterdata rows with the values of the user's data:
+/// MOB_CH_MANGNYANG, a normal monster (1/2/1, rarity 0, speeds 8 and 22,
+/// 54 HP), and MOB_CH_TIGERWOMAN, a unique (rarity 3, speeds 20 and 90,
+/// 598720 HP).
+fn monster_rows() -> String {
+    let row = |id: &str, rarity: &str, (walk, run): (&str, &str), hp: &str| {
+        let mut row = vec![String::from("0"); 60];
+        (row[1], row[9], row[10], row[11], row[12]) =
+            (id.into(), "1".into(), "2".into(), "1".into(), "1".into());
+        (row[15], row[46], row[47], row[59]) = (rarity.into(), walk.into(), run.into(), hp.into());
+        row.join("\t")
+    };
+    let rows = [
+        row("1933", "0", ("8", "22"), "54"),
+        row("1954", "3", ("20", "90"), "598720"),
+    ];
+    rows.join("\n")
+}
+
+/// The hero's model and the monsters of [`MONSTERPOS`].
+fn monster_world() -> (World, Arc<MemoryStore>) {
+    let mut refdata = hero_model();
+    refdata.add_characters(&monster_rows());
+    refdata.add_npcs(MONSTERPOS);
+    world_with(refdata)
 }
 
 fn send(world: &mut World, session: SessionId, packet: Packet) {
@@ -190,12 +232,12 @@ fn frames(world: &mut World, session: SessionId) -> Vec<(u16, Bytes)> {
         .collect()
 }
 
-/// Only NPC models are placed: the monster and the model not in the client's
-/// data are counted and skipped.
+/// NPC models are placed as NPCs; the model not in the client's data is
+/// counted and skipped.
 #[test]
 fn npcs_stand_where_the_data_puts_them() {
     let (world, _) = world();
-    assert_eq!(world.skipped_npc_rows(), 2);
+    assert_eq!(world.skipped_npc_rows(), 1);
     let placed: Vec<(u32, u16, f32)> = world
         .npcs()
         .map(|(_, n)| (n.ref_id, n.position.region, n.position.x))
@@ -271,8 +313,9 @@ fn walking_brings_npcs_into_sight_and_takes_them_back() {
 }
 
 /// With the user's data (OPENROAD_TEXTDATA_DIR): Hero enters at the bench's
-/// start point and is shown the NPCs around Jangan in one group. Run it with
-/// OPENROAD_WIRE_LOG to have the reading contract check the real records.
+/// start point and is shown the NPCs and monsters around Jangan in one group.
+/// Run it with OPENROAD_WIRE_LOG to have the reading contract check the real
+/// records.
 #[test]
 #[ignore = "needs the user's data: OPENROAD_TEXTDATA_DIR=<textdata> cargo test -p server --test npcs -- --ignored"]
 fn the_users_npcs_around_the_start_point_come_in_one_group() {
@@ -283,9 +326,27 @@ fn the_users_npcs_around_the_start_point_come_in_one_group() {
     let store = Arc::new(store);
     let mut shard = (World::new(store.clone(), refdata), store);
     let (s, _) = enter(&mut shard);
-    let (kind, uids) = group(&frames(&mut shard.0, s));
-    assert_eq!(kind, 1);
-    assert!(uids.iter().all(|uid| shard.0.npc(*uid).is_some()));
+    // The group holds the monsters south of the town too, read as the client
+    // reads them with the user's tables.
+    let seen = frames(&mut shard.0, s);
+    let count = u16::from_le_bytes([seen[0].1[1], seen[0].1[2]]);
+    let tables = RefData::load(std::path::Path::new(&textdata)).expect("the textdata loads");
+    let parsed = parse_group_spawn(&seen[1].1, true, count, &tables.spawn_tables());
+    assert_eq!(
+        (parsed.end, parsed.spawns.len()),
+        (seen[1].1.len(), count as usize)
+    );
+    let world = &shard.0;
+    let npcs = parsed
+        .spawns
+        .iter()
+        .filter(|e| world.npc(e.unique_id).is_some());
+    let monsters = parsed
+        .spawns
+        .iter()
+        .filter(|e| world.monster(e.unique_id).is_some());
+    let (npcs, monsters) = (npcs.count(), monsters.count());
+    assert!(npcs > 0 && monsters > 0 && npcs + monsters == count as usize);
     // The smith of Jangan, selected, talked to and left, with the user's
     // characterdata and siegefortress.txt deciding the fortress bytes.
     let smith = uid_of(&shard.0, 2003);
@@ -347,4 +408,136 @@ fn an_npc_is_selected_talked_to_and_closed() {
     assert_eq!(ask(world, talk(uid_of(world, 2028), 1)), [refused()]);
     let close = Packet::CloseTalkRequest(CloseTalkRequest { unique_id: smith });
     assert_eq!(ask(world, close), [(0xB04B, Bytes::from_static(&[0x01]))]);
+}
+
+/// One row is one monster, at the HP of its characterdata row.
+#[test]
+fn monsters_stand_where_the_data_puts_them() {
+    let (world, _) = monster_world();
+    let placed: Vec<(u32, u16, f32, u32)> = world
+        .monsters()
+        .map(|(_, m)| (m.ref_id, m.position.region, m.position.x, m.hp))
+        .collect();
+    let expected = [
+        (1933, 25000, 900.0, 54),
+        (1954, 25000, 1000.0, 598720),
+        (1933, 25002, 100.0, 54),
+    ];
+    assert_eq!(
+        (placed.as_slice(), world.skipped_npc_rows()),
+        (&expected[..], 0)
+    );
+}
+
+/// The monsters around the entering character come in one group, read as the
+/// client reads it, with tables of its own: standing, alive, the speeds and
+/// the rarity of their rows, option 5.
+#[test]
+fn the_monsters_around_come_in_one_group_as_the_client_reads_it() {
+    let mut shard = monster_world();
+    let (s, _) = enter(&mut shard);
+    let near: Vec<(u32, u32)> = (shard.0.monsters())
+        .filter(|(_, m)| m.position.region == REGION)
+        .map(|(uid, m)| (uid, m.ref_id))
+        .collect();
+    let seen = frames(&mut shard.0, s);
+    let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
+    assert_eq!(codes, [0x3017, 0x3019, 0x3018]);
+    let characters = CharacterData::parse_shard(&monster_rows());
+    let client = SpawnTables {
+        characters: Some(&characters),
+        items: None,
+        gates: None,
+    };
+    let parsed = parse_group_spawn(&seen[1].1, true, 2, &client);
+    assert_eq!(parsed.end, seen[1].1.len());
+    let monster = |(unique_id, ref_id), (x, z), rarity, (walk_speed, run_speed)| SpawnedEntity {
+        ref_id,
+        unique_id,
+        position: SpawnPosition {
+            region: REGION,
+            x,
+            y: 0.0,
+            z,
+            heading: 0,
+        },
+        name: None,
+        guild: None,
+        movement: Some(EntityMovement {
+            has_destination: false,
+            move_type: 1,
+            source: Some(0),
+            angle: Some(0),
+            ..Default::default()
+        }),
+        state: Some(EntityState {
+            life_state: 1,
+            unk: 0,
+            motion_state: 0,
+            body_state: 0,
+            walk_speed,
+            run_speed,
+            hwan_speed: 100.0,
+            buffs: Vec::new(),
+        }),
+        spawn_rarity: Some(rarity),
+        talk_options: vec![5],
+        interaction: Some(Interaction {
+            flags: 2,
+            ..Interaction::default()
+        }),
+        kind: SpawnKind::Monster { extra: None },
+    };
+    let expected = vec![
+        monster(near[0], (900.0, 1400.0), 0, (8.0, 22.0)),
+        monster(near[1], (1000.0, 1500.0), 3, (20.0, 90.0)),
+    ];
+    assert_eq!(parsed.spawns, expected);
+}
+
+/// Selecting a monster the client was shown answers its HP, also for one the
+/// bench placed; a monster the client was not shown is not answered, and a
+/// model that is no monster's is not placed.
+#[test]
+fn a_monster_is_selected_with_its_hp() {
+    let mut shard = monster_world();
+    let at = Position {
+        region: REGION,
+        x: 969.0,
+        y: 0.0,
+        z: 369.0,
+        heading: 0,
+    };
+    let placed = shard.0.place_monster(1933, at).unwrap();
+    assert_eq!(shard.0.place_monster(1907, at), None);
+    let (s, _) = enter(&mut shard);
+    frames(&mut shard.0, s);
+    let at_x = |x: f32| {
+        shard
+            .0
+            .monsters()
+            .find(|(_, m)| m.position.x == x)
+            .unwrap()
+            .0
+    };
+    let (mangnyang, far) = (at_x(900.0), at_x(100.0));
+    let mut select = |uid: u32| {
+        let select = SelectEntityRequest { unique_id: uid };
+        send(&mut shard.0, s, Packet::SelectEntityRequest(select));
+        frames(&mut shard.0, s)
+    };
+    let selected = |uid: u32| {
+        let body = [
+            &[1][..],
+            &uid.to_le_bytes(),
+            &[1],
+            &54u32.to_le_bytes(),
+            &[1, 5],
+        ]
+        .concat();
+        vec![(0xB045, Bytes::from(body))]
+    };
+    assert_eq!(select(mangnyang), selected(mangnyang));
+    assert_eq!(select(placed), selected(placed));
+    assert_eq!(select(far), []);
 }

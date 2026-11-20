@@ -18,6 +18,7 @@ use packets::judge::{decode_exact, Verdict};
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
+use crate::monster::Monster;
 use crate::movement;
 use crate::npc::Npc;
 use crate::outbox::{Frame, Outbox};
@@ -144,9 +145,12 @@ pub struct World {
     players: BTreeMap<u32, Player>,
     /// NPCs by unique id, placed from the reference data at the start.
     npcs: BTreeMap<u32, Npc>,
-    /// The NPCs of each region, for sight.
-    npcs_in: HashMap<u16, Vec<u32>>,
-    /// Rows of `npcpos.txt` that name no NPC model (`crate::npc`).
+    /// Monsters by unique id, placed from the reference data and the bench's
+    /// fixture at the start.
+    monsters: BTreeMap<u32, Monster>,
+    /// The NPCs and monsters of each region, for sight.
+    placed_in: HashMap<u16, Vec<u32>>,
+    /// Rows of `npcpos.txt` that name neither an NPC nor a monster model.
     skipped_npc_rows: usize,
     /// What the store has to write, in order (`take_commits`).
     commits: Vec<Changes>,
@@ -166,7 +170,8 @@ impl World {
             sessions: BTreeMap::new(),
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
-            npcs_in: HashMap::new(),
+            monsters: BTreeMap::new(),
+            placed_in: HashMap::new(),
             skipped_npc_rows: 0,
             commits: Vec::new(),
             tickets: HashMap::new(),
@@ -179,10 +184,6 @@ impl World {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
                 continue;
             };
-            if !world.refdata.is_npc(ref_id) {
-                world.skipped_npc_rows += 1;
-                continue;
-            }
             let position = Position {
                 region: row.region,
                 x: row.x,
@@ -190,16 +191,46 @@ impl World {
                 z: row.z,
                 heading: 0,
             };
-            let uid = world.next_uid();
-            world.npcs_in.entry(row.region).or_default().push(uid);
-            world.npcs.insert(uid, Npc { ref_id, position });
+            if world.refdata.is_npc(ref_id) {
+                let uid = world.next_uid();
+                world.placed_in.entry(row.region).or_default().push(uid);
+                world.npcs.insert(uid, Npc { ref_id, position });
+            } else if world.place_monster(ref_id, position).is_none() {
+                world.skipped_npc_rows += 1;
+            }
         }
         world
+    }
+
+    /// Places a monster of model `ref_id` at `position`, at the full HP of its
+    /// characterdata row, as the original does; its unique id, or `None` when
+    /// `ref_id` is no monster model.
+    pub fn place_monster(&mut self, ref_id: u32, position: Position) -> Option<u32> {
+        let hp = self.refdata.monster(ref_id)?.max_hp;
+        let uid = self.next_uid();
+        self.placed_in.entry(position.region).or_default().push(uid);
+        self.monsters.insert(
+            uid,
+            Monster {
+                ref_id,
+                position,
+                hp,
+            },
+        );
+        Some(uid)
     }
 
     /// Rows of `npcpos.txt` that were not placed (`crate::npc`).
     pub fn skipped_npc_rows(&self) -> usize {
         self.skipped_npc_rows
+    }
+
+    pub fn monster(&self, uid: u32) -> Option<&Monster> {
+        self.monsters.get(&uid)
+    }
+
+    pub fn monsters(&self) -> impl Iterator<Item = (u32, &Monster)> {
+        self.monsters.iter().map(|(uid, monster)| (*uid, monster))
     }
 
     pub fn npc(&self, uid: u32) -> Option<&Npc> {
@@ -210,9 +241,9 @@ impl World {
         self.npcs.iter().map(|(uid, npc)| (*uid, npc))
     }
 
-    /// The NPCs standing in `region`.
-    pub(crate) fn npcs_in(&self, region: u16) -> &[u32] {
-        self.npcs_in.get(&region).map_or(&[], Vec::as_slice)
+    /// The NPCs and monsters standing in `region`.
+    pub(crate) fn placed_in(&self, region: u16) -> &[u32] {
+        self.placed_in.get(&region).map_or(&[], Vec::as_slice)
     }
 
     /// Let `account` in after the gateway checked its password: the returned
@@ -398,12 +429,12 @@ impl World {
         self.send(session, Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
     }
 
-    /// The entities `session`'s client was shown that are NPCs.
-    pub(crate) fn shown_npcs(&self, session: SessionId) -> Vec<u32> {
+    /// The entities `session`'s client was shown that are NPCs or monsters.
+    pub(crate) fn shown_placed(&self, session: SessionId) -> Vec<u32> {
         self.sessions.get(&session).map_or(Vec::new(), |s| {
             s.known
                 .iter()
-                .filter(|uid| self.npcs.contains_key(uid))
+                .filter(|uid| self.npcs.contains_key(uid) || self.monsters.contains_key(uid))
                 .copied()
                 .collect()
         })
