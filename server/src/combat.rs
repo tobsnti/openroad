@@ -4,27 +4,29 @@
 //! request]. A swing lasts its basic attack's Action_ActionDuration and three
 //! steps more, and the next one starts when it ends [V capture, peer vSRO: the
 //! median time between two swings is that duration plus 94 to 118 ms, for the
-//! fist, the sword and the spear].
+//! fist, the sword and the spear]. A request while a swing runs waits behind
+//! it: 0xB074 `01 02`, then `02 01` when the swing ends [V capture, peer vSRO:
+//! `02 01` 1.07 to 1.57 s after the last sword swing, 65 times].
 //!
-//! A swing waits until the attacker is in reach. The monster stands while it
-//! is attacked and does not hit back yet (decision 0020, E4); what a hit deals
-//! is [`RefData::basic_attack`]'s.
+//! The attacker first walks into reach. The monster stands while it is
+//! attacked and does not hit back yet (decision 0020, E4); what a hit deals is
+//! [`RefData::basic_attack`]'s.
 //!
 //! [`RefData::basic_attack`]: crate::refdata::RefData::basic_attack
 
 use packets::agent::ingame::{
     ActionCommand, ActionKind, ActionTarget, DamageContent, DamageValue, EntityBarsUpdate,
-    EntityStateUpdate, HitEffect, ObjectActionRequest, ObjectActionResponse, ObjectActionUpdate,
-    PerEntityDamage, SkillPartDamage, BARS_FLAG_BAD_STATUS, BARS_FLAG_HP, BARS_SOURCE_DAMAGE,
-    LIFE_STATE_DEAD, STATE_KIND_LIFE,
+    EntityStateUpdate, HitEffect, MovementResponse, ObjectActionRequest, ObjectActionResponse,
+    ObjectActionUpdate, PerEntityDamage, SkillPartDamage, BARS_FLAG_BAD_STATUS, BARS_FLAG_HP,
+    BARS_SOURCE_DAMAGE, LIFE_STATE_DEAD, STATE_KIND_LIFE,
 };
 use packets::Packet;
 
-use crate::movement::in_world;
+use crate::movement::{in_region, in_world};
 use crate::refdata::BasicAttack;
 use crate::store::Position;
 use crate::tick::STEPS_PER_SECOND;
-use crate::world::{Phase, Point, Reason, SessionId, World};
+use crate::world::{Phase, Point, Reason, SessionId, Walk, World};
 
 /// A character's attack on a monster.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,9 +54,10 @@ const BODIES: f32 = 10.0;
 const SWING_WORD: u16 = 0x3002;
 
 /// 0x7074. Attacking a living monster the client knows is answered `01 01`
-/// and runs; a cancel ends the attack with `02 00`, twice while a swing runs
-/// [V capture, peer vSRO: 4 of 4 cancels during a swing, 3 of 3 outside one].
-/// A request while an attack runs, and other actions, are not handled yet.
+/// and runs, or waits as `01 02` behind a running attack; a cancel ends the
+/// attack with `02 00`, twice while a swing runs [V capture, peer vSRO: 4 of
+/// 4 cancels during a swing, 3 of 3 outside one]. Other actions are not
+/// handled yet.
 pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
     let Packet::ObjectActionRequest(request) = packet else {
         unreachable!("0x7074 decodes to ObjectActionRequest");
@@ -74,14 +77,17 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
             let player = world
                 .player_mut(uid)
                 .expect("a character in the game has a player");
-            if player.attack.is_some() {
-                return Err(Reason::NotHandled);
-            }
-            player.attack = Some(Attack {
-                target,
-                swing_ends: None,
-            });
-            vec![ObjectActionResponse::Started { queue_len: 1 }]
+            let queue_len = if player.attack.is_some() {
+                player.queued = Some(target);
+                2
+            } else {
+                player.attack = Some(Attack {
+                    target,
+                    swing_ends: None,
+                });
+                1
+            };
+            vec![ObjectActionResponse::Started { queue_len }]
         }
         ObjectActionRequest::Cancel => {
             let player = world
@@ -92,6 +98,7 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
                 .take()
                 .and_then(|a| a.swing_ends)
                 .is_some_and(|end| now < end);
+            player.queued = None;
             let ended = ObjectActionResponse::Ended { queue_len: 0 };
             vec![ended; 1 + usize::from(swinging)]
         }
@@ -103,8 +110,8 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
     Ok(())
 }
 
-/// Each step: every attack whose swing has ended swings again when in reach,
-/// or ends with its target's death.
+/// Each step: every attack whose swing has ended swings again, walks on into
+/// reach, takes up the waiting request, or ends with its target's death.
 pub(crate) fn step(world: &mut World) {
     let attackers: Vec<u32> = world
         .players()
@@ -118,16 +125,28 @@ pub(crate) fn step(world: &mut World) {
 
 fn attack(world: &mut World, uid: u32) {
     let now = world.steps();
-    let player = world.player(uid).expect("an attacker is a player");
-    let (session, here, Some(attack)) = (player.session, player.character.position, player.attack)
-    else {
+    let player = world.player_mut(uid).expect("an attacker is a player");
+    let (session, Some(attack)) = (player.session, player.attack) else {
         return;
     };
     if attack.swing_ends.is_some_and(|end| now < end) {
         return;
     }
+    // A request that waited behind the swing starts now (`02 01`).
+    let target = match attack.swing_ends.and_then(|_| player.queued.take()) {
+        Some(next) => {
+            player.attack = Some(Attack {
+                target: next,
+                swing_ends: None,
+            });
+            let started = ObjectActionResponse::Ended { queue_len: 1 };
+            world.send(session, Packet::ObjectActionResponse(started));
+            next
+        }
+        None => attack.target,
+    };
     let at = world
-        .monster(attack.target)
+        .monster(target)
         .filter(|m| m.hp > 0)
         .map(|m| m.position);
     let basic = player_weapon(world, uid).and_then(|w| world.refdata().basic_attack(w));
@@ -140,8 +159,13 @@ fn attack(world: &mut World, uid: u32) {
         world.send(session, Packet::ObjectActionResponse(ended));
         return;
     };
-    if distance(here, at) <= basic.reach + BODIES {
-        swing(world, uid, attack.target, basic);
+    let player = world.player(uid).expect("an attacker is a player");
+    let (here, walking) = (player.character.position, player.walk.is_some());
+    let reach = basic.reach + BODIES;
+    if distance(here, at) <= reach {
+        swing(world, uid, target, basic);
+    } else if !walking {
+        approach(world, uid, ground(here), ground(at), reach);
     }
 }
 
@@ -155,20 +179,52 @@ fn player_weapon(world: &World, uid: u32) -> Option<Option<u32>> {
     )
 }
 
+/// A position in world coordinates.
+fn ground(p: Position) -> Point {
+    in_world(
+        p.region,
+        Point {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        },
+    )
+}
+
 /// The distance between two positions on the ground, across regions.
 fn distance(a: Position, b: Position) -> f32 {
-    let point = |p: Position| {
-        in_world(
-            p.region,
-            Point {
-                x: p.x,
-                y: p.y,
-                z: p.z,
-            },
-        )
-    };
-    let (a, b) = (point(a), point(b));
+    let (a, b) = (ground(a), ground(b));
     (b.x - a.x).hypot(b.z - a.z)
+}
+
+/// Walks the attacker straight toward its target until it is a unit inside
+/// reach; the clients that know it are told where, as for a requested walk.
+fn approach(world: &mut World, uid: u32, here: Point, there: Point, reach: f32) {
+    let (dx, dz) = (there.x - here.x, there.z - here.z);
+    let share = 1.0 - (reach - 1.0) / dx.hypot(dz);
+    let to = Point {
+        x: here.x + dx * share,
+        y: there.y,
+        z: here.z + dz * share,
+    };
+    let player = world.player_mut(uid).expect("an attacker is a player");
+    player.walk = Some(Walk {
+        from: here,
+        to,
+        steps: 0,
+    });
+    let (region, local) = in_region(to);
+    let told = MovementResponse {
+        unique_id: uid,
+        has_destination: true,
+        region,
+        x: local.x.round() as i32,
+        y: local.y.round() as i32,
+        z: local.z.round() as i32,
+        angle: 0,
+    };
+    let observers = world.observers(uid);
+    world.broadcast(&observers, Packet::MovementResponse(told));
 }
 
 /// One swing of `uid` at `target`: its hits are rolled and taken off the

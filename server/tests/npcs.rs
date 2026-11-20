@@ -995,3 +995,67 @@ fn a_cancel_during_a_swing_ends_the_attack() {
     let opcodes: Vec<u16> = frames(world, s).iter().map(|f| f.0).collect();
     assert!(!opcodes.contains(&0xB070), "{opcodes:x?}");
 }
+
+/// A Mangnyang 200 units south: the hero is answered `01 01`, told where it
+/// walks, a unit inside reach of it (the sword's 6 and 10 for the bodies),
+/// and swings when it gets there, at its run speed (50 units a second).
+#[test]
+fn an_attacker_walks_into_reach_first() {
+    let mut shard = armed_at("1933\t25000\t969.0\t0.0\t1219.0\r\n");
+    let (s, hero) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    frames(world, s);
+    send(world, s, attack(mob));
+    assert_eq!(frames(world, s), [(0xB074, Bytes::from_static(&[1, 1]))]);
+    world.step();
+    let walks = MovementResponse {
+        unique_id: hero,
+        has_destination: true,
+        region: REGION,
+        x: 969,
+        y: 0,
+        z: 1219 + 15,
+        angle: 0,
+    };
+    let (opcode, body) = Packet::MovementResponse(walks).into_serialize();
+    assert_eq!(frames(world, s), [(opcode, body)]);
+    let walked = (185.0f32 / 50.0 * 30.0).ceil() as usize;
+    for _ in 0..walked {
+        world.step();
+    }
+    let opcodes: Vec<u16> = frames(world, s).iter().map(|f| f.0).collect();
+    assert_eq!(opcodes, [0xB070]);
+}
+
+/// A request for a second Mangnyang during a swing at the first waits behind
+/// it (`01 02`); when the swing ends (39 steps), it starts (`02 01`) and the
+/// next swing hits the second.
+#[test]
+fn a_request_during_a_swing_waits_behind_it() {
+    let rows = "1933\t25000\t979.0\t0.0\t1419.0\r\n1933\t25000\t969.0\t0.0\t1429.0\r\n";
+    let mut shard = armed_at(rows);
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let at = |world: &World, x: f32| world.monsters().find(|(_, m)| m.position.x == x).unwrap().0;
+    let (first, second) = (at(world, 979.0), at(world, 969.0));
+    frames(world, s);
+    send(world, s, attack(first));
+    world.step();
+    frames(world, s);
+    send(world, s, attack(second));
+    assert_eq!(frames(world, s), [(0xB074, Bytes::from_static(&[1, 2]))]);
+    for _ in 0..38 {
+        world.step();
+    }
+    assert_eq!(frames(world, s), []);
+    world.step();
+    let sent = frames(world, s);
+    assert_eq!(sent[0], (0xB074, Bytes::from_static(&[2, 1])));
+    let Ok(Packet::ObjectActionUpdate(ObjectActionUpdate::Success { target, .. })) =
+        Packet::deserialize(sent[1].0, sent[1].1.clone())
+    else {
+        panic!("a swing follows");
+    };
+    assert_eq!(target, second);
+}

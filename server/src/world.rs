@@ -81,6 +81,8 @@ pub struct Player {
     pub run_speed: f32,
     pub walk: Option<Walk>,
     pub attack: Option<Attack>,
+    /// The target of an attack request waiting behind the running swing.
+    pub queued: Option<u32>,
 }
 
 /// A walk in world coordinates (it may cross regions): from where, to where,
