@@ -8,5 +8,6 @@ pub mod characterdata;
 pub mod itemdata;
 pub mod npcpos;
 pub mod siegefortress;
+pub mod skilldata;
 pub mod spawn;
 pub mod teleportbuilding;

@@ -10,15 +10,18 @@
 //! `basic_level` (col 7) orders the ladder. Trailing columns from 69 on are
 //! a fourcc-tagged parameter stream (`'att'`, `'dura' <ms>`, ...).
 
+#[cfg(feature = "bevy")]
 use bevy::asset::Asset;
+#[cfg(feature = "bevy")]
 use bevy::prelude::TypePath;
 use std::collections::HashMap;
 use std::ops::Deref;
 
 #[derive(Debug, Clone)]
-pub struct SkillDataRow(pub(crate) Vec<String>);
+pub struct SkillDataRow(pub Vec<String>);
 
-#[derive(Asset, TypePath, Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(Asset, TypePath))]
+#[derive(Debug, Clone)]
 pub struct SkillData(pub HashMap<i32, SkillDataRow>);
 
 #[repr(usize)]
@@ -61,6 +64,22 @@ enum SkilldataFields {
     TooltipDescId = 64,
     StudyDescId = 65,
     ParamsStart = 69,
+}
+
+impl SkillData {
+    /// One `skilldata_*.txt` shard: tab-separated rows keyed by their id
+    /// column. Shorter rows are headers or blanks, and a row whose id does not
+    /// parse is skipped rather than taking the whole table down.
+    pub fn parse_shard(content: &str) -> Self {
+        Self(
+            content
+                .lines()
+                .map(|l| l.split('\t').map(String::from).collect::<Vec<String>>())
+                .filter(|l| l.len() > 100)
+                .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, SkillDataRow(l))))
+                .collect(),
+        )
+    }
 }
 
 impl Deref for SkillData {
@@ -327,13 +346,38 @@ impl SkillDataRow {
     /// The stream mixes tags and their arguments; a lookup keyed on the tag
     /// is enough for single-argument tags.
     pub fn param_after(&self, tag: &str) -> Option<i64> {
+        self.param_arg(tag, 0)
+    }
+
+    /// The `n`-th argument after a fourcc parameter tag, 0 being the one
+    /// right after it.
+    fn param_arg(&self, tag: &str, n: usize) -> Option<i64> {
         let tag = fourcc(tag)?;
-        let params = &self.0.get(SkilldataFields::ParamsStart as usize..)?;
-        params
+        let params = self.0.get(SkilldataFields::ParamsStart as usize..)?;
+        let at = params
             .iter()
-            .position(|v| v.trim().parse::<i64>() == Ok(tag))
-            .and_then(|idx| params.get(idx + 1))
-            .and_then(|v| v.trim().parse::<i64>().ok())
+            .position(|v| v.trim().parse::<i64>() == Ok(tag))?;
+        params.get(at + 1 + n)?.trim().parse().ok()
+    }
+
+    /// The hits one use lands on its target: the second argument of `'mc'`,
+    /// one for a row without it. The first argument is 2 in every one of the
+    /// 25,623 rows that carry `'mc'`. On the wire [V capture, peer vSRO],
+    /// `SKILL_CH_SWORD_BASE_01` (`'mc' 2 2`) landed two hits in all 4,551
+    /// captured swings, `MSKILL_CH_MANGNYANG_ATTACK01` (`'mc' 2 1`) one in
+    /// 17, `MSKILL_CH_MANGNYANG_ATTACK02` (`'mc' 2 2`) two in 7, and the
+    /// spear's and the fist's basic attacks, without `'mc'`, one in 203.
+    pub fn hit_count(&self) -> u8 {
+        self.param_arg("mc", 1)
+            .and_then(|hits| u8::try_from(hits).ok())
+            .unwrap_or(1)
+    }
+
+    /// The share of the attacker's power one hit deals, in percent: the
+    /// second argument of `'att'` (`'att' <kind> <pct> <min> <max> <x>`, as
+    /// [`Self::stat_lines`] reads it).
+    pub fn attack_percent(&self) -> Option<i64> {
+        self.param_arg("att", 1)
     }
 
     /// Human-readable stat lines from the parameter stream — the damage /
@@ -376,8 +420,14 @@ impl SkillDataRow {
                         format!("Attack power {pct}%")
                     })
                 }
-                // 'mc' <hits> <x> — chain/combo hit count
-                "mc" => (arg(1) > 1).then(|| format!("{} consecutive hits", arg(1))),
+                // 'mc' 2 <hits>, read where the server reads it (`hit_count`).
+                // The first argument is 2 in all 25,623 rows with 'mc'; the
+                // second is 1 in 21,581, 2 in 3,737, 3 in 231, 4 in 34, 5 in 4
+                // and 0 in 36, and it counts the hits [V capture, peer vSRO].
+                "mc" => {
+                    let hits = self.hit_count();
+                    (hits > 1).then(|| format!("{hits} consecutive hits"))
+                }
                 "dura" => Some(format!("Duration: {}s", arg(1) / 1000)),
                 "cr" => Some(format!("Critical +{}", arg(1))),
                 "ru" => Some(format!("Attack distance +{}", arg(1))),
@@ -556,6 +606,23 @@ mod test {
         assert!(row.target_required());
         assert!(row.targets_enemy());
         assert!(!row.targets_self());
+    }
+
+    /// An attack's hits and share are the second arguments of `'mc'` and
+    /// `'att'`, here as `MSKILL_CH_MANGNYANG_ATTACK01` has them (one hit on the
+    /// wire); a row without `'mc'` lands one hit.
+    #[test]
+    fn hits_and_attack_share_come_from_the_parameters() {
+        let mut attack = row();
+        let stream = ["6386804", "5", "200", "17", "19", "100", "28003", "2", "1"];
+        for (at, value) in stream.iter().enumerate() {
+            attack.0[69 + at] = String::from(*value);
+        }
+        assert_eq!(
+            (attack.hit_count(), attack.attack_percent()),
+            (1, Some(200))
+        );
+        assert_eq!(row().hit_count(), 1);
     }
 
     #[test]
@@ -746,17 +813,20 @@ mod test {
         assert_eq!(case(&[1851946342, 26738, 0, 10]), vec!["Hit rate +10%"]);
 
         // skilldata_10000.txt:3151 SKILL_EU_WARRIOR_DUALA_TWIST_A_01:
-        // 'bl' 30000 25 1 10 20 — five arguments, and 'st' follows it
+        // 'bl' 30000 25 1 10 20 — five arguments, and 'st' follows it; its
+        // 'mc' 2 1 is one hit, so no hit line
         assert_eq!(
             case(&[
                 6386804, 5, 131, 34, 42, 0, 28003, 2, 1, 25196, 30000, 25, 1, 10, 20, 29556, 5000,
                 20, 1, 1734702198, 1160921409,
             ]),
-            vec![
-                "Attack power 131% + 34 ~ 42",
-                "2 consecutive hits",
-                "Stun 20% for 5s"
-            ]
+            vec!["Attack power 131% + 34 ~ 42", "Stun 20% for 5s"]
+        );
+
+        // skilldata_5000.txt:2 SKILL_CH_SWORD_BASE_01: 'mc' 2 2, two hits
+        assert_eq!(
+            case(&[6386804, 5, 60, 0, 0, 60, 28003, 2, 2]),
+            vec!["Attack power 60%", "2 consecutive hits"]
         );
     }
 
@@ -831,39 +901,39 @@ mod test {
     }
 
     /// Anchor test against the real archive locking the verified column map.
-    #[test]
-    #[ignore = "needs Media.pk2; run with: cargo test -p client skilldata_real_columns -- --ignored"]
-    fn skilldata_real_columns() {
-        use bevy_pk2::prelude::Archive;
-        use std::collections::HashMap;
-        use std::path::{Path, PathBuf};
-
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("assets");
-        let archive = Archive::configured(assets.join("Media.pk2"));
-        let bytes = archive
-            .read_file_bytes(Path::new("server_dep/silkroad/textdata/skilldata_5000.txt"))
-            .expect("skilldata_5000.txt in Media.pk2");
-        let content = super::super::skilleffect::decode_utf16le(&bytes);
-        let rows: Vec<SkillDataRow> = content
-            .lines()
-            .map(|l| SkillDataRow(l.split('\t').map(String::from).collect()))
-            .filter(|r| r.0.len() > 100)
+    /// One shard of the user's textdata folder, which the game ships as
+    /// UTF-16 LE with a byte order mark.
+    fn shard(name: &str) -> Vec<SkillDataRow> {
+        let dir = std::env::var("OPENROAD_TEXTDATA_DIR").expect("OPENROAD_TEXTDATA_DIR");
+        let bytes =
+            std::fs::read(std::path::Path::new(&dir).join(name)).expect("a skilldata shard");
+        let units: Vec<u16> = (bytes.chunks_exact(2).skip(1))
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
+        let content = String::from_utf16_lossy(&units);
+        SkillData::parse_shard(&content).0.into_values().collect()
+    }
+
+    #[test]
+    #[ignore = "needs OPENROAD_TEXTDATA_DIR, the textdata folder"]
+    fn skilldata_real_columns() {
+        use std::collections::HashMap;
+
+        let rows = shard("skilldata_5000.txt");
         assert!(rows.len() > 4000, "only {} rows", rows.len());
 
-        // activity histogram: passives, instants, castables
+        // activity histogram: passives, instants, castables, over the 4,719
+        // rows of the user's skilldata_5000.txt
         let mut activity: HashMap<u8, usize> = HashMap::new();
         for row in &rows {
             *activity.entry(row.activity()).or_default() += 1;
         }
-        assert_eq!(activity[&0], 84);
-        assert_eq!(activity[&1], 191);
-        assert_eq!(activity[&2], 4570);
+        assert_eq!(activity[&0], 63);
+        assert_eq!(activity[&1], 185);
+        assert_eq!(activity[&2], 4471);
 
-        // sword smash A lv2: Bicheon lv7 required, 2 SP, 'att' param present
+        // sword smash A lv2 (skilldata_5000.txt:289): Bicheon lv7 required,
+        // 5 SP, 'att' param present
         let smash = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_CH_SWORD_SMASH_A_02")
@@ -872,7 +942,7 @@ mod test {
         assert_eq!(smash.basic_group(), Some("SKILL_CH_SWORD_SMASH_A"));
         assert_eq!(smash.basic_level(), 2);
         assert_eq!(smash.mastery_req(), Some((257, 7)));
-        assert_eq!(smash.sp_cost(), 2);
+        assert_eq!(smash.sp_cost(), 5);
         assert_eq!(smash.casting_time_ms(), 411);
         assert_eq!(smash.reuse_delay_ms(), 3000);
         assert!(smash.target_required() && smash.targets_enemy());
@@ -911,26 +981,56 @@ mod test {
         assert_eq!(smash_b.skill_prereq(), Some((174, 9)));
         assert!(smash_b.is_learnable_root());
 
-        // imbue: activity 1, self-target, 'dura' 6000
+        // imbue (skilldata_5000.txt:124): activity 1, self-target, 'dura' 5000
         let imbue = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_CH_FIRE_GIGONGTA_A_01")
             .unwrap();
         assert_eq!(imbue.activity(), 1);
-        assert_eq!(imbue.param_after("dura"), Some(6000));
+        assert_eq!(imbue.param_after("dura"), Some(5000));
+
+        // the basic attacks of the sword, the spear and the bare fist
+        // (skilldata_5000.txt:2, :40, :1): their weapons, their duration,
+        // their hits and their share
+        let basic = |code: &str| {
+            let row = rows.iter().find(|r| r.code_name() == code).unwrap();
+            (
+                row.required_weapons(),
+                row.action_duration_ms(),
+                row.hit_count(),
+                row.attack_percent(),
+            )
+        };
+        assert_eq!(
+            basic("SKILL_CH_SWORD_BASE_01"),
+            (Some((2, 3)), 1200, 2, Some(60))
+        );
+        assert_eq!(
+            basic("SKILL_CH_SPEAR_BASE_01"),
+            (Some((4, 5)), 1166, 1, Some(117))
+        );
+        assert_eq!(
+            basic("SKILL_PUNCH_01"),
+            (Some((1, 255)), 1500, 1, Some(150))
+        );
+        // the two attacks of the Mangnyang (skilldata_5000.txt:160, :161),
+        // captured with one and two hits
+        let hits = |code: &str| {
+            rows.iter()
+                .find(|r| r.code_name() == code)
+                .unwrap()
+                .hit_count()
+        };
+        assert_eq!(
+            (
+                hits("MSKILL_CH_MANGNYANG_ATTACK01"),
+                hits("MSKILL_CH_MANGNYANG_ATTACK02")
+            ),
+            (1, 2)
+        );
 
         // EU player skills live in the 10000+ shards; same column scheme
-        let bytes = archive
-            .read_file_bytes(Path::new(
-                "server_dep/silkroad/textdata/skilldata_10000.txt",
-            ))
-            .expect("skilldata_10000.txt in Media.pk2");
-        let content = super::super::skilleffect::decode_utf16le(&bytes);
-        let rows: Vec<SkillDataRow> = content
-            .lines()
-            .map(|l| SkillDataRow(l.split('\t').map(String::from).collect()))
-            .filter(|r| r.0.len() > 100)
-            .collect();
+        let rows = shard("skilldata_10000.txt");
         let eu = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_EU_WARRIOR_FRENZYA_TOUNT_A_01")
@@ -938,7 +1038,8 @@ mod test {
         assert_eq!(eu.group_id(), 536);
         assert_eq!(eu.basic_group(), Some("SKILL_EU_WARRIOR_FRENZYA_TOUNT_A"));
         assert_eq!(eu.mastery_req(), Some((513, 10)));
-        assert_eq!(eu.sp_cost(), 4);
+        // skilldata_10000.txt:2486
+        assert_eq!(eu.sp_cost(), 9);
         assert!(eu.is_learnable_root());
 
         // bow projectile skill (id 7821): authored 400 u/s flight speed
