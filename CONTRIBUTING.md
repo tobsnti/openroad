@@ -96,7 +96,9 @@ Out of the repository, by policy:
 - **Decompiler output and everything derived from its form** — pseudocode, function
   addresses, and the internal source-file names and assert strings the original binary
   happens to embed. A wire layout, an opcode number or a field order is a fact and may
-  be written down; the decompiled evidence behind it may not.
+  be written down; the decompiled evidence behind it may not. `make ci` counts the
+  decompiler names and addresses the tree still carries from before this rule, per
+  directory, and the counts may only go down (`scripts/check_re_addresses.py`).
 - **Verbatim copies of the original's data files** — `resinfo` UI trees, `textdata`
   strings, 2DT tables. Cite the handful of values a change actually needs, do not
   transcribe the file.
@@ -132,8 +134,10 @@ follows a `docs/` path in a comment is more likely to find nothing than somethin
 
 Two rules keep new code honest about this:
 
-- **Cite the evidence, not a document.** A reader can act on `textuisystem.txt:917`, on a
-  `packet_dump/<opcode>.log` line, or on a decompiled address. A bare path into an
+- **Cite the evidence, not a document.** A reader can act on `textuisystem.txt:917` or on a
+  `packet_dump/<opcode>.log` line. A reading of the original binary is marked
+  `[V original handler]` or `[V original builder]`; its address stays in the local RE
+  store (see "What this repository does not publish" above). A bare path into an
   unpublished document is not evidence for anyone outside this machine. Where the long form
   really lives in the local RE store, say so in the sentence ("kept in the local RE store,
   not in this repo") rather than leaving a path that reads like a file next door.
