@@ -24,7 +24,7 @@ use crate::assets::textdata::optionalteleport::OptionalTeleportTable;
 use crate::assets::textdata::quest::QuestTable;
 use crate::assets::textdata::questreward::{QuestRewardItems, QuestRewardModes, QuestRewardValues};
 use crate::assets::textdata::shops::ShopTable;
-use crate::assets::textdata::skilldata::{SkillData, SkillDataRow};
+use crate::assets::textdata::skilldata::SkillData;
 use crate::assets::textdata::skilleffect::{parse_skilleffect, SkillEffectTable};
 use crate::assets::textdata::skillgroup::SkillGroupTable;
 use crate::assets::textdata::teleport::TeleportTable;
@@ -416,13 +416,7 @@ impl AssetLoader for TextdataLoader {
                 }
                 Ok(Textdata::SkillData(SkillData(data)))
             } else {
-                let data = content
-                    .lines()
-                    .map(|l| l.split("\t").map(String::from).collect::<Vec<String>>())
-                    .filter(|l| l.len() > 100)
-                    .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, SkillDataRow(l))))
-                    .collect::<HashMap<_, _>>();
-                Ok(Textdata::SkillData(SkillData(data)))
+                Ok(Textdata::SkillData(SkillData::parse_shard(&content)))
             }
         } else if file_stem.starts_with("skilleffect") {
             // #section-structured, not a row table — dedicated parser

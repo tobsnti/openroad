@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 
 #[derive(Debug, Clone)]
-pub struct SkillDataRow(pub(crate) Vec<String>);
+pub struct SkillDataRow(pub Vec<String>);
 
 #[derive(Asset, TypePath, Debug, Clone)]
 pub struct SkillData(pub HashMap<i32, SkillDataRow>);
@@ -61,6 +61,22 @@ enum SkilldataFields {
     TooltipDescId = 64,
     StudyDescId = 65,
     ParamsStart = 69,
+}
+
+impl SkillData {
+    /// One `skilldata_*.txt` shard: tab-separated rows keyed by their id
+    /// column. Shorter rows are headers or blanks, and a row whose id does not
+    /// parse is skipped rather than taking the whole table down.
+    pub fn parse_shard(content: &str) -> Self {
+        Self(
+            content
+                .lines()
+                .map(|l| l.split('\t').map(String::from).collect::<Vec<String>>())
+                .filter(|l| l.len() > 100)
+                .filter_map(|l| l[1].parse::<i32>().ok().map(|id| (id, SkillDataRow(l))))
+                .collect(),
+        )
+    }
 }
 
 impl Deref for SkillData {
@@ -831,39 +847,39 @@ mod test {
     }
 
     /// Anchor test against the real archive locking the verified column map.
-    #[test]
-    #[ignore = "needs Media.pk2; run with: cargo test -p client skilldata_real_columns -- --ignored"]
-    fn skilldata_real_columns() {
-        use bevy_pk2::prelude::Archive;
-        use std::collections::HashMap;
-        use std::path::{Path, PathBuf};
-
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("assets");
-        let archive = Archive::configured(assets.join("Media.pk2"));
-        let bytes = archive
-            .read_file_bytes(Path::new("server_dep/silkroad/textdata/skilldata_5000.txt"))
-            .expect("skilldata_5000.txt in Media.pk2");
-        let content = super::super::skilleffect::decode_utf16le(&bytes);
-        let rows: Vec<SkillDataRow> = content
-            .lines()
-            .map(|l| SkillDataRow(l.split('\t').map(String::from).collect()))
-            .filter(|r| r.0.len() > 100)
+    /// One shard of the user's textdata folder, which the game ships as
+    /// UTF-16 LE with a byte order mark.
+    fn shard(name: &str) -> Vec<SkillDataRow> {
+        let dir = std::env::var("OPENROAD_TEXTDATA_DIR").expect("OPENROAD_TEXTDATA_DIR");
+        let bytes =
+            std::fs::read(std::path::Path::new(&dir).join(name)).expect("a skilldata shard");
+        let units: Vec<u16> = (bytes.chunks_exact(2).skip(1))
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
+        let content = String::from_utf16_lossy(&units);
+        SkillData::parse_shard(&content).0.into_values().collect()
+    }
+
+    #[test]
+    #[ignore = "needs OPENROAD_TEXTDATA_DIR, the textdata folder"]
+    fn skilldata_real_columns() {
+        use std::collections::HashMap;
+
+        let rows = shard("skilldata_5000.txt");
         assert!(rows.len() > 4000, "only {} rows", rows.len());
 
-        // activity histogram: passives, instants, castables
+        // activity histogram: passives, instants, castables, over the 4,719
+        // rows of the user's skilldata_5000.txt
         let mut activity: HashMap<u8, usize> = HashMap::new();
         for row in &rows {
             *activity.entry(row.activity()).or_default() += 1;
         }
-        assert_eq!(activity[&0], 84);
-        assert_eq!(activity[&1], 191);
-        assert_eq!(activity[&2], 4570);
+        assert_eq!(activity[&0], 63);
+        assert_eq!(activity[&1], 185);
+        assert_eq!(activity[&2], 4471);
 
-        // sword smash A lv2: Bicheon lv7 required, 2 SP, 'att' param present
+        // sword smash A lv2 (skilldata_5000.txt:289): Bicheon lv7 required,
+        // 5 SP, 'att' param present
         let smash = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_CH_SWORD_SMASH_A_02")
@@ -872,7 +888,7 @@ mod test {
         assert_eq!(smash.basic_group(), Some("SKILL_CH_SWORD_SMASH_A"));
         assert_eq!(smash.basic_level(), 2);
         assert_eq!(smash.mastery_req(), Some((257, 7)));
-        assert_eq!(smash.sp_cost(), 2);
+        assert_eq!(smash.sp_cost(), 5);
         assert_eq!(smash.casting_time_ms(), 411);
         assert_eq!(smash.reuse_delay_ms(), 3000);
         assert!(smash.target_required() && smash.targets_enemy());
@@ -911,26 +927,16 @@ mod test {
         assert_eq!(smash_b.skill_prereq(), Some((174, 9)));
         assert!(smash_b.is_learnable_root());
 
-        // imbue: activity 1, self-target, 'dura' 6000
+        // imbue (skilldata_5000.txt:124): activity 1, self-target, 'dura' 5000
         let imbue = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_CH_FIRE_GIGONGTA_A_01")
             .unwrap();
         assert_eq!(imbue.activity(), 1);
-        assert_eq!(imbue.param_after("dura"), Some(6000));
+        assert_eq!(imbue.param_after("dura"), Some(5000));
 
         // EU player skills live in the 10000+ shards; same column scheme
-        let bytes = archive
-            .read_file_bytes(Path::new(
-                "server_dep/silkroad/textdata/skilldata_10000.txt",
-            ))
-            .expect("skilldata_10000.txt in Media.pk2");
-        let content = super::super::skilleffect::decode_utf16le(&bytes);
-        let rows: Vec<SkillDataRow> = content
-            .lines()
-            .map(|l| SkillDataRow(l.split('\t').map(String::from).collect()))
-            .filter(|r| r.0.len() > 100)
-            .collect();
+        let rows = shard("skilldata_10000.txt");
         let eu = rows
             .iter()
             .find(|r| r.code_name() == "SKILL_EU_WARRIOR_FRENZYA_TOUNT_A_01")
@@ -938,7 +944,8 @@ mod test {
         assert_eq!(eu.group_id(), 536);
         assert_eq!(eu.basic_group(), Some("SKILL_EU_WARRIOR_FRENZYA_TOUNT_A"));
         assert_eq!(eu.mastery_req(), Some((513, 10)));
-        assert_eq!(eu.sp_cost(), 4);
+        // skilldata_10000.txt:2486
+        assert_eq!(eu.sp_cost(), 9);
         assert!(eu.is_learnable_root());
 
         // bow projectile skill (id 7821): authored 400 u/s flight speed
