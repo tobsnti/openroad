@@ -32,9 +32,10 @@
 //! are wired, because those are the parts the wire actually has.
 
 use bevy::ecs::relationship::RelatedSpawnerCommands;
+use bevy::input_focus::InputFocus;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
-use bevy::text::LineBreak;
+use bevy::text::{EditableText, LineBreak};
 use bevy::ui_widgets::{Activate, Button};
 
 use packets::agent::party::{PartyMatchDeleteRequest, PartyMatchListRequest, PartySetup};
@@ -50,7 +51,9 @@ use sro_net::frame::SilkroadFrame;
 
 use crate::plugins::config::chat::parse_argb;
 use crate::plugins::config::ClientConfig;
-use crate::plugins::hud::chat::model::{ChatHistory, ChatLine};
+use crate::plugins::hud::chat::input::prefill_whisper_input;
+use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
+use crate::plugins::hud::chat::ui::ChatInputBox;
 use crate::plugins::hud::party_matching::dialogs::{AUTO_MATCH, PROGRESS_TIMEOUT_SECS};
 use crate::plugins::hud::party_matching::model::{
     MatchDialog, MatchSort, PartyMatchState, ReloadMatchList, MATCH_ROWS,
@@ -1066,7 +1069,9 @@ fn on_action_button(
     actions: Query<&MatchAction>,
     conn: Query<&SilkroadConnection, With<AgentConnection>>,
     mut state: ResMut<PartyMatchState>,
-    mut history: Option<ResMut<crate::plugins::hud::chat::model::ChatHistory>>,
+    mut focus: ResMut<InputFocus>,
+    mut chat: ResMut<ChatState>,
+    mut input: Query<(Entity, &mut EditableText), With<ChatInputBox>>,
 ) {
     let Ok(action) = actions.get(activate.entity) else {
         return;
@@ -1095,13 +1100,10 @@ fn on_action_button(
             }
         }
         MatchAction::Whisper => {
-            // Vanilla opens a whisper to the party master. Our chat owns the
-            // whisper target, so this only reports until that seam exists.
-            if let (Some(entry), Some(history)) = (state.selected_entry(), history.as_mut()) {
-                history.push(crate::plugins::hud::chat::model::ChatLine::system(format!(
-                    "Whisper to {}.",
-                    entry.master_name
-                )));
+            // Vanilla opens a whisper to the party master: the chat input,
+            // addressed the way a click on a sender's name in the chat does.
+            if let Some(entry) = state.selected_entry() {
+                prefill_whisper_input(&entry.master_name, &mut focus, &mut chat, &mut input);
             }
         }
         MatchAction::AutoMatch => state.dialog = MatchDialog::Auto,
@@ -1529,5 +1531,46 @@ mod tests {
         // the widest shipped purpose string has no chance in 37 px, which is
         // why the answer is a clip and not a layout change
         assert_eq!(CELL_PURPOSE.2, 37.0);
+    }
+
+    /// "Whisper" addresses the chat input to the selected party's master, the
+    /// way a click on a sender's name in the chat does — no line of our own.
+    #[test]
+    fn whisper_addresses_the_chat_input_to_the_master() {
+        let mut app = App::new();
+        app.init_resource::<InputFocus>()
+            .init_resource::<ChatState>()
+            .init_resource::<PartyMatchState>();
+        let input = app
+            .world_mut()
+            .spawn((ChatInputBox, EditableText::new("")))
+            .id();
+        let mut state = app.world_mut().resource_mut::<PartyMatchState>();
+        state.entries.push(packets::agent::party::PartyMatchEntry {
+            number: 7,
+            registered_at: 0,
+            master_name: "Alice".into(),
+            race_type: 0,
+            member_count: 1,
+            setup: 0,
+            purpose: 0,
+            level_min: 1,
+            level_max: 140,
+            title: String::new(),
+        });
+        state.selected = Some(7);
+        let button = app
+            .world_mut()
+            .spawn(MatchAction::Whisper)
+            .observe(on_action_button)
+            .id();
+        app.world_mut().trigger(Activate { entity: button });
+
+        let text = app.world().get::<EditableText>(input).unwrap();
+        assert_eq!(
+            text.pending_edits.last(),
+            Some(&bevy::text::TextEdit::Insert("$Alice ".into()))
+        );
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(input));
     }
 }
