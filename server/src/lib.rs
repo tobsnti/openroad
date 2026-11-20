@@ -24,6 +24,7 @@ pub mod outbox;
 pub mod pg_store;
 pub mod refdata;
 pub mod registry;
+mod reward;
 pub mod runtime;
 mod sight;
 pub mod store;

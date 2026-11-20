@@ -9,8 +9,8 @@ use packets::agent::entity_spawn::{
     parse_group_spawn, parse_single_spawn, Interaction, SingleTail, SpawnKind, SpawnedEntity,
 };
 use packets::agent::ingame::{
-    ActionCommand, ActionKind, ActionTarget, EntityBarsUpdate, HitEffect, ObjectActionRequest,
-    ObjectActionResponse, ObjectActionUpdate,
+    ActionCommand, ActionKind, ActionTarget, CharacterPointsUpdate, EntityBarsUpdate, HitEffect,
+    ObjectActionRequest, ObjectActionResponse, ObjectActionUpdate,
 };
 use packets::agent::prelude::{
     AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest, MovementResponse,
@@ -137,19 +137,20 @@ const MONSTERPOS: &str = "1933\t25000\t900.0\t0.0\t1400.0\r\n\
 
 /// The monsters' characterdata rows with the values of the user's data:
 /// MOB_CH_MANGNYANG, a normal monster (1/2/1, rarity 0, speeds 8 and 22,
-/// 54 HP), and MOB_CH_TIGERWOMAN, a unique (rarity 3, speeds 20 and 90,
-/// 598720 HP).
+/// 54 HP, 24 EXP), and MOB_CH_TIGERWOMAN, a unique (rarity 3, speeds 20 and
+/// 90, 598720 HP, 451200 EXP).
 fn monster_rows() -> String {
-    let row = |id: &str, rarity: &str, (walk, run): (&str, &str), hp: &str| {
-        let mut row = vec![String::from("0"); 60];
+    let row = |id: &str, rarity: &str, (walk, run): (&str, &str), hp: &str, exp: &str| {
+        let mut row = vec![String::from("0"); 80];
         (row[1], row[9], row[10], row[11], row[12]) =
             (id.into(), "1".into(), "2".into(), "1".into(), "1".into());
         (row[15], row[46], row[47], row[59]) = (rarity.into(), walk.into(), run.into(), hp.into());
+        row[79] = exp.into();
         row.join("\t")
     };
     let rows = [
-        row("1933", "0", ("8", "22"), "54"),
-        row("1954", "3", ("20", "90"), "598720"),
+        row("1933", "0", ("8", "22"), "54", "24"),
+        row("1954", "3", ("20", "90"), "598720", "451200"),
     ];
     rows.join("\n")
 }
@@ -789,10 +790,14 @@ fn a_seeded_world_repeats_its_monsters_moves() {
     assert_ne!(moves(20), once);
 }
 
-/// The hero with the bench's sword, and the monsters of `npcpos`; the sword
+fn armed_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
+    armed(npcpos, hero())
+}
+
+/// `hero` with the bench's sword, and the monsters of `npcpos`; the sword
 /// and the basic attacks of the fist and the sword as the user's data holds
 /// them (itemdata_5000.txt:1683, skilldata_5000.txt:1 and :2).
-fn armed_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
+fn armed(npcpos: &str, hero: Character) -> (World, Arc<MemoryStore>) {
     let mut refdata = monster_data(npcpos);
     let row = |width: usize, values: &[(usize, &str)]| {
         let mut row = vec!["0"; width];
@@ -836,7 +841,7 @@ fn armed_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     let armed = Character {
         equipment: vec![(6, 3632)],
-        ..hero()
+        ..hero
     };
     store.add_account("a", "a", vec![armed]);
     let store = Arc::new(store);
@@ -885,7 +890,8 @@ fn fight(select: bool) -> (Vec<(u64, u16, Packet)>, u32, u32) {
 /// lands two hits, each in the span the sword's rows give, and the client
 /// that selected the Mangnyang is told the HP left after each. The hit that
 /// kills carries 0x80 and one after it lands on nothing (arm 8); the death
-/// follows (0x30BF `00 02`), and the end of that swing ends the attack.
+/// follows (0x30BF `00 02`) with the Mangnyang's EXP (0x3056), and the end of
+/// that swing ends the attack.
 #[test]
 fn a_monster_in_reach_is_hit_until_it_dies() {
     let (seen, hero, mob) = fight(true);
@@ -894,6 +900,7 @@ fn a_monster_in_reach_is_hit_until_it_dies() {
     let share = |attack: f32| (attack * 60.0 / 100.0).round() as u32;
     let span = share(15.0)..=share(16.0);
     let (mut hp, mut swings) = (54u32, Vec::new());
+    let (mut died, mut gained) = (None, 0);
     for (step, opcode, packet) in &seen[1..] {
         match packet {
             Packet::ObjectActionUpdate(ObjectActionUpdate::Success {
@@ -928,6 +935,13 @@ fn a_monster_in_reach_is_hit_until_it_dies() {
             }
             Packet::EntityStateUpdate(dead) => {
                 assert_eq!((dead.unique_id, dead.is_death(), hp), (mob, true, 0));
+                died = Some(*step);
+            }
+            Packet::ReceiveExperience(exp) => {
+                let read = (exp.exp_origin, exp.experience, exp.sp_exp, exp.unknown);
+                assert_eq!((read, exp.tail.is_empty()), ((mob, 24, 24, 0), true));
+                assert_eq!(Some(*step), died);
+                gained += 1;
             }
             Packet::ObjectActionResponse(ObjectActionResponse::Ended { queue_len: 0 }) => {
                 assert_eq!(*step, swings.last().unwrap().0 + 39);
@@ -935,7 +949,7 @@ fn a_monster_in_reach_is_hit_until_it_dies() {
             _ => panic!("unexpected {opcode:#06x}"),
         }
     }
-    assert_eq!(hp, 0);
+    assert_eq!((hp, gained), (0, 1));
     let numbered: Vec<u32> = swings.iter().map(|s| s.1).collect();
     assert_eq!(numbered, (1..=swings.len() as u32).collect::<Vec<_>>());
     assert!(
@@ -1091,4 +1105,41 @@ fn a_killed_monster_is_taken_away_and_its_row_comes_back() {
     assert_eq!(placed, (1933, 979.0, 1419.0, 54, None));
     let tail = spawn[spawn.len() - 1];
     assert_eq!((&spawn[4..8], tail), (&new.to_le_bytes()[..], 1));
+}
+
+/// A kill gives the hero the Mangnyang's 24 EXP and 24 SP-EXP, the monster
+/// named as their origin. From 390 SP-EXP that makes a skill point, which its
+/// client is told (0x304E 2), with 14 SP-EXP left over.
+#[test]
+fn a_kill_gives_the_monsters_exp_and_400_sp_exp_make_a_skill_point() {
+    let hero = Character {
+        exp: 100,
+        skill_exp: 390,
+        skill_points: 7,
+        ..hero()
+    };
+    let mut shard = armed("1933\t25000\t979.0\t0.0\t1419.0\r\n", hero);
+    let (s, uid) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    frames(world, s);
+    send(world, s, attack(mob));
+    let (mut exp, mut points) = (Vec::new(), Vec::new());
+    for _ in 0..60 * 30 {
+        world.step();
+        for (op, body) in frames(world, s) {
+            match Packet::deserialize(op, body).unwrap() {
+                Packet::ReceiveExperience(p) => exp.push((p.exp_origin, p.experience, p.sp_exp)),
+                Packet::CharacterPointsUpdate(p) => points.push(p),
+                _ => {}
+            }
+        }
+    }
+    let sp = CharacterPointsUpdate::Sp {
+        amount: 8,
+        display: 0,
+    };
+    assert_eq!((exp, points), (vec![(mob, 24, 24)], vec![sp]));
+    let c = &world.player(uid).unwrap().character;
+    assert_eq!((c.exp, c.skill_exp, c.skill_points), (124, 14, 8));
 }

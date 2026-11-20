@@ -28,6 +28,8 @@ pub struct CharacterRef {
 pub struct MonsterRef {
     pub max_hp: u32,
     pub rarity: u8,
+    /// What killing it gives (ExpToGive), 0 for a row without.
+    pub exp: u32,
     /// Walk and run speed in world units per second, 0 for a monster that
     /// does not move.
     pub walk_speed: f32,
@@ -223,6 +225,7 @@ impl RefData {
         Some(MonsterRef {
             max_hp: row.max_hp()?,
             rarity: row.rarity(),
+            exp: row.exp_to_give().unwrap_or(0),
             walk_speed: row.walk_speed().unwrap_or(0.0),
             run_speed: row.run_speed().unwrap_or(0.0),
         })
@@ -387,5 +390,18 @@ mod tests {
             .basic_attack(None)
             .map(|a| (a.skill, a.duration_ms, a.hits));
         assert_eq!(fist, Some((1, 1500, 1)));
+    }
+
+    /// What killing the bench's monsters gives, as the user's data says:
+    /// MOB_CH_MANGNYANG 24 (characterdata_5000.txt:27), MOB_CH_YEOHA 235
+    /// (:37), MOB_CH_TIGERWOMAN 451200 (:48).
+    #[test]
+    #[ignore = "needs OPENROAD_TEXTDATA_DIR, the user's textdata folder"]
+    fn the_monsters_give_the_users_exp() {
+        let dir = std::env::var("OPENROAD_TEXTDATA_DIR").unwrap();
+        let data = RefData::load(Path::new(&dir)).unwrap();
+        let exp = |model| data.monster(model).map(|m| m.exp);
+        let read = (exp(1933), exp(1943), exp(1954));
+        assert_eq!(read, (Some(24), Some(235), Some(451200)));
     }
 }
