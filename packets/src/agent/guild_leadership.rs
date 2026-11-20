@@ -215,6 +215,11 @@ pub struct GuildGpHistoryEntry {
 
 /// 0xB501 — the GP contribution log, handler `FUN_00885c20`; the per-row
 /// formatter resolves `UIIT_MSG_GUILD_GP_HISTORY`, which is what names it.
+///
+/// Stated deviation (ADR-0009): openroad always reads the entries the count
+/// announces, while the original reads them only while its GP history window
+/// is open `[V original handler]`, so a server sends `result == 1` with
+/// entries only while that window is open.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct GuildGpHistoryResponse {
     pub result: u8,
