@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
-use packets::agent::entity_spawn::{parse_group_spawn, Interaction, SpawnKind, SpawnedEntity};
+use packets::agent::entity_spawn::{
+    parse_group_spawn, parse_single_spawn, Interaction, SingleTail, SpawnKind, SpawnedEntity,
+};
 use packets::agent::ingame::{
     ActionCommand, ActionKind, ActionTarget, EntityBarsUpdate, HitEffect, ObjectActionRequest,
     ObjectActionResponse, ObjectActionUpdate,
@@ -605,11 +607,11 @@ fn a_monster_walks_at_its_walk_speed_and_is_seen_walking() {
     );
 }
 
-/// A monster walking into a region the hero sees comes as a group of one,
-/// walking, and is taken back when it walks out again. Before it comes, the
-/// hero is not told where it goes.
+/// A monster walking into a region the hero sees comes alone, walking, in a
+/// single spawn whose last byte is 4, and is taken back when it walks out
+/// again. Before it comes, the hero is not told where it goes.
 #[test]
-fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
+fn a_monster_walking_into_sight_comes_alone_and_walking() {
     let mut shard = monster_world();
     let (s, _) = enter(&mut shard);
     let world = &mut shard.0;
@@ -641,14 +643,14 @@ fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
     };
     let seen = walk(world, point(REGION + 1, 1800.0));
     let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
-    assert_eq!(codes, [0x3017, 0x3019, 0x3018]);
+    assert_eq!(codes, [0x3015]);
     let characters = CharacterData::parse_shard(&monster_rows());
     let client = SpawnTables {
         characters: Some(&characters),
         items: None,
         gates: None,
     };
-    let parsed = parse_group_spawn(&seen[1].1, true, 1, &client);
+    let (entity, tail) = parse_single_spawn(&seen[0].1, &client).unwrap();
     let walking = EntityMovement {
         has_destination: true,
         move_type: 0,
@@ -658,8 +660,8 @@ fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
         dest_z: Some(100),
         ..Default::default()
     };
-    let read = (parsed.spawns[0].unique_id, parsed.spawns[0].movement);
-    assert_eq!(read, (far, Some(walking)));
+    let read = (entity.unique_id, entity.movement, tail);
+    assert_eq!(read, (far, Some(walking), SingleTail::Figure(4)));
     // Walking out, the hero is told where it goes, then sees it taken back.
     let seen = walk(world, point(REGION + 2, 100.0));
     let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
@@ -729,8 +731,8 @@ fn monsters_near_a_character_wander_around_their_rows() {
 }
 
 /// Monsters think a region beyond what the hero sees. One whose row lies at
-/// the edge of sight and that walked out comes back within ten minutes, as a
-/// group of one; one three regions away does not move.
+/// the edge of sight and that walked out comes back within ten minutes,
+/// alone; one three regions away does not move.
 #[test]
 fn a_monster_that_walked_out_of_sight_walks_back_in() {
     const EDGE: &str = "1933\t25001\t1880.0\t0.0\t100.0\r\n\
@@ -757,17 +759,14 @@ fn a_monster_that_walked_out_of_sight_walks_back_in() {
         world.step();
     }
     frames(world, s);
-    // A spawn group of one (kind 1, count 1) whose record, after its ref,
-    // names the monster.
+    // A single spawn whose record, after its ref, names the monster.
     let back = (0..10 * 60 * 30).any(|_| {
         world.step();
         let seen: Vec<_> = (frames(world, s).into_iter())
             .filter(|f| f.0 != 0xB021)
             .collect();
         let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
-        codes == [0x3017, 0x3019, 0x3018]
-            && seen[0].1[..] == [1, 1, 0]
-            && seen[1].1[4..8] == edge.to_le_bytes()
+        codes == [0x3015] && seen[0].1[4..8] == edge.to_le_bytes()
     });
     assert!(back);
     let unmoved = world.monster(beyond).unwrap();

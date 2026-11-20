@@ -75,8 +75,9 @@ pub(crate) fn update(world: &mut World, uid: u32) {
 }
 
 /// Monster `uid` walked from region `from` into another: the clients in the
-/// game that now see it are shown it, and those that no longer do have it
-/// taken back, each as a group of one, as for NPCs.
+/// game that now see it are shown it alone ([`alone`]), as the vSRO server
+/// shows a monster that walks into sight; those that no longer see it have it
+/// taken back as a group of one.
 pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
     let Some(region) = world.monster(uid).map(|m| m.position.region) else {
         return;
@@ -91,8 +92,10 @@ pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
     for (session, at) in players {
         let near = in_sight(at, region);
         if near && !world.knows(session, uid) {
-            let record = placed_record(world, uid);
-            world.show_group(session, vec![(uid, record)]);
+            let spawn = SingleEntitySpawn {
+                raw: alone(world, uid),
+            };
+            world.show(session, uid, Packet::SingleEntitySpawn(spawn));
         } else if !near && world.knows(session, uid) {
             world.hide_group(session, vec![uid]);
         }
@@ -100,28 +103,12 @@ pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
 }
 
 /// Monster `uid` came back at its row: the clients in the game that see its
-/// region are shown it as a single spawn whose last byte is 1, as the vSRO
-/// server shows a monster that comes back [V capture, peer vSRO: 20 of 20
-/// natural returns, and 794 of 809 GM spawns; a monster walking into sight
-/// came with 4].
+/// region are shown it alone ([`alone`]).
 pub(crate) fn monster_returned(world: &mut World, uid: u32) {
-    let Some(m) = world.monster(uid) else {
+    let Some(region) = world.monster(uid).map(|m| m.position.region) else {
         return;
     };
-    let region = m.position.region;
-    let data = world.refdata().monster(m.ref_id);
-    let entity = monster::entity(
-        uid,
-        m,
-        data.expect("a placed monster has a monster's model"),
-    );
-    let raw: Bytes = write_single_spawn(
-        &entity,
-        &SingleTail::Figure(1),
-        &world.refdata().spawn_tables(),
-    )
-    .expect("a placed monster has its model's record")
-    .into();
+    let raw = alone(world, uid);
     let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
     let seeing: Vec<SessionId> = world
         .players()
@@ -132,6 +119,28 @@ pub(crate) fn monster_returned(world: &mut World, uid: u32) {
         let spawn = SingleEntitySpawn { raw: raw.clone() };
         world.show(session, uid, Packet::SingleEntitySpawn(spawn));
     }
+}
+
+/// Placed monster `uid` alone, as a single spawn (0x3015). Its last byte
+/// follows its movement, 1 standing and 4 walking, as behind every monster the
+/// vSRO server spawned alone [V capture, peer vSRO: 878 of 878 standing, 446
+/// of 446 walking]; what the byte means is [U].
+fn alone(world: &World, uid: u32) -> Bytes {
+    let m = world.monster(uid).expect("a placed monster");
+    let data = world.refdata().monster(m.ref_id);
+    let entity = monster::entity(
+        uid,
+        m,
+        data.expect("a placed monster has a monster's model"),
+    );
+    let last = if m.walk.is_some() { 4 } else { 1 };
+    write_single_spawn(
+        &entity,
+        &SingleTail::Figure(last),
+        &world.refdata().spawn_tables(),
+    )
+    .expect("a placed monster has its model's record")
+    .into()
 }
 
 /// The group spawn record of NPC or monster `uid`.
