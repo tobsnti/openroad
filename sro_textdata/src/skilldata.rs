@@ -420,8 +420,14 @@ impl SkillDataRow {
                         format!("Attack power {pct}%")
                     })
                 }
-                // 'mc' <hits> <x> — chain/combo hit count
-                "mc" => (arg(1) > 1).then(|| format!("{} consecutive hits", arg(1))),
+                // 'mc' 2 <hits>, read where the server reads it (`hit_count`).
+                // The first argument is 2 in all 25,623 rows with 'mc'; the
+                // second is 1 in 21,581, 2 in 3,737, 3 in 231, 4 in 34, 5 in 4
+                // and 0 in 36, and it counts the hits [V capture, peer vSRO].
+                "mc" => {
+                    let hits = self.hit_count();
+                    (hits > 1).then(|| format!("{hits} consecutive hits"))
+                }
                 "dura" => Some(format!("Duration: {}s", arg(1) / 1000)),
                 "cr" => Some(format!("Critical +{}", arg(1))),
                 "ru" => Some(format!("Attack distance +{}", arg(1))),
@@ -807,17 +813,20 @@ mod test {
         assert_eq!(case(&[1851946342, 26738, 0, 10]), vec!["Hit rate +10%"]);
 
         // skilldata_10000.txt:3151 SKILL_EU_WARRIOR_DUALA_TWIST_A_01:
-        // 'bl' 30000 25 1 10 20 — five arguments, and 'st' follows it
+        // 'bl' 30000 25 1 10 20 — five arguments, and 'st' follows it; its
+        // 'mc' 2 1 is one hit, so no hit line
         assert_eq!(
             case(&[
                 6386804, 5, 131, 34, 42, 0, 28003, 2, 1, 25196, 30000, 25, 1, 10, 20, 29556, 5000,
                 20, 1, 1734702198, 1160921409,
             ]),
-            vec![
-                "Attack power 131% + 34 ~ 42",
-                "2 consecutive hits",
-                "Stun 20% for 5s"
-            ]
+            vec!["Attack power 131% + 34 ~ 42", "Stun 20% for 5s"]
+        );
+
+        // skilldata_5000.txt:2 SKILL_CH_SWORD_BASE_01: 'mc' 2 2, two hits
+        assert_eq!(
+            case(&[6386804, 5, 60, 0, 0, 60, 28003, 2, 2]),
+            vec!["Attack power 60%", "2 consecutive hits"]
         );
     }
 
