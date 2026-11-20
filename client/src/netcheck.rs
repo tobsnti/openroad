@@ -52,7 +52,9 @@ use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::teleport::TeleportTable;
 use crate::net::{log_spawn_notes, read_single_spawn};
 use crate::plugins::textdata::TextdataResolver;
-use packets::agent::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
+use packets::agent::entity_spawn::{
+    parse_group_spawn, RefResolver, RefType, SpawnKind, SpawnedEntity,
+};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -954,6 +956,15 @@ fn netcheck_press_attack(
     );
 }
 
+/// Whether a single spawn after the attack is a drop to pick up: an item, and
+/// not the entity the driver attacked. A player or a monster walking into view
+/// arrives as a single spawn too, and was walked to as if it were the loot.
+fn is_drop(entity: &SpawnedEntity, attacked: Option<u32>) -> bool {
+    matches!(entity.kind, SpawnKind::Item { .. })
+        && entity.unique_id != 0
+        && Some(entity.unique_id) != attacked
+}
+
 /// Pick up the first ground drop that appears, which is the kill's own receipt.
 ///
 /// A drop arrives as a single-record spawn, and picking it up is the same
@@ -976,34 +987,20 @@ fn netcheck_pick_up_loot(
         return;
     };
     for spawn in reader.read() {
-        let Some(dropped) = read_single_spawn(&spawn.raw, &game_data.resolver()).filter(|entity| {
-            entity.unique_id != 0 && Some(entity.unique_id) != driver.selected_uid
-        }) else {
-            // Say so instead of skipping quietly: a drop this harness cannot
-            // classify parses to nothing, and its uid cannot be read from the
-            // raw bytes either — a gold record carries its amount between the
-            // ref id and the uid, a non-gold record does not. Without game
-            // data only gold is classified, so every other drop lands here;
-            // the limit is ours, not the server's. The silent version of this
-            // branch read as "the chain completed".
-            warn!(
-                "netcheck: a drop arrived that could not be classified ({} bytes, ref={}); \
-                 no pickup sent",
-                spawn.raw.len(),
-                spawn
-                    .raw
-                    .get(..4)
-                    .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    .unwrap_or(0)
-            );
+        // A frame that does not read has been reported by `read_single_spawn`;
+        // without game data that is every drop but gold, so no pickup follows.
+        let Some(entity) = read_single_spawn(&spawn.raw, &game_data.resolver()) else {
             continue;
         };
+        if !is_drop(&entity, driver.selected_uid) {
+            continue;
+        }
         // Walk onto the pile first. The server gates an explicit pickup on a
         // radius (80 units in our stub), and the driver's movement square
         // leaves the player ~150 away from where the mob died — so the pickup
         // was refused with `picked=false` and the chain proved only that the
         // request arrives, not that it works.
-        let (uid, drop_pos) = (dropped.unique_id, dropped.position);
+        let (uid, drop_pos) = (entity.unique_id, entity.position);
         if let Err(e) = conn.get_sender().send(
             Packet::from(MovementRequest::ToLocation {
                 region: drop_pos.region,
@@ -1285,6 +1282,25 @@ mod tests {
         let start = (25_000, 969.0, 1_419.0);
         let live = [(29, 24_745, 995.8, 680.8), (12_356, 25_000, 969.0, 369.0)];
         assert_eq!(nearest_candidate(&live, start), Some((12_356, 25_000)));
+    }
+
+    /// A gold pile our stub dropped (bench run 2026-11-20), as a single spawn.
+    const STUB_GOLD_DROP: &str = "010000002B0000000000B000A86100407244000000000080B8430000000000";
+
+    /// Only an item is a drop. In a two-client run on the new server, the
+    /// second player walking into view after the attack was walked to as the
+    /// loot; without game data a monster stands in for anything not an item.
+    #[test]
+    fn only_an_item_is_a_drop() {
+        let read =
+            |raw: &[u8]| read_single_spawn(raw, &HeadlessResolver).expect("reads to its end");
+        let gold = read(&bytes(STUB_GOLD_DROP));
+        let mut monster = bytes(VSRO_MONSTERS)[..55].to_vec();
+        monster.push(0); // the single spawn's tail
+        let monster = read(&monster);
+        assert!(is_drop(&gold, None));
+        assert!(!is_drop(&gold, Some(gold.unique_id)));
+        assert!(!is_drop(&monster, None));
     }
 }
 
