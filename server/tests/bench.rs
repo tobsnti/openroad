@@ -35,22 +35,26 @@ impl Drop for Server {
     }
 }
 
-/// Starts the binary with `fixture`, a textdata folder holding the model 1907
-/// (or `textdata`, the user's), and ephemeral ports.
+/// Starts the binary with `fixture`, a textdata folder holding the models
+/// 1907 and 1933 (or `textdata`, the user's), and ephemeral ports.
 fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
     let dir = std::env::temp_dir().join(format!("or-bench-{}-{name}", std::process::id()));
     let own = dir.join("textdata");
     std::fs::create_dir_all(&own).unwrap();
-    let mut row = vec![String::from("0"); 48];
-    // A player's model (type ids 1/1) with its walk and run speeds.
-    (row[1], row[9], row[10], row[46], row[47]) = (
-        "1907".into(),
-        "1".into(),
-        "1".into(),
-        "16".into(),
-        "50".into(),
-    );
-    std::fs::write(own.join("characterdata_test.txt"), row.join("\t")).unwrap();
+    // A player's model (type ids 1/1) and a monster's (1/2/1) with their walk
+    // and run speeds, the monster with its rarity and its HP.
+    let row = |id: &str, tid: [&str; 3], (walk, run): (&str, &str), hp: &str| {
+        let mut row = vec![String::from("0"); 60];
+        (row[1], row[9], row[10], row[11]) =
+            (id.into(), tid[0].into(), tid[1].into(), tid[2].into());
+        (row[46], row[47], row[59]) = (walk.into(), run.into(), hp.into());
+        row.join("\t")
+    };
+    let rows = [
+        row("1907", ["1", "1", "0"], ("16", "50"), "0"),
+        row("1933", ["1", "2", "1"], ("8", "22"), "54"),
+    ];
+    std::fs::write(own.join("characterdata_test.txt"), rows.join("\n")).unwrap();
     let (events, admin) = (dir.join("events.jsonl"), dir.join("admin.sock"));
     let child = Command::new(env!("CARGO_BIN_EXE_openroad-server"))
         .env("BENCH_FIXTURE", fixture)
@@ -87,6 +91,8 @@ fn bench_fixture() -> Value {
         "charakter": {"name": "Gilgamesh", "ref": 1907, "level": 10, "exp": 0, "gold": 100,
             "hp": 1000, "mp": 1000, "str": 20, "int": 20, "statuspunkte": 0},
         "charakter_b": {"name": "Enkidu"},
+        "mobs": [{"key": "MOB", "uid": 8195, "ref": 1933, "hp": 1000, "region": 25000,
+            "x": 969, "y": 0, "z": 369}],
     })
 }
 
@@ -202,6 +208,16 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     assert_eq!(at, (&json!(25000), &json!(969.0), &json!(1419.0)));
     assert_eq!(admin(&server.admin, "loot")["ok"], false);
 
+    // The fixture's monster stands where it says, with a uid and the HP of
+    // the server: the entry's are the stub's.
+    let mobs = admin(&server.admin, "mobs");
+    let mob = &mobs["mobs"][0];
+    assert!(mob["uid"].as_u64().is_some_and(|uid| uid != 8195), "{mob}");
+    let fields = ["ref", "region", "x", "y", "z", "hp"].map(|k| (k, mob[k].clone()));
+    let expected =
+        json!({"ref": 1933, "region": 25000, "x": 969.0, "y": 0.0, "z": 369.0, "hp": 54});
+    assert_eq!(Value::from_iter(fields), expected);
+
     // Selecting an entity comes with the NPCs: until then the frame is
     // reported, not answered.
     client.send(0x7045, &[0x01, 0x10, 0x00, 0x00], false);
@@ -254,6 +270,15 @@ fn a_wrong_fixture_value_ends_the_server_with_its_key() {
     assert!(stderr.contains("charakter_b.ref"), "{stderr}");
 }
 
+/// A monster entry whose model is no monster's ends the server the same way.
+#[test]
+fn a_mob_that_is_no_monster_ends_the_server_with_its_key() {
+    let mut wrong = bench_fixture();
+    wrong["mobs"][0]["ref"] = json!(1907);
+    let stderr = ended_by("no-monster", &wrong);
+    assert!(stderr.contains("mobs[0].ref 1907"), "{stderr}");
+}
+
 /// A worn item the user's itemdata does not hold ends the server the same
 /// way, naming the entry and the code name.
 #[test]
@@ -265,9 +290,9 @@ fn an_unknown_worn_item_ends_the_server_with_its_key() {
     assert!(stderr.contains(key), "{stderr}");
 }
 
-/// The bench's own fixture: both of its accounts log in and list their
-/// characters, wearing the items the fixture names, in slot order, as the
-/// user's itemdata numbers them.
+/// The bench's own fixture: its monsters stand where it says, and both of its
+/// accounts log in and list their characters, wearing the items the fixture
+/// names, in slot order, as the user's itemdata numbers them.
 #[test]
 #[ignore = "needs the bench's files: OPENROAD_BENCH_FIXTURE=<startwelt.json> \
             OPENROAD_TEXTDATA_DIR=<textdata> cargo test -p server --test bench -- --ignored"]
@@ -278,6 +303,12 @@ fn the_benchs_own_fixture_starts_the_server() {
     let refdata = RefData::load(&textdata).unwrap();
     let server = start("own", &fixture, Some(&textdata));
     let ready = event(&server.events, "ready");
+    let mobs = admin(&server.admin, "mobs");
+    let at = |m: &Value| ["ref", "region", "x", "y", "z"].map(|k| m[k].as_f64());
+    for mob in entries["mobs"].as_array().unwrap() {
+        let mut placed = mobs["mobs"].as_array().unwrap().iter();
+        assert!(placed.any(|m| at(m) == at(mob)), "{mob}");
+    }
     for (konto, charakter) in [("konto", "charakter"), ("konto_b", "charakter_b")] {
         let user = entries[konto]["name"].as_str().unwrap();
         let password = entries[konto]["passwort"]

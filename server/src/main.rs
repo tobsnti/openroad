@@ -7,7 +7,10 @@
 //!   `konto_b`) becomes an account with `charakter<suffix>` as its character.
 //!   As the fixture's own rule says, a suffixed entry names only what differs:
 //!   it is laid over its unsuffixed one. A character wears the items its
-//!   `ausruestung` and `avatar` name by itemdata code name.
+//!   `ausruestung` and `avatar` name by itemdata code name. Each of the
+//!   `mobs` stands as a monster of its `ref` at its `region`, `x`, `y` and
+//!   `z`; its uid and HP are the server's (decision 0019), so the entry's
+//!   `uid` and `hp` are left to the frozen stub.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
 //!   `player.joined`, `c2s.rejected`, `session.opened` (a handshake's seeds)
@@ -78,9 +81,11 @@ fn run() -> Result<(), String> {
         handshake: HANDSHAKE,
         gateway_idle: GATEWAY_IDLE,
     };
-    let world = World::new(store.clone(), refdata);
-    let (placed, skipped) = (world.npcs().count(), world.skipped_npc_rows());
-    eprintln!("npcpos.txt: {placed} NPCs placed, {skipped} rows skipped (no NPC model in the client's data)");
+    let mut world = World::new(store.clone(), refdata);
+    let (npcs, monsters) = (world.npcs().count(), world.monsters().count());
+    let skipped = world.skipped_npc_rows();
+    eprintln!("npcpos.txt: {npcs} NPCs and {monsters} monsters placed, {skipped} rows skipped (no model in the client's data)");
+    place_mobs(&fixture, &mut world)?;
     let reporter = events.clone();
     let notices = events.clone();
     let running = runtime::start(
@@ -168,6 +173,17 @@ fn answer(command: &str, running: &Running) -> Value {
                 world.npcs().map(row).collect::<Vec<_>>()
             });
             json!({"ok": true, "npcs": npcs.unwrap_or_default()})
+        }
+        Some("mobs") => {
+            let mobs = running.query(|world| {
+                let row = |(uid, m): (u32, &server::monster::Monster)| {
+                    let at = m.position;
+                    json!({"uid": uid, "ref": m.ref_id, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z, "hp": m.hp})
+                };
+                world.monsters().map(row).collect::<Vec<_>>()
+            });
+            json!({"ok": true, "mobs": mobs.unwrap_or_default()})
         }
         Some("loot" | "grant-exp") => json!({"ok": false, "error": "not yet"}),
         _ => json!({"ok": false, "error": "unknown command"}),
@@ -355,6 +371,34 @@ fn worn(
         worn.push((slot, ref_id));
     }
     Ok(worn)
+}
+
+/// The fixture's `mobs`, each placed as a monster; one whose `ref` is no
+/// monster model ends the server, naming the entry.
+fn place_mobs(fixture: &Value, world: &mut World) -> Result<(), String> {
+    let Some(mobs) = fixture.get("mobs") else {
+        return Ok(());
+    };
+    let mobs = mobs.as_array().ok_or("BENCH_FIXTURE mobs is not a list")?;
+    for (i, entry) in mobs.iter().enumerate() {
+        let key = format!("mobs[{i}]");
+        let coordinate = |field: &str| {
+            let value = entry[field].as_f64().map(|v| v as f32);
+            value.ok_or(format!("BENCH_FIXTURE {key}.{field} is not a number"))
+        };
+        let at = Position {
+            region: number(entry, &key, "region")?,
+            x: coordinate("x")?,
+            y: coordinate("y")?,
+            z: coordinate("z")?,
+            heading: 0,
+        };
+        let ref_id = number(entry, &key, "ref")?;
+        world.place_monster(ref_id, at).ok_or(format!(
+            "BENCH_FIXTURE {key}.ref {ref_id} is no monster model in characterdata"
+        ))?;
+    }
+    Ok(())
 }
 
 fn start_position(text: &str) -> Result<Position, String> {
