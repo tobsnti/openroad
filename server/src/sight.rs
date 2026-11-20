@@ -20,8 +20,8 @@ use packets::region::{is_dungeon, region_id, sector};
 use packets::Packet;
 
 use crate::movement::in_region;
-use crate::npc;
 use crate::world::{Player, World};
+use crate::{monster, npc};
 
 /// Brings who sees the character `uid`, and whom it sees, in line with where
 /// everyone is: what came into sight is shown, what left it is taken back,
@@ -53,30 +53,45 @@ pub(crate) fn update(world: &mut World, uid: u32) {
             world.hide(player.session, uid);
         }
     }
-    // NPCs only are seen, and come and go in groups, as the vSRO server
-    // sends them [V capture, peer vSRO: every NPC record in 0x3019].
+    // NPCs and monsters are only seen, and come and go in groups, as the vSRO
+    // server sends them [V capture, peer vSRO: every NPC and monster record
+    // in 0x3019].
     let near: BTreeSet<u32> = around(me.character.position.region)
         .into_iter()
-        .flat_map(|region| world.npcs_in(region).to_vec())
+        .flat_map(|region| world.placed_in(region).to_vec())
         .collect();
     let gone: Vec<u32> = world
-        .shown_npcs(me.session)
+        .shown_placed(me.session)
         .into_iter()
         .filter(|uid| !near.contains(uid))
         .collect();
     world.hide_group(me.session, gone);
-    let tables = world.refdata().spawn_tables();
-    let record = |uid: u32, npc: &npc::Npc| -> Bytes {
-        write_group_spawn(&[npc::entity(uid, npc)], &tables)
-            .expect("a placed NPC has an NPC's model (World::new)")
-            .into()
-    };
     let new: Vec<(u32, Bytes)> = near
         .into_iter()
         .filter(|uid| !world.knows(me.session, *uid))
-        .filter_map(|uid| world.npc(uid).map(|n| (uid, record(uid, n))))
+        .map(|uid| (uid, placed_record(world, uid)))
         .collect();
     world.show_group(me.session, new);
+}
+
+/// The group spawn record of NPC or monster `uid`.
+fn placed_record(world: &World, uid: u32) -> Bytes {
+    let entity = match (world.npc(uid), world.monster(uid)) {
+        (Some(npc), _) => npc::entity(uid, npc),
+        (None, Some(m)) => {
+            let data = world.refdata().monster(m.ref_id);
+            monster::entity(
+                uid,
+                m,
+                data.expect("a placed monster has a monster's model"),
+            )
+        }
+        (None, None) => unreachable!("only NPCs and monsters are placed"),
+    };
+    let record = write_group_spawn(&[entity], &world.refdata().spawn_tables());
+    record
+        .expect("a placed NPC or monster has its model's record (World::new)")
+        .into()
 }
 
 /// The regions a character in `region` sees: its own and, in the overworld,

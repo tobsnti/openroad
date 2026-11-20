@@ -16,6 +16,7 @@ pub mod gateway;
 pub mod handshake;
 mod join;
 mod lobby;
+pub mod monster;
 mod movement;
 pub mod npc;
 pub mod outbox;

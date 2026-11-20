@@ -22,6 +22,17 @@ pub struct CharacterRef {
     pub run_speed: f32,
 }
 
+/// What a monster's record and selection take from its characterdata row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MonsterRef {
+    pub max_hp: u32,
+    pub rarity: u8,
+    /// Walk and run speed in world units per second, 0 for a monster that
+    /// does not move.
+    pub walk_speed: f32,
+    pub run_speed: f32,
+}
+
 pub struct RefData {
     characters: CharacterData,
     items: ItemData,
@@ -117,7 +128,7 @@ impl RefData {
         }
     }
 
-    /// The rows of `npcpos.txt`: where the data puts its NPCs.
+    /// The rows of `npcpos.txt`: where the data puts its NPCs and monsters.
     pub fn add_npcs(&mut self, table: &str) {
         self.npcs.extend(npcpos::parse(table));
     }
@@ -131,6 +142,18 @@ impl RefData {
     pub fn is_npc(&self, ref_id: u32) -> bool {
         let row = self.row(ref_id);
         row.is_some_and(|row| matches!(row.type_ids(), Some((1, 2, 2, _))))
+    }
+
+    /// The monster model `ref_id` (characterdata type ids 1/2/1); `None` for
+    /// any other model and for a monster row without HP.
+    pub fn monster(&self, ref_id: u32) -> Option<MonsterRef> {
+        let row = self.row(ref_id).filter(|row| row.is_monster())?;
+        Some(MonsterRef {
+            max_hp: row.max_hp()?,
+            rarity: row.rarity(),
+            walk_speed: row.walk_speed().unwrap_or(0.0),
+            run_speed: row.run_speed().unwrap_or(0.0),
+        })
     }
 
     /// The rows of `siegefortress.txt`.
