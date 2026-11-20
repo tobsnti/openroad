@@ -22,6 +22,9 @@ packets = { path = "../packets" }
 # (measured 2026-11-14, both clean under cargo deny).
 postgres = { version = "0.19", default-features = false }
 rand_core = { version = "0.6", features = ["getrandom"] }
+# The world's chance (monsters' wander steps and rests), seeded so that a run
+# can be repeated; small, and already in the workspace through bevy.
+fastrand = "2"
 serde_json = "1"
 sro_macro = { path = "../sro_macro" }
 sro_net = { path = "../sro_net" }

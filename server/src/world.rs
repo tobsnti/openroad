@@ -161,10 +161,17 @@ pub struct World {
     last_uid: u32,
     step: u64,
     events: Vec<Event>,
+    /// The world's chance: the monsters' wander steps and rests.
+    chance: fastrand::Rng,
 }
 
 impl World {
     pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
+        World::seeded(store, refdata, fastrand::u64(..))
+    }
+
+    /// A world whose chance starts from `seed`, so that a run repeats.
+    pub fn seeded(store: Arc<dyn Store + Send + Sync>, refdata: RefData, seed: u64) -> World {
         let placed = refdata.npcs().to_vec();
         let mut world = World {
             store,
@@ -181,6 +188,7 @@ impl World {
             last_uid: 0,
             step: 0,
             events: Vec::new(),
+            chance: fastrand::Rng::with_seed(seed),
         };
         for row in placed {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
@@ -217,7 +225,7 @@ impl World {
             hp,
             walk: None,
             home: position,
-            rest_until: self.step + monster::rest(),
+            rest_until: self.step + monster::rest(&mut self.chance),
         };
         self.monsters.insert(uid, monster);
         Some(uid)
@@ -280,6 +288,10 @@ impl World {
 
     pub(crate) fn monster_mut(&mut self, uid: u32) -> Option<&mut Monster> {
         self.monsters.get_mut(&uid)
+    }
+
+    pub(crate) fn chance(&mut self) -> &mut fastrand::Rng {
+        &mut self.chance
     }
 
     pub fn monsters(&self) -> impl Iterator<Item = (u32, &Monster)> {
