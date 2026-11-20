@@ -73,6 +73,7 @@ use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::plugin::{NetworkCorePlugin, NetworkState};
 use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientTeleport};
 use packets::hexdump;
+use packets::region::{is_dungeon, sector, REGION_SIZE};
 use sro_net::frame::SilkroadFrame;
 
 /// Build and run the headless net-check app. Blocks until the process is killed.
@@ -735,6 +736,35 @@ fn netcheck_drive_actions(
     driver.next_move_at = Some(now + 1.5);
 }
 
+/// The candidate nearest to the player `(region, x, z)`. A position is
+/// region-local, so it is placed on the region grid ([`packets::region`])
+/// before two regions are compared; a dungeon is on no grid, so there only its
+/// own region's candidates count.
+fn nearest_candidate(
+    candidates: &[(u32, u16, f32, f32)],
+    (region, x, z): (u16, f64, f64),
+) -> Option<(u32, u16)> {
+    let on_grid = |region: u16, x: f64, z: f64| {
+        let (sx, sz) = sector(region);
+        let size = f64::from(REGION_SIZE);
+        (!is_dungeon(region)).then(|| (f64::from(sx) * size + x, f64::from(sz) * size + z))
+    };
+    let distance = |&(_, at, cx, cz): &(u32, u16, f32, f32)| {
+        let (cx, cz) = (f64::from(cx), f64::from(cz));
+        let ((ax, az), (bx, bz)) = if at == region {
+            ((x, z), (cx, cz))
+        } else {
+            (on_grid(region, x, z)?, on_grid(at, cx, cz)?)
+        };
+        Some((ax - bx).hypot(az - bz))
+    };
+    candidates
+        .iter()
+        .filter_map(|c| distance(c).map(|d| (d, c)))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, c)| (c.0, c.1))
+}
+
 /// Select the nearest monster from the spawns seen so far, once.
 fn netcheck_select_target(
     mut driver: ResMut<ActionDriver>,
@@ -800,19 +830,12 @@ fn netcheck_select_target(
     if !driver.pos_known {
         return;
     }
-    let (lx, lz) = (f64::from(driver.base_x), f64::from(driver.base_z));
-    let nearest = driver
-        .candidates
-        .iter()
-        .min_by(|a, b| {
-            let d = |c: &&(u32, u16, f32, f32)| {
-                let (dx, dz) = (f64::from(c.2) - lx, f64::from(c.3) - lz);
-                dx * dx + dz * dz
-            };
-            d(a).total_cmp(&d(b))
-        })
-        .map(|c| (c.0, c.1));
-    let Some((uid, region)) = nearest else {
+    let own = (
+        driver.region,
+        f64::from(driver.base_x),
+        f64::from(driver.base_z),
+    );
+    let Some((uid, region)) = nearest_candidate(&driver.candidates, own) else {
         return;
     };
     let Ok(conn) = conn.single() else {
@@ -1241,6 +1264,27 @@ mod tests {
             (driver.base_x, driver.base_y, driver.base_z),
             (800, 20, 900)
         );
+    }
+
+    /// A monster in the region south of the player can be nearer by its local
+    /// coordinates and still farther in the world: the region grid decides.
+    #[test]
+    fn the_nearest_target_is_measured_on_the_region_grid() {
+        let own = (25_000, 964.0, 369.0);
+        let south = packets::region::region_id(0xA8, 0x60);
+        let candidates = [
+            (1, south, 964.0, 369.0), // locally 0 away, 1,920 in the world
+            (2, 25_000, 1_100.0, 369.0),
+        ];
+        assert_eq!(nearest_candidate(&candidates, own), Some((2, 25_000)));
+
+        // Live on the new server with its monsters (qa-lab, 2026-11-20): from
+        // the start spot the local rule chose the monster in region 24745,
+        // 738 locally and about 3,295 in the world, over the one 1,050 away
+        // in the player's own region.
+        let start = (25_000, 969.0, 1_419.0);
+        let live = [(29, 24_745, 995.8, 680.8), (12_356, 25_000, 969.0, 369.0)];
+        assert_eq!(nearest_candidate(&live, start), Some((12_356, 25_000)));
     }
 }
 
