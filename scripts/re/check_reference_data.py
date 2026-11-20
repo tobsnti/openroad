@@ -26,7 +26,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-TEXTDATA = ROOT / "client" / "src" / "assets" / "textdata"
 
 # `Setup.Add(new Query2Path() { Path = "characterdata_5000.txt", Query = "SELECT ..." });`
 QUERY2PATH = re.compile(r'Path\s*=\s*"([^"]+)".*?Query\s*=\s*"([^"]+)"', re.S)
@@ -43,7 +42,7 @@ STAT_RANGE_ARM = re.compile(r"StatRange::(\w+)\s*=>\s*\((\d+)\s*,\s*(\d+)\)")
 OUR_ENUMS = [
     ("ItemdataFields", ROOT / "sro_textdata" / "src" / "itemdata.rs", "itemdata"),
     ("ChardataFields", ROOT / "sro_textdata" / "src" / "characterdata.rs", "characterdata"),
-    ("SkilldataFields", TEXTDATA / "skilldata.rs", "skilldata"),
+    ("SkilldataFields", ROOT / "sro_textdata" / "src" / "skilldata.rs", "skilldata"),
 ]
 
 # Renames that no mechanical rule derives. Keys and values are already

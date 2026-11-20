@@ -56,7 +56,7 @@ pub mod questreward;
 pub mod shops;
 pub mod siegefortress;
 pub mod siegefortressreward;
-pub mod skilldata;
+pub use sro_textdata::skilldata;
 pub mod skilleffect;
 pub mod skillgroup;
 pub mod specialty;

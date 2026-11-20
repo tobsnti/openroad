@@ -10,7 +10,9 @@
 //! `basic_level` (col 7) orders the ladder. Trailing columns from 69 on are
 //! a fourcc-tagged parameter stream (`'att'`, `'dura' <ms>`, ...).
 
+#[cfg(feature = "bevy")]
 use bevy::asset::Asset;
+#[cfg(feature = "bevy")]
 use bevy::prelude::TypePath;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -18,7 +20,8 @@ use std::ops::Deref;
 #[derive(Debug, Clone)]
 pub struct SkillDataRow(pub Vec<String>);
 
-#[derive(Asset, TypePath, Debug, Clone)]
+#[cfg_attr(feature = "bevy", derive(Asset, TypePath))]
+#[derive(Debug, Clone)]
 pub struct SkillData(pub HashMap<i32, SkillDataRow>);
 
 #[repr(usize)]
