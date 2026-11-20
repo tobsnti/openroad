@@ -93,6 +93,10 @@ pub enum CharacterSelectionAction {
     ShowJobSpread,
     #[sro_packet(value = 0x10)]
     AssignJob,
+    /// Every other action, 6 and 7 among them: the original reads their 0xB007
+    /// answers like any other `[V original handler]`. What they do is [U].
+    #[sro_packet(other)]
+    Other(u8),
 }
 
 /// 0xB007 — answer to [`CharacterSelectionActionRequest`].
@@ -100,8 +104,8 @@ pub enum CharacterSelectionAction {
 /// Idea of the two gates: the frame is `action | result` and *both* tails are
 /// conditional, never both present. A success answer for Create/Delete/Restore
 /// is the bare two bytes: the original client receives `01 01`, `03 01` and
-/// `05 01` and nothing else, which is why only `List` reads a body on
-/// `result == 1`. The error code hangs on any other result — the original
+/// `05 01` and nothing else, which is why only `List` and action 6 read a body
+/// on `result == 1`. The error code hangs on any other result — the original
 /// reads it for every `result != 1` `[V original handler]` — and is a u16 LE,
 /// e.g. `04 02 1004` = `0x0410` for action `04`, and `01 02 1004` for a
 /// rejected Create.
@@ -126,6 +130,10 @@ pub struct CharacterSelectionActionResponse {
     pub result: u8,
     #[sro_packet(when = "result == 1 && action == CharacterSelectionAction::List")]
     pub characters: Option<CharacterData>,
+    /// Action 6 answers success with one string `[V original handler]`; what
+    /// it holds is [U].
+    #[sro_packet(when = "result == 1 && action == CharacterSelectionAction::Other(6)")]
+    pub action6_string: Option<String>,
     #[sro_packet(when = "result != 1")]
     pub error_code: Option<u16>,
 }
@@ -560,6 +568,30 @@ mod tests {
             assert_eq!(response.result, 1);
             assert!(response.characters.is_none());
             assert!(response.error_code.is_none());
+        }
+    }
+
+    /// Actions 6 and 7 have no variant of their own; their answers round-trip
+    /// whole: action 6 with its string on success, 7 with nothing, and either
+    /// with the error code on failure.
+    #[test]
+    fn actions_six_and_seven_read_as_the_original() {
+        for raw in [
+            &[0x06, 0x01, 0x02, 0x00, b'h', b'i'][..],
+            &[0x06, 0x02, 0x10, 0x04],
+            &[0x07, 0x01],
+            &[0x07, 0x02, 0x10, 0x04],
+        ] {
+            let response =
+                CharacterSelectionActionResponse::try_from(Bytes::copy_from_slice(raw)).unwrap();
+            assert_eq!(response.action, CharacterSelectionAction::Other(raw[0]));
+            assert_eq!(
+                response.action6_string.as_deref(),
+                (raw[..2] == [0x06, 0x01]).then_some("hi")
+            );
+            assert_eq!(response.byte_size(), raw.len());
+            let back: Bytes = response.into();
+            assert_eq!(back.as_ref(), raw);
         }
     }
 
