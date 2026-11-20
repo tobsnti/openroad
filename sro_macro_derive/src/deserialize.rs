@@ -6,7 +6,8 @@ use syn::spanned::Spanned;
 use syn::{Data, Expr, Field, Fields, Type};
 
 use crate::{
-    get_type_of, get_variant_value, PacketArgs, PacketFieldArgs, UsedType, DEFAULT_LIST_TYPE,
+    get_type_of, get_variant_value, is_other, PacketArgs, PacketFieldArgs, UsedType,
+    DEFAULT_LIST_TYPE,
 };
 
 pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream {
@@ -48,14 +49,46 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> Token
         },
         Data::Enum(ref enum_data) => {
             let enum_size = args.size.unwrap_or(1);
-            let arms = enum_data.variants.iter().map(|variant| {
+            let mut others = enum_data
+                .variants
+                .iter()
+                .filter(|variant| is_other(variant));
+            let other = others.next();
+            if let Some(second) = others.next() {
+                abort!(
+                    second,
+                    "only one variant can be `#[sro_packet(other)]`: it is read for every value \
+                     without a variant of its own"
+                );
+            }
+            // The `other` arm matches every value, so it comes last whatever
+            // the declaration order.
+            let variants = enum_data
+                .variants
+                .iter()
+                .filter(|variant| !is_other(variant))
+                .chain(other);
+            let arms = variants.map(|variant| {
                 let field_args =
                     PacketFieldArgs::from_attributes(&variant.attrs).expect("i failed");
-                let value = get_variant_value(
-                    &variant.ident,
-                    field_args.value.expect("Missing value for variant."),
-                    enum_size,
-                );
+                // The `other` variant keeps the value it matched in its first
+                // field, which is bound to it instead of read.
+                let (pattern, skip) = if field_args.other {
+                    if variant.fields.is_empty() {
+                        abort!(
+                            variant,
+                            "an `#[sro_packet(other)]` variant needs a first field for the value"
+                        );
+                    }
+                    (quote!(unknown), 1)
+                } else {
+                    let value = get_variant_value(
+                        &variant.ident,
+                        field_args.value.expect("Missing value for variant."),
+                        enum_size,
+                    );
+                    (quote!(#value), 0)
+                };
                 let variant_ident = &variant.ident;
 
                 match &variant.fields {
@@ -65,11 +98,13 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> Token
                             .iter()
                             .map(|field| field.ident.as_ref().expect("i failed"))
                             .collect::<Vec<&Ident>>();
-                        let content = named.named.iter().map(|field| {
+                        let bound = &idents[..skip];
+                        let content = named.named.iter().skip(skip).map(|field| {
                             generate_reader_for(field, field.ident.as_ref().expect("i failed"))
                         });
                         quote_spanned! { variant_ident.span() =>
-                            #value => {
+                            #pattern => {
+                                #(let #bound = unknown;)*
                                 #(#content)*
                                 Ok(#ident::#variant_ident { #(#idents),* })
                             }
@@ -79,13 +114,16 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> Token
                         let idents = (0..unnamed.unnamed.len())
                             .map(|i| format_ident!("t{}", i))
                             .collect::<Vec<Ident>>();
+                        let bound = &idents[..skip];
                         let content = unnamed
                             .unnamed
                             .iter()
                             .zip(&idents)
+                            .skip(skip)
                             .map(|(field, ident)| generate_reader_for(field, ident));
                         quote_spanned! { variant_ident.span() =>
-                            #value => {
+                            #pattern => {
+                                #(let #bound = unknown;)*
                                 #(#content)*
                                 Ok(#ident::#variant_ident(#(#idents),*))
                             }
@@ -93,13 +131,18 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> Token
                     }
                     Fields::Unit => {
                         quote_spanned! { variant_ident.span() =>
-                            #value => Ok(#ident::#variant_ident)
+                            #pattern => Ok(#ident::#variant_ident)
                         }
                     }
                 }
             });
 
             let variant_string = format!("{}", ident);
+            let unknown_arm = other.is_none().then(|| {
+                quote_spanned! { ident.span() =>
+                    unknown => Err(sro_macro::SerializationError::UnknownVariation(unknown as usize, #variant_string)),
+                }
+            });
             let size = args.size.unwrap_or(1);
             let reader = match size {
                 1 => quote_spanned!(ident.span() => u8::read_from(reader)?),
@@ -110,8 +153,8 @@ pub(crate) fn deserialize(ident: &Ident, data: &Data, args: PacketArgs) -> Token
             };
             quote_spanned! { ident.span() =>
                 match #reader {
-                    #(#arms),*,
-                    unknown => Err(sro_macro::SerializationError::UnknownVariation(unknown as usize, #variant_string)),
+                    #(#arms,)*
+                    #unknown_arm
                 }
             }
         }
