@@ -50,9 +50,11 @@ use crate::assets::textdata::characterdata::CharacterData;
 use crate::assets::textdata::decode::decode_textdata;
 use crate::assets::textdata::itemdata::ItemData;
 use crate::assets::textdata::teleport::TeleportTable;
-use crate::net::log_spawn_notes;
+use crate::net::{log_spawn_notes, read_single_spawn};
 use crate::plugins::textdata::TextdataResolver;
-use packets::agent::entity_spawn::{parse_group_spawn, RefResolver, RefType, SpawnKind};
+use packets::agent::entity_spawn::{
+    parse_group_spawn, RefResolver, RefType, SpawnKind, SpawnedEntity,
+};
 use packets::agent::{AgentLoginRequest, AgentLoginResponse};
 use packets::login::{
     LoginCaptchaChallenge, LoginCaptchaConfirmRequest, LoginRequest, LoginResponse,
@@ -73,6 +75,7 @@ use crate::plugins::net::gateway::GatewayConnection;
 use crate::plugins::net::plugin::{NetworkCorePlugin, NetworkState};
 use crate::plugins::textdata::{ClientCharacterData, ClientItemData, ClientTeleport};
 use packets::hexdump;
+use packets::region::{is_dungeon, sector, REGION_SIZE};
 use sro_net::frame::SilkroadFrame;
 
 /// Build and run the headless net-check app. Blocks until the process is killed.
@@ -735,6 +738,35 @@ fn netcheck_drive_actions(
     driver.next_move_at = Some(now + 1.5);
 }
 
+/// The candidate nearest to the player `(region, x, z)`. A position is
+/// region-local, so it is placed on the region grid ([`packets::region`])
+/// before two regions are compared; a dungeon is on no grid, so there only its
+/// own region's candidates count.
+fn nearest_candidate(
+    candidates: &[(u32, u16, f32, f32)],
+    (region, x, z): (u16, f64, f64),
+) -> Option<(u32, u16)> {
+    let on_grid = |region: u16, x: f64, z: f64| {
+        let (sx, sz) = sector(region);
+        let size = f64::from(REGION_SIZE);
+        (!is_dungeon(region)).then(|| (f64::from(sx) * size + x, f64::from(sz) * size + z))
+    };
+    let distance = |&(_, at, cx, cz): &(u32, u16, f32, f32)| {
+        let (cx, cz) = (f64::from(cx), f64::from(cz));
+        let ((ax, az), (bx, bz)) = if at == region {
+            ((x, z), (cx, cz))
+        } else {
+            (on_grid(region, x, z)?, on_grid(at, cx, cz)?)
+        };
+        Some((ax - bx).hypot(az - bz))
+    };
+    candidates
+        .iter()
+        .filter_map(|c| distance(c).map(|d| (d, c)))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, c)| (c.0, c.1))
+}
+
 /// Select the nearest monster from the spawns seen so far, once.
 fn netcheck_select_target(
     mut driver: ResMut<ActionDriver>,
@@ -769,10 +801,12 @@ fn netcheck_select_target(
         })
         .inspect(log_spawn_notes)
         .collect();
+    // A single spawn is read with its own reader: its record has a tail the
+    // group frame lacks, and without game data that tail is what tells an NPC
+    // from a monster (read as a one-record batch, an NPC came out a monster).
     let single_spawns: Vec<_> = reader
         .read()
-        .map(|spawn| parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver()))
-        .inspect(log_spawn_notes)
+        .filter_map(|spawn| read_single_spawn(&spawn.raw, &game_data.resolver()))
         .collect();
     // Remember every candidate; choose when the local position is known.
     // Measured 2026-11-09: the spawn batch and the join land in the same frame,
@@ -785,8 +819,7 @@ fn netcheck_select_target(
     // to be candidates as soon as they parsed.
     for entity in single_spawns
         .iter()
-        .chain(group_spawns.iter())
-        .flat_map(|parsed| parsed.spawns.iter())
+        .chain(group_spawns.iter().flat_map(|parsed| parsed.spawns.iter()))
         .filter(|entity| entity.unique_id != 0 && matches!(entity.kind, SpawnKind::Monster { .. }))
     {
         driver.candidates.push((
@@ -799,19 +832,12 @@ fn netcheck_select_target(
     if !driver.pos_known {
         return;
     }
-    let (lx, lz) = (f64::from(driver.base_x), f64::from(driver.base_z));
-    let nearest = driver
-        .candidates
-        .iter()
-        .min_by(|a, b| {
-            let d = |c: &&(u32, u16, f32, f32)| {
-                let (dx, dz) = (f64::from(c.2) - lx, f64::from(c.3) - lz);
-                dx * dx + dz * dz
-            };
-            d(a).total_cmp(&d(b))
-        })
-        .map(|c| (c.0, c.1));
-    let Some((uid, region)) = nearest else {
+    let own = (
+        driver.region,
+        f64::from(driver.base_x),
+        f64::from(driver.base_z),
+    );
+    let Some((uid, region)) = nearest_candidate(&driver.candidates, own) else {
         return;
     };
     let Ok(conn) = conn.single() else {
@@ -930,6 +956,15 @@ fn netcheck_press_attack(
     );
 }
 
+/// Whether a single spawn after the attack is a drop to pick up: an item, and
+/// not the entity the driver attacked. A player or a monster walking into view
+/// arrives as a single spawn too, and was walked to as if it were the loot.
+fn is_drop(entity: &SpawnedEntity, attacked: Option<u32>) -> bool {
+    matches!(entity.kind, SpawnKind::Item { .. })
+        && entity.unique_id != 0
+        && Some(entity.unique_id) != attacked
+}
+
 /// Pick up the first ground drop that appears, which is the kill's own receipt.
 ///
 /// A drop arrives as a single-record spawn, and picking it up is the same
@@ -952,46 +987,20 @@ fn netcheck_pick_up_loot(
         return;
     };
     for spawn in reader.read() {
-        let parsed = parse_group_spawn(&spawn.raw, true, 1, &game_data.resolver());
-        log_spawn_notes(&parsed);
-        let Some(uid) = parsed
-            .spawns
-            .iter()
-            .map(|entity| entity.unique_id)
-            .find(|&uid| uid != 0 && Some(uid) != driver.selected_uid)
-        else {
-            // Say so instead of skipping quietly: a drop this harness cannot
-            // classify parses to nothing, and its uid cannot be read from the
-            // raw bytes either — a gold record carries its amount between the
-            // ref id and the uid, a non-gold record does not. Without game
-            // data only gold is classified, so every other drop lands here;
-            // the limit is ours, not the server's. The silent version of this
-            // branch read as "the chain completed".
-            warn!(
-                "netcheck: a drop arrived that could not be classified ({} bytes, ref={}); \
-                 no pickup sent",
-                spawn.raw.len(),
-                spawn
-                    .raw
-                    .get(..4)
-                    .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    .unwrap_or(0)
-            );
+        // A frame that does not read has been reported by `read_single_spawn`;
+        // without game data that is every drop but gold, so no pickup follows.
+        let Some(entity) = read_single_spawn(&spawn.raw, &game_data.resolver()) else {
             continue;
         };
+        if !is_drop(&entity, driver.selected_uid) {
+            continue;
+        }
         // Walk onto the pile first. The server gates an explicit pickup on a
         // radius (80 units in our stub), and the driver's movement square
         // leaves the player ~150 away from where the mob died — so the pickup
         // was refused with `picked=false` and the chain proved only that the
         // request arrives, not that it works.
-        let Some(drop_pos) = parsed
-            .spawns
-            .iter()
-            .find(|e| e.unique_id == uid)
-            .map(|e| e.position.clone())
-        else {
-            continue;
-        };
+        let (uid, drop_pos) = (entity.unique_id, entity.position);
         if let Err(e) = conn.get_sender().send(
             Packet::from(MovementRequest::ToLocation {
                 region: drop_pos.region,
@@ -1170,6 +1179,43 @@ mod tests {
         assert_eq!(got, two_npcs_three_monsters());
     }
 
+    /// A single spawn (0x3015) is one record and a tail byte, and without game
+    /// data that tail is what decides: one byte behind the NPC reading is an
+    /// NPC's tail, two are a monster's rarity and its tail. Read as a
+    /// one-record batch instead, the NPC came out a monster and the monster
+    /// undecided, so the driver aimed at the NPC. The records are the first of
+    /// each captured group above.
+    #[test]
+    fn a_single_spawn_without_game_data_makes_only_the_monster_a_target() {
+        let mut app = App::new();
+        app.add_message::<SingleEntitySpawn>()
+            .add_message::<GroupEntitySpawnBegin>()
+            .add_message::<GroupEntitySpawnData>()
+            .insert_resource(ActionDriver {
+                enabled: true,
+                ..Default::default()
+            })
+            .insert_resource(GameData(None))
+            .add_systems(Update, netcheck_select_target);
+        for (group, count) in [(VSRO_NPCS, 2), (VSRO_MONSTERS, 3)] {
+            let group = bytes(group);
+            // the records of each group are of one length
+            let mut raw = group[..group.len() / count].to_vec();
+            raw.push(0); // the single spawn's tail
+            app.world_mut()
+                .write_message(SingleEntitySpawn { raw: raw.into() });
+        }
+        app.update();
+        let targets: Vec<u32> = app
+            .world()
+            .resource::<ActionDriver>()
+            .candidates
+            .iter()
+            .map(|candidate| candidate.0)
+            .collect();
+        assert_eq!(targets, [106_615]);
+    }
+
     /// #728's root cause, pinned: a CHARACTER_DATA body that offers more than
     /// one plausible position is REFUSED by the id-less scan
     /// (`packets/src/agent/character_data.rs:696-703` — "a second match means we
@@ -1215,6 +1261,46 @@ mod tests {
             (driver.base_x, driver.base_y, driver.base_z),
             (800, 20, 900)
         );
+    }
+
+    /// A monster in the region south of the player can be nearer by its local
+    /// coordinates and still farther in the world: the region grid decides.
+    #[test]
+    fn the_nearest_target_is_measured_on_the_region_grid() {
+        let own = (25_000, 964.0, 369.0);
+        let south = packets::region::region_id(0xA8, 0x60);
+        let candidates = [
+            (1, south, 964.0, 369.0), // locally 0 away, 1,920 in the world
+            (2, 25_000, 1_100.0, 369.0),
+        ];
+        assert_eq!(nearest_candidate(&candidates, own), Some((2, 25_000)));
+
+        // Live on the new server with its monsters (qa-lab, 2026-11-20): from
+        // the start spot the local rule chose the monster in region 24745,
+        // 738 locally and about 3,295 in the world, over the one 1,050 away
+        // in the player's own region.
+        let start = (25_000, 969.0, 1_419.0);
+        let live = [(29, 24_745, 995.8, 680.8), (12_356, 25_000, 969.0, 369.0)];
+        assert_eq!(nearest_candidate(&live, start), Some((12_356, 25_000)));
+    }
+
+    /// A gold pile our stub dropped (bench run 2026-11-20), as a single spawn.
+    const STUB_GOLD_DROP: &str = "010000002B0000000000B000A86100407244000000000080B8430000000000";
+
+    /// Only an item is a drop. In a two-client run on the new server, the
+    /// second player walking into view after the attack was walked to as the
+    /// loot; without game data a monster stands in for anything not an item.
+    #[test]
+    fn only_an_item_is_a_drop() {
+        let read =
+            |raw: &[u8]| read_single_spawn(raw, &HeadlessResolver).expect("reads to its end");
+        let gold = read(&bytes(STUB_GOLD_DROP));
+        let mut monster = bytes(VSRO_MONSTERS)[..55].to_vec();
+        monster.push(0); // the single spawn's tail
+        let monster = read(&monster);
+        assert!(is_drop(&gold, None));
+        assert!(!is_drop(&gold, Some(gold.unique_id)));
+        assert!(!is_drop(&monster, None));
     }
 }
 
