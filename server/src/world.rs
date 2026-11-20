@@ -12,9 +12,11 @@ use std::sync::Arc;
 use bytes::Bytes;
 use packets::agent::ingame::{GROUP_DESPAWN, GROUP_SPAWN};
 use packets::agent::prelude::{
-    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, SingleEntityDespawn,
+    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, MovementResponse,
+    SingleEntityDespawn,
 };
 use packets::judge::{decode_exact, Verdict};
+use packets::region::is_dungeon;
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
@@ -209,15 +211,60 @@ impl World {
         let hp = self.refdata.monster(ref_id)?.max_hp;
         let uid = self.next_uid();
         self.placed_in.entry(position.region).or_default().push(uid);
-        self.monsters.insert(
-            uid,
-            Monster {
-                ref_id,
-                position,
-                hp,
+        let monster = Monster {
+            ref_id,
+            position,
+            hp,
+            walk: None,
+        };
+        self.monsters.insert(uid, monster);
+        Some(uid)
+    }
+
+    /// Sends monster `uid` walking to `to`, a point in world coordinates, at
+    /// its walk speed; the clients that know it are told where (0xB021), as
+    /// for a character [V capture, peer vSRO: 4417 of 18164 monster moves
+    /// carry no start position]. False when there is no such monster, or it
+    /// stands in a dungeon, whose coordinates are outside the region grid.
+    pub fn walk_monster(&mut self, uid: u32, to: Point) -> bool {
+        let Some(monster) = self.monsters.get_mut(&uid) else {
+            return false;
+        };
+        let at = monster.position;
+        if is_dungeon(at.region) {
+            return false;
+        }
+        let from = movement::in_world(
+            at.region,
+            Point {
+                x: at.x,
+                y: at.y,
+                z: at.z,
             },
         );
-        Some(uid)
+        monster.walk = Some(Walk { from, to, steps: 0 });
+        let (region, local) = movement::in_region(to);
+        let answer = MovementResponse {
+            unique_id: uid,
+            has_destination: true,
+            region,
+            x: local.x as i32,
+            y: local.y as i32,
+            z: local.z as i32,
+            angle: 0,
+        };
+        let observers = self.observers(uid);
+        self.broadcast(&observers, Packet::MovementResponse(answer));
+        true
+    }
+
+    /// Moves NPC or monster `uid` from the index of region `from` to that of
+    /// region `to`.
+    pub(crate) fn move_placed(&mut self, uid: u32, from: u16, to: u16) {
+        if let Some(uids) = self.placed_in.get_mut(&from) {
+            uids.retain(|placed| *placed != uid);
+        }
+        self.placed_in.entry(to).or_default().push(uid);
     }
 
     /// Rows of `npcpos.txt` that were not placed (`crate::npc`).
@@ -476,13 +523,30 @@ impl World {
         let mut crossed = Vec::new();
         for (uid, player) in &mut self.players {
             let region = player.character.position.region;
-            movement::advance(player);
+            let at = &mut player.character.position;
+            movement::advance(&mut player.walk, player.run_speed, at);
             if player.character.position.region != region {
                 crossed.push(*uid);
             }
         }
         for uid in crossed {
             sight::update(self, uid);
+        }
+        let mut crossed = Vec::new();
+        let walking = self.monsters.iter_mut().filter(|(_, m)| m.walk.is_some());
+        for (uid, monster) in walking {
+            let from = monster.position.region;
+            let speed = self
+                .refdata
+                .monster(monster.ref_id)
+                .map_or(0.0, |d| d.walk_speed);
+            movement::advance(&mut monster.walk, speed, &mut monster.position);
+            if monster.position.region != from {
+                crossed.push((*uid, from));
+            }
+        }
+        for (uid, from) in crossed {
+            sight::monster_crossed(self, uid, from);
         }
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self

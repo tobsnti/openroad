@@ -20,7 +20,7 @@ use packets::region::{is_dungeon, region_id, sector};
 use packets::Packet;
 
 use crate::movement::in_region;
-use crate::world::{Player, World};
+use crate::world::{Phase, Player, SessionId, World};
 use crate::{monster, npc};
 
 /// Brings who sees the character `uid`, and whom it sees, in line with where
@@ -72,6 +72,31 @@ pub(crate) fn update(world: &mut World, uid: u32) {
         .map(|uid| (uid, placed_record(world, uid)))
         .collect();
     world.show_group(me.session, new);
+}
+
+/// Monster `uid` walked from region `from` into another: the clients in the
+/// game that now see it are shown it, and those that no longer do have it
+/// taken back, each as a group of one, as for NPCs.
+pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
+    let Some(region) = world.monster(uid).map(|m| m.position.region) else {
+        return;
+    };
+    world.move_placed(uid, from, region);
+    let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
+    let players: Vec<(SessionId, u16)> = world
+        .players()
+        .filter(|(_, p)| in_game(p.session))
+        .map(|(_, p)| (p.session, p.character.position.region))
+        .collect();
+    for (session, at) in players {
+        let near = in_sight(at, region);
+        if near && !world.knows(session, uid) {
+            let record = placed_record(world, uid);
+            world.show_group(session, vec![(uid, record)]);
+        } else if !near && world.knows(session, uid) {
+            world.hide_group(session, vec![uid]);
+        }
+    }
 }
 
 /// The group spawn record of NPC or monster `uid`.

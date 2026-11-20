@@ -3,22 +3,25 @@
 //! One row is one monster, a deliberate simplification (decision 0019): the
 //! file holds a row's model and position only, while the nest's size, radius
 //! and respawn time are in the original's server data, which we do not have
-//! [U]. They stand still until they think (M2).
+//! [U].
 
 use bytes::{BufMut, BytesMut};
-use packets::agent::character_data::EntityState;
+use packets::agent::character_data::{EntityMovement, EntityState};
 use packets::agent::entity_spawn::{Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::SelectEntityResponse;
 
+use crate::movement::in_region;
 use crate::refdata::MonsterRef;
 use crate::sight;
 use crate::store::Position;
+use crate::world::Walk;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Monster {
     pub ref_id: u32,
     pub position: Position,
     pub hp: u32,
+    pub walk: Option<Walk>,
 }
 
 /// The talk option every monster offers in its record and its selection, as
@@ -26,21 +29,34 @@ pub struct Monster {
 /// records, 73 of 73 selections]. Its meaning and source are open [U].
 const OPTIONS: [u8; 1] = [0x05];
 
-/// The monster as its record in a group spawn shows it, for the spawn writer.
-/// A standing monster as the vSRO server sends one [V capture, peer vSRO: 4323
-/// monster records]: alive, the walk and run speeds and the rarity of its
-/// characterdata row (all records but the champions, which the server makes
-/// from normal ones at run time), Hwan speed 100, no buffs, no name, and
-/// interaction flag 2 with its option. `npcpos.txt` has no heading; it is 0
-/// [U].
+/// The monster as its record in a group spawn shows it, for the spawn writer,
+/// as the vSRO server sends one [V capture, peer vSRO: 4323 monster records]:
+/// alive, the walk and run speeds and the rarity of its characterdata row (all
+/// records but the champions, which the server makes from normal ones at run
+/// time), Hwan speed 100, no buffs, no name, and interaction flag 2 with its
+/// option. Standing, it faces its heading; `npcpos.txt` has none, so it is 0
+/// [U]. Walking, it carries its destination with movement type 0, as 3405 of
+/// the 3443 walking records do.
 pub(crate) fn entity(uid: u32, monster: &Monster, data: MonsterRef) -> SpawnedEntity {
+    let movement = match monster.walk.map(|walk| in_region(walk.to)) {
+        Some((region, to)) => EntityMovement {
+            has_destination: true,
+            move_type: 0,
+            dest_region: Some(region),
+            dest_x: Some(to.x as i32),
+            dest_y: Some(to.y as i32),
+            dest_z: Some(to.z as i32),
+            ..Default::default()
+        },
+        None => sight::standing(monster.position.heading),
+    };
     SpawnedEntity {
         ref_id: monster.ref_id,
         unique_id: uid,
         position: monster.position.into(),
         name: None,
         guild: None,
-        movement: Some(sight::standing(monster.position.heading)),
+        movement: Some(movement),
         state: Some(EntityState {
             life_state: 1,
             unk: 0,

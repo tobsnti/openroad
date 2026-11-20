@@ -7,13 +7,14 @@ use bytes::Bytes;
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
 use packets::agent::entity_spawn::{parse_group_spawn, Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::{
-    AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest,
+    AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest, MovementResponse,
     SelectEntityRequest, TalkRequest,
 };
+use packets::region::{sector, REGION_SIZE};
 use packets::Packet;
 use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position, Store};
-use server::world::{Phase, SessionId, World};
+use server::world::{Phase, Point, SessionId, World};
 use sro_textdata::characterdata::CharacterData;
 use sro_textdata::spawn::SpawnTables;
 
@@ -540,4 +541,112 @@ fn a_monster_is_selected_with_its_hp() {
     assert_eq!(select(mangnyang), selected(mangnyang));
     assert_eq!(select(placed), selected(placed));
     assert_eq!(select(far), []);
+}
+
+/// The monster's walk speed: a Mangnyang (8 units per second) sent 88 units
+/// east walks 11 s, 330 steps; the client that sees it is told where it
+/// goes, as for a character.
+#[test]
+fn a_monster_walks_at_its_walk_speed_and_is_seen_walking() {
+    let mut shard = monster_world();
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    frames(world, s);
+    let mangnyang = world
+        .monsters()
+        .find(|(_, m)| m.position.x == 900.0)
+        .unwrap()
+        .0;
+    let (sx, sz) = sector(REGION);
+    let to = Point {
+        x: f32::from(sx) * REGION_SIZE + 988.0,
+        y: 0.0,
+        z: f32::from(sz) * REGION_SIZE + 1400.0,
+    };
+    assert!(world.walk_monster(mangnyang, to));
+    let told = MovementResponse {
+        unique_id: mangnyang,
+        has_destination: true,
+        region: REGION,
+        x: 988,
+        y: 0,
+        z: 1400,
+        angle: 0,
+    };
+    let (opcode, body) = Packet::MovementResponse(told).into_serialize();
+    assert_eq!(frames(world, s), [(opcode, body)]);
+    for _ in 0..329 {
+        world.step();
+    }
+    assert!(world.monster(mangnyang).unwrap().walk.is_some());
+    world.step();
+    let m = world.monster(mangnyang).unwrap();
+    assert_eq!(
+        (m.walk, m.position.region, m.position.x),
+        (None, REGION, 988.0)
+    );
+}
+
+/// A monster walking into a region the hero sees comes as a group of one,
+/// walking, and is taken back when it walks out again. Before it comes, the
+/// hero is not told where it goes.
+#[test]
+fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
+    let mut shard = monster_world();
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    frames(world, s);
+    let far = world
+        .monsters()
+        .find(|(_, m)| m.position.x == 100.0)
+        .unwrap()
+        .0;
+    let point = |region: u16, x: f32| {
+        let (sx, sz) = sector(region);
+        let (x, z) = (
+            f32::from(sx) * REGION_SIZE + x,
+            f32::from(sz) * REGION_SIZE + 100.0,
+        );
+        Point { x, y: 0.0, z }
+    };
+    let walk = |world: &mut World, to| {
+        assert!(world.walk_monster(far, to));
+        while world.monster(far).unwrap().walk.is_some() {
+            world.step();
+        }
+        frames(world, s)
+    };
+    let seen = walk(world, point(REGION + 1, 1800.0));
+    let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
+    assert_eq!(codes, [0x3017, 0x3019, 0x3018]);
+    let characters = CharacterData::parse_shard(&monster_rows());
+    let client = SpawnTables {
+        characters: Some(&characters),
+        items: None,
+        gates: None,
+    };
+    let parsed = parse_group_spawn(&seen[1].1, true, 1, &client);
+    let walking = EntityMovement {
+        has_destination: true,
+        move_type: 0,
+        dest_region: Some(REGION + 1),
+        dest_x: Some(1800),
+        dest_y: Some(0),
+        dest_z: Some(100),
+        ..Default::default()
+    };
+    let read = (parsed.spawns[0].unique_id, parsed.spawns[0].movement);
+    assert_eq!(read, (far, Some(walking)));
+    // Walking out, the hero is told where it goes, then sees it taken back.
+    let seen = walk(world, point(REGION + 2, 100.0));
+    let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
+    assert_eq!(codes, [0xB021, 0x3017, 0x3019, 0x3018]);
+    let gone = (
+        seen[2].1.clone(),
+        Bytes::copy_from_slice(&far.to_le_bytes()),
+    );
+    assert_eq!(
+        (seen[1].1.clone(), gone.0),
+        (Bytes::from_static(&[2, 1, 0]), gone.1)
+    );
 }
