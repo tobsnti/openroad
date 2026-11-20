@@ -146,9 +146,14 @@ fn monster_rows() -> String {
 
 /// The hero's model and the monsters of [`MONSTERPOS`].
 fn monster_world() -> (World, Arc<MemoryStore>) {
+    monsters_at(MONSTERPOS)
+}
+
+/// The hero's model and the monsters of the rows `npcpos`.
+fn monsters_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
     let mut refdata = hero_model();
     refdata.add_characters(&monster_rows());
-    refdata.add_npcs(MONSTERPOS);
+    refdata.add_npcs(npcpos);
     world_with(refdata)
 }
 
@@ -660,8 +665,7 @@ fn a_monster_walking_into_sight_comes_as_a_group_of_one() {
 /// Monsters near the hero wander: in the first minute each takes a few
 /// steps, each at most 111 units long and ending at most 250 units from its
 /// row, at least 9.2 s apart; the Tiger Woman, walking 20 units a second,
-/// rests most of that time. The monster two regions away, which nobody sees,
-/// does not move.
+/// rests most of that time.
 #[test]
 fn monsters_near_a_character_wander_around_their_rows() {
     let mut shard = monster_world();
@@ -680,11 +684,6 @@ fn monsters_near_a_character_wander_around_their_rows() {
         (uid, in_world(REGION, x, z))
     };
     let near = [placed(world, 900.0, 1400.0), placed(world, 1000.0, 1500.0)];
-    let far = world
-        .monsters()
-        .find(|(_, m)| m.position.x == 100.0)
-        .unwrap()
-        .0;
     let mut moves: Vec<(u32, u64, (f32, f32))> = Vec::new();
     for step in 0..60 * 30 {
         world.step();
@@ -715,6 +714,50 @@ fn monsters_near_a_character_wander_around_their_rows() {
             from = (step, to);
         }
     }
-    let unmoved = world.monster(far).unwrap();
+}
+
+/// Monsters think a region beyond what the hero sees. One whose row lies at
+/// the edge of sight and that walked out comes back within ten minutes, as a
+/// group of one; one three regions away does not move.
+#[test]
+fn a_monster_that_walked_out_of_sight_walks_back_in() {
+    const EDGE: &str = "1933\t25001\t1880.0\t0.0\t100.0\r\n\
+                        1933\t25003\t100.0\t0.0\t100.0\r\n";
+    let mut shard = monsters_at(EDGE);
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let placed = |world: &World, region| {
+        let mut monsters = world.monsters();
+        monsters
+            .find(|(_, m)| m.position.region == region)
+            .unwrap()
+            .0
+    };
+    let (edge, beyond) = (placed(world, REGION + 1), placed(world, REGION + 3));
+    let (sx, sz) = sector(REGION + 2);
+    let out = Point {
+        x: f32::from(sx) * REGION_SIZE + 60.0,
+        y: 0.0,
+        z: f32::from(sz) * REGION_SIZE + 100.0,
+    };
+    assert!(world.walk_monster(edge, out));
+    while world.monster(edge).unwrap().walk.is_some() {
+        world.step();
+    }
+    frames(world, s);
+    // A spawn group of one (kind 1, count 1) whose record, after its ref,
+    // names the monster.
+    let back = (0..10 * 60 * 30).any(|_| {
+        world.step();
+        let seen: Vec<_> = (frames(world, s).into_iter())
+            .filter(|f| f.0 != 0xB021)
+            .collect();
+        let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
+        codes == [0x3017, 0x3019, 0x3018]
+            && seen[0].1[..] == [1, 1, 0]
+            && seen[1].1[4..8] == edge.to_le_bytes()
+    });
+    assert!(back);
+    let unmoved = world.monster(beyond).unwrap();
     assert_eq!((unmoved.walk, unmoved.position.x), (None, 100.0));
 }

@@ -116,17 +116,20 @@ pub(crate) fn selection(uid: u32, monster: &Monster) -> SelectEntityResponse {
     }
 }
 
-/// The AI timer (A10): every monster near a character in the game that stands
-/// and has rested long enough starts a wander step. Monsters nobody sees do
-/// not think, so the cost follows the players, not the 12,000 monsters of the
-/// user's data; a monster in a dungeon or without a walk speed stays where it
-/// is.
+/// The AI timer (A10): every monster within a region of what a character in
+/// the game sees, standing and rested long enough, starts a wander step. A
+/// monster strays at most [`HOME_RADIUS`] from its row, less than a region,
+/// so one whose row is in sight walks back in after it walked out, instead of
+/// standing just beyond. Monsters further away do not think, so the cost
+/// follows the players, not the 12,000 monsters of the user's data; a monster
+/// in a dungeon or without a walk speed stays where it is.
 pub(crate) fn think(world: &mut World) {
     let now = world.steps();
     let regions: BTreeSet<u16> = world
         .players()
         .filter(|(_, p)| matches!(world.phase(p.session), Some(Phase::Game { .. })))
         .flat_map(|(_, p)| sight::around(p.character.position.region))
+        .flat_map(sight::around)
         .collect();
     let near: Vec<u32> = regions
         .into_iter()
