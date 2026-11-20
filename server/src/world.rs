@@ -6,7 +6,7 @@
 //! nothing needs a lock, and a test can drive it frame by frame.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -172,6 +172,10 @@ pub struct World {
     /// The last action instance (0xB070), counted up per swing as the vSRO
     /// server does [V capture, peer vSRO: 5853 to 5899 over 47 swings].
     last_action: u32,
+    /// Dead monsters, oldest first, with the step their bodies go.
+    pub(crate) bodies: VecDeque<(u64, u32)>,
+    /// Monsters to come back: the step, the model and the row.
+    pub(crate) returning: Vec<(u64, u32, Position)>,
 }
 
 impl World {
@@ -199,6 +203,8 @@ impl World {
             events: Vec::new(),
             chance: fastrand::Rng::with_seed(seed),
             last_action: 0,
+            bodies: VecDeque::new(),
+            returning: Vec::new(),
         };
         for row in placed {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
@@ -298,6 +304,13 @@ impl World {
 
     pub(crate) fn monster_mut(&mut self, uid: u32) -> Option<&mut Monster> {
         self.monsters.get_mut(&uid)
+    }
+
+    pub(crate) fn remove_monster(&mut self, uid: u32) {
+        if let Some(m) = self.monsters.remove(&uid) {
+            let placed = self.placed_in.entry(m.position.region).or_default();
+            placed.retain(|placed| *placed != uid);
+        }
     }
 
     pub(crate) fn chance(&mut self) -> &mut fastrand::Rng {
@@ -606,6 +619,7 @@ impl World {
             sight::monster_crossed(self, uid, from);
         }
         combat::step(self);
+        monster::tend(self);
         if fires(self.step, AI_STEPS) {
             monster::think(self);
         }

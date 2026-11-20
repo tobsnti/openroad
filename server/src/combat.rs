@@ -22,6 +22,7 @@ use packets::agent::ingame::{
 };
 use packets::Packet;
 
+use crate::monster;
 use crate::movement::{in_region, in_world};
 use crate::refdata::BasicAttack;
 use crate::store::Position;
@@ -300,6 +301,7 @@ fn swing(world: &mut World, uid: u32, target: u32, basic: BasicAttack) {
     let selecting = world.selecting(target);
     world.broadcast(&selecting, Packet::EntityBarsUpdate(bars));
     if hp == 0 {
+        monster::fell(world, target);
         let dead = EntityStateUpdate {
             unique_id: target,
             kind: STATE_KIND_LIFE,
