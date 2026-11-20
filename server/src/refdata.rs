@@ -12,6 +12,7 @@ use sro_textdata::characterdata::{CharacterData, CharacterDataRow};
 use sro_textdata::itemdata::{ItemData, StatRange};
 use sro_textdata::npcpos::{self, NpcPos};
 use sro_textdata::siegefortress::FortressTable;
+use sro_textdata::skilldata::SkillData;
 use sro_textdata::spawn::SpawnTables;
 
 /// What the server takes from a characterdata row.
@@ -33,11 +34,25 @@ pub struct MonsterRef {
     pub run_speed: f32,
 }
 
+/// A weapon's basic attack, as skilldata and itemdata hold it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BasicAttack {
+    pub skill: u32,
+    /// How long one swing lasts (skilldata Action_ActionDuration).
+    pub duration_ms: u32,
+    pub hits: u8,
+    /// The lowest and the highest damage of one hit.
+    pub damage: (u32, u32),
+    /// How far the weapon reaches past the bodies, in world units.
+    pub reach: f32,
+}
+
 pub struct RefData {
     characters: CharacterData,
     items: ItemData,
     npcs: Vec<NpcPos>,
     fortresses: FortressTable,
+    skills: SkillData,
 }
 
 impl Default for RefData {
@@ -47,13 +62,15 @@ impl Default for RefData {
             items: ItemData(HashMap::new()),
             npcs: Vec::new(),
             fortresses: FortressTable::default(),
+            skills: SkillData(HashMap::new()),
         }
     }
 }
 
 impl RefData {
-    /// Every `characterdata*.txt` and `itemdata*.txt` under `textdata`,
-    /// `npcpos.txt` and `siegefortress.txt`.
+    /// Every `characterdata*.txt`, `itemdata*.txt` and plain
+    /// `skilldata_*.txt` under `textdata`, `npcpos.txt` and
+    /// `siegefortress.txt`.
     pub fn load(textdata: &Path) -> std::io::Result<RefData> {
         let mut data = RefData::default();
         for entry in std::fs::read_dir(textdata)? {
@@ -71,6 +88,8 @@ impl RefData {
                 data.add_npcs(&text(&std::fs::read(&path)?));
             } else if name == "siegefortress.txt" {
                 data.add_fortresses(&text(&std::fs::read(&path)?));
+            } else if name.starts_with("skilldata_") && !name.ends_with("enc.txt") {
+                data.add_skills(&text(&std::fs::read(&path)?));
             }
         }
         Ok(data)
@@ -116,6 +135,59 @@ impl RefData {
     /// The item table, for the item records' classes (0x3013).
     pub fn items(&self) -> &ItemData {
         &self.items
+    }
+
+    /// The rows of one skilldata table.
+    pub fn add_skills(&mut self, table: &str) {
+        self.skills.0.extend(SkillData::parse_shard(table).0);
+    }
+
+    /// The basic attack of a character holding `weapon` (an itemdata ref), or
+    /// bare-handed. It is the player skill (`SKILL_`) of level 1 that is cast,
+    /// stays out of the skill book (tab 255), needs no mastery level, and
+    /// names the weapon's type (TypeID4) among its cast weapons; bare hands
+    /// are type 1, which only the punch names. The user's data holds exactly
+    /// one such skill for each of the 15 types [S].
+    ///
+    /// Its damage is a deliberate simplification [U], decision 0020: the
+    /// weapon's white attack (the lower bounds of its itemdata ranges) times
+    /// the skill's attack share, because the character's own values and the
+    /// target's defence are not built yet; bare hands deal 1. On the vSRO
+    /// server a Lv 21 sword 03_C hit a Mangnyang for 43 to 46, where this
+    /// gives 46 to 52.
+    pub fn basic_attack(&self, weapon: Option<u32>) -> Option<BasicAttack> {
+        let weapon = weapon.and_then(|id| self.items.0.get(&i32::try_from(id).ok()?));
+        let kind = match weapon.map(|w| w.type_ids()) {
+            None => 1,
+            Some(Some((3, 1, 6, kind))) => u8::try_from(kind).ok()?,
+            Some(_) => return None,
+        };
+        let basic = |row: &&sro_textdata::skilldata::SkillDataRow| {
+            let names = row
+                .required_weapons()
+                .is_some_and(|(a, b)| a == kind || b == kind);
+            row.code_name().starts_with("SKILL_")
+                && row.basic_level() == 1
+                && row.activity() == 2
+                && row.ui_grid().is_none()
+                && row.mastery_req().is_none_or(|(_, level)| level == 0)
+                && names
+        };
+        let (&skill, row) = self.skills.0.iter().find(|(_, row)| basic(row))?;
+        let share = row.attack_percent()? as f32 / 100.0;
+        let hit = |attack: f32| (attack * share).round().max(1.0) as u32;
+        let white = |stat| weapon?.stat_range(stat).map(|(lower, _)| lower);
+        let damage = match (white(StatRange::PhyAtkMin), white(StatRange::PhyAtkMax)) {
+            (Some(min), Some(max)) => (hit(min), hit(max)),
+            _ => (1, 1),
+        };
+        Some(BasicAttack {
+            skill: u32::try_from(skill).ok()?,
+            duration_ms: row.action_duration_ms(),
+            hits: row.hit_count(),
+            damage,
+            reach: weapon.and_then(|w| w.attack_reach()).unwrap_or(0.0),
+        })
     }
 
     /// The tables a spawn record's layout depends on, for the spawn writer.
@@ -195,5 +267,125 @@ fn text(bytes: &[u8]) -> String {
             String::from_utf16_lossy(&units)
         }
         None => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table row: `values` at their columns, 0 elsewhere.
+    fn row(width: usize, values: &[(usize, &str)]) -> String {
+        let mut row = vec!["0"; width];
+        for (at, value) in values {
+            row[*at] = value;
+        }
+        row.join("\t")
+    }
+
+    /// A basic attack's skilldata row: level 1, cast (activity 2), out of the
+    /// skill book (tab 255), its duration, its cast weapons and its
+    /// parameters from column 69 on.
+    fn basic(id: &str, code: &str, duration: &str, weapons: [&str; 2], params: &[&str]) -> String {
+        let mut values = vec![(1, id), (3, code), (7, "1"), (8, "2"), (13, duration)];
+        values.extend([(50, weapons[0]), (51, weapons[1]), (57, "255")]);
+        values.extend(params.iter().enumerate().map(|(at, p)| (69 + at, *p)));
+        row(119, &values)
+    }
+
+    /// The sword of the bench and the basic attacks of the bare fist and the
+    /// sword, with the values the user's data holds for them
+    /// (itemdata_5000.txt:1683, skilldata_5000.txt:1 and :2).
+    fn armoury() -> RefData {
+        let mut data = RefData::default();
+        let sword = [
+            (1, "3632"),
+            (9, "3"),
+            (10, "1"),
+            (11, "6"),
+            (12, "2"),
+            (94, "6"),
+        ];
+        let white = [(95, "15"), (96, "16"), (97, "16"), (98, "18")];
+        data.add_items(&row(160, &[&sword[..], &white[..]].concat()));
+        let att = |share| ["6386804", "5", share, "0", "0", share];
+        data.add_skills(&basic(
+            "1",
+            "SKILL_PUNCH_01",
+            "1500",
+            ["1", "255"],
+            &att("150"),
+        ));
+        let sword_base = [&att("60")[..], &["28003", "2", "2"]].concat();
+        data.add_skills(&basic(
+            "2",
+            "SKILL_CH_SWORD_BASE_01",
+            "1200",
+            ["2", "3"],
+            &sword_base,
+        ));
+        data
+    }
+
+    /// The sword strikes with the skill that names its type, for that skill's
+    /// duration and hits; a hit deals the sword's white attack (the lower
+    /// bounds) times the skill's share, as the rows above say. Bare hands
+    /// punch for 1.
+    #[test]
+    fn a_weapons_basic_attack_comes_from_its_rows() {
+        let data = armoury();
+        let share = |attack: f32| (attack * 60.0 / 100.0).round() as u32;
+        let sword = BasicAttack {
+            skill: 2,
+            duration_ms: 1200,
+            hits: 2,
+            damage: (share(15.0), share(16.0)),
+            reach: 6.0,
+        };
+        let fist = BasicAttack {
+            skill: 1,
+            duration_ms: 1500,
+            hits: 1,
+            damage: (1, 1),
+            reach: 0.0,
+        };
+        assert_eq!(data.basic_attack(Some(3632)), Some(sword));
+        assert_eq!(data.basic_attack(None), Some(fist));
+    }
+
+    /// The bench's weapons in the user's data: the sword
+    /// (itemdata_5000.txt:1683, white attack 15..16 to 16..18) strikes with
+    /// SKILL_CH_SWORD_BASE_01 (skilldata_5000.txt:2: 1200 ms, share 60 %,
+    /// 'mc' 2 2), the glaive (itemdata_5000.txt:1686, 16..17 to 20..22) with
+    /// SKILL_CH_SPEAR_BASE_01 (skilldata_5000.txt:40: 1166 ms, 117 %, no
+    /// 'mc'), bare hands with SKILL_PUNCH_01 (skilldata_5000.txt:1, 1500 ms).
+    #[test]
+    #[ignore = "needs OPENROAD_TEXTDATA_DIR, the user's textdata folder"]
+    fn the_benchs_weapons_strike_as_the_users_data_says() {
+        let dir = std::env::var("OPENROAD_TEXTDATA_DIR").unwrap();
+        let data = RefData::load(Path::new(&dir)).unwrap();
+        let share = |attack: f32, percent: f32| (attack * percent / 100.0).round() as u32;
+        let sword = data.basic_attack(data.item_named("ITEM_CH_SWORD_01_A_DEF"));
+        let expected = BasicAttack {
+            skill: 2,
+            duration_ms: 1200,
+            hits: 2,
+            damage: (share(15.0, 60.0), share(16.0, 60.0)),
+            reach: 6.0,
+        };
+        assert_eq!(sword, Some(expected));
+        let glaive = data.basic_attack(data.item_named("ITEM_CH_TBLADE_01_A_DEF"));
+        let expected = BasicAttack {
+            skill: 40,
+            duration_ms: 1166,
+            hits: 1,
+            damage: (share(16.0, 117.0), share(20.0, 117.0)),
+            reach: 18.0,
+        };
+        assert_eq!(glaive, Some(expected));
+        let fist = data
+            .basic_attack(None)
+            .map(|a| (a.skill, a.duration_ms, a.hits));
+        assert_eq!(fist, Some((1, 1500, 1)));
     }
 }
