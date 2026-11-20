@@ -13,7 +13,6 @@ use packets::agent::character_data::{EntityMovement, EntityState};
 use packets::agent::entity_spawn::{Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::SelectEntityResponse;
 use packets::region::is_dungeon;
-use rand_core::{OsRng, RngCore};
 
 use crate::movement::{in_region, in_world};
 use crate::refdata::MonsterRef;
@@ -145,25 +144,25 @@ pub(crate) fn think(world: &mut World) {
         if !idle || speed <= 0.0 || is_dungeon(monster.position.region) {
             continue;
         }
-        let to = wander_step(monster);
+        let to = wander_step(monster.position, monster.home, world.chance());
         world.walk_monster(uid, to);
+        let rest = rest(world.chance());
         if let Some(monster) = world.monster_mut(uid) {
-            monster.rest_until = now + rest();
+            monster.rest_until = now + rest;
         }
     }
 }
 
 /// A time of [`REST_STEPS`] until the next wander step, for a monster just
 /// placed or starting a step.
-pub(crate) fn rest() -> u64 {
-    let span = REST_STEPS.end() - REST_STEPS.start() + 1;
-    REST_STEPS.start() + u64::from(OsRng.next_u32()) % span
+pub(crate) fn rest(chance: &mut fastrand::Rng) -> u64 {
+    chance.u64(REST_STEPS)
 }
 
-/// Where the monster's next wander step leads, in world coordinates:
-/// [`STEP_LENGTH`] in a random direction, or toward its home when that step
-/// would leave [`HOME_RADIUS`].
-fn wander_step(monster: &Monster) -> Point {
+/// Where a monster standing `at` takes its next wander step, in world
+/// coordinates: [`STEP_LENGTH`] in a random direction, or toward its `home`
+/// when that step would leave [`HOME_RADIUS`].
+fn wander_step(at: Position, home: Position, chance: &mut fastrand::Rng) -> Point {
     let point = |at: Position| {
         in_world(
             at.region,
@@ -174,10 +173,9 @@ fn wander_step(monster: &Monster) -> Point {
             },
         )
     };
-    let (here, home) = (point(monster.position), point(monster.home));
-    let unit = || OsRng.next_u32() as f32 / u32::MAX as f32;
-    let length = STEP_LENGTH.start() + unit() * (STEP_LENGTH.end() - STEP_LENGTH.start());
-    let angle = unit() * std::f32::consts::TAU;
+    let (here, home) = (point(at), point(home));
+    let length = STEP_LENGTH.start() + chance.f32() * (STEP_LENGTH.end() - STEP_LENGTH.start());
+    let angle = chance.f32() * std::f32::consts::TAU;
     let mut to = Point {
         x: here.x + length * angle.cos(),
         y: here.y,
@@ -194,4 +192,39 @@ fn wander_step(monster: &Monster) -> Point {
         };
     }
     to
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every step drawn for a monster at the edge of its home radius, 245
+    /// units east of its row, ends within 250 units of the row.
+    #[test]
+    fn a_wander_step_stays_within_the_home_radius() {
+        let home = Position {
+            region: 25000,
+            x: 900.0,
+            y: 0.0,
+            z: 1400.0,
+            heading: 0,
+        };
+        let edge = Position {
+            x: home.x + 245.0,
+            ..home
+        };
+        let row = in_world(
+            home.region,
+            Point {
+                x: 900.0,
+                y: 0.0,
+                z: 1400.0,
+            },
+        );
+        let mut chance = fastrand::Rng::with_seed(19);
+        for _ in 0..100 {
+            let to = wander_step(edge, home, &mut chance);
+            assert!((to.x - row.x).hypot(to.z - row.z) <= 250.0, "{to:?}");
+        }
+    }
 }

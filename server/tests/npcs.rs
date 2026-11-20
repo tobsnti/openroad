@@ -88,11 +88,12 @@ fn world() -> (World, Arc<MemoryStore>) {
     world_with(refdata())
 }
 
+/// A world whose chance repeats from run to run.
 fn world_with(refdata: RefData) -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("a", "a", vec![hero()]);
     let store = Arc::new(store);
-    (World::new(store.clone(), refdata), store)
+    (World::seeded(store.clone(), refdata, 19), store)
 }
 
 /// The hero's model, the rows of [`model_rows`] and the NPCs of [`NPCPOS`].
