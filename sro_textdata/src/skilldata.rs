@@ -346,13 +346,38 @@ impl SkillDataRow {
     /// The stream mixes tags and their arguments; a lookup keyed on the tag
     /// is enough for single-argument tags.
     pub fn param_after(&self, tag: &str) -> Option<i64> {
+        self.param_arg(tag, 0)
+    }
+
+    /// The `n`-th argument after a fourcc parameter tag, 0 being the one
+    /// right after it.
+    fn param_arg(&self, tag: &str, n: usize) -> Option<i64> {
         let tag = fourcc(tag)?;
-        let params = &self.0.get(SkilldataFields::ParamsStart as usize..)?;
-        params
+        let params = self.0.get(SkilldataFields::ParamsStart as usize..)?;
+        let at = params
             .iter()
-            .position(|v| v.trim().parse::<i64>() == Ok(tag))
-            .and_then(|idx| params.get(idx + 1))
-            .and_then(|v| v.trim().parse::<i64>().ok())
+            .position(|v| v.trim().parse::<i64>() == Ok(tag))?;
+        params.get(at + 1 + n)?.trim().parse().ok()
+    }
+
+    /// The hits one use lands on its target: the second argument of `'mc'`,
+    /// one for a row without it. The first argument is 2 in every one of the
+    /// 25,623 rows that carry `'mc'`. On the wire [V capture, peer vSRO],
+    /// `SKILL_CH_SWORD_BASE_01` (`'mc' 2 2`) landed two hits in all 4,551
+    /// captured swings, `MSKILL_CH_MANGNYANG_ATTACK01` (`'mc' 2 1`) one in
+    /// 17, `MSKILL_CH_MANGNYANG_ATTACK02` (`'mc' 2 2`) two in 7, and the
+    /// spear's and the fist's basic attacks, without `'mc'`, one in 203.
+    pub fn hit_count(&self) -> u8 {
+        self.param_arg("mc", 1)
+            .and_then(|hits| u8::try_from(hits).ok())
+            .unwrap_or(1)
+    }
+
+    /// The share of the attacker's power one hit deals, in percent: the
+    /// second argument of `'att'` (`'att' <kind> <pct> <min> <max> <x>`, as
+    /// [`Self::stat_lines`] reads it).
+    pub fn attack_percent(&self) -> Option<i64> {
+        self.param_arg("att", 1)
     }
 
     /// Human-readable stat lines from the parameter stream — the damage /
@@ -575,6 +600,23 @@ mod test {
         assert!(row.target_required());
         assert!(row.targets_enemy());
         assert!(!row.targets_self());
+    }
+
+    /// An attack's hits and share are the second arguments of `'mc'` and
+    /// `'att'`, here as `MSKILL_CH_MANGNYANG_ATTACK01` has them (one hit on the
+    /// wire); a row without `'mc'` lands one hit.
+    #[test]
+    fn hits_and_attack_share_come_from_the_parameters() {
+        let mut attack = row();
+        let stream = ["6386804", "5", "200", "17", "19", "100", "28003", "2", "1"];
+        for (at, value) in stream.iter().enumerate() {
+            attack.0[69 + at] = String::from(*value);
+        }
+        assert_eq!(
+            (attack.hit_count(), attack.attack_percent()),
+            (1, Some(200))
+        );
+        assert_eq!(row().hit_count(), 1);
     }
 
     #[test]
@@ -937,6 +979,46 @@ mod test {
             .unwrap();
         assert_eq!(imbue.activity(), 1);
         assert_eq!(imbue.param_after("dura"), Some(5000));
+
+        // the basic attacks of the sword, the spear and the bare fist
+        // (skilldata_5000.txt:2, :40, :1): their weapons, their duration,
+        // their hits and their share
+        let basic = |code: &str| {
+            let row = rows.iter().find(|r| r.code_name() == code).unwrap();
+            (
+                row.required_weapons(),
+                row.action_duration_ms(),
+                row.hit_count(),
+                row.attack_percent(),
+            )
+        };
+        assert_eq!(
+            basic("SKILL_CH_SWORD_BASE_01"),
+            (Some((2, 3)), 1200, 2, Some(60))
+        );
+        assert_eq!(
+            basic("SKILL_CH_SPEAR_BASE_01"),
+            (Some((4, 5)), 1166, 1, Some(117))
+        );
+        assert_eq!(
+            basic("SKILL_PUNCH_01"),
+            (Some((1, 255)), 1500, 1, Some(150))
+        );
+        // the two attacks of the Mangnyang (skilldata_5000.txt:160, :161),
+        // captured with one and two hits
+        let hits = |code: &str| {
+            rows.iter()
+                .find(|r| r.code_name() == code)
+                .unwrap()
+                .hit_count()
+        };
+        assert_eq!(
+            (
+                hits("MSKILL_CH_MANGNYANG_ATTACK01"),
+                hits("MSKILL_CH_MANGNYANG_ATTACK02")
+            ),
+            (1, 2)
+        );
 
         // EU player skills live in the 10000+ shards; same column scheme
         let rows = shard("skilldata_10000.txt");
