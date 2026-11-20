@@ -116,6 +116,49 @@ pub(crate) fn selection(uid: u32, monster: &Monster) -> SelectEntityResponse {
     }
 }
 
+/// A dead monster's body lies 5 s, then it is taken away (0x3016), as on the
+/// vSRO server [V capture, peer vSRO: 4.89 to 5.67 s after the killing swing,
+/// median 5.008, for 173 of 173 kills].
+const BODY_STEPS: u64 = 150;
+
+/// The monster of the row comes back 14 to 17 s after the death, under a new
+/// uid, standing at the row (decision 0020, E3) [S: the middle half of 20
+/// natural returns in the captures, median 16 s; 38 that seemed to be returns
+/// were GM spawns].
+const RETURN_STEPS: RangeInclusive<u64> = 420..=510;
+
+/// Monster `uid` died this step: its body is taken away, and its row's
+/// monster comes back, each at its time.
+pub(crate) fn fell(world: &mut World, uid: u32) {
+    let now = world.steps();
+    let Some(&Monster { ref_id, home, .. }) = world.monster(uid) else {
+        return;
+    };
+    let back = now + world.chance().u64(RETURN_STEPS);
+    world.bodies.push_back((now + BODY_STEPS, uid));
+    world.returning.push((back, ref_id, home));
+}
+
+/// Each step: the bodies whose time is up are taken away from the clients that
+/// know them, and the monsters whose time is up come back.
+pub(crate) fn tend(world: &mut World) {
+    let now = world.steps();
+    while let Some(&(_, uid)) = world.bodies.front().filter(|(due, _)| *due <= now) {
+        world.bodies.pop_front();
+        for session in world.observers(uid) {
+            world.hide(session, uid);
+        }
+        world.remove_monster(uid);
+    }
+    let (due, later) = world.returning.iter().partition(|(at, ..)| *at <= now);
+    world.returning = later;
+    for (_, ref_id, home) in due {
+        if let Some(uid) = world.place_monster(ref_id, home) {
+            sight::monster_returned(world, uid);
+        }
+    }
+}
+
 /// The AI timer (A10): every monster within a region of what a character in
 /// the game sees, standing and rested long enough, starts a wander step. A
 /// monster strays at most [`HOME_RADIUS`] from its row, less than a region,

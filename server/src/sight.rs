@@ -99,6 +99,41 @@ pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
     }
 }
 
+/// Monster `uid` came back at its row: the clients in the game that see its
+/// region are shown it as a single spawn whose last byte is 1, as the vSRO
+/// server shows a monster that comes back [V capture, peer vSRO: 20 of 20
+/// natural returns, and 794 of 809 GM spawns; a monster walking into sight
+/// came with 4].
+pub(crate) fn monster_returned(world: &mut World, uid: u32) {
+    let Some(m) = world.monster(uid) else {
+        return;
+    };
+    let region = m.position.region;
+    let data = world.refdata().monster(m.ref_id);
+    let entity = monster::entity(
+        uid,
+        m,
+        data.expect("a placed monster has a monster's model"),
+    );
+    let raw: Bytes = write_single_spawn(
+        &entity,
+        &SingleTail::Figure(1),
+        &world.refdata().spawn_tables(),
+    )
+    .expect("a placed monster has its model's record")
+    .into();
+    let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
+    let seeing: Vec<SessionId> = world
+        .players()
+        .filter(|(_, p)| in_game(p.session) && in_sight(p.character.position.region, region))
+        .map(|(_, p)| p.session)
+        .collect();
+    for session in seeing {
+        let spawn = SingleEntitySpawn { raw: raw.clone() };
+        world.show(session, uid, Packet::SingleEntitySpawn(spawn));
+    }
+}
+
 /// The group spawn record of NPC or monster `uid`.
 fn placed_record(world: &World, uid: u32) -> Bytes {
     let entity = match (world.npc(uid), world.monster(uid)) {

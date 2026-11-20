@@ -1059,3 +1059,44 @@ fn a_request_during_a_swing_waits_behind_it() {
     };
     assert_eq!(target, second);
 }
+
+/// The killed Mangnyang's body lies 150 steps (5 s); then the hero is told it
+/// is gone (0x3016), and it leaves the world. 420 to 510 steps (14 to 17 s)
+/// after its death, the monster of its row comes back under a new uid,
+/// standing at the row with full HP, as a single spawn whose last byte is 1.
+#[test]
+fn a_killed_monster_is_taken_away_and_its_row_comes_back() {
+    let mut shard = armed_at("1933\t25000\t979.0\t0.0\t1419.0\r\n");
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    frames(world, s);
+    send(world, s, attack(mob));
+    let died = (0..60 * 30u64).find(|_| {
+        world.step();
+        frames(world, s).iter().any(|f| f.0 == 0x30BF)
+    });
+    let died = died.unwrap();
+    let (mut gone, mut back) = (None, None);
+    for step in died + 1..died + 600 {
+        world.step();
+        for (opcode, body) in frames(world, s) {
+            match opcode {
+                0x3016 => gone = Some((step, body)),
+                0x3015 => back = Some((step, body)),
+                _ => {}
+            }
+        }
+    }
+    let gone = gone.unwrap();
+    assert_eq!((gone.0, &gone.1[..]), (died + 150, &mob.to_le_bytes()[..]));
+    assert!(world.monster(mob).is_none());
+    let (at, spawn) = back.unwrap();
+    assert!((died + 420..=died + 510).contains(&at), "{at}");
+    let (new, m) = world.monsters().next().unwrap();
+    assert_ne!(new, mob);
+    let placed = (m.ref_id, m.position.x, m.position.z, m.hp, m.walk);
+    assert_eq!(placed, (1933, 979.0, 1419.0, 54, None));
+    let tail = spawn[spawn.len() - 1];
+    assert_eq!((&spawn[4..8], tail), (&new.to_le_bytes()[..], 1));
+}
