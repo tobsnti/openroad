@@ -110,6 +110,11 @@ enum ChardataFields {
     InventorySize = 61,
     CanBeVehicle = 66,
     CanControl = 67,
+    // RefObjChar ExpToGive, the base of what killing the monster gives. For
+    // a normal monster it equals leveldata col 5 at its level (Mangnyang 24
+    // at 1, Yeoha 235 at 10, Chakji 470 at 20); col 80 is a packed value
+    // (0x14141414 for the Mangnyang), not EXP.
+    ExpToGive = 79,
     // RefObjChar Knockdown / KO_RecoverTime. These map 1:1 onto go-sro
     // `model/ref_char.go:13-36` (`… ExpToGive, Knockdown, KORecoveryTime, …`),
     // per docs/formats/textdata-characterdata.md §3.
@@ -271,6 +276,17 @@ impl CharacterDataRow {
     pub fn max_hp(&self) -> Option<u32> {
         let hp = self.0.get(ChardataFields::MaxHp as usize)?.parse().ok()?;
         (hp > 0).then_some(hp)
+    }
+
+    /// What killing this monster gives (RefObjChar `ExpToGive`), or `None`
+    /// when the column is missing or zero.
+    pub fn exp_to_give(&self) -> Option<u32> {
+        let exp = self
+            .0
+            .get(ChardataFields::ExpToGive as usize)?
+            .parse()
+            .ok()?;
+        (exp > 0).then_some(exp)
     }
 
     /// How long this body stays prone after a knockdown (RefObjChar
@@ -449,6 +465,21 @@ mod test {
 
         // Short rows (the index files are one column wide) must not panic.
         assert_eq!(CharacterDataRow(vec![String::new(); 3]).scale_factor(), 1.0);
+    }
+
+    #[test]
+    fn exp_to_give_is_column_79_when_above_zero() {
+        let row = |value: &str| {
+            let mut fields = vec![String::new(); 105];
+            fields[79] = value.to_string();
+            CharacterDataRow(fields)
+        };
+        assert_eq!(row("24").exp_to_give(), Some(24));
+        assert_eq!(row("0").exp_to_give(), None);
+        assert_eq!(
+            CharacterDataRow(vec![String::new(); 60]).exp_to_give(),
+            None
+        );
     }
 
     fn recover_row(raw: &str) -> CharacterDataRow {

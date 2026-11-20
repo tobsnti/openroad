@@ -367,6 +367,8 @@ impl SkillDataRow {
     /// captured swings, `MSKILL_CH_MANGNYANG_ATTACK01` (`'mc' 2 1`) one in
     /// 17, `MSKILL_CH_MANGNYANG_ATTACK02` (`'mc' 2 2`) two in 7, and the
     /// spear's and the fist's basic attacks, without `'mc'`, one in 203.
+    /// 36 monster skills carry `'mc' 2 0`; what a 0 there means is [U], and
+    /// this reads it as 0.
     pub fn hit_count(&self) -> u8 {
         self.param_arg("mc", 1)
             .and_then(|hits| u8::try_from(hits).ok())
