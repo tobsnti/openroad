@@ -38,6 +38,11 @@ impl Drop for Server {
 /// Starts the binary with `fixture`, a textdata folder holding the models
 /// 1907 and 1933 (or `textdata`, the user's), and ephemeral ports.
 fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
+    start_with(name, fixture, textdata, &[])
+}
+
+/// [`start`] with the further settings `env`.
+fn start_with(name: &str, fixture: &Path, textdata: Option<&Path>, env: &[(&str, &str)]) -> Server {
     let dir = std::env::temp_dir().join(format!("or-bench-{}-{name}", std::process::id()));
     let own = dir.join("textdata");
     std::fs::create_dir_all(&own).unwrap();
@@ -64,6 +69,7 @@ fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
         .env("OPENROAD_TEXTDATA_DIR", textdata.unwrap_or(&own))
         .env("BENCH_GATEWAY", "127.0.0.1:0")
         .env("BENCH_AGENT", "127.0.0.1:0")
+        .envs(env.iter().copied())
         .stderr(Stdio::piped())
         .spawn()
         .expect("the binary starts");
@@ -238,8 +244,13 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
 /// panic. Waits for the end up to 10 s, like [`event`]: a server that takes
 /// the fixture runs on.
 fn ended_by(name: &str, wrong: &Value) -> String {
-    let fixture = fixture_file(name, wrong);
-    let mut server = start(name, &fixture, None);
+    ended_with(name, wrong, &[])
+}
+
+/// [`ended_by`] with the further settings `env`.
+fn ended_with(name: &str, fixture: &Value, env: &[(&str, &str)]) -> String {
+    let fixture = fixture_file(name, fixture);
+    let mut server = start_with(name, &fixture, None, env);
     let started = Instant::now();
     let status = loop {
         if let Some(status) = server.child.try_wait().unwrap() {
@@ -268,6 +279,36 @@ fn a_wrong_fixture_value_ends_the_server_with_its_key() {
     wrong["charakter_b"]["ref"] = json!("x");
     let stderr = ended_by("wrong", &wrong);
     assert!(stderr.contains("charakter_b.ref"), "{stderr}");
+}
+
+/// The log names the seed of the world's chance, the one `BENCH_WORLD_SEED`
+/// sets or the one drawn, so that a run can be repeated; a seed that is no
+/// number ends the server with its key.
+#[test]
+fn the_log_names_the_world_seed() {
+    let fixture = fixture_file("seed", &bench_fixture());
+    let seed_line = |env: &[(&str, &str)]| {
+        let mut server = start_with("seed", &fixture, None, env);
+        let stderr = BufReader::new(server.child.stderr.take().unwrap());
+        // The seed comes before the listening addresses; a log without it
+        // ends the search there rather than waiting on a running server.
+        let mut lines = stderr.lines().map(Result::unwrap);
+        let line = |l: &String| l.starts_with("world seed: ") || l.starts_with("gateway on ");
+        lines.find(line).unwrap()
+    };
+    let named = seed_line(&[("BENCH_WORLD_SEED", "19")]);
+    assert_eq!(named, "world seed: 19 (BENCH_WORLD_SEED)");
+    let drawn = seed_line(&[]);
+    assert!(
+        drawn.ends_with("(drawn; BENCH_WORLD_SEED repeats it)"),
+        "{drawn}"
+    );
+    let _ = std::fs::remove_file(fixture);
+    let wrong = ended_with("bad-seed", &bench_fixture(), &[("BENCH_WORLD_SEED", "x")]);
+    assert!(
+        wrong.contains("BENCH_WORLD_SEED is not a number: x"),
+        "{wrong}"
+    );
 }
 
 /// A monster entry whose model is no monster's ends the server the same way.

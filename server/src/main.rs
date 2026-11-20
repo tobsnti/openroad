@@ -23,6 +23,9 @@
 //! - `BENCH_AGENT_ADVERTISE`: the agent address the gateway tells clients
 //!   (0xA102), for a client that reaches the agent through a relay;
 //!   `BENCH_AGENT` unless set.
+//! - `BENCH_WORLD_SEED`: the seed of the world's chance (a `u64`), so that a
+//!   run repeats; drawn from the system unless set. The log names the seed in
+//!   force either way.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -81,7 +84,7 @@ fn run() -> Result<(), String> {
         handshake: HANDSHAKE,
         gateway_idle: GATEWAY_IDLE,
     };
-    let mut world = World::new(store.clone(), refdata);
+    let mut world = World::seeded(store.clone(), refdata, world_seed()?);
     let (npcs, monsters) = (world.npcs().count(), world.monsters().count());
     let skipped = world.skipped_npc_rows();
     eprintln!("npcpos.txt: {npcs} NPCs and {monsters} monsters placed, {skipped} rows skipped (no model in the client's data)");
@@ -430,6 +433,21 @@ fn text<'a>(entry: &'a Value, key: &str, field: &str) -> Result<&'a str, String>
     entry[field]
         .as_str()
         .ok_or(format!("BENCH_FIXTURE {key}.{field} is not text"))
+}
+
+/// The seed of the world's chance, `BENCH_WORLD_SEED` or drawn; the log
+/// names it, so that any run can be repeated.
+fn world_seed() -> Result<u64, String> {
+    let (seed, from) = match std::env::var("BENCH_WORLD_SEED") {
+        Ok(seed) => (
+            seed.parse()
+                .map_err(|_| format!("BENCH_WORLD_SEED is not a number: {seed}"))?,
+            "BENCH_WORLD_SEED",
+        ),
+        Err(_) => (fastrand::u64(..), "drawn; BENCH_WORLD_SEED repeats it"),
+    };
+    eprintln!("world seed: {seed} ({from})");
+    Ok(seed)
 }
 
 fn var(name: &str) -> Result<String, String> {

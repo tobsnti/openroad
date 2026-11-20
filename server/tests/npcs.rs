@@ -90,10 +90,14 @@ fn world() -> (World, Arc<MemoryStore>) {
 
 /// A world whose chance repeats from run to run.
 fn world_with(refdata: RefData) -> (World, Arc<MemoryStore>) {
+    seeded_with(refdata, 19)
+}
+
+fn seeded_with(refdata: RefData, seed: u64) -> (World, Arc<MemoryStore>) {
     let mut store = MemoryStore::default();
     store.add_account("a", "a", vec![hero()]);
     let store = Arc::new(store);
-    (World::seeded(store.clone(), refdata, 19), store)
+    (World::seeded(store.clone(), refdata, seed), store)
 }
 
 /// The hero's model, the rows of [`model_rows`] and the NPCs of [`NPCPOS`].
@@ -151,10 +155,14 @@ fn monster_world() -> (World, Arc<MemoryStore>) {
 
 /// The hero's model and the monsters of the rows `npcpos`.
 fn monsters_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
+    world_with(monster_data(npcpos))
+}
+
+fn monster_data(npcpos: &str) -> RefData {
     let mut refdata = hero_model();
     refdata.add_characters(&monster_rows());
     refdata.add_npcs(npcpos);
-    world_with(refdata)
+    refdata
 }
 
 fn send(world: &mut World, session: SessionId, packet: Packet) {
@@ -760,4 +768,27 @@ fn a_monster_that_walked_out_of_sight_walks_back_in() {
     assert!(back);
     let unmoved = world.monster(beyond).unwrap();
     assert_eq!((unmoved.walk, unmoved.position.x), (None, 100.0));
+}
+
+/// The world's chance repeats from its seed: in a minute, two worlds of the
+/// same seed send the hero the same monster moves, and a world of another
+/// seed other ones.
+#[test]
+fn a_seeded_world_repeats_its_monsters_moves() {
+    let moves = |seed: u64| {
+        let mut shard = seeded_with(monster_data(MONSTERPOS), seed);
+        let (s, _) = enter(&mut shard);
+        let world = &mut shard.0;
+        frames(world, s);
+        let mut moves = Vec::new();
+        for _ in 0..60 * 30 {
+            world.step();
+            moves.extend(frames(world, s).into_iter().filter(|f| f.0 == 0xB021));
+        }
+        moves
+    };
+    let once = moves(19);
+    assert!(!once.is_empty());
+    assert_eq!(moves(19), once);
+    assert_ne!(moves(20), once);
 }
