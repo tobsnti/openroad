@@ -6,6 +6,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
 use packets::agent::entity_spawn::{parse_group_spawn, Interaction, SpawnKind, SpawnedEntity};
+use packets::agent::ingame::{
+    ActionCommand, ActionKind, ActionTarget, EntityBarsUpdate, HitEffect, ObjectActionRequest,
+    ObjectActionResponse, ObjectActionUpdate,
+};
 use packets::agent::prelude::{
     AgentLoginRequest, CharacterJoinRequest, CloseTalkRequest, MovementRequest, MovementResponse,
     SelectEntityRequest, TalkRequest,
@@ -791,4 +795,203 @@ fn a_seeded_world_repeats_its_monsters_moves() {
     assert!(!once.is_empty());
     assert_eq!(moves(19), once);
     assert_ne!(moves(20), once);
+}
+
+/// The hero with the bench's sword, and the monsters of `npcpos`; the sword
+/// and the basic attacks of the fist and the sword as the user's data holds
+/// them (itemdata_5000.txt:1683, skilldata_5000.txt:1 and :2).
+fn armed_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
+    let mut refdata = monster_data(npcpos);
+    let row = |width: usize, values: &[(usize, &str)]| {
+        let mut row = vec!["0"; width];
+        for (at, value) in values {
+            row[*at] = value;
+        }
+        row.join("\t")
+    };
+    let sword = [
+        (1, "3632"),
+        (9, "3"),
+        (10, "1"),
+        (11, "6"),
+        (12, "2"),
+        (94, "6"),
+    ];
+    let white = [(95, "15"), (96, "16"), (97, "16"), (98, "18")];
+    refdata.add_items(&row(160, &[&sword[..], &white[..]].concat()));
+    let basic = |id, code, duration, weapons: [&'static str; 2], params: &[&'static str]| {
+        let mut values = vec![(1, id), (3, code), (7, "1"), (8, "2"), (13, duration)];
+        values.extend([(50, weapons[0]), (51, weapons[1]), (57, "255")]);
+        values.extend(params.iter().enumerate().map(|(at, p)| (69 + at, *p)));
+        row(119, &values)
+    };
+    let att = |share| ["6386804", "5", share, "0", "0", share];
+    refdata.add_skills(&basic(
+        "1",
+        "SKILL_PUNCH_01",
+        "1500",
+        ["1", "255"],
+        &att("150"),
+    ));
+    let sword_base = [&att("60")[..], &["28003", "2", "2"]].concat();
+    refdata.add_skills(&basic(
+        "2",
+        "SKILL_CH_SWORD_BASE_01",
+        "1200",
+        ["2", "3"],
+        &sword_base,
+    ));
+    let mut store = MemoryStore::default();
+    let armed = Character {
+        equipment: vec![(6, 3632)],
+        ..hero()
+    };
+    store.add_account("a", "a", vec![armed]);
+    let store = Arc::new(store);
+    (World::seeded(store.clone(), refdata, 19), store)
+}
+
+fn attack(target: u32) -> Packet {
+    let target = ActionTarget::Entity { unique_id: target };
+    Packet::ObjectActionRequest(ObjectActionRequest::Execute(ActionCommand::Attack(target)))
+}
+
+/// What the hero's client is sent, decoded, with the step and the opcode:
+/// from an attack on the Mangnyang next to it (10 units east), having
+/// selected it or not, until the attack ends; and the hero's and the
+/// Mangnyang's uids.
+fn fight(select: bool) -> (Vec<(u64, u16, Packet)>, u32, u32) {
+    let mut shard = armed_at("1933\t25000\t979.0\t0.0\t1419.0\r\n");
+    let (s, hero) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    if select {
+        send(
+            world,
+            s,
+            Packet::SelectEntityRequest(SelectEntityRequest { unique_id: mob }),
+        );
+    }
+    frames(world, s);
+    send(world, s, attack(mob));
+    let mut seen = Vec::new();
+    for step in 0..60 * 30 {
+        for (op, body) in frames(world, s) {
+            seen.push((step, op, Packet::deserialize(op, body).unwrap()));
+        }
+        let end = ObjectActionResponse::Ended { queue_len: 0 };
+        if matches!(seen.last(), Some((_, _, Packet::ObjectActionResponse(r))) if *r == end) {
+            break;
+        }
+        world.step();
+    }
+    (seen, hero, mob)
+}
+
+/// The hero selects the Mangnyang next to it and attacks it with the sword.
+/// It is answered `01 01`; a swing every 39 steps (1200 ms and the pause)
+/// lands two hits, each in the span the sword's rows give, and the client
+/// that selected the Mangnyang is told the HP left after each. The hit that
+/// kills carries 0x80 and one after it lands on nothing (arm 8); the death
+/// follows (0x30BF `00 02`), and the end of that swing ends the attack.
+#[test]
+fn a_monster_in_reach_is_hit_until_it_dies() {
+    let (seen, hero, mob) = fight(true);
+    let started = ObjectActionResponse::Started { queue_len: 1 };
+    assert!(matches!(&seen[0], (0, _, Packet::ObjectActionResponse(r)) if *r == started));
+    let share = |attack: f32| (attack * 60.0 / 100.0).round() as u32;
+    let span = share(15.0)..=share(16.0);
+    let (mut hp, mut swings) = (54u32, Vec::new());
+    for (step, opcode, packet) in &seen[1..] {
+        match packet {
+            Packet::ObjectActionUpdate(ObjectActionUpdate::Success {
+                skill_id,
+                source,
+                instance,
+                target,
+                kind: ActionKind::Attack { damage: Some(d) },
+                ..
+            }) => {
+                assert_eq!((*skill_id, *source, *target), (2, hero, mob));
+                assert_eq!((d.instance_count, d.entities.len()), (2, 1));
+                for hit in &d.entities[0].hits {
+                    match hit.effect {
+                        HitEffect::Damage { value, .. } => {
+                            assert!(hp > 0 && span.contains(&value.amount), "{value:?}");
+                            hp = hp.saturating_sub(value.amount);
+                            assert_eq!(hit.killing_blow, hp == 0);
+                        }
+                        HitEffect::NoPayload { arm: 8 } => assert_eq!(hp, 0),
+                        other => panic!("{other:?}"),
+                    }
+                }
+                swings.push((*step, *instance));
+            }
+            Packet::EntityBarsUpdate(EntityBarsUpdate {
+                unique_id,
+                hp: told,
+                ..
+            }) => {
+                assert_eq!((*unique_id, *told), (mob, Some(hp)));
+            }
+            Packet::EntityStateUpdate(dead) => {
+                assert_eq!((dead.unique_id, dead.is_death(), hp), (mob, true, 0));
+            }
+            Packet::ObjectActionResponse(ObjectActionResponse::Ended { queue_len: 0 }) => {
+                assert_eq!(*step, swings.last().unwrap().0 + 39);
+            }
+            _ => panic!("unexpected {opcode:#06x}"),
+        }
+    }
+    assert_eq!(hp, 0);
+    let numbered: Vec<u32> = swings.iter().map(|s| s.1).collect();
+    assert_eq!(numbered, (1..=swings.len() as u32).collect::<Vec<_>>());
+    assert!(
+        swings.windows(2).all(|w| w[1].0 - w[0].0 == 39),
+        "{swings:?}"
+    );
+}
+
+/// A client that has not selected the monster is not told its HP.
+#[test]
+fn only_a_selecting_client_is_told_the_hp() {
+    let (seen, _, _) = fight(false);
+    let opcodes: Vec<u16> = seen.iter().map(|(_, op, _)| *op).collect();
+    assert!(
+        !opcodes.contains(&0x3057) && opcodes.contains(&0x30BF),
+        "{opcodes:x?}"
+    );
+}
+
+/// The Tiger Woman stands while the hero attacks it (decision 0020, E4). A
+/// cancel during a swing ends the attack with two `02 00`, and no swing
+/// follows.
+#[test]
+fn a_cancel_during_a_swing_ends_the_attack() {
+    let mut shard = armed_at("1954\t25000\t979.0\t0.0\t1419.0\r\n");
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let tiger = world.monsters().next().unwrap().0;
+    frames(world, s);
+    send(world, s, attack(tiger));
+    for _ in 0..30 * 30 {
+        world.step();
+    }
+    let opcodes: Vec<u16> = frames(world, s).iter().map(|f| f.0).collect();
+    assert!(
+        opcodes.contains(&0xB070) && !opcodes.contains(&0xB021),
+        "{opcodes:x?}"
+    );
+    send(
+        world,
+        s,
+        Packet::ObjectActionRequest(ObjectActionRequest::Cancel),
+    );
+    let ended = (0xB074, Bytes::from_static(&[2, 0]));
+    assert_eq!(frames(world, s), [ended.clone(), ended]);
+    for _ in 0..3 * 30 {
+        world.step();
+    }
+    let opcodes: Vec<u16> = frames(world, s).iter().map(|f| f.0).collect();
+    assert!(!opcodes.contains(&0xB070), "{opcodes:x?}");
 }

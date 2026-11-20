@@ -99,10 +99,12 @@ pub(crate) fn select(world: &mut World, session: SessionId, packet: Packet) -> R
     let uid = request.unique_id;
     let monster = world.monster(uid).filter(|_| sees(world, session, uid));
     if let Some(answer) = monster.map(|m| monster::selection(uid, m)) {
+        world.select(session, uid);
         world.send(session, Packet::SelectEntityResponse(answer));
         return Ok(());
     }
     let ref_id = shown(world, session, uid).ok_or(Reason::NotHandled)?;
+    world.select(session, uid);
     let options = options(ref_id);
     let mut tail = BytesMut::new();
     tail.put_u8(0);

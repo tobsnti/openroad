@@ -11,7 +11,7 @@
 use packets::Packet;
 
 use crate::world::{Reason, SessionId, World};
-use crate::{chat, consignment, join, lobby, movement, npc};
+use crate::{chat, combat, consignment, join, lobby, movement, npc};
 
 pub enum Handling {
     Locked {
@@ -32,6 +32,7 @@ pub fn handling(opcode: u16) -> Option<Handling> {
         0x7025 => Handling::Answer(chat::say),
         0x7007 => Handling::Answer(lobby::lobby),
         0x7045 => Handling::Answer(npc::select),
+        0x7074 => Handling::Answer(combat::request),
         0x7046 => Handling::Locked {
             answer: npc::talk,
             refusal: npc::talk_refusal,
