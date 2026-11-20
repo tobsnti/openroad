@@ -608,8 +608,8 @@ fn a_monster_walks_at_its_walk_speed_and_is_seen_walking() {
 }
 
 /// A monster walking into a region the hero sees comes alone, walking, in a
-/// single spawn whose last byte is 4, and is taken back when it walks out
-/// again. Before it comes, the hero is not told where it goes.
+/// single spawn whose last byte is 4, and is taken back alone (0x3016) when it
+/// walks out again. Before it comes, the hero is not told where it goes.
 #[test]
 fn a_monster_walking_into_sight_comes_alone_and_walking() {
     let mut shard = monster_world();
@@ -665,15 +665,8 @@ fn a_monster_walking_into_sight_comes_alone_and_walking() {
     // Walking out, the hero is told where it goes, then sees it taken back.
     let seen = walk(world, point(REGION + 2, 100.0));
     let codes: Vec<u16> = seen.iter().map(|f| f.0).collect();
-    assert_eq!(codes, [0xB021, 0x3017, 0x3019, 0x3018]);
-    let gone = (
-        seen[2].1.clone(),
-        Bytes::copy_from_slice(&far.to_le_bytes()),
-    );
-    assert_eq!(
-        (seen[1].1.clone(), gone.0),
-        (Bytes::from_static(&[2, 1, 0]), gone.1)
-    );
+    assert_eq!(codes, [0xB021, 0x3016]);
+    assert_eq!(seen[1].1[..], far.to_le_bytes());
 }
 
 /// Monsters near the hero wander: in the first minute each takes a few

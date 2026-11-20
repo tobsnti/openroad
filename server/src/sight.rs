@@ -75,9 +75,9 @@ pub(crate) fn update(world: &mut World, uid: u32) {
 }
 
 /// Monster `uid` walked from region `from` into another: the clients in the
-/// game that now see it are shown it alone ([`alone`]), as the vSRO server
-/// shows a monster that walks into sight; those that no longer see it have it
-/// taken back as a group of one.
+/// game that now see it are shown it alone ([`alone`]), and those that no
+/// longer see it are told it is gone (0x3016), as the vSRO server does for a
+/// monster that walks into or out of sight.
 pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
     let Some(region) = world.monster(uid).map(|m| m.position.region) else {
         return;
@@ -96,8 +96,8 @@ pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
                 raw: alone(world, uid),
             };
             world.show(session, uid, Packet::SingleEntitySpawn(spawn));
-        } else if !near && world.knows(session, uid) {
-            world.hide_group(session, vec![uid]);
+        } else if !near {
+            world.hide(session, uid);
         }
     }
 }
