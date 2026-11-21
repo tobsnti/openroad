@@ -3,7 +3,7 @@
 .PHONY: check-deps check-env
 .PHONY: run watch launcher intro intro_v2 world world_debug animations ui_testing asset-loading asset_loading skills dungeons netcheck
 
-.PHONY: build windows release test fmt fmt-check clippy warnings opcodes check-target-dir re-tools reference-data deny ci clean
+.PHONY: build windows release test fmt fmt-check clippy warnings opcodes addresses check-target-dir re-tools reference-data deny ci clean
 .PHONY: pk2 pk2-list pk2-unpack list unpack bsr2glb
 .PHONY: perf snapshot sample fps get set attribute
 .PHONY: profile chrome tracy summary windows
@@ -66,9 +66,10 @@ help:
 	@echo "  clippy          Clippy (all targets, all features)"
 	@echo "  warnings        Reject Rust warnings except unread struct fields"
 	@echo "  opcodes         Check the opcode ledger against the packets! macro"
+	@echo "  addresses       Hold the original binary's addresses per directory at their ceiling"
 	@echo "  reference-data  Check textdata column indices against SR_Db2Media (SRO_REFS_PATH)"
 	@echo "  deny            Supply-chain gate: licences/advisories (needs cargo-deny)"
-	@echo "  ci              Full local gate: check-target-dir + fmt-check + warnings + opcodes + re-tools + reference-data + deny + test + build"
+	@echo "  ci              Full local gate: check-target-dir + fmt-check + warnings + opcodes + addresses + re-tools + reference-data + deny + test + build"
 	@echo "  clean           Cargo clean"
 	@echo ""
 	@echo "Tools:"
@@ -280,7 +281,7 @@ warnings:
 # The full local quality gate — run this before pushing. There is no CI service:
 # this repo deliberately has no GitHub Actions, so these checks are the gate.
 
-ci: check-target-dir fmt-check warnings opcodes re-tools reference-data deny test build
+ci: check-target-dir fmt-check warnings opcodes addresses re-tools reference-data deny test build
 
 # Supply-chain gate: licences, advisories, wildcard versions, source registries
 # (deny.toml). Skips with a notice when cargo-deny is absent, the same way the
@@ -300,6 +301,11 @@ fmt-check:
 opcodes:
 	python3 scripts/check_opcode_ledger.py
 
+# The original binary's addresses still in the tree, per directory: the counts
+# may only go down (CONTRIBUTING.md, "What this repository does not publish").
+addresses:
+	python3 scripts/check_re_addresses.py
+
 # Cargo cannot tell two worktrees apart in a shared target dir, so a gate run
 # there can pass on another worktree's binary. Refuse instead (#374).
 check-target-dir:
@@ -312,6 +318,7 @@ re-tools:
 	python3 scripts/re/test_stringbind.py
 	python3 scripts/re/test_check_reference_data.py
 	python3 scripts/test_check_opcode_ledger.py
+	python3 scripts/test_check_re_addresses.py
 	python3 scripts/test_bump_version.py
 	bash scripts/test_safe_analyze.sh
 
