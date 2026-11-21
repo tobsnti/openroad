@@ -212,7 +212,10 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     assert_eq!(player["uid"], joined["uid"]);
     let at = (&player["region"], &player["x"], &player["z"]);
     assert_eq!(at, (&json!(25000), &json!(969.0), &json!(1419.0)));
-    assert_eq!(admin(&server.admin, "loot")["ok"], false);
+    assert_eq!(
+        admin(&server.admin, "loot"),
+        json!({"ok": true, "drops": []})
+    );
 
     // The fixture's monster stands where it says, with a uid and the HP of
     // the server: the entry's are the stub's.
@@ -309,6 +312,15 @@ fn the_log_names_the_world_seed() {
         wrong.contains("BENCH_WORLD_SEED is not a number: x"),
         "{wrong}"
     );
+}
+
+/// A gold chance above 1000 per mille ends the server with its key.
+#[test]
+fn a_gold_chance_above_1000_ends_the_server() {
+    let env = [("BENCH_GOLD_DROP_PERMILLE", "1001")];
+    let wrong = ended_with("bad-gold", &bench_fixture(), &env);
+    let named = "BENCH_GOLD_DROP_PERMILLE is not 0 to 1000: 1001";
+    assert!(wrong.contains(named), "{wrong}");
 }
 
 /// A monster entry whose model is no monster's ends the server the same way.

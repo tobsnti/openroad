@@ -53,9 +53,15 @@ const PILE_CHANCE: f32 = 0.5;
 /// [V capture, peer vSRO].
 const SCATTER: RangeInclusive<f32> = 10.0..=30.0;
 
-/// How many piles one kill drops.
-fn piles(chance: &mut fastrand::Rng) -> usize {
-    (0..THROWS).filter(|_| chance.f32() < PILE_CHANCE).count()
+/// How many piles one kill drops. The bench may fix the chance
+/// (`BENCH_GOLD_DROP_PERMILLE`, bench contract); then one throw at that chance
+/// replaces the two, so that a test kill drops at most one pile (lead,
+/// 2026-11-21).
+fn piles(chance: &mut fastrand::Rng, fixed: Option<u16>) -> usize {
+    match fixed {
+        Some(permille) => usize::from(chance.u16(0..1000) < permille),
+        None => (0..THROWS).filter(|_| chance.f32() < PILE_CHANCE).count(),
+    }
 }
 
 /// Monster `uid` died, killed for the character with the id `owner`: a normal
@@ -88,7 +94,8 @@ pub(crate) fn monster_died(world: &mut World, uid: u32, owner: u32) {
             z: at.z,
         },
     );
-    for _ in 0..piles(world.chance()) {
+    let fixed = world.gold_drop();
+    for _ in 0..piles(world.chance(), fixed) {
         let amount = world.chance().u32(gold.clone());
         let Some((ref_id, decay_ms)) = world.refdata().gold_pile(amount) else {
             continue;
@@ -270,12 +277,33 @@ mod tests {
         let mut chance = fastrand::Rng::with_seed(19);
         let mut count = [0u32; 3];
         for _ in 0..10_000 {
-            count[piles(&mut chance)] += 1;
+            count[piles(&mut chance, None)] += 1;
         }
         let near = |n: u32, share: u32| n.abs_diff(share * 100) <= 100;
         assert!(
             near(count[0], 25) && near(count[1], 50) && near(count[2], 25),
             "{count:?}"
+        );
+    }
+
+    /// With the bench's chance fixed, one throw: at 1000 a pile every time, at
+    /// 0 never, at 250 in a quarter of 10,000 kills, within one percent; never
+    /// two.
+    #[test]
+    fn one_throw_at_a_fixed_chance() {
+        let mut chance = fastrand::Rng::with_seed(19);
+        let mut count = |permille| {
+            let mut count = [0u32; 3];
+            for _ in 0..10_000 {
+                count[piles(&mut chance, Some(permille))] += 1;
+            }
+            count
+        };
+        assert_eq!((count(1000), count(0)), ([0, 10_000, 0], [10_000, 0, 0]));
+        let quarter = count(250);
+        assert!(
+            quarter[1].abs_diff(2500) <= 100 && quarter[2] == 0,
+            "{quarter:?}"
         );
     }
 }

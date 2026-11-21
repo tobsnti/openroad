@@ -26,6 +26,9 @@
 //! - `BENCH_WORLD_SEED`: the seed of the world's chance (a `u64`), so that a
 //!   run repeats; drawn from the system unless set. The log names the seed in
 //!   force either way.
+//! - `BENCH_GOLD_DROP_PERMILLE`: 0 to 1000, the chance of the one pile of
+//!   gold a kill then drops (the contract's test knob); unset, a kill drops
+//!   gold as measured on the vSRO server.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -85,6 +88,9 @@ fn run() -> Result<(), String> {
         gateway_idle: GATEWAY_IDLE,
     };
     let mut world = World::seeded(store.clone(), refdata, world_seed()?);
+    if let Some(permille) = gold_drop()? {
+        world.fix_gold_drop(permille);
+    }
     let (npcs, monsters) = (world.npcs().count(), world.monsters().count());
     let skipped = world.skipped_npc_rows();
     eprintln!("npcpos.txt: {npcs} NPCs and {monsters} monsters placed, {skipped} rows skipped (no model in the client's data)");
@@ -188,7 +194,18 @@ fn answer(command: &str, running: &Running) -> Value {
             });
             json!({"ok": true, "mobs": mobs.unwrap_or_default()})
         }
-        Some("loot" | "grant-exp") => json!({"ok": false, "error": "not yet"}),
+        Some("loot") => {
+            let drops = running.query(|world| {
+                let row = |(uid, item): (u32, &server::ground::GroundItem)| {
+                    let at = item.position;
+                    json!({"uid": uid, "from": item.dropper, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z})
+                };
+                world.ground_items().map(row).collect::<Vec<_>>()
+            });
+            json!({"ok": true, "drops": drops.unwrap_or_default()})
+        }
+        Some("grant-exp") => json!({"ok": false, "error": "not yet"}),
         _ => json!({"ok": false, "error": "unknown command"}),
     }
 }
@@ -449,6 +466,19 @@ fn world_seed() -> Result<u64, String> {
     };
     eprintln!("world seed: {seed} ({from})");
     Ok(seed)
+}
+
+/// `BENCH_GOLD_DROP_PERMILLE`, when set; the log names it.
+fn gold_drop() -> Result<Option<u16>, String> {
+    let Ok(value) = std::env::var("BENCH_GOLD_DROP_PERMILLE") else {
+        return Ok(None);
+    };
+    let permille = value.parse().ok().filter(|p| *p <= 1000);
+    let permille = permille.ok_or(format!(
+        "BENCH_GOLD_DROP_PERMILLE is not 0 to 1000: {value}"
+    ))?;
+    eprintln!("gold drop: one pile per kill at {permille} per mille (BENCH_GOLD_DROP_PERMILLE)");
+    Ok(Some(permille))
 }
 
 fn var(name: &str) -> Result<String, String> {

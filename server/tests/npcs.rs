@@ -1447,3 +1447,22 @@ fn a_pickup_waits_behind_a_swing() {
     let gold = world.player(hero).unwrap().character.gold;
     assert_eq!(gold, u64::from(amount));
 }
+
+/// With the bench's gold chance fixed (`World::fix_gold_drop`), a kill drops
+/// one pile at 1000 per mille and none at 0.
+#[test]
+fn a_fixed_gold_chance_drops_one_pile_or_none() {
+    let piles = |permille| {
+        let mut shard = armed(gold_data(), hero());
+        shard.0.fix_gold_drop(permille);
+        let (s, _) = enter(&mut shard);
+        let world = &mut shard.0;
+        let mob = world.monsters().next().unwrap().0;
+        send(world, s, attack(mob));
+        while world.monster(mob).is_some_and(|m| m.hp > 0) {
+            world.step();
+        }
+        world.ground_items().count()
+    };
+    assert_eq!((piles(1000), piles(0)), (1, 0));
+}
