@@ -182,6 +182,9 @@ pub struct World {
     pub(crate) bodies: VecDeque<(u64, u32)>,
     /// Monsters to come back: the step, the model and the row.
     pub(crate) returning: Vec<(u64, u32, Position)>,
+    /// The chance of a gold pile per kill in per mille, when the bench fixes
+    /// it ([`World::fix_gold_drop`]).
+    gold_drop: Option<u16>,
 }
 
 impl World {
@@ -212,6 +215,7 @@ impl World {
             last_action: 0,
             bodies: VecDeque::new(),
             returning: Vec::new(),
+            gold_drop: None,
         };
         for row in placed {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
@@ -344,6 +348,16 @@ impl World {
             let placed = self.placed_in.entry(m.position.region).or_default();
             placed.retain(|placed| *placed != uid);
         }
+    }
+
+    /// A kill drops one pile of gold with chance `permille` / 1000, instead
+    /// of the measured rule (`ground`); the bench's test knob.
+    pub fn fix_gold_drop(&mut self, permille: u16) {
+        self.gold_drop = Some(permille);
+    }
+
+    pub(crate) fn gold_drop(&self) -> Option<u16> {
+        self.gold_drop
     }
 
     pub(crate) fn chance(&mut self) -> &mut fastrand::Rng {
