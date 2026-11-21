@@ -20,6 +20,9 @@ pub struct AccountId(pub u32);
 /// A character as the store keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Character {
+    /// The store's id of the character, given when the store takes it in, as
+    /// a database row's id. A drop names its owner by it (decision 0021 E3).
+    pub id: u32,
     pub name: String,
     /// The characterdata row of the character's model.
     pub ref_id: u32,
@@ -140,7 +143,8 @@ struct Account {
 }
 
 impl MemoryStore {
-    /// Add an account, as the admin seed of a fresh store does.
+    /// Add an account, as the admin seed of a fresh store does. Each of its
+    /// characters gets the next id, as a new database row does.
     pub fn add_account(
         &mut self,
         username: &str,
@@ -148,6 +152,14 @@ impl MemoryStore {
         characters: Vec<Character>,
     ) -> AccountId {
         let accounts = self.accounts.get_mut().expect("no store user panicked");
+        let mut id: u32 = accounts.iter().map(|a| a.characters.len() as u32).sum();
+        let characters = characters
+            .into_iter()
+            .map(|c| {
+                id += 1;
+                Character { id, ..c }
+            })
+            .collect();
         accounts.push(Account {
             username: username.to_owned(),
             password_hash: hash_password(password),
@@ -215,6 +227,7 @@ mod tests {
 
     fn named(name: &str) -> Character {
         Character {
+            id: 0,
             name: name.to_owned(),
             ref_id: 1907,
             scale: 34,
@@ -242,19 +255,35 @@ mod tests {
         }
     }
 
+    /// The store gives each character it takes in the next id, across
+    /// accounts.
+    #[test]
+    fn each_character_gets_the_next_id() {
+        let mut store = MemoryStore::default();
+        let a = store.add_account("a", "a", vec![named("A1"), named("A2")]);
+        let b = store.add_account("b", "b", vec![named("B1")]);
+        let ids =
+            |account| -> Vec<u32> { store.characters(account).iter().map(|c| c.id).collect() };
+        assert_eq!((ids(a), ids(b)), (vec![1, 2], vec![3]));
+    }
+
     /// A commit is all or nothing: one character the store does not know
     /// keeps the other's change out too.
     #[test]
     fn a_commit_writes_all_of_it_or_nothing() {
         let mut store = MemoryStore::default();
         let admin = store.add_account("admin", "secret", vec![named("Hero")]);
-        let mut moved = named("Hero");
+        let hero = Character {
+            id: 1,
+            ..named("Hero")
+        };
+        let mut moved = hero.clone();
         moved.position.x = 1119.0;
         let both = Changes {
             characters: vec![moved.clone(), named("Nobody")],
         };
         assert_eq!(store.commit(&both), Err("no character Nobody".to_owned()));
-        assert_eq!(store.characters(admin), [named("Hero")]);
+        assert_eq!(store.characters(admin), [hero]);
         let one = Changes {
             characters: vec![moved.clone()],
         };

@@ -6,6 +6,7 @@
 //! the files. Only what the server uses so far is read.
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use sro_textdata::characterdata::{CharacterData, CharacterDataRow};
@@ -28,6 +29,8 @@ pub struct CharacterRef {
 pub struct MonsterRef {
     pub max_hp: u32,
     pub rarity: u8,
+    /// Its level, 0 for a row without.
+    pub level: u8,
     /// What killing it gives (ExpToGive), 0 for a row without.
     pub exp: u32,
     /// Walk and run speed in world units per second, 0 for a monster that
@@ -52,6 +55,8 @@ pub struct BasicAttack {
 pub struct RefData {
     characters: CharacterData,
     items: ItemData,
+    /// The gold a monster of a level drops, from `levelgold.txt`.
+    level_gold: HashMap<u8, RangeInclusive<u32>>,
     npcs: Vec<NpcPos>,
     fortresses: FortressTable,
     skills: SkillData,
@@ -62,6 +67,7 @@ impl Default for RefData {
         RefData {
             characters: CharacterData(HashMap::new()),
             items: ItemData(HashMap::new()),
+            level_gold: HashMap::new(),
             npcs: Vec::new(),
             fortresses: FortressTable::default(),
             skills: SkillData(HashMap::new()),
@@ -71,8 +77,8 @@ impl Default for RefData {
 
 impl RefData {
     /// Every `characterdata*.txt`, `itemdata*.txt` and plain
-    /// `skilldata_*.txt` under `textdata`, `npcpos.txt` and
-    /// `siegefortress.txt`.
+    /// `skilldata_*.txt` under `textdata`, `npcpos.txt`, `siegefortress.txt`
+    /// and `levelgold.txt`.
     pub fn load(textdata: &Path) -> std::io::Result<RefData> {
         let mut data = RefData::default();
         for entry in std::fs::read_dir(textdata)? {
@@ -90,6 +96,8 @@ impl RefData {
                 data.add_npcs(&text(&std::fs::read(&path)?));
             } else if name == "siegefortress.txt" {
                 data.add_fortresses(&text(&std::fs::read(&path)?));
+            } else if name == "levelgold.txt" {
+                data.add_level_gold(&text(&std::fs::read(&path)?));
             } else if name.starts_with("skilldata_") && !name.ends_with("enc.txt") {
                 data.add_skills(&text(&std::fs::read(&path)?));
             }
@@ -113,6 +121,47 @@ impl RefData {
     /// The rows of one itemdata table, read like a characterdata table.
     pub fn add_items(&mut self, table: &str) {
         self.items.0.extend(ItemData::parse_shard(table).0);
+    }
+
+    /// The rows of `levelgold.txt`: a level, then the least and the most gold
+    /// a monster of that level drops. The client does not read the file, so
+    /// its columns are named here (decision 0017).
+    pub fn add_level_gold(&mut self, table: &str) {
+        for line in table.lines() {
+            let mut cells = line.split('\t').map(|cell| cell.trim().parse::<u32>().ok());
+            let (Some(Some(level)), Some(Some(least)), Some(Some(most))) =
+                (cells.next(), cells.next(), cells.next())
+            else {
+                continue;
+            };
+            if let Ok(level) = u8::try_from(level) {
+                self.level_gold.insert(level, least..=most);
+            }
+        }
+    }
+
+    /// The gold a monster of `level` drops, at least and at most. The vSRO
+    /// server's 154 piles of the Mangnyang (level 1), the Yeoha (10) and the
+    /// Chakji (20) all held an amount in the range of their level [V capture,
+    /// peer vSRO: 29 to 53, 60 to 124 and 95 to 197].
+    pub fn gold_at(&self, level: u8) -> Option<RangeInclusive<u32>> {
+        self.level_gold.get(&level).cloned()
+    }
+
+    /// The gold pile that holds `amount`, and how long it lies on the ground
+    /// (DecayTime, ms): of the gold items, the one with the largest Param1 not
+    /// above the amount. Param1 is 1, 1000 and 10000 for ITEM_ETC_GOLD_01 to
+    /// _03 (itemdata_5000.txt:1-3), and the vSRO server dropped _01 for 29 to
+    /// 197 gold and _02 for 2850 to 5910 [V capture, peer vSRO: 168 and 276
+    /// piles].
+    pub fn gold_pile(&self, amount: u32) -> Option<(u32, u32)> {
+        let piles = self.items.0.iter().filter(|(_, row)| row.is_gold());
+        let fitting = piles.filter_map(|(id, row)| {
+            let least = row.param(1).filter(|least| *least <= i64::from(amount))?;
+            Some((least, u32::try_from(*id).ok()?, row.decay_time_ms()?))
+        });
+        let (_, ref_id, decay_ms) = fitting.max_by_key(|(least, ..)| *least)?;
+        Some((ref_id, decay_ms))
     }
 
     /// The ref id of the item whose code name is `code`.
@@ -225,6 +274,7 @@ impl RefData {
         Some(MonsterRef {
             max_hp: row.max_hp()?,
             rarity: row.rarity(),
+            level: row.level().and_then(|l| u8::try_from(l).ok()).unwrap_or(0),
             exp: row.exp_to_give().unwrap_or(0),
             walk_speed: row.walk_speed().unwrap_or(0.0),
             run_speed: row.run_speed().unwrap_or(0.0),
@@ -390,6 +440,21 @@ mod tests {
             .basic_attack(None)
             .map(|a| (a.skill, a.duration_ms, a.hits));
         assert_eq!(fist, Some((1, 1500, 1)));
+    }
+
+    /// Gold as the user's data holds it: the Mangnyang is level 1
+    /// (characterdata_5000.txt:27), a monster of level 1 drops 28 to 59
+    /// (levelgold.txt:1), and 53 gold lie in ITEM_ETC_GOLD_01, 2850 in _02,
+    /// each for 180 s (itemdata_5000.txt:1 and :2).
+    #[test]
+    #[ignore = "needs OPENROAD_TEXTDATA_DIR, the user's textdata folder"]
+    fn the_users_gold() {
+        let dir = std::env::var("OPENROAD_TEXTDATA_DIR").unwrap();
+        let data = RefData::load(Path::new(&dir)).unwrap();
+        let level = data.monster(1933).map(|m| m.level);
+        assert_eq!((level, data.gold_at(1)), (Some(1), Some(28..=59)));
+        let piles = (data.gold_pile(53), data.gold_pile(2850));
+        assert_eq!(piles, (Some((1, 180000)), Some((2, 180000))));
     }
 
     /// What killing the bench's monsters gives, as the user's data says:

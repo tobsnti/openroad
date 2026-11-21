@@ -23,6 +23,7 @@ const REGION: u16 = 25000;
 
 fn character(name: &str, region: u16) -> Character {
     Character {
+        id: 0,
         name: name.to_owned(),
         ref_id: 1907,
         scale: 0x22,

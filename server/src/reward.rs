@@ -1,5 +1,6 @@
-//! What a kill gives its killer. For now that is EXP: the monster's
-//! ExpToGive (characterdata), given as EXP and as SP-EXP alike. This is a
+//! What a kill gives: the killer the monster's EXP, and the ground the
+//! monster's gold ([`ground`]). The EXP is the monster's ExpToGive
+//! (characterdata), given as EXP and as SP-EXP alike. This is a
 //! deliberate simplification (decision 0021 E1) and differs from the vSRO
 //! server. For a Mangnyang (ExpToGive 24), vSRO gave a level 1 character 23
 //! EXP and 119 SP-EXP, and gave less the higher the killer's level was above
@@ -12,6 +13,7 @@ use bytes::Bytes;
 use packets::agent::ingame::{CharacterPointsUpdate, ReceiveExperience};
 use packets::Packet;
 
+use crate::ground;
 use crate::world::World;
 
 /// SP-EXP per skill point [V capture, peer vSRO: 0x304E 2 followed exactly
@@ -20,8 +22,8 @@ const SP_EXP_PER_POINT: u32 = 400;
 
 /// Player `killer` killed monster `uid`: it gains the monster's EXP and
 /// SP-EXP (0x3056, the monster as origin [V capture, peer vSRO: 142 of 142
-/// EXP frames after a kill]), and the client hears of a new skill point
-/// (0x304E 2).
+/// EXP frames after a kill]), the client hears of a new skill point (0x304E
+/// 2), and the monster drops its gold for the killer.
 pub(crate) fn killed(world: &mut World, killer: u32, uid: u32) {
     let model = world.monster(uid).map(|m| m.ref_id);
     let exp = model
@@ -36,7 +38,7 @@ pub(crate) fn killed(world: &mut World, killer: u32, uid: u32) {
     let points = sp_exp / SP_EXP_PER_POINT;
     character.skill_exp = sp_exp % SP_EXP_PER_POINT;
     character.skill_points += points;
-    let (session, skill_points) = (player.session, character.skill_points);
+    let (session, skill_points, owner) = (player.session, character.skill_points, character.id);
     let gained = ReceiveExperience {
         exp_origin: uid,
         experience: i64::from(exp),
@@ -52,4 +54,5 @@ pub(crate) fn killed(world: &mut World, killer: u32, uid: u32) {
         };
         world.send(session, Packet::CharacterPointsUpdate(sp));
     }
+    ground::monster_died(world, uid, owner);
 }
