@@ -11,6 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use argon2::password_hash::{PasswordHash, SaltString};
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use packets::agent::character_data::SpawnPosition;
 use rand_core::OsRng;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,6 +20,9 @@ pub struct AccountId(pub u32);
 /// A character as the store keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Character {
+    /// The store's id of the character, given when the store takes it in, as
+    /// a database row's id. A drop names its owner by it (decision 0021 E3).
+    pub id: u32,
     pub name: String,
     /// The characterdata row of the character's model.
     pub ref_id: u32,
@@ -38,6 +42,37 @@ pub struct Character {
     /// Mastery id and level.
     pub masteries: Vec<(u32, u8)>,
     pub position: Position,
+    /// The items the character wears: inventory slot (0 to 12) and itemdata
+    /// ref, and the avatar items it wears: avatar slot and ref. Static for
+    /// now: nothing moves an item yet, and the PostgreSQL store does not keep
+    /// them.
+    pub equipment: Vec<(u8, u32)>,
+    pub avatar: Vec<(u8, u32)>,
+}
+
+impl Character {
+    /// The worn items the lobby list (0xB007) and the spawn (0x3015) show,
+    /// with their plus: the inventory slots 0 to 7 in slot order, as the vSRO
+    /// server lists them [V capture, peer vSRO: 323 lobby characters and 117
+    /// player spawns, 6 to 8 items each, none from slot 8 or above]. A static
+    /// item has plus 0.
+    pub fn shown_equipment(&self) -> Vec<(u32, u8)> {
+        let mut worn: Vec<(u8, u32)> = self
+            .equipment
+            .iter()
+            .copied()
+            .filter(|(slot, _)| *slot < 8)
+            .collect();
+        worn.sort_unstable();
+        worn.into_iter().map(|(_, ref_id)| (ref_id, 0)).collect()
+    }
+
+    /// The worn avatar items, in slot order, each with plus 0.
+    pub fn shown_avatar(&self) -> Vec<(u32, u8)> {
+        let mut worn = self.avatar.clone();
+        worn.sort_unstable();
+        worn.into_iter().map(|(_, ref_id)| (ref_id, 0)).collect()
+    }
 }
 
 /// Where a character stands: region, coordinates within it, and heading.
@@ -48,6 +83,18 @@ pub struct Position {
     pub y: f32,
     pub z: f32,
     pub heading: u16,
+}
+
+impl From<Position> for SpawnPosition {
+    fn from(p: Position) -> Self {
+        SpawnPosition {
+            region: p.region,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            heading: p.heading,
+        }
+    }
 }
 
 /// What one accepted action changed, written as a whole or not at all
@@ -96,7 +143,8 @@ struct Account {
 }
 
 impl MemoryStore {
-    /// Add an account, as the admin seed of a fresh store does.
+    /// Add an account, as the admin seed of a fresh store does. Each of its
+    /// characters gets the next id, as a new database row does.
     pub fn add_account(
         &mut self,
         username: &str,
@@ -104,6 +152,14 @@ impl MemoryStore {
         characters: Vec<Character>,
     ) -> AccountId {
         let accounts = self.accounts.get_mut().expect("no store user panicked");
+        let mut id: u32 = accounts.iter().map(|a| a.characters.len() as u32).sum();
+        let characters = characters
+            .into_iter()
+            .map(|c| {
+                id += 1;
+                Character { id, ..c }
+            })
+            .collect();
         accounts.push(Account {
             username: username.to_owned(),
             password_hash: hash_password(password),
@@ -171,6 +227,7 @@ mod tests {
 
     fn named(name: &str) -> Character {
         Character {
+            id: 0,
             name: name.to_owned(),
             ref_id: 1907,
             scale: 34,
@@ -193,7 +250,21 @@ mod tests {
                 z: 1419.0,
                 heading: 0,
             },
+            equipment: Vec::new(),
+            avatar: Vec::new(),
         }
+    }
+
+    /// The store gives each character it takes in the next id, across
+    /// accounts.
+    #[test]
+    fn each_character_gets_the_next_id() {
+        let mut store = MemoryStore::default();
+        let a = store.add_account("a", "a", vec![named("A1"), named("A2")]);
+        let b = store.add_account("b", "b", vec![named("B1")]);
+        let ids =
+            |account| -> Vec<u32> { store.characters(account).iter().map(|c| c.id).collect() };
+        assert_eq!((ids(a), ids(b)), (vec![1, 2], vec![3]));
     }
 
     /// A commit is all or nothing: one character the store does not know
@@ -202,13 +273,17 @@ mod tests {
     fn a_commit_writes_all_of_it_or_nothing() {
         let mut store = MemoryStore::default();
         let admin = store.add_account("admin", "secret", vec![named("Hero")]);
-        let mut moved = named("Hero");
+        let hero = Character {
+            id: 1,
+            ..named("Hero")
+        };
+        let mut moved = hero.clone();
         moved.position.x = 1119.0;
         let both = Changes {
             characters: vec![moved.clone(), named("Nobody")],
         };
         assert_eq!(store.commit(&both), Err("no character Nobody".to_owned()));
-        assert_eq!(store.characters(admin), [named("Hero")]);
+        assert_eq!(store.characters(admin), [hero]);
         let one = Changes {
             characters: vec![moved.clone()],
         };

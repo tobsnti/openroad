@@ -24,6 +24,7 @@ use common::Wire;
 
 fn hero() -> Character {
     Character {
+        id: 0,
         name: "Hero".to_owned(),
         ref_id: 1907,
         scale: 34,
@@ -46,6 +47,8 @@ fn hero() -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
@@ -100,7 +103,14 @@ fn started(
     let store = Arc::new(store);
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    // A player's model (type ids 1/1) with its walk and run speeds.
+    (row[1], row[9], row[10], row[46], row[47]) = (
+        "1907".into(),
+        "1".into(),
+        "1".into(),
+        "16".into(),
+        "50".into(),
+    );
     refdata.add_characters(&row.join("\t"));
     let world = World::new(store.clone(), refdata);
     let running =

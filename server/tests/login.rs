@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use packets::agent::character_data::{parse_character_info, ItemClass, ItemClassResolver};
+use packets::agent::character_data::{
+    parse_character_info, EquipmentData, InventoryItem, ItemClass, ItemClassResolver, ItemTypeData,
+    RentInfo,
+};
 use packets::agent::prelude::*;
 use packets::global::{KeepAlive, ModuleIdentification};
 use packets::Packet;
@@ -12,8 +15,12 @@ use server::refdata::RefData;
 use server::store::{login, AccountId, Character, MemoryStore, Position};
 use server::world::{Event, Phase, Reason, SessionId, World};
 
+mod common;
+use common::item_row;
+
 fn hero() -> Character {
     Character {
+        id: 0,
         name: "Hero".to_owned(),
         ref_id: 1907,
         scale: 34,
@@ -39,14 +46,18 @@ fn hero() -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
-/// A characterdata line with the model's id and speeds, at the columns the
-/// game's table has them (`docs/formats/textdata-characterdata.md` §3).
+/// A characterdata line of a player's model (type ids 1/1) with the model's
+/// id and speeds, at the columns the game's table has them
+/// (`docs/formats/textdata-characterdata.md` §3).
 fn character_row(ref_id: u32, walk: f32, run: f32) -> String {
     let mut cols = vec![String::from("0"); 48];
-    (cols[1], cols[46], cols[47]) = (ref_id.to_string(), walk.to_string(), run.to_string());
+    (cols[1], cols[9], cols[10]) = (ref_id.to_string(), "1".into(), "1".into());
+    (cols[46], cols[47]) = (walk.to_string(), run.to_string());
     cols.join("\t")
 }
 
@@ -229,6 +240,88 @@ fn a_character_enters_the_world_and_nothing_follows_until_game_ready() {
     assert_eq!(world.players().count(), 0);
 }
 
+/// The hero's model, a sword (durability 62 to 76), a heavy armour's body
+/// (48 to 59) and an avatar flag, as the user's itemdata has them.
+fn refdata_with_items() -> RefData {
+    let mut refdata = RefData::default();
+    refdata.add_characters(&character_row(hero().ref_id, 16.0, 50.0));
+    for (id, code, tid, durability) in [
+        (3632, "ITEM_CH_SWORD_01_A_DEF", [3, 1, 6, 2], (62, 76)),
+        (3637, "ITEM_CH_M_HEAVY_01_BA_A_DEF", [3, 1, 3, 3], (48, 59)),
+        (
+            5893,
+            "ITEM_ETC_E051021_BLUEDRAGON_BUNTING_M",
+            [3, 1, 13, 4],
+            (0, 0),
+        ),
+    ] {
+        refdata.add_items(&item_row(id, code, tid, durability));
+    }
+    refdata
+}
+
+/// A character wearing a sword, an armour's body and an avatar flag shows
+/// them in the lobby list, and its record (0x3013) carries them in slot order
+/// as new items: no rent, plus 0, variance 0, the durability its itemdata
+/// starts it with, no options.
+#[test]
+fn a_character_wears_its_items_in_the_lobby_and_in_its_record() {
+    let mut worn = hero();
+    (worn.equipment, worn.avatar) = (vec![(6, 3632), (1, 3637)], vec![(0, 5893)]);
+    let mut store = MemoryStore::default();
+    store.add_account("admin", "secret", vec![worn.clone()]);
+    let account = login(&store, "admin", "secret").expect("the seeded password logs in");
+    let mut world = World::new(Arc::new(store), refdata_with_items());
+    let ticket = world
+        .admit(account, "admin", vec![worn])
+        .expect("no agent session yet");
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.take_frames(s);
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    let (opcode, body) = frames(&mut world, s).remove(0);
+    let Ok(Packet::CharacterSelectionActionResponse(list)) =
+        Packet::deserialize(opcode, Bytes::from(body))
+    else {
+        panic!("a lobby list");
+    };
+    let lobby = &list.characters.expect("the list").characters[0];
+    let shown =
+        |items: &[LobbyItem]| -> Vec<(u32, u8)> { items.iter().map(|i| (i.id, i.plus)).collect() };
+    let listed = (shown(&lobby.char_items), shown(&lobby.avatar_items));
+    assert_eq!(listed, (vec![(3637, 0), (3632, 0)], vec![(5893, 0)]));
+
+    join(&mut world, s, "Hero");
+    let out = frames(&mut world, s);
+    let Some(Phase::Joining { uid, .. }) = world.phase(s) else {
+        panic!("the session is joining");
+    };
+    let items = refdata_with_items();
+    let info = parse_character_info(&out[2].1, Some(uid), items.items());
+    assert!(info.fully_parsed, "failed at {:?}", info.failed_stage);
+    let new = |slot, ref_id, durability| InventoryItem {
+        slot,
+        rent: RentInfo::default(),
+        ref_id,
+        data: ItemTypeData::Equipment(EquipmentData {
+            opt_level: 0,
+            variance: 0,
+            durability,
+            mag_params: Vec::new(),
+            socket_tag: 1,
+            sockets: Vec::new(),
+            elixir_tag: 2,
+            adv_elixirs: Vec::new(),
+        }),
+    };
+    let worn = (info.inventory, info.avatar_items);
+    let expected = (
+        vec![new(1, 3637, 48), new(6, 3632, 62)],
+        vec![new(0, 5893, 0)],
+    );
+    assert_eq!(worn, (Some(expected.0), Some(expected.1)));
+}
+
 #[test]
 fn only_a_character_of_the_account_enters() {
     let (mut world, ticket) = admitted();
@@ -238,6 +331,39 @@ fn only_a_character_of_the_account_enters() {
     world.take_frames(s);
     join(&mut world, s, "Nobody");
     assert_eq!(frames(&mut world, s), [(0xB001, vec![0x02, 0x0D, 0x04])]);
+    assert!(matches!(world.phase(s), Some(Phase::Lobby(_))));
+}
+
+/// A character whose model is no player's in the reference data could not be
+/// spawned as one, so its join is refused like one whose model has no row.
+#[test]
+fn a_character_whose_model_is_no_players_is_refused() {
+    let mut store = MemoryStore::default();
+    store.add_account("admin", "secret", vec![hero()]);
+    let account = login(&store, "admin", "secret").expect("the seeded password logs in");
+    let mut refdata = RefData::default();
+    // the hero's model id and speeds, with an NPC's type ids (1/2/2)
+    let mut npc: Vec<String> = character_row(hero().ref_id, 16.0, 50.0)
+        .split('\t')
+        .map(String::from)
+        .collect();
+    (npc[10], npc[11]) = ("2".into(), "2".into());
+    refdata.add_characters(&npc.join("\t"));
+    let mut world = World::new(Arc::new(store), refdata);
+    let ticket = world
+        .admit(account, "admin", vec![hero()])
+        .expect("no agent session yet");
+    let s = world.connect();
+    log_in(&mut world, s, ticket, "admin");
+    world.receive(s, 0x7007, Bytes::from_static(&[0x02]));
+    world.take_frames(s);
+    join(&mut world, s, "Hero");
+    assert_eq!(frames(&mut world, s), [(0xB001, vec![0x02, 0x15, 0x04])]);
+    let refused = Event::NoRefData {
+        session: s,
+        ref_id: hero().ref_id,
+    };
+    assert!(world.take_events().contains(&refused));
     assert!(matches!(world.phase(s), Some(Phase::Lobby(_))));
 }
 

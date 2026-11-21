@@ -9,10 +9,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest};
+use packets::agent::prelude::{AgentLoginRequest, CharacterJoinRequest, LobbyCharacter, LobbyItem};
 use packets::login::{LoginRequest, LoginResponse};
 use packets::Packet;
 use serde_json::{json, Value};
+use server::refdata::RefData;
 
 mod common;
 use common::Wire;
@@ -34,15 +35,31 @@ impl Drop for Server {
     }
 }
 
-/// Starts the binary with `fixture`, a textdata folder holding the model 1907
-/// (or `textdata`, the user's), and ephemeral ports.
+/// Starts the binary with `fixture`, a textdata folder holding the models
+/// 1907 and 1933 (or `textdata`, the user's), and ephemeral ports.
 fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
+    start_with(name, fixture, textdata, &[])
+}
+
+/// [`start`] with the further settings `env`.
+fn start_with(name: &str, fixture: &Path, textdata: Option<&Path>, env: &[(&str, &str)]) -> Server {
     let dir = std::env::temp_dir().join(format!("or-bench-{}-{name}", std::process::id()));
     let own = dir.join("textdata");
     std::fs::create_dir_all(&own).unwrap();
-    let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
-    std::fs::write(own.join("characterdata_test.txt"), row.join("\t")).unwrap();
+    // A player's model (type ids 1/1) and a monster's (1/2/1) with their walk
+    // and run speeds, the monster with its rarity and its HP.
+    let row = |id: &str, tid: [&str; 3], (walk, run): (&str, &str), hp: &str| {
+        let mut row = vec![String::from("0"); 60];
+        (row[1], row[9], row[10], row[11]) =
+            (id.into(), tid[0].into(), tid[1].into(), tid[2].into());
+        (row[46], row[47], row[59]) = (walk.into(), run.into(), hp.into());
+        row.join("\t")
+    };
+    let rows = [
+        row("1907", ["1", "1", "0"], ("16", "50"), "0"),
+        row("1933", ["1", "2", "1"], ("8", "22"), "54"),
+    ];
+    std::fs::write(own.join("characterdata_test.txt"), rows.join("\n")).unwrap();
     let (events, admin) = (dir.join("events.jsonl"), dir.join("admin.sock"));
     let child = Command::new(env!("CARGO_BIN_EXE_openroad-server"))
         .env("BENCH_FIXTURE", fixture)
@@ -52,6 +69,7 @@ fn start(name: &str, fixture: &Path, textdata: Option<&Path>) -> Server {
         .env("OPENROAD_TEXTDATA_DIR", textdata.unwrap_or(&own))
         .env("BENCH_GATEWAY", "127.0.0.1:0")
         .env("BENCH_AGENT", "127.0.0.1:0")
+        .envs(env.iter().copied())
         .stderr(Stdio::piped())
         .spawn()
         .expect("the binary starts");
@@ -79,6 +97,8 @@ fn bench_fixture() -> Value {
         "charakter": {"name": "Gilgamesh", "ref": 1907, "level": 10, "exp": 0, "gold": 100,
             "hp": 1000, "mp": 1000, "str": 20, "int": 20, "statuspunkte": 0},
         "charakter_b": {"name": "Enkidu"},
+        "mobs": [{"key": "MOB", "uid": 8195, "ref": 1933, "hp": 1000, "region": 25000,
+            "x": 969, "y": 0, "z": 369}],
     })
 }
 
@@ -152,16 +172,20 @@ fn enter_agent(agent: SocketAddr, token: u32, user: &str) -> Wire {
     client
 }
 
-/// The names of the characters the agent lists for a logged-in client.
-fn listed(client: &mut Wire) -> Vec<String> {
+/// The characters the agent lists for a logged-in client.
+fn lobby(client: &mut Wire) -> Vec<LobbyCharacter> {
     client.send(0x7007, &[0x02], false);
     let (opcode, body) = client.recv();
     let Ok(Packet::CharacterSelectionActionResponse(list)) = Packet::deserialize(opcode, body)
     else {
         panic!("0xB007 decodes");
     };
-    let characters = list.characters.expect("a list").characters;
-    characters.into_iter().map(|c| c.name).collect()
+    list.characters.expect("a list").characters
+}
+
+/// The names of the characters the agent lists for a logged-in client.
+fn listed(client: &mut Wire) -> Vec<String> {
+    lobby(client).into_iter().map(|c| c.name).collect()
 }
 
 #[test]
@@ -188,7 +212,20 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     assert_eq!(player["uid"], joined["uid"]);
     let at = (&player["region"], &player["x"], &player["z"]);
     assert_eq!(at, (&json!(25000), &json!(969.0), &json!(1419.0)));
-    assert_eq!(admin(&server.admin, "loot")["ok"], false);
+    assert_eq!(
+        admin(&server.admin, "loot"),
+        json!({"ok": true, "drops": []})
+    );
+
+    // The fixture's monster stands where it says, with a uid and the HP of
+    // the server: the entry's are the stub's.
+    let mobs = admin(&server.admin, "mobs");
+    let mob = &mobs["mobs"][0];
+    assert!(mob["uid"].as_u64().is_some_and(|uid| uid != 8195), "{mob}");
+    let fields = ["ref", "region", "x", "y", "z", "hp"].map(|k| (k, mob[k].clone()));
+    let expected =
+        json!({"ref": 1933, "region": 25000, "x": 969.0, "y": 0.0, "z": 369.0, "hp": 54});
+    assert_eq!(Value::from_iter(fields), expected);
 
     // Selecting an entity comes with the NPCs: until then the frame is
     // reported, not answered.
@@ -206,26 +243,109 @@ fn the_bench_sees_a_character_enter_and_its_rejected_frames() {
     let _ = std::fs::remove_file(fixture);
 }
 
+/// What the server says when `wrong` ends it: exit 2 and a message, not a
+/// panic. Waits for the end up to 10 s, like [`event`]: a server that takes
+/// the fixture runs on.
+fn ended_by(name: &str, wrong: &Value) -> String {
+    ended_with(name, wrong, &[])
+}
+
+/// [`ended_by`] with the further settings `env`.
+fn ended_with(name: &str, fixture: &Value, env: &[(&str, &str)]) -> String {
+    let fixture = fixture_file(name, fixture);
+    let mut server = start_with(name, &fixture, None, env);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the server took the fixture"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    let mut pipe = server.child.stderr.take().unwrap();
+    std::io::Read::read_to_string(&mut pipe, &mut stderr).unwrap();
+    let _ = std::fs::remove_file(fixture);
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    stderr
+}
+
 /// A value the server cannot use ends it with a message that names the entry
 /// it came from, not with a panic.
 #[test]
 fn a_wrong_fixture_value_ends_the_server_with_its_key() {
     let mut wrong = bench_fixture();
     wrong["charakter_b"]["ref"] = json!("x");
-    let fixture = fixture_file("wrong", &wrong);
-    let mut server = start("wrong", &fixture, None);
-    let status = server.child.wait().unwrap();
-    let mut stderr = String::new();
-    let mut pipe = server.child.stderr.take().unwrap();
-    std::io::Read::read_to_string(&mut pipe, &mut stderr).unwrap();
-    assert_eq!(status.code(), Some(2), "{stderr}");
+    let stderr = ended_by("wrong", &wrong);
     assert!(stderr.contains("charakter_b.ref"), "{stderr}");
-    assert!(!stderr.contains("panicked"), "{stderr}");
-    let _ = std::fs::remove_file(fixture);
 }
 
-/// The bench's own fixture: both of its accounts log in and list their
-/// characters.
+/// The log names the seed of the world's chance, the one `BENCH_WORLD_SEED`
+/// sets or the one drawn, so that a run can be repeated; a seed that is no
+/// number ends the server with its key.
+#[test]
+fn the_log_names_the_world_seed() {
+    let fixture = fixture_file("seed", &bench_fixture());
+    let seed_line = |env: &[(&str, &str)]| {
+        let mut server = start_with("seed", &fixture, None, env);
+        let stderr = BufReader::new(server.child.stderr.take().unwrap());
+        // The seed comes before the listening addresses; a log without it
+        // ends the search there rather than waiting on a running server.
+        let mut lines = stderr.lines().map(Result::unwrap);
+        let line = |l: &String| l.starts_with("world seed: ") || l.starts_with("gateway on ");
+        lines.find(line).unwrap()
+    };
+    let named = seed_line(&[("BENCH_WORLD_SEED", "19")]);
+    assert_eq!(named, "world seed: 19 (BENCH_WORLD_SEED)");
+    let drawn = seed_line(&[]);
+    assert!(
+        drawn.ends_with("(drawn; BENCH_WORLD_SEED repeats it)"),
+        "{drawn}"
+    );
+    let _ = std::fs::remove_file(fixture);
+    let wrong = ended_with("bad-seed", &bench_fixture(), &[("BENCH_WORLD_SEED", "x")]);
+    assert!(
+        wrong.contains("BENCH_WORLD_SEED is not a number: x"),
+        "{wrong}"
+    );
+}
+
+/// A gold chance above 1000 per mille ends the server with its key.
+#[test]
+fn a_gold_chance_above_1000_ends_the_server() {
+    let env = [("BENCH_GOLD_DROP_PERMILLE", "1001")];
+    let wrong = ended_with("bad-gold", &bench_fixture(), &env);
+    let named = "BENCH_GOLD_DROP_PERMILLE is not 0 to 1000: 1001";
+    assert!(wrong.contains(named), "{wrong}");
+}
+
+/// A monster entry whose model is no monster's ends the server the same way.
+#[test]
+fn a_mob_that_is_no_monster_ends_the_server_with_its_key() {
+    let mut wrong = bench_fixture();
+    wrong["mobs"][0]["ref"] = json!(1907);
+    let stderr = ended_by("no-monster", &wrong);
+    assert!(stderr.contains("mobs[0].ref 1907"), "{stderr}");
+}
+
+/// A worn item the user's itemdata does not hold ends the server the same
+/// way, naming the entry and the code name.
+#[test]
+fn an_unknown_worn_item_ends_the_server_with_its_key() {
+    let mut wrong = bench_fixture();
+    wrong["charakter"]["ausruestung"] = json!([{"platz": 6, "codename": "ITEM_NOWHERE"}]);
+    let stderr = ended_by("unknown-item", &wrong);
+    let key = "charakter.ausruestung[0].codename ITEM_NOWHERE";
+    assert!(stderr.contains(key), "{stderr}");
+}
+
+/// The bench's own fixture: its monsters stand where it says, and both of its
+/// accounts log in and list their characters, wearing the items the fixture
+/// names, in slot order, as the user's itemdata numbers them.
 #[test]
 #[ignore = "needs the bench's files: OPENROAD_BENCH_FIXTURE=<startwelt.json> \
             OPENROAD_TEXTDATA_DIR=<textdata> cargo test -p server --test bench -- --ignored"]
@@ -233,8 +353,15 @@ fn the_benchs_own_fixture_starts_the_server() {
     let fixture = PathBuf::from(std::env::var("OPENROAD_BENCH_FIXTURE").unwrap());
     let textdata = PathBuf::from(std::env::var("OPENROAD_TEXTDATA_DIR").unwrap());
     let entries: Value = serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+    let refdata = RefData::load(&textdata).unwrap();
     let server = start("own", &fixture, Some(&textdata));
     let ready = event(&server.events, "ready");
+    let mobs = admin(&server.admin, "mobs");
+    let at = |m: &Value| ["ref", "region", "x", "y", "z"].map(|k| m[k].as_f64());
+    for mob in entries["mobs"].as_array().unwrap() {
+        let mut placed = mobs["mobs"].as_array().unwrap().iter();
+        assert!(placed.any(|m| at(m) == at(mob)), "{mob}");
+    }
     for (konto, charakter) in [("konto", "charakter"), ("konto_b", "charakter_b")] {
         let user = entries[konto]["name"].as_str().unwrap();
         let password = entries[konto]["passwort"]
@@ -243,9 +370,23 @@ fn the_benchs_own_fixture_starts_the_server() {
             .unwrap();
         let agent = token(address(&ready, "gateway"), user, password);
         let mut client = enter_agent(address(&ready, "agent"), agent, user);
-        assert_eq!(
-            listed(&mut client),
-            [entries[charakter]["name"].as_str().unwrap()]
-        );
+        // A list the suffixed entry names replaces the unsuffixed one's.
+        let named = |field: &str| -> Vec<u32> {
+            let list = entries[charakter].get(field);
+            let list = list.unwrap_or(&entries["charakter"][field]);
+            let mut worn: Vec<(u64, u32)> = Vec::new();
+            for w in list.as_array().unwrap() {
+                let id = refdata.item_named(w["codename"].as_str().unwrap());
+                worn.push((w["platz"].as_u64().unwrap(), id.unwrap()));
+            }
+            worn.sort_unstable();
+            worn.into_iter().map(|(_, id)| id).collect()
+        };
+        let ids = |items: &[LobbyItem]| -> Vec<u32> { items.iter().map(|i| i.id).collect() };
+        let shown: Vec<_> = (lobby(&mut client).iter())
+            .map(|c| (c.name.clone(), ids(&c.char_items), ids(&c.avatar_items)))
+            .collect();
+        let name = entries[charakter]["name"].as_str().unwrap().to_owned();
+        assert_eq!(shown, [(name, named("ausruestung"), named("avatar"))]);
     }
 }

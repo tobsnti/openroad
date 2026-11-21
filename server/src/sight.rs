@@ -11,16 +11,17 @@
 
 use std::collections::BTreeSet;
 
-use bytes::{BufMut, Bytes, BytesMut};
-use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
+use bytes::Bytes;
+use packets::agent::character_data::{EntityMovement, EntityState};
+use packets::agent::entity_spawn::{PlayerBytes, SingleTail, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::SingleEntitySpawn;
+use packets::agent::spawn_writer::{write_group_spawn, write_single_spawn};
 use packets::region::{is_dungeon, region_id, sector};
 use packets::Packet;
-use sro_macro::Serialize;
 
 use crate::movement::in_region;
-use crate::npc;
-use crate::world::{Player, World};
+use crate::world::{Phase, Player, SessionId, World};
+use crate::{ground, monster, npc};
 
 /// Brings who sees the character `uid`, and whom it sees, in line with where
 /// everyone is: what came into sight is shown, what left it is taken back,
@@ -44,21 +45,23 @@ pub(crate) fn update(world: &mut World, uid: u32) {
             continue;
         };
         if near {
-            world.show(me.session, other, spawn(other, &player));
-            world.show(player.session, uid, spawn(uid, &me));
+            let (theirs, mine) = (spawn(world, other, &player), spawn(world, uid, &me));
+            world.show(me.session, other, theirs);
+            world.show(player.session, uid, mine);
         } else {
             world.hide(me.session, other);
             world.hide(player.session, uid);
         }
     }
-    // NPCs only are seen, and come and go in groups, as the vSRO server
-    // sends them [V capture, peer vSRO: every NPC record in 0x3019].
+    // NPCs and monsters are only seen, and come and go in groups, as the vSRO
+    // server sends them [V capture, peer vSRO: every NPC and monster record
+    // in 0x3019].
     let near: BTreeSet<u32> = around(me.character.position.region)
         .into_iter()
-        .flat_map(|region| world.npcs_in(region).to_vec())
+        .flat_map(|region| world.placed_in(region).to_vec())
         .collect();
     let gone: Vec<u32> = world
-        .shown_npcs(me.session)
+        .shown_placed(me.session)
         .into_iter()
         .filter(|uid| !near.contains(uid))
         .collect();
@@ -66,14 +69,131 @@ pub(crate) fn update(world: &mut World, uid: u32) {
     let new: Vec<(u32, Bytes)> = near
         .into_iter()
         .filter(|uid| !world.knows(me.session, *uid))
-        .filter_map(|uid| world.npc(uid).map(|n| (uid, npc::record(uid, n))))
+        .map(|uid| (uid, placed_record(world, uid)))
         .collect();
     world.show_group(me.session, new);
 }
 
+/// Monster `uid` walked from region `from` into another: the clients in the
+/// game that now see it are shown it alone ([`alone`]), and those that no
+/// longer see it are told it is gone (0x3016), as the vSRO server does for a
+/// monster that walks into or out of sight.
+pub(crate) fn monster_crossed(world: &mut World, uid: u32, from: u16) {
+    let Some(region) = world.monster(uid).map(|m| m.position.region) else {
+        return;
+    };
+    world.move_placed(uid, from, region);
+    let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
+    let players: Vec<(SessionId, u16)> = world
+        .players()
+        .filter(|(_, p)| in_game(p.session))
+        .map(|(_, p)| (p.session, p.character.position.region))
+        .collect();
+    for (session, at) in players {
+        let near = in_sight(at, region);
+        if near && !world.knows(session, uid) {
+            let spawn = SingleEntitySpawn {
+                raw: alone(world, uid),
+            };
+            world.show(session, uid, Packet::SingleEntitySpawn(spawn));
+        } else if !near {
+            world.hide(session, uid);
+        }
+    }
+}
+
+/// Monster `uid` came back at its row: the clients in the game that see its
+/// region are shown it alone ([`alone`]).
+pub(crate) fn monster_returned(world: &mut World, uid: u32) {
+    let Some(region) = world.monster(uid).map(|m| m.position.region) else {
+        return;
+    };
+    let raw = alone(world, uid);
+    show_alone(world, uid, region, raw);
+}
+
+/// Item `uid` fell to the ground: the clients in the game that see where it
+/// lies are shown it alone, with source 5 and the monster that dropped it
+/// behind its record, as behind 2310 of the 2311 drops of the vSRO server
+/// [V capture, peer vSRO]; what 5 means is [U].
+pub(crate) fn item_dropped(world: &mut World, uid: u32) {
+    let Some(&item) = world.ground_item(uid) else {
+        return;
+    };
+    let tail = SingleTail::Item {
+        source: 5,
+        dropper: Some(item.dropper),
+    };
+    let entity = ground::entity(uid, &item);
+    let raw = write_single_spawn(&entity, &tail, &world.refdata().spawn_tables())
+        .expect("a dropped item has its itemdata row")
+        .into();
+    show_alone(world, uid, item.position.region, raw);
+}
+
+/// Shows entity `uid`, which is in `region`, alone (`raw`, a single spawn) to
+/// the clients in the game that see that region.
+fn show_alone(world: &mut World, uid: u32, region: u16, raw: Bytes) {
+    let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
+    let seeing: Vec<SessionId> = world
+        .players()
+        .filter(|(_, p)| in_game(p.session) && in_sight(p.character.position.region, region))
+        .map(|(_, p)| p.session)
+        .collect();
+    for session in seeing {
+        let spawn = SingleEntitySpawn { raw: raw.clone() };
+        world.show(session, uid, Packet::SingleEntitySpawn(spawn));
+    }
+}
+
+/// Placed monster `uid` alone, as a single spawn (0x3015). Its last byte
+/// follows its movement, 1 standing and 4 walking, as behind every monster the
+/// vSRO server spawned alone [V capture, peer vSRO: 878 of 878 standing, 446
+/// of 446 walking]; what the byte means is [U].
+fn alone(world: &World, uid: u32) -> Bytes {
+    let m = world.monster(uid).expect("a placed monster");
+    let data = world.refdata().monster(m.ref_id);
+    let entity = monster::entity(
+        uid,
+        m,
+        data.expect("a placed monster has a monster's model"),
+    );
+    let last = if m.walk.is_some() { 4 } else { 1 };
+    write_single_spawn(
+        &entity,
+        &SingleTail::Figure(last),
+        &world.refdata().spawn_tables(),
+    )
+    .expect("a placed monster has its model's record")
+    .into()
+}
+
+/// The group spawn record of NPC, monster or item on the ground `uid`.
+fn placed_record(world: &World, uid: u32) -> Bytes {
+    let entity = match (world.npc(uid), world.monster(uid), world.ground_item(uid)) {
+        (Some(npc), ..) => npc::entity(uid, npc),
+        (None, Some(m), _) => {
+            let data = world.refdata().monster(m.ref_id);
+            monster::entity(
+                uid,
+                m,
+                data.expect("a placed monster has a monster's model"),
+            )
+        }
+        (None, None, Some(item)) => ground::entity(uid, item),
+        (None, None, None) => {
+            unreachable!("only NPCs, monsters and items on the ground are placed")
+        }
+    };
+    let record = write_group_spawn(&[entity], &world.refdata().spawn_tables());
+    record
+        .expect("a placed entity has its model's record (World::new, ground::monster_died)")
+        .into()
+}
+
 /// The regions a character in `region` sees: its own and, in the overworld,
 /// the eight around it.
-fn around(region: u16) -> Vec<u16> {
+pub(crate) fn around(region: u16) -> Vec<u16> {
     if is_dungeon(region) {
         return vec![region];
     }
@@ -92,30 +212,27 @@ fn in_sight(a: u16, b: u16) -> bool {
     around(a).contains(&b)
 }
 
-/// The single spawn (0x3015) of a character, in the order the original
-/// client reads it [V original handler]. What the server holds no state for
-/// yet is empty (gear, mask, mount, guild, stall) or carries what the vSRO
-/// server sends for an ordinary player [V capture, peer vSRO: 0x3015 player
-/// records]: alive, 5 avatar slots, job level 1, Hwan speed 100, PK flag
-/// 0xFF, last byte 1.
-fn spawn(uid: u32, p: &Player) -> Packet {
+/// The movement block of a character standing, facing `heading`, as the vSRO
+/// server sends it [V capture, peer vSRO].
+pub(crate) fn standing(heading: u16) -> EntityMovement {
+    EntityMovement {
+        has_destination: false,
+        move_type: 1,
+        source: Some(0),
+        angle: Some(heading),
+        ..Default::default()
+    }
+}
+
+/// The single spawn (0x3015) of a character, with the items it wears as
+/// [`crate::store::Character::shown_equipment`] lists them. What the server
+/// holds no state for yet is empty (mask, mount, guild, stall) or carries what
+/// the vSRO server sends for an ordinary player [V capture, peer vSRO: 0x3015
+/// player records]: alive, Hwan speed 100, 5 avatar slots; before the
+/// equipment the model's scale, three bytes 0 and the inventory size; behind
+/// the name 0, 1 and 0; PK flag 0xFF; last byte 1.
+fn spawn(world: &World, uid: u32, p: &Player) -> Packet {
     let c = &p.character;
-    let at = c.position;
-    let mut b = BytesMut::new();
-    b.put_u32_le(c.ref_id);
-    // Height and build, Hwan level, PVP cape, auto-invest, inventory size.
-    b.put_slice(&[c.scale, 0, 0, 0, c.inventory_size]);
-    // No gear; an avatar section of 5 slots with none worn; no mask.
-    b.put_slice(&[0, 5, 0, 0]);
-    b.put_u32_le(uid);
-    let position = SpawnPosition {
-        region: at.region,
-        x: at.x,
-        y: at.y,
-        z: at.z,
-        heading: at.heading,
-    };
-    position.serialize_to(&mut b);
     let movement = match p.walk.map(|walk| in_region(walk.to)) {
         Some((region, to)) => EntityMovement {
             has_destination: true,
@@ -126,38 +243,53 @@ fn spawn(uid: u32, p: &Player) -> Packet {
             dest_z: Some(to.z as i32),
             ..Default::default()
         },
-        None => EntityMovement {
-            has_destination: false,
-            move_type: 1,
-            source: Some(0),
-            angle: Some(at.heading),
-            ..Default::default()
+        None => standing(c.position.heading),
+    };
+    let entity = SpawnedEntity {
+        ref_id: c.ref_id,
+        unique_id: uid,
+        position: c.position.into(),
+        name: Some(c.name.clone()),
+        guild: None,
+        movement: Some(movement),
+        state: Some(EntityState {
+            life_state: 1,
+            unk: 0,
+            motion_state: 0,
+            body_state: 0,
+            walk_speed: p.walk_speed,
+            run_speed: p.run_speed,
+            hwan_speed: 100.0,
+            buffs: Vec::new(),
+        }),
+        spawn_rarity: None,
+        talk_options: Vec::new(),
+        interaction: None,
+        kind: SpawnKind::Player {
+            equipment: c.shown_equipment(),
+            avatar: c.shown_avatar(),
+            riding: 0,
+            riding_uid: None,
+            mask: None,
+            interact_mode: 0,
+            stall: None,
+            guild_after_name: 0,
+            guild_tail: [0; 14],
+            bytes: PlayerBytes {
+                head: [c.scale, 0, 0, 0, c.inventory_size],
+                between_lists: 5,
+                after_name: [0, 1, 0],
+                after_riding: 0,
+                around_mode: [0, 0],
+                tail: [0, 0xFF],
+            },
         },
     };
-    movement
-        .write(&mut b)
-        .expect("each form names the fields it writes");
-    let state = EntityState {
-        life_state: 1,
-        unk: 0,
-        motion_state: 0,
-        body_state: 0,
-        walk_speed: p.walk_speed,
-        run_speed: p.run_speed,
-        hwan_speed: 100.0,
-        buffs: Vec::new(),
-    };
-    state.serialize_to(&mut b);
-    let name = u16::try_from(c.name.len()).expect("a name fits its u16 length");
-    b.put_u16_le(name);
-    b.put_slice(c.name.as_bytes());
-    // Job type and level, PK state; not riding, not fighting; no scroll,
-    // interaction or the byte after it.
-    b.put_slice(&[0, 1, 0, 0, 0, 0, 0, 0]);
-    // The guild block of a character without one: name, id, nick, crest,
-    // union id and crest, two flags.
-    b.put_slice(&[0; 2 + 4 + 2 + 4 + 4 + 4 + 1 + 1]);
-    // Equipment cooldown; PK flag 0xFF; the last byte of a single spawn.
-    b.put_slice(&[0, 0xFF, 1]);
-    Packet::SingleEntitySpawn(SingleEntitySpawn { raw: b.freeze() })
+    let raw = write_single_spawn(
+        &entity,
+        &SingleTail::Figure(1),
+        &world.refdata().spawn_tables(),
+    )
+    .expect("a character in the world has a player's model (join)");
+    Packet::SingleEntitySpawn(SingleEntitySpawn { raw: raw.into() })
 }

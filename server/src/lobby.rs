@@ -90,9 +90,15 @@ pub(crate) fn lobby(world: &mut World, session: SessionId, packet: Packet) -> Re
 }
 
 /// No guild or academy yet: class 0, which 529 of the 531 characters in the
-/// captured vSRO lists carry [V capture, peer vSRO]. Equipment comes with the
-/// inventory.
+/// captured vSRO lists carry [V capture, peer vSRO]. The items it wears as
+/// the spawn shows them ([`Character::shown_equipment`]).
 fn lobby_character(c: &Character) -> LobbyCharacter {
+    let listed = |items: Vec<(u32, u8)>| -> Vec<LobbyItem> {
+        items
+            .into_iter()
+            .map(|(id, plus)| LobbyItem { id, plus })
+            .collect()
+    };
     LobbyCharacter {
         ref_obj_id: c.ref_id,
         name: c.name.clone(),
@@ -110,7 +116,7 @@ fn lobby_character(c: &Character) -> LobbyCharacter {
         is_guild_rename_required: false,
         current_guild_name: None,
         academy_member_class: 0,
-        char_items: Vec::new(),
-        avatar_items: Vec::new(),
+        char_items: listed(c.shown_equipment()),
+        avatar_items: listed(c.shown_avatar()),
     }
 }

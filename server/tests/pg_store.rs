@@ -49,6 +49,7 @@ impl Drop for Scratch {
 
 fn hero() -> Character {
     Character {
+        id: 1,
         name: "Hero".to_owned(),
         ref_id: 1907,
         scale: 34,
@@ -71,6 +72,8 @@ fn hero() -> Character {
             z: 1419.75,
             heading: 0x4000,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
@@ -82,6 +85,7 @@ fn the_store_reads_back_what_the_seed_put_in() {
     let scratch = Scratch::new();
     let store = PgStore::open(&scratch.config).expect("the store opens");
     let mut kiro = hero();
+    kiro.id = 2;
     kiro.name = "Kiro".to_owned();
     kiro.masteries.clear();
     let admin = store

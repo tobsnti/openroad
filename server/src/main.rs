@@ -6,7 +6,11 @@
 //! - `BENCH_FIXTURE`: the start world. Each `konto<suffix>` (`konto`,
 //!   `konto_b`) becomes an account with `charakter<suffix>` as its character.
 //!   As the fixture's own rule says, a suffixed entry names only what differs:
-//!   it is laid over its unsuffixed one.
+//!   it is laid over its unsuffixed one. A character wears the items its
+//!   `ausruestung` and `avatar` name by itemdata code name. Each of the
+//!   `mobs` stands as a monster of its `ref` at its `region`, `x`, `y` and
+//!   `z`; its uid and HP are the server's (decision 0019), so the entry's
+//!   `uid` and `hp` are left to the frozen stub.
 //! - `BENCH_START_POS`: `<region> <x> <y> <z>`, where the character stands.
 //! - `BENCH_EVENTS`: a file the events go to, one JSON line each: `ready`,
 //!   `player.joined`, `c2s.rejected`, `session.opened` (a handshake's seeds)
@@ -19,16 +23,24 @@
 //! - `BENCH_AGENT_ADVERTISE`: the agent address the gateway tells clients
 //!   (0xA102), for a client that reaches the agent through a relay;
 //!   `BENCH_AGENT` unless set.
+//! - `BENCH_WORLD_SEED`: the seed of the world's chance (a `u64`), so that a
+//!   run repeats; drawn from the system unless set. The log names the seed in
+//!   force either way.
+//! - `BENCH_GOLD_DROP_PERMILLE`: 0 to 1000, the chance of the one pile of
+//!   gold a kill then drops (the contract's test knob); unset, a kill drops
+//!   gold as measured on the vSRO server.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::ops::RangeInclusive;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use packets::agent::character_data::{ItemClass, ItemClassResolver};
 use serde_json::{json, Map, Value};
 use server::gateway::Gateway;
 use server::refdata::RefData;
@@ -53,11 +65,12 @@ fn run() -> Result<(), String> {
     let fixture = fs::read_to_string(&path).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
     let fixture: Value =
         serde_json::from_str(&fixture).map_err(|e| format!("BENCH_FIXTURE {path}: {e}"))?;
-    let store = accounts(&fixture, start_position(&var("BENCH_START_POS")?)?)?;
-    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
     let textdata = var("OPENROAD_TEXTDATA_DIR")?;
     let refdata = RefData::load(Path::new(&textdata))
         .map_err(|e| format!("OPENROAD_TEXTDATA_DIR {textdata}: {e}"))?;
+    let start = start_position(&var("BENCH_START_POS")?)?;
+    let store = accounts(&fixture, start, &refdata)?;
+    let store: Arc<dyn Store + Send + Sync> = Arc::new(store);
     let events = var("BENCH_EVENTS")?;
     let events = OpenOptions::new()
         .create(true)
@@ -74,9 +87,14 @@ fn run() -> Result<(), String> {
         handshake: HANDSHAKE,
         gateway_idle: GATEWAY_IDLE,
     };
-    let world = World::new(store.clone(), refdata);
-    let (placed, skipped) = (world.npcs().count(), world.skipped_npc_rows());
-    eprintln!("npcpos.txt: {placed} NPCs placed, {skipped} rows skipped (no NPC model in the client's data)");
+    let mut world = World::seeded(store.clone(), refdata, world_seed()?);
+    if let Some(permille) = gold_drop()? {
+        world.fix_gold_drop(permille);
+    }
+    let (npcs, monsters) = (world.npcs().count(), world.monsters().count());
+    let skipped = world.skipped_npc_rows();
+    eprintln!("npcpos.txt: {npcs} NPCs and {monsters} monsters placed, {skipped} rows skipped (no model in the client's data)");
+    place_mobs(&fixture, &mut world)?;
     let reporter = events.clone();
     let notices = events.clone();
     let running = runtime::start(
@@ -106,7 +124,7 @@ fn run() -> Result<(), String> {
 }
 
 /// Every `konto<suffix>` of the fixture with its `charakter<suffix>`.
-fn accounts(fixture: &Value, start: Position) -> Result<MemoryStore, String> {
+fn accounts(fixture: &Value, start: Position, refdata: &RefData) -> Result<MemoryStore, String> {
     let entries = fixture
         .as_object()
         .ok_or("BENCH_FIXTURE is not a JSON object")?;
@@ -115,7 +133,8 @@ fn accounts(fixture: &Value, start: Position) -> Result<MemoryStore, String> {
         let suffix = &key["konto".len()..];
         let account = laid_over(entries, "konto", key)?;
         let name = format!("charakter{suffix}");
-        let character = character(&laid_over(entries, "charakter", &name)?, &name, start)?;
+        let entry = laid_over(entries, "charakter", &name)?;
+        let character = character(&entry, &name, start, refdata)?;
         let user = text(&account, key, "name")?;
         store.add_account(user, text(&account, key, "passwort")?, vec![character]);
     }
@@ -164,7 +183,29 @@ fn answer(command: &str, running: &Running) -> Value {
             });
             json!({"ok": true, "npcs": npcs.unwrap_or_default()})
         }
-        Some("loot" | "grant-exp") => json!({"ok": false, "error": "not yet"}),
+        Some("mobs") => {
+            let mobs = running.query(|world| {
+                let row = |(uid, m): (u32, &server::monster::Monster)| {
+                    let at = m.position;
+                    json!({"uid": uid, "ref": m.ref_id, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z, "hp": m.hp})
+                };
+                world.monsters().map(row).collect::<Vec<_>>()
+            });
+            json!({"ok": true, "mobs": mobs.unwrap_or_default()})
+        }
+        Some("loot") => {
+            let drops = running.query(|world| {
+                let row = |(uid, item): (u32, &server::ground::GroundItem)| {
+                    let at = item.position;
+                    json!({"uid": uid, "from": item.dropper, "region": at.region, "x": at.x,
+                        "y": at.y, "z": at.z})
+                };
+                world.ground_items().map(row).collect::<Vec<_>>()
+            });
+            json!({"ok": true, "drops": drops.unwrap_or_default()})
+        }
+        Some("grant-exp") => json!({"ok": false, "error": "not yet"}),
         _ => json!({"ok": false, "error": "unknown command"}),
     }
 }
@@ -277,9 +318,16 @@ fn gateway(agent: SocketAddr) -> Gateway {
 /// The fixture's character `key`. What the fixture does not name is set to
 /// what the captured vSRO records carry [V capture, peer vSRO: 243 records]:
 /// height and build 0x22 for this model, 109 inventory slots, the seven
-/// Chinese masteries at level 0. Its bag (`tasche`) waits for the inventory.
-fn character(c: &Value, key: &str, position: Position) -> Result<Character, String> {
+/// Chinese masteries at level 0. It wears its `ausruestung` and `avatar`
+/// ([`worn`]); its bag (`tasche`) waits for the inventory.
+fn character(
+    c: &Value,
+    key: &str,
+    position: Position,
+    refdata: &RefData,
+) -> Result<Character, String> {
     Ok(Character {
+        id: 0,
         name: text(c, key, "name")?.to_owned(),
         ref_id: number(c, key, "ref")?,
         scale: 0x22,
@@ -298,7 +346,80 @@ fn character(c: &Value, key: &str, position: Position) -> Result<Character, Stri
             .map(|id| (id, 0))
             .to_vec(),
         position,
+        equipment: worn(c, key, "ausruestung", refdata, 0..=7)?,
+        avatar: worn(c, key, "avatar", refdata, 0..=4)?,
     })
+}
+
+/// The items the fixture's character `key` wears under `field`: each a slot
+/// (`platz`) and an itemdata code name (`codename`). No list wears nothing. A
+/// code name the user's itemdata does not hold, an item that is no equipment,
+/// or a slot out of `slots` or taken twice ends the server, naming the entry.
+/// Inventory slots end at 7, the last the lobby and the spawn show [V capture,
+/// peer vSRO], so that each item worn can be seen; avatar slots at 4, the
+/// last of the five the record announces.
+fn worn(
+    c: &Value,
+    key: &str,
+    field: &str,
+    refdata: &RefData,
+    slots: RangeInclusive<u8>,
+) -> Result<Vec<(u8, u32)>, String> {
+    let Some(list) = c.get(field) else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or(format!("BENCH_FIXTURE {key}.{field} is not a list"))?;
+    let mut worn: Vec<(u8, u32)> = Vec::new();
+    for (i, entry) in list.iter().enumerate() {
+        let at = format!("{key}.{field}[{i}]");
+        let slot: u8 = number(entry, &at, "platz")?;
+        if !slots.contains(&slot) || worn.iter().any(|(taken, _)| *taken == slot) {
+            return Err(format!(
+                "BENCH_FIXTURE {at}.platz {slot} is no free slot of {slots:?}"
+            ));
+        }
+        let code = text(entry, &at, "codename")?;
+        let ref_id = refdata.item_named(code).ok_or(format!(
+            "BENCH_FIXTURE {at}.codename {code} is in no itemdata table"
+        ))?;
+        if refdata.items().item_class(ref_id) != ItemClass::Equipment {
+            return Err(format!(
+                "BENCH_FIXTURE {at}.codename {code} is no equipment"
+            ));
+        }
+        worn.push((slot, ref_id));
+    }
+    Ok(worn)
+}
+
+/// The fixture's `mobs`, each placed as a monster; one whose `ref` is no
+/// monster model ends the server, naming the entry.
+fn place_mobs(fixture: &Value, world: &mut World) -> Result<(), String> {
+    let Some(mobs) = fixture.get("mobs") else {
+        return Ok(());
+    };
+    let mobs = mobs.as_array().ok_or("BENCH_FIXTURE mobs is not a list")?;
+    for (i, entry) in mobs.iter().enumerate() {
+        let key = format!("mobs[{i}]");
+        let coordinate = |field: &str| {
+            let value = entry[field].as_f64().map(|v| v as f32);
+            value.ok_or(format!("BENCH_FIXTURE {key}.{field} is not a number"))
+        };
+        let at = Position {
+            region: number(entry, &key, "region")?,
+            x: coordinate("x")?,
+            y: coordinate("y")?,
+            z: coordinate("z")?,
+            heading: 0,
+        };
+        let ref_id = number(entry, &key, "ref")?;
+        world.place_monster(ref_id, at).ok_or(format!(
+            "BENCH_FIXTURE {key}.ref {ref_id} is no monster model in characterdata"
+        ))?;
+    }
+    Ok(())
 }
 
 fn start_position(text: &str) -> Result<Position, String> {
@@ -330,6 +451,34 @@ fn text<'a>(entry: &'a Value, key: &str, field: &str) -> Result<&'a str, String>
     entry[field]
         .as_str()
         .ok_or(format!("BENCH_FIXTURE {key}.{field} is not text"))
+}
+
+/// The seed of the world's chance, `BENCH_WORLD_SEED` or drawn; the log
+/// names it, so that any run can be repeated.
+fn world_seed() -> Result<u64, String> {
+    let (seed, from) = match std::env::var("BENCH_WORLD_SEED") {
+        Ok(seed) => (
+            seed.parse()
+                .map_err(|_| format!("BENCH_WORLD_SEED is not a number: {seed}"))?,
+            "BENCH_WORLD_SEED",
+        ),
+        Err(_) => (fastrand::u64(..), "drawn; BENCH_WORLD_SEED repeats it"),
+    };
+    eprintln!("world seed: {seed} ({from})");
+    Ok(seed)
+}
+
+/// `BENCH_GOLD_DROP_PERMILLE`, when set; the log names it.
+fn gold_drop() -> Result<Option<u16>, String> {
+    let Ok(value) = std::env::var("BENCH_GOLD_DROP_PERMILLE") else {
+        return Ok(None);
+    };
+    let permille = value.parse().ok().filter(|p| *p <= 1000);
+    let permille = permille.ok_or(format!(
+        "BENCH_GOLD_DROP_PERMILLE is not 0 to 1000: {value}"
+    ))?;
+    eprintln!("gold drop: one pile per kill at {permille} per mille (BENCH_GOLD_DROP_PERMILLE)");
+    Ok(Some(permille))
 }
 
 fn var(name: &str) -> Result<String, String> {

@@ -11,17 +11,21 @@
 
 mod chat;
 pub mod clock;
+pub mod combat;
 mod consignment;
 pub mod gateway;
+pub mod ground;
 pub mod handshake;
 mod join;
 mod lobby;
+pub mod monster;
 mod movement;
 pub mod npc;
 pub mod outbox;
 pub mod pg_store;
 pub mod refdata;
 pub mod registry;
+mod reward;
 pub mod runtime;
 mod sight;
 pub mod store;

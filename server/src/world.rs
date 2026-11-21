@@ -6,18 +6,23 @@
 //! nothing needs a lock, and a test can drive it frame by frame.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use bytes::Bytes;
 use packets::agent::ingame::{GROUP_DESPAWN, GROUP_SPAWN};
 use packets::agent::prelude::{
-    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, SingleEntityDespawn,
+    GroupEntitySpawnBegin, GroupEntitySpawnData, GroupEntitySpawnEnd, MovementResponse,
+    SingleEntityDespawn,
 };
 use packets::judge::{decode_exact, Verdict};
+use packets::region::is_dungeon;
 use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
+use crate::combat::{self, Attack};
+use crate::ground::{self, GroundItem};
+use crate::monster::{self, Monster};
 use crate::movement;
 use crate::npc::Npc;
 use crate::outbox::{Frame, Outbox};
@@ -25,7 +30,7 @@ use crate::refdata::RefData;
 use crate::registry::{handling, Handling};
 use crate::sight;
 use crate::store::{AccountId, Changes, Character, Position, Store};
-use crate::tick::STEPS_PER_SECOND;
+use crate::tick::{fires, AI_STEPS, STEPS_PER_SECOND};
 use crate::wirelog::{Dir, WireLog};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,7 +63,8 @@ pub enum Event {
     Closed(SessionId),
     /// The session fell too far behind and was cut off.
     Overflowed(SessionId),
-    /// A character's model has no reference-data row; its join was refused.
+    /// A character's model has no player row in the reference data; its
+    /// join was refused.
     NoRefData { session: SessionId, ref_id: u32 },
     /// The client has loaded the world (0x3012): its character is in the game.
     Joined { session: SessionId, uid: u32 },
@@ -75,6 +81,12 @@ pub struct Player {
     pub walk_speed: f32,
     pub run_speed: f32,
     pub walk: Option<Walk>,
+    pub attack: Option<Attack>,
+    /// The target of an attack request waiting behind the running swing.
+    pub queued: Option<u32>,
+    /// The item on the ground the character is to pick up; while it attacks,
+    /// the pickup waits behind the running swing.
+    pub pickup: Option<u32>,
 }
 
 /// A walk in world coordinates (it may cross regions): from where, to where,
@@ -128,6 +140,8 @@ struct Session {
     known: BTreeSet<u32>,
     /// The account's characters, from its ticket on.
     characters: Vec<Character>,
+    /// The entity its client selected last.
+    selected: Option<u32>,
 }
 
 /// The original client sends the agent login right after the handshake, 0.05
@@ -143,9 +157,14 @@ pub struct World {
     players: BTreeMap<u32, Player>,
     /// NPCs by unique id, placed from the reference data at the start.
     npcs: BTreeMap<u32, Npc>,
-    /// The NPCs of each region, for sight.
-    npcs_in: HashMap<u16, Vec<u32>>,
-    /// Rows of `npcpos.txt` that name no NPC model (`crate::npc`).
+    /// Monsters by unique id, placed from the reference data and the bench's
+    /// fixture at the start.
+    monsters: BTreeMap<u32, Monster>,
+    /// Items on the ground by unique id.
+    ground: BTreeMap<u32, GroundItem>,
+    /// The NPCs, monsters and items on the ground of each region, for sight.
+    placed_in: HashMap<u16, Vec<u32>>,
+    /// Rows of `npcpos.txt` that name neither an NPC nor a monster model.
     skipped_npc_rows: usize,
     /// What the store has to write, in order (`take_commits`).
     commits: Vec<Changes>,
@@ -154,10 +173,27 @@ pub struct World {
     last_uid: u32,
     step: u64,
     events: Vec<Event>,
+    /// The world's chance: the monsters' wander steps and rests, the damage.
+    chance: fastrand::Rng,
+    /// The last action instance (0xB070), counted up per swing as the vSRO
+    /// server does [V capture, peer vSRO: 5853 to 5899 over 47 swings].
+    last_action: u32,
+    /// Dead monsters, oldest first, with the step their bodies go.
+    pub(crate) bodies: VecDeque<(u64, u32)>,
+    /// Monsters to come back: the step, the model and the row.
+    pub(crate) returning: Vec<(u64, u32, Position)>,
+    /// The chance of a gold pile per kill in per mille, when the bench fixes
+    /// it ([`World::fix_gold_drop`]).
+    gold_drop: Option<u16>,
 }
 
 impl World {
     pub fn new(store: Arc<dyn Store + Send + Sync>, refdata: RefData) -> World {
+        World::seeded(store, refdata, fastrand::u64(..))
+    }
+
+    /// A world whose chance starts from `seed`, so that a run repeats.
+    pub fn seeded(store: Arc<dyn Store + Send + Sync>, refdata: RefData, seed: u64) -> World {
         let placed = refdata.npcs().to_vec();
         let mut world = World {
             store,
@@ -165,7 +201,9 @@ impl World {
             sessions: BTreeMap::new(),
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
-            npcs_in: HashMap::new(),
+            monsters: BTreeMap::new(),
+            ground: BTreeMap::new(),
+            placed_in: HashMap::new(),
             skipped_npc_rows: 0,
             commits: Vec::new(),
             tickets: HashMap::new(),
@@ -173,15 +211,16 @@ impl World {
             last_uid: 0,
             step: 0,
             events: Vec::new(),
+            chance: fastrand::Rng::with_seed(seed),
+            last_action: 0,
+            bodies: VecDeque::new(),
+            returning: Vec::new(),
+            gold_drop: None,
         };
         for row in placed {
             let Ok(ref_id) = u32::try_from(row.ref_id) else {
                 continue;
             };
-            if !world.refdata.is_npc(ref_id) {
-                world.skipped_npc_rows += 1;
-                continue;
-            }
             let position = Position {
                 region: row.region,
                 x: row.x,
@@ -189,16 +228,172 @@ impl World {
                 z: row.z,
                 heading: 0,
             };
-            let uid = world.next_uid();
-            world.npcs_in.entry(row.region).or_default().push(uid);
-            world.npcs.insert(uid, Npc { ref_id, position });
+            if world.refdata.is_npc(ref_id) {
+                let uid = world.next_uid();
+                world.placed_in.entry(row.region).or_default().push(uid);
+                world.npcs.insert(uid, Npc { ref_id, position });
+            } else if world.place_monster(ref_id, position).is_none() {
+                world.skipped_npc_rows += 1;
+            }
         }
         world
+    }
+
+    /// Places a monster of model `ref_id` at `position`, at the full HP of its
+    /// characterdata row, as the original does; its unique id, or `None` when
+    /// `ref_id` is no monster model.
+    pub fn place_monster(&mut self, ref_id: u32, position: Position) -> Option<u32> {
+        let hp = self.refdata.monster(ref_id)?.max_hp;
+        let uid = self.next_uid();
+        self.placed_in.entry(position.region).or_default().push(uid);
+        let monster = Monster {
+            ref_id,
+            position,
+            hp,
+            walk: None,
+            home: position,
+            rest_until: self.step + monster::rest(&mut self.chance),
+        };
+        self.monsters.insert(uid, monster);
+        Some(uid)
+    }
+
+    /// Sends monster `uid` walking to `to`, a point in world coordinates, at
+    /// its walk speed; the clients that know it are told where (0xB021), as
+    /// for a character [V capture, peer vSRO: 4417 of 18164 monster moves
+    /// carry no start position]. False when there is no such monster, or it
+    /// stands in a dungeon, whose coordinates are outside the region grid.
+    pub fn walk_monster(&mut self, uid: u32, to: Point) -> bool {
+        let Some(monster) = self.monsters.get_mut(&uid) else {
+            return false;
+        };
+        let at = monster.position;
+        if is_dungeon(at.region) {
+            return false;
+        }
+        let from = movement::in_world(
+            at.region,
+            Point {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            },
+        );
+        monster.walk = Some(Walk { from, to, steps: 0 });
+        let (region, local) = movement::in_region(to);
+        let answer = MovementResponse {
+            unique_id: uid,
+            has_destination: true,
+            region,
+            x: local.x as i32,
+            y: local.y as i32,
+            z: local.z as i32,
+            angle: 0,
+        };
+        let observers = self.observers(uid);
+        self.broadcast(&observers, Packet::MovementResponse(answer));
+        true
+    }
+
+    /// Moves NPC or monster `uid` from the index of region `from` to that of
+    /// region `to`.
+    pub(crate) fn move_placed(&mut self, uid: u32, from: u16, to: u16) {
+        if let Some(uids) = self.placed_in.get_mut(&from) {
+            uids.retain(|placed| *placed != uid);
+        }
+        self.placed_in.entry(to).or_default().push(uid);
     }
 
     /// Rows of `npcpos.txt` that were not placed (`crate::npc`).
     pub fn skipped_npc_rows(&self) -> usize {
         self.skipped_npc_rows
+    }
+
+    pub fn monster(&self, uid: u32) -> Option<&Monster> {
+        self.monsters.get(&uid)
+    }
+
+    pub(crate) fn monster_mut(&mut self, uid: u32) -> Option<&mut Monster> {
+        self.monsters.get_mut(&uid)
+    }
+
+    /// Puts `item` on the ground; its unique id.
+    pub(crate) fn place_ground_item(&mut self, item: GroundItem) -> u32 {
+        let uid = self.next_uid();
+        self.placed_in
+            .entry(item.position.region)
+            .or_default()
+            .push(uid);
+        self.ground.insert(uid, item);
+        uid
+    }
+
+    pub(crate) fn remove_ground_item(&mut self, uid: u32) {
+        if let Some(item) = self.ground.remove(&uid) {
+            let placed = self.placed_in.entry(item.position.region).or_default();
+            placed.retain(|placed| *placed != uid);
+        }
+    }
+
+    pub fn ground_items(&self) -> impl Iterator<Item = (u32, &GroundItem)> {
+        self.ground.iter().map(|(uid, item)| (*uid, item))
+    }
+
+    pub fn ground_item(&self, uid: u32) -> Option<&GroundItem> {
+        self.ground.get(&uid)
+    }
+
+    pub(crate) fn remove_monster(&mut self, uid: u32) {
+        if let Some(m) = self.monsters.remove(&uid) {
+            let placed = self.placed_in.entry(m.position.region).or_default();
+            placed.retain(|placed| *placed != uid);
+        }
+    }
+
+    /// A kill drops one pile of gold with chance `permille` / 1000, instead
+    /// of the measured rule (`ground`); the bench's test knob.
+    pub fn fix_gold_drop(&mut self, permille: u16) {
+        self.gold_drop = Some(permille);
+    }
+
+    pub(crate) fn gold_drop(&self) -> Option<u16> {
+        self.gold_drop
+    }
+
+    pub(crate) fn chance(&mut self) -> &mut fastrand::Rng {
+        &mut self.chance
+    }
+
+    pub(crate) fn next_action(&mut self) -> u32 {
+        self.last_action += 1;
+        self.last_action
+    }
+
+    /// Whether a character attacks the monster `uid`.
+    pub(crate) fn attacked(&self, uid: u32) -> bool {
+        let at = |p: &Player| p.attack.is_some_and(|a| a.target == uid);
+        self.players.values().any(at)
+    }
+
+    /// `session`'s client selected `uid`.
+    pub(crate) fn select(&mut self, session: SessionId, uid: u32) {
+        if let Some(s) = self.sessions.get_mut(&session) {
+            s.selected = Some(uid);
+        }
+    }
+
+    /// The sessions whose clients have `uid` selected.
+    pub(crate) fn selecting(&self, uid: u32) -> Vec<SessionId> {
+        let selects = |(_, s): &(&SessionId, &Session)| s.selected == Some(uid);
+        self.sessions
+            .iter()
+            .filter(selects)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    pub fn monsters(&self) -> impl Iterator<Item = (u32, &Monster)> {
+        self.monsters.iter().map(|(uid, monster)| (*uid, monster))
     }
 
     pub fn npc(&self, uid: u32) -> Option<&Npc> {
@@ -209,9 +404,9 @@ impl World {
         self.npcs.iter().map(|(uid, npc)| (*uid, npc))
     }
 
-    /// The NPCs standing in `region`.
-    pub(crate) fn npcs_in(&self, region: u16) -> &[u32] {
-        self.npcs_in.get(&region).map_or(&[], Vec::as_slice)
+    /// The NPCs and monsters standing in `region`.
+    pub(crate) fn placed_in(&self, region: u16) -> &[u32] {
+        self.placed_in.get(&region).map_or(&[], Vec::as_slice)
     }
 
     /// Let `account` in after the gateway checked its password: the returned
@@ -251,6 +446,7 @@ impl World {
             since: self.step,
             known: BTreeSet::new(),
             characters: Vec::new(),
+            selected: None,
         };
         self.sessions.insert(id, session);
         id
@@ -397,14 +593,16 @@ impl World {
         self.send(session, Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
     }
 
-    /// The entities `session`'s client was shown that are NPCs.
-    pub(crate) fn shown_npcs(&self, session: SessionId) -> Vec<u32> {
+    /// The entities `session`'s client was shown that are NPCs, monsters or
+    /// items on the ground.
+    pub(crate) fn shown_placed(&self, session: SessionId) -> Vec<u32> {
+        let placed = |uid: &u32| {
+            self.npcs.contains_key(uid)
+                || self.monsters.contains_key(uid)
+                || self.ground.contains_key(uid)
+        };
         self.sessions.get(&session).map_or(Vec::new(), |s| {
-            s.known
-                .iter()
-                .filter(|uid| self.npcs.contains_key(uid))
-                .copied()
-                .collect()
+            s.known.iter().filter(|uid| placed(uid)).copied().collect()
         })
     }
 
@@ -444,13 +642,37 @@ impl World {
         let mut crossed = Vec::new();
         for (uid, player) in &mut self.players {
             let region = player.character.position.region;
-            movement::advance(player);
+            let at = &mut player.character.position;
+            movement::advance(&mut player.walk, player.run_speed, at);
             if player.character.position.region != region {
                 crossed.push(*uid);
             }
         }
         for uid in crossed {
             sight::update(self, uid);
+        }
+        let mut crossed = Vec::new();
+        let walking = self.monsters.iter_mut().filter(|(_, m)| m.walk.is_some());
+        for (uid, monster) in walking {
+            let from = monster.position.region;
+            let speed = self
+                .refdata
+                .monster(monster.ref_id)
+                .map_or(0.0, |d| d.walk_speed);
+            movement::advance(&mut monster.walk, speed, &mut monster.position);
+            if monster.position.region != from {
+                crossed.push((*uid, from));
+            }
+        }
+        for (uid, from) in crossed {
+            sight::monster_crossed(self, uid, from);
+        }
+        combat::step(self);
+        ground::step(self);
+        monster::tend(self);
+        ground::tend(self);
+        if fires(self.step, AI_STEPS) {
+            monster::think(self);
         }
         let late = |s: &Session| s.phase == Phase::Title && self.step - s.since >= LOGIN_STEPS;
         let late: Vec<SessionId> = self

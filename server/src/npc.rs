@@ -7,18 +7,19 @@
 //! 12,110 are monsters and 12 name models that are not in the client's data
 //! (the user's characterdata). The original client reads a monster's record
 //! with more bytes [V original handler], and what is not in the client's data
-//! is not sent to it. So only NPC models (`RefData::is_npc`) are placed; the
-//! other rows are counted and skipped, and monsters come with their own
-//! system.
+//! is not sent to it. So only NPC models (`RefData::is_npc`) are placed here;
+//! monsters stand with their own record ([`crate::monster`]), and the rest is
+//! counted and skipped.
 
 use bytes::{BufMut, Bytes, BytesMut};
-use packets::agent::character_data::{EntityMovement, EntityState, SpawnPosition};
+use packets::agent::character_data::EntityState;
+use packets::agent::entity_spawn::{Interaction, SpawnKind, SpawnedEntity};
 use packets::agent::prelude::{CloseTalkResponse, SelectEntityResponse, TalkResponse};
 use packets::Packet;
-use sro_macro::Serialize;
 
 use crate::store::Position;
 use crate::world::{Phase, Reason, SessionId, World};
+use crate::{monster, sight};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Npc {
@@ -51,67 +52,59 @@ pub(crate) fn options(ref_id: u32) -> &'static [u8] {
         .map_or(&[], |(_, options)| options)
 }
 
-/// The NPC's record in a group spawn, in the order the original client reads
-/// it [V original handler]. A standing NPC as the vSRO server sends it
-/// [V capture, peer vSRO]: alive, speeds 0, 0 and 100, no buffs, and when it
-/// offers something, interaction flag 2 with its options. `npcpos.txt` has no
-/// heading; it is 0 [U].
-pub(crate) fn record(uid: u32, npc: &Npc) -> Bytes {
-    let at = npc.position;
-    let mut b = BytesMut::new();
-    b.put_u32_le(npc.ref_id);
-    b.put_u32_le(uid);
-    let position = SpawnPosition {
-        region: at.region,
-        x: at.x,
-        y: at.y,
-        z: at.z,
-        heading: at.heading,
-    };
-    position.serialize_to(&mut b);
-    let standing = EntityMovement {
-        has_destination: false,
-        move_type: 1,
-        source: Some(0),
-        angle: Some(at.heading),
-        ..Default::default()
-    };
-    standing
-        .write(&mut b)
-        .expect("a standing block names its source and angle");
-    let state = EntityState {
-        life_state: 1,
-        unk: 0,
-        motion_state: 0,
-        body_state: 0,
-        walk_speed: 0.0,
-        run_speed: 0.0,
-        hwan_speed: 100.0,
-        buffs: Vec::new(),
-    };
-    state.serialize_to(&mut b);
-    match options(npc.ref_id) {
-        [] => b.put_u8(0),
-        options => {
-            b.put_u8(2);
-            b.put_u8(u8::try_from(options.len()).expect("a handful of options"));
-            b.put_slice(options);
-        }
+/// The NPC as its record in a group spawn shows it, for the spawn writer. A
+/// standing NPC as the vSRO server sends it [V capture, peer vSRO]: alive,
+/// speeds 0, 0 and 100, no buffs, and when it offers something, interaction
+/// flag 2 with its options. `npcpos.txt` has no heading; it is 0 [U].
+pub(crate) fn entity(uid: u32, npc: &Npc) -> SpawnedEntity {
+    let options = options(npc.ref_id);
+    let flags = if options.is_empty() { 0 } else { 2 };
+    SpawnedEntity {
+        ref_id: npc.ref_id,
+        unique_id: uid,
+        position: npc.position.into(),
+        name: None,
+        guild: None,
+        movement: Some(sight::standing(npc.position.heading)),
+        state: Some(EntityState {
+            life_state: 1,
+            unk: 0,
+            motion_state: 0,
+            body_state: 0,
+            walk_speed: 0.0,
+            run_speed: 0.0,
+            hwan_speed: 100.0,
+            buffs: Vec::new(),
+        }),
+        spawn_rarity: None,
+        talk_options: options.to_vec(),
+        interaction: Some(Interaction {
+            flags,
+            ..Interaction::default()
+        }),
+        kind: SpawnKind::Npc,
     }
-    b.freeze()
 }
 
 /// 0x7045. Selecting an NPC the client was shown is answered with what the
 /// original client reads for one [V original handler]: no vital mask, the
 /// NPC's options, the NPC byte 0, and for an NPC of a listed fortress two
 /// more bytes, 0, as the vSRO server sent for the Jangan smith
-/// [V capture, peer vSRO]. Selecting anything else is not handled yet.
+/// [V capture, peer vSRO]. A monster the client was shown answers with its HP
+/// ([`monster::selection`]). Selecting anything else is not handled yet.
 pub(crate) fn select(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
     let Packet::SelectEntityRequest(request) = packet else {
         unreachable!("0x7045 decodes to SelectEntityRequest");
     };
     let uid = request.unique_id;
+    let monster = world.monster(uid).filter(|_| sees(world, session, uid));
+    if let Some(answer) = monster.map(|m| monster::selection(uid, m)) {
+        world.select(session, uid);
+        world.send(session, Packet::SelectEntityResponse(answer));
+        return Ok(());
+    }
     let ref_id = shown(world, session, uid).ok_or(Reason::NotHandled)?;
+    world.select(session, uid);
     let options = options(ref_id);
     let mut tail = BytesMut::new();
     tail.put_u8(0);
@@ -174,9 +167,11 @@ pub(crate) fn close(world: &mut World, session: SessionId, packet: Packet) -> Re
 /// The model of NPC `uid`, if the client of `session` is in the game and
 /// was shown it.
 fn shown(world: &World, session: SessionId, uid: u32) -> Option<u32> {
-    let Some(Phase::Game { .. }) = world.phase(session) else {
-        return None;
-    };
     let npc = world.npc(uid)?;
-    world.knows(session, uid).then_some(npc.ref_id)
+    sees(world, session, uid).then_some(npc.ref_id)
+}
+
+/// Whether the client of `session` is in the game and was shown `uid`.
+fn sees(world: &World, session: SessionId, uid: u32) -> bool {
+    matches!(world.phase(session), Some(Phase::Game { .. })) && world.knows(session, uid)
 }

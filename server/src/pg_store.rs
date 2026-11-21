@@ -18,6 +18,8 @@ const MIGRATIONS: [(i32, &str); 1] = [(
     include_str!("../migrations/0001_accounts_and_characters.sql"),
 )];
 
+/// It does not keep the items a character wears yet: a character read back
+/// from it wears nothing.
 pub struct PgStore {
     /// One connection: the store is asked at the pace of logins, not steps.
     client: Mutex<Client>,
@@ -146,6 +148,7 @@ fn read_characters(
             let id: i32 = r.get("id");
             let of_this = masteries.iter().filter(|m| m.get::<_, i32>(0) == id);
             Character {
+                id: wire(id),
                 name: r.get("name"),
                 ref_id: wire(r.get::<_, i64>("ref_id")),
                 scale: wire(r.get::<_, i16>("scale")),
@@ -170,6 +173,8 @@ fn read_characters(
                     z: r.get("z"),
                     heading: wire(r.get::<_, i32>("heading")),
                 },
+                equipment: Vec::new(),
+                avatar: Vec::new(),
             }
         })
         .collect())

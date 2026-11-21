@@ -199,3 +199,16 @@ fn fill(mut stream: &TcpStream, buf: &mut Vec<u8>) {
     assert!(n > 0, "the server closed the connection");
     buf.extend_from_slice(&chunk[..n]);
 }
+
+/// An itemdata line with the item's id, code name, type ids and durability
+/// bounds, at the columns the game's table has them (63 and 64 for the
+/// durability).
+pub fn item_row(id: u32, code: &str, tid: [u32; 4], durability: (u32, u32)) -> String {
+    let mut cols = vec![String::from("0"); 70];
+    (cols[1], cols[2]) = (id.to_string(), code.to_owned());
+    for (i, t) in tid.iter().enumerate() {
+        cols[9 + i] = t.to_string();
+    }
+    (cols[63], cols[64]) = (durability.0.to_string(), durability.1.to_string());
+    cols.join("\t")
+}

@@ -16,8 +16,9 @@ use packets::agent::prelude::{MovementRequest, MovementResponse};
 use packets::region::{is_dungeon, region_id, sector, REGION_SIZE};
 use packets::Packet;
 
+use crate::store::Position;
 use crate::tick::STEPS_PER_SECOND;
-use crate::world::{Phase, Player, Point, Reason, SessionId, Walk, World};
+use crate::world::{Phase, Point, Reason, SessionId, Walk, World};
 
 /// 0x7021.
 pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
@@ -81,22 +82,22 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
     Ok(())
 }
 
-/// One step of a walking character. Its position follows from the steps the
-/// walk has taken at its run speed, not from adding up per-step moves, so the
-/// float error does not grow with the walk. Within a millionth of a unit of
-/// the target counts as there.
-pub(crate) fn advance(player: &mut Player) {
-    let Some(walk) = &mut player.walk else {
+/// One step along `walk` at `speed` world units per second, for a character
+/// or a monster: `at` moves, and the walk ends at its target. The position
+/// follows from the steps the walk has taken, not from adding up per-step
+/// moves, so the float error does not grow with the walk. Within a millionth
+/// of a unit of the target counts as there.
+pub(crate) fn advance(walk: &mut Option<Walk>, speed: f32, at: &mut Position) {
+    let Some(w) = walk else {
         return;
     };
-    walk.steps += 1;
-    let (from, to) = (walk.from, walk.to);
+    w.steps += 1;
+    let (from, to) = (w.from, w.to);
     let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
     let length = f64::from(dx).hypot(f64::from(dz));
-    let speed = f64::from(player.run_speed) / STEPS_PER_SECOND as f64;
-    let covered = f64::from(walk.steps) * speed;
+    let covered = f64::from(w.steps) * f64::from(speed) / STEPS_PER_SECOND as f64;
     let now = if covered + 1e-6 >= length {
-        player.walk = None;
+        *walk = None;
         to
     } else {
         let share = (covered / length) as f32;
@@ -107,7 +108,6 @@ pub(crate) fn advance(player: &mut Player) {
         }
     };
     let (region, local) = in_region(now);
-    let at = &mut player.character.position;
     (at.region, at.x, at.y, at.z) = (region, local.x, local.y, local.z);
 }
 

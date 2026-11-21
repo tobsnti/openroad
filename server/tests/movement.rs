@@ -17,6 +17,7 @@ const REGION: u16 = 25000;
 
 fn hero() -> Character {
     Character {
+        id: 0,
         name: "Hero".to_owned(),
         ref_id: 1907,
         scale: 34,
@@ -39,6 +40,8 @@ fn hero() -> Character {
             z: 1419.0,
             heading: 0,
         },
+        equipment: Vec::new(),
+        avatar: Vec::new(),
     }
 }
 
@@ -55,7 +58,14 @@ fn joined(ready: bool) -> (World, SessionId, u32) {
     let account = login(&store, "admin", "secret").unwrap();
     let mut refdata = RefData::default();
     let mut row = vec![String::from("0"); 48];
-    (row[1], row[46], row[47]) = ("1907".into(), "16".into(), "50".into());
+    // A player's model (type ids 1/1) with its walk and run speeds.
+    (row[1], row[9], row[10], row[46], row[47]) = (
+        "1907".into(),
+        "1".into(),
+        "1".into(),
+        "16".into(),
+        "50".into(),
+    );
     refdata.add_characters(&row.join("\t"));
     let mut world = World::new(Arc::new(store), refdata);
     let token = world.admit(account, "admin", vec![hero()]).unwrap();
