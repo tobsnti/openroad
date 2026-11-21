@@ -25,6 +25,7 @@ use packets::Packet;
 use crate::monster;
 use crate::movement::{in_region, in_world};
 use crate::refdata::BasicAttack;
+use crate::reward;
 use crate::store::Position;
 use crate::tick::STEPS_PER_SECOND;
 use crate::world::{Phase, Point, Reason, SessionId, Walk, World};
@@ -310,6 +311,7 @@ fn swing(world: &mut World, uid: u32, target: u32, basic: BasicAttack) {
         };
         let observers = world.observers(target);
         world.broadcast(&observers, Packet::EntityStateUpdate(dead));
+        reward::killed(world, uid, target);
     }
     let lasts = u64::from(basic.duration_ms) * STEPS_PER_SECOND;
     let player = world.player_mut(uid).expect("an attacker is a player");
