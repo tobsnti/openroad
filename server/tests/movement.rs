@@ -17,6 +17,7 @@ const REGION: u16 = 25000;
 
 fn hero() -> Character {
     Character {
+        id: 0,
         name: "Hero".to_owned(),
         ref_id: 1907,
         scale: 34,

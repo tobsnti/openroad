@@ -148,6 +148,7 @@ fn read_characters(
             let id: i32 = r.get("id");
             let of_this = masteries.iter().filter(|m| m.get::<_, i32>(0) == id);
             Character {
+                id: wire(id),
                 name: r.get("name"),
                 ref_id: wire(r.get::<_, i64>("ref_id")),
                 scale: wire(r.get::<_, i16>("scale")),

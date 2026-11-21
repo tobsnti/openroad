@@ -310,6 +310,7 @@ fn character(
     refdata: &RefData,
 ) -> Result<Character, String> {
     Ok(Character {
+        id: 0,
         name: text(c, key, "name")?.to_owned(),
         ref_id: number(c, key, "ref")?,
         scale: 0x22,
