@@ -34,7 +34,7 @@ CEILING = {
     "assets": (0, 1),
     "client": (17, 73),
     "docs": (161, 182),
-    "packets": (178, 48),
+    "packets": (72, 48),
     "scripts": (8, 10),
 }
 

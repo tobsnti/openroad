@@ -8,13 +8,14 @@
 //! field per call, so the layouts fall out of the decompiles
 //! (`docs/re/net/outbound/academy-arena.md`, `docs/re/net/inbound/academy.md`).
 //! What the decompiles cannot supply is *meaning*: a width and an order are
-//! `[V]`, a field's name is `[S]`, and a branch's semantics stay `[U]` until a
-//! capture exists. This module types what is `[V]` and refuses to name what is
+//! `[V original builder]` or `[V original handler]`; a field's name, even one
+//! suggested by a sibling opcode, and a branch's semantics stay `[U]` until a
+//! capture exists. This module types what is verified and refuses to name what is
 //! not — the 0xB47D record block is kept as raw bytes rather than decoded into
 //! invented field names.
 //!
 //! **0x3C81 (SERVER_ACADEMY_DATA) is not here on purpose.** Its handler
-//! (`sro_client.exe@FUN_008986c0`) contains no read call at all: the original
+//! contains no read call at all `[V original handler]`: the original
 //! consumes zero bytes of it, so there is no layout to model. It is listed in
 //! the client's known-and-ignored opcodes instead
 //! (`client/src/plugins/net/plugin.rs`).
@@ -32,9 +33,9 @@ use sro_macro_derive::*;
 
 /// 0x7477 — client → server: edit the academy notice.
 ///
-/// Builder `FUN_00824560` writes `strS strS` and nothing else
+/// The original's builder writes `strS strS` and nothing else
 /// (`docs/re/net/outbound/academy-arena.md:212`). Which string is the title
-/// and which the body is `[S]`, taken from the guild notice edit 0x70F9, whose
+/// and which the body is `[U]`, taken from the guild notice edit 0x70F9, whose
 /// builder writes the same pair in the same order.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct AcademyNoticeEditRequest {
@@ -44,9 +45,9 @@ pub struct AcademyNoticeEditRequest {
 
 /// 0x747D — client → server: fetch a page of the academy matching board.
 ///
-/// Builder `FUN_0081d3b0` writes exactly one byte
+/// The original's builder writes exactly one byte
 /// (`docs/re/net/outbound/academy-arena.md:282`). That the byte is a page
-/// index is `[S]`, by symmetry with the party match list, which pages the same
+/// index is `[U]`, by symmetry with the party match list, which pages the same
 /// way — the decompile proves only the width.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct AcademyMatchListRequest {
@@ -55,7 +56,7 @@ pub struct AcademyMatchListRequest {
 
 /// 0xB47D — server → client: the matching-board page.
 ///
-/// Read trace of `FUN_00890ab0` (`docs/re/net/inbound/academy.md:486-511`):
+/// Read trace of the original's handler (`docs/re/net/inbound/academy.md:486-511`):
 /// one byte at depth 1, then **three** bytes at depth 2 followed by a record
 /// loop at depth 4, with a `u16` read on the other depth-2 branch. So the
 /// shape is the family's usual `result` + success/failure arms — but the three

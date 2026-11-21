@@ -7,7 +7,7 @@
 //! own parser/builder functions and, where one exists, cross-checked against the
 //! vSRO server's writer — `docs/re/net/inbound/pet-cos.md` and
 //! `docs/re/net/outbound/pet-cos.md` carry the per-field evidence, the handler
-//! and builder VAs, and the [V]/[S]/[U] tags. Those two supersede the older
+//! and builder VAs, and the evidence tags. Those two supersede the older
 //! xBot-derived `docs/net-pet-0x30C8.md`, which is wrong in four places this
 //! module used to inherit (0x30C9's missing arms, 0xB0CB's conditional riding
 //! uid, 0xB420's conditional settings word, 0x70CB's body).
@@ -28,7 +28,7 @@
 //!
 //! The COS kind that selects the body's layout is **not a byte in the body** —
 //! the original derives it from the ref object's refdata `tid` word and then
-//! gates the body on it (`FUN_009a1900`, see [`CosKind`]). `Deserialize` takes
+//! gates the body on it (see [`CosKind`]). `Deserialize` takes
 //! no context, so the packet stops after the two header fields and the body is
 //! read through [`PetData::body`] once the caller has resolved the kind — the
 //! same split that keeps `CharacterDataBody` raw (`ingame.rs:9-16`) and
@@ -62,10 +62,9 @@ use sro_macro_derive::*;
 
 /// Which COS this is. **It is not a field on the wire.**
 ///
-/// `FUN_009a1900` derives it from the entity's refdata `tid` word — all five
-/// arms share `tid & 2 != 0 && (tid & 0x1c) == 4 && (tid & 0x60) == 0x40 &&
-/// (tid & 0x780) == 0x180` and differ only in `tid & 0xF800`, i.e. `TypeID4`
-/// (`:98-130`) — and stores the result at `record+0x14`, which every later
+/// The original's handler derives it from the entity's refdata `tid` word —
+/// all five arms share one test of the lower bits and differ only in the top
+/// five, `TypeID4` — and stores the result at `record+0x14`, which every later
 /// gate in the body then tests. So the caller resolves the kind from the COS
 /// ref-object row and hands it to [`PetData::body`]; the packet cannot know it.
 ///
@@ -74,18 +73,18 @@ use sro_macro_derive::*;
 /// Source: `docs/re/net/inbound/pet-cos.md` §0x30C8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CosKind {
-    /// `TypeID4` 1 → kind 0. Transport / vehicle. [S]
+    /// `TypeID4` 1 → kind 0. Transport / vehicle. [U]
     Vehicle,
-    /// `TypeID4` 2 → kind 1. The second transport class. [S]
+    /// `TypeID4` 2 → kind 1. The second transport class. [U]
     Transport,
     /// `TypeID4` 3 → kind 3. Growth ("attack") pet: the only kind carrying the
-    /// growth block, and it is named. [S]
+    /// growth block, and it is named. [U]
     GrowthPet,
-    /// `TypeID4` 4 → kind 2. Grab / pick pet: named, no growth block. [S]
+    /// `TypeID4` 4 → kind 2. Grab / pick pet: named, no growth block. [U]
     GrabPet,
-    /// `TypeID4` 5 → kind 4. Mercenary / fellow. [V] — `FUN_0099ddb0` is
-    /// `kind == 4` and is exactly the gate that logs `Create Mercenary
-    /// Interface` at `00811500:23`.
+    /// `TypeID4` 5 → kind 4. Mercenary / fellow. [V original handler] — the
+    /// original's test for kind 4 is exactly the gate that creates its mercenary
+    /// interface.
     Fellow,
 }
 
@@ -136,15 +135,15 @@ impl CosKind {
 }
 
 /// The COS inventory is paged **28 slots per page**: the body's slot byte goes
-/// through `FUN_0099dbd0(slot) = FUN_0099dba0(slot / 0x1c, slot % 0x1c)`
-/// (`FUN_009a1900:245-248`). [V]
+/// through a split into page `slot / 28` and position `slot % 28`
+/// [V original handler].
 pub const COS_INVENTORY_PAGE_SLOTS: u8 = 28;
 
 /// A full hunger bar. HGP is a per-10,000 value, and this is what the original
-/// substitutes for the kinds that carry no growth block (`FUN_009a1900:155`).
+/// substitutes for the kinds that carry no growth block.
 ///
 /// It used to live here as `COS_GROWTH_SCALE_DEFAULT`, "a per-mille/percent
-/// scalar `[S]`", and a second copy of the same 10,000 sat in the client as
+/// scalar", and a second copy of the same 10,000 sat in the client as
 /// `HGP_FULL`. They were always the same number: see [`CosGrowth::hgp`] for how
 /// the field was identified. [V]
 ///
@@ -154,7 +153,7 @@ pub const COS_INVENTORY_PAGE_SLOTS: u8 = 28;
 pub const COS_HGP_FULL: u16 = 10_000;
 
 /// 0x30C9 update discriminators — the seven arms of the original's own switch
-/// (`FUN_008aa340`, `docs/re/net/inbound/pet-cos.md` §0x30C9). [V]
+/// (`docs/re/net/inbound/pet-cos.md` §0x30C9). [V original handler]
 pub const PET_UPDATE_UNSUMMONED: u8 = 1;
 pub const PET_UPDATE_BAG: u8 = 2;
 pub const PET_UPDATE_EXP: u8 = 3;
@@ -168,13 +167,13 @@ pub const PET_UPDATE_MODEL_CHANGED: u8 = 7;
 /// The COS command codes carried by 0x70C5's action byte.
 ///
 /// 1 and 8 are the two the original's builders emit
-/// (`docs/re/net/outbound/pet-cos.md` §0x70C5). 2 and 8 are independently [V]
-/// from the **server** side — `server-dec/004ecbc0_FUN_004ecbc0.c:68-86`
-/// branches on both when it writes the 0xB0C5 error ack. 4 (turn-in-place, a
+/// (`docs/re/net/outbound/pet-cos.md` §0x70C5). 2 and 8 are independently
+/// `[V original server]`: the original server branches on both when it writes
+/// the 0xB0C5 error ack. 4 (turn-in-place, a
 /// `u16` heading) comes from builders `009eb470`/`009eb6e0`.
 ///
 /// 9 and 11 appear in no binary we have; they are Hyperbot's `CosCommandType`
-/// (`packetEnums.hpp:459-465`) and are therefore [S]. Sending one is a probe —
+/// (`packetEnums.hpp:459-465`) and are therefore [U]. Sending one is a probe —
 /// 0xB0C5 echoes the action byte back, so the server's verdict is legible.
 pub const PET_ACTION_MOVEMENT: u8 = 1;
 pub const PET_ACTION_ATTACK: u8 = 2;
@@ -233,7 +232,7 @@ impl PickPetSettings {
 }
 
 /// The growth-pet block — present only for [`CosKind::GrowthPet`]
-/// (`FUN_009a1900:141-152`).
+/// `[V original handler]`.
 ///
 /// **All three fields are named `[V]` as of 2026-08-19.** They used to be
 /// `unk_c`/`unk_d`/`scale_e`, because the binary-derived doc recovered the
@@ -244,10 +243,10 @@ impl PickPetSettings {
 ///    u64/u8/u16 triple. That file carries a `SUPERSEDED` banner for five
 ///    *layout* errors, but its own closing line reserves its field names, and
 ///    they are what settle this.
-/// 2. **The offsets, cross-matched between the two handlers.** `FUN_009a1900`
+/// 2. **The offsets, cross-matched between the two handlers.** The 0x30C8 one
 ///    stores these at `record[0x14]/[0x15]` (= byte `+0x50`), `record+0x12` and
-///    `record+0x10`. `FUN_008aa340` (0x30C9) adds arm 3's exp delta to
-///    `pet+0x50/+0x54`, runs its level-up loop over `FUN_00937f20(pet+0x12)`,
+///    `record+0x10`. The 0x30C9 one adds arm 3's exp delta to
+///    `pet+0x50/+0x54`, runs its level-up loop on the level at `pet+0x12`,
 ///    and arm 4 writes its HGP `u16` to `+0x10`. Three offsets, three matches,
 ///    same record.
 /// 3. **A capture** — `packet_dump/0x30c8.log`, a Grey Wolf (ref 6106) on the
@@ -258,7 +257,7 @@ pub struct CosGrowth {
     /// from 0x30C9 arm 3 move it, so it goes *down* when the pet dies. [V]
     pub exp: u64,
     /// The pet's own level, `u8` at `:145-148` → `pet+0x12`, and the index the
-    /// level table `FUN_00937f20` is read at. Not the same thing as the growth
+    /// level table is read at. Not the same thing as the growth
     /// stage's characterdata `Lvl`, though the ladder rows happen to agree. [V]
     pub level: u8,
     /// Hunger (HGP), `u16` at `:149-152` → `pet+0x10`, the same slot 0x30C9
@@ -273,15 +272,15 @@ struct CosName {
     name: String,
 }
 
-/// The 0x30C8 body behind the two header fields — the grammar `FUN_009a1900`
+/// The 0x30C8 body behind the two header fields — the grammar the original
 /// actually reads, with every optional part carrying the gate that produces it.
 ///
 /// Names are `[U]` where the original names nothing; the widths and the gates
 /// are `[V]` (`docs/re/net/inbound/pet-cos.md` §0x30C8).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CosBody {
-    /// HP at summon time, `:132-135` — fed to both `FUN_009c7870` and
-    /// `FUN_009c78a0`, i.e. current *and* maximum. xBot names off 8 `HP` on all
+    /// HP at summon time, `:132-135` — the original stores it as both current
+    /// *and* maximum HP. xBot names off 8 `HP` on all
     /// three tails, and the captures agree: a horse reports 983 with `unk_b`
     /// also 983, and the Grey Wolf reports 360, its characterdata `MaxHP`. [V]
     pub hp: u32,
@@ -324,7 +323,7 @@ pub struct CosBody {
 
 impl CosBody {
     /// Hunger, with the original's substitution for the kinds that carry no
-    /// growth block (`FUN_009a1900:155`) — they do not starve, so a full bar.
+    /// growth block — they do not starve, so a full bar.
     pub fn hgp_or_full(&self) -> u16 {
         self.growth.map_or(COS_HGP_FULL, |growth| growth.hgp)
     }
@@ -339,10 +338,10 @@ impl CosBody {
 /// `CharacterDataBody` raw (`ingame.rs:9-16`).
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct PetData {
-    /// The COS entity's unique id (`FUN_009a1900:73-78`). [V]
+    /// The COS entity's unique id. [V original handler]
     pub unique_id: u32,
-    /// The COS ref-object id — what the refdata lookup `FUN_0093f630` keys on,
-    /// and therefore where the caller gets [`CosKind`] from (`:79-85`). [V]
+    /// The COS ref-object id — what the refdata lookup keys on, and therefore
+    /// where the caller gets [`CosKind`] from (`:79-85`). [V original handler]
     pub ref_obj_id: u32,
     /// The kind-dependent remainder; read with [`Self::body`].
     pub tail: Bytes,
@@ -464,7 +463,7 @@ pub enum PetUpdatePayload {
     /// resolver, exactly like 0x30C8's, so they stay raw here and are read
     /// through [`PetUpdate::bag_items`].
     Bag {
-        /// [S] — stored at `pet+0x18`, i.e. the same slot capacity 0x30C8's
+        /// [U] — stored at `pet+0x18`, i.e. the same slot capacity 0x30C8's
         /// `inventory_size` carries.
         slot_capacity: u8,
         item_count: u8,
@@ -495,16 +494,16 @@ pub enum PetUpdatePayload {
 }
 
 /// 0x30C9 — server → client cos delta, discriminated by `update_type`
-/// (`FUN_008aa340`; `docs/re/net/inbound/pet-cos.md` §0x30C9).
+/// (`docs/re/net/inbound/pet-cos.md` §0x30C9).
 ///
 /// Hand-written rather than derived for the same reason [`PetData`] is: arm 2
 /// carries item records whose shape depends on the loaded itemdata, which
 /// `Deserialize` has no way to reach.
 ///
-/// All seven arms' widths are [V] — the client's reader and, for arms 1/2/4/7,
-/// the vSRO server's writers agree. Arm 3 in particular is **not** [U]: this
-/// module used to claim its body was unresolvable without a capture, but
-/// `FUN_008aa340` reads `{i64, u32}` plainly.
+/// All seven arms' widths are [V original handler] — the client's reader
+/// and, for arms 1/2/4/7, the vSRO server's writers agree. Arm 3 in particular
+/// is **not** [U]: this module used to claim its body was unresolvable without
+/// a capture, but the original's handler reads `{i64, u32}` plainly.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub struct PetUpdate {
     pub unique_id: u32,
@@ -629,8 +628,8 @@ impl From<PetUpdate> for Bytes {
     }
 }
 
-/// 0xB0CB — server → client mount/dismount ack (`FUN_008a7720`;
-/// `docs/re/net/inbound/pet-cos.md` §0xB0CB). 10 bytes on success, 3 on error.
+/// 0xB0CB — server → client mount/dismount ack
+/// (`docs/re/net/inbound/pet-cos.md` §0xB0CB). 10 bytes on success, 3 on error.
 ///
 /// `riding_unique_id` is **unconditional**: the original's three reads happen
 /// back-to-back before any branch, and both vSRO server writers — `004ec640`
@@ -655,8 +654,8 @@ pub struct PetPlayerMounted {
     pub error_code: Option<u16>,
 }
 
-/// 0xB420 — server → client settings-change ack (`FUN_008a7d20`;
-/// `docs/re/net/inbound/pet-cos.md` §0xB420). 10 bytes on success, 3 on error.
+/// 0xB420 — server → client settings-change ack
+/// (`docs/re/net/inbound/pet-cos.md` §0xB420). 10 bytes on success, 3 on error.
 ///
 /// `settings` is **unconditional** on the success path — the original's three
 /// reads are not branched, and its two asserts name the `settings_type` arms
@@ -682,7 +681,7 @@ pub struct PetSettingsChangeResponse {
 /// 0x7420 — client → server: change a COS's settings.
 ///
 /// Shape from the **server's** reader, not from a client builder (the original
-/// has none): `server-dec/00511d10_FUN_00511d10.c:14-18` reads `u32, u8, u32`
+/// has none): the original server reads `u32, u8, u32`
 /// in that order (`docs/re/net/inbound/pet-cos.md:741`).
 ///
 /// `settings_type` is **not** an "attack pet vs other" discriminator — per the
@@ -700,24 +699,24 @@ pub struct PetSettingsChangeRequest {
 /// (`docs/re/net/inbound/pet-cos.md:739-740`).
 pub const PET_SETTINGS_TYPE_GOLD: u8 = 1;
 
-/// 0x7116 — client → server unsummon (builder `0081e8d0`, 4 bytes. [V]).
+/// 0x7116 — client → server unsummon (4 bytes, [V original builder]).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetUnsummonRequest {
     pub unique_id: u32,
 }
 
-/// 0xB116 — the unsummon ack (`FUN_008a7b30`). Success is **empty**: the COS
+/// 0xB116 — the unsummon ack `[V original handler]`. Success is **empty**: the COS
 /// itself goes away via 0x30C9 arm 1, not through this packet.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetUnsummonResponse {
     pub success: bool,
     /// COS error category `0x0C`. The server pushes small ints (3, 4) here, so
-    /// the value space is likely 1-byte-ish despite the `u16` width. [S]
+    /// the value space is likely 1-byte-ish despite the `u16` width. [U]
     #[sro_packet(when = "!success")]
     pub error_code: Option<u16>,
 }
 
-/// 0x70C6 — client → server terminate (builder `0081e810`, 4 bytes. [V]).
+/// 0x70C6 — client → server terminate (4 bytes, [V original builder]).
 ///
 /// Distinct from [`PetUnsummonRequest`]: unsummon puts a COS away, terminate
 /// ends it (the original's `UIIT_STT_COS_CLEAN` "Terminated" action).
@@ -726,7 +725,7 @@ pub struct PetTerminateRequest {
     pub unique_id: u32,
 }
 
-/// 0xB0C6 — the terminate ack (`FUN_008a7a70`). Carries **no** cos uid; the
+/// 0xB0C6 — the terminate ack `[V original handler]`. Carries **no** cos uid; the
 /// success body is empty. Note the original's guard is `result != 1`, not
 /// `== 2`, so any non-1 byte takes the error path — which is exactly how
 /// `bool` deserializes here (`u8 == 1`).
@@ -737,15 +736,15 @@ pub struct PetTerminateResponse {
     pub error_code: Option<u16>,
 }
 
-/// 0x7117 — client → server rename (builder `007a4170`, module
-/// `IFCOSInfo.cpp`. [V]).
+/// 0x7117 — client → server rename (built in the COS info window,
+/// [V original builder]).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetRenameRequest {
     pub unique_id: u32,
     pub name: String,
 }
 
-/// 0xB117 — the rename ack (`FUN_008a7b80`). Success is **empty**, so the new
+/// 0xB117 — the rename ack `[V original handler]`. Success is **empty**, so the new
 /// name reaches the client only as [`PetUpdatePayload::Renamed`] — do not
 /// apply a rename optimistically.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -755,14 +754,15 @@ pub struct PetRenameResponse {
     pub error_code: Option<u16>,
 }
 
-/// 0xB0C5 — the ack for a 0x70C5 COS command (`FUN_00872590`;
-/// `docs/re/net/inbound/pet-cos.md` §0xB0C5). 6 / 10 bytes, 8 / 12 with a code.
+/// 0xB0C5 — the ack for a 0x70C5 COS command
+/// (`docs/re/net/inbound/pet-cos.md` §0xB0C5). 6 / 10 bytes, 8 / 12 with a code.
 ///
 /// Note the field order: the error code sits **between** the action echo and
 /// the cos uid, so `unique_id` is at offset 2 on success and 4 on failure.
-/// Both the client's reader and the server's writer (`004ecbc0:68-86`) agree,
-/// and that writer is also what makes [`PET_ACTION_ATTACK`] and
-/// [`PET_ACTION_ITEM_PICKUP`] [V] rather than bot-sourced.
+/// The client's reader `[V original handler]` and the original server's writer
+/// `[V original server]` agree, and that writer is also what makes
+/// [`PET_ACTION_ATTACK`] and [`PET_ACTION_ITEM_PICKUP`] `[V original server]`
+/// rather than bot-sourced.
 ///
 /// Actions other than 8 read no tail, so a server that appended one for e.g.
 /// `Movement` would desync — the original would too `[V original handler]`.
@@ -777,12 +777,12 @@ pub struct PetActionResponse {
     pub error_code: Option<u16>,
     pub unique_id: u32,
     /// The grabbed item's GID, present only on the pick-up action. The
-    /// original names it `dwGIDItem` in a `DropItemManager.cpp` assert.
+    /// original's own assert names it the item GID.
     #[sro_packet(when = "action == 8 && error_code != Some(0)")]
     pub item_gid: Option<u32>,
 }
 
-/// 0x30E7 — "you have wandered too far" (`FUN_00883b10`). One reason byte;
+/// 0x30E7 — "you have wandered too far" `[V original handler]`. One reason byte;
 /// the distances the original shows (100, 30) are **client-side literals**,
 /// not wire fields.
 ///
@@ -801,16 +801,16 @@ pub const STUCK_REASON_QUEST_MONSTER: u8 = 2;
 
 /// 0x70CB — client → server mount/dismount toggle.
 ///
-/// The builder does exist after all: `0081eb50` writes `b1 b4` — a **byte
-/// first**, then the uid (`docs/re/net/outbound/pet-cos.md` §0x70CB, [V]).
+/// The builder does exist after all: it writes `b1 b4` — a **byte first**, then
+/// the uid (`docs/re/net/outbound/pet-cos.md` §0x70CB, [V original builder]).
 /// This struct was previously an explicit `[U]` guess of a bare `{u32}`, which
 /// is both the wrong width and the wrong order; `packet_dump/c2s/0x70cb.log`
 /// records the 4-byte probes we sent before the builder was recovered.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PetMountRequest {
     /// 1 = board, 0 = dismount — the same sense as `PetPlayerMounted`'s
-    /// `is_mounting`, which is what the server echoes back. [S]: the width and
-    /// position are [V] from the builder, the value mapping is the mirror of
+    /// `is_mounting`, which is what the server echoes back. [U]: the width and
+    /// position are [V original builder], the value mapping is the mirror of
     /// the ack.
     pub mount_state: u8,
     pub cos_unique_id: u32,
@@ -840,22 +840,22 @@ pub enum PetActionRequest {
         z: i32,
     },
     /// `action = 2` — send the COS at a target. The 9-byte `b4 b1 b4` shape of
-    /// builders `00791d40`/`008a5fd0`/`008afb50`; those are the *same*
-    /// functions that build the player's own 0x7074, which is the mechanism by
-    /// which a commanded COS takes over the ordinary attack path. [V]
+    /// three original builders; those are the *same* functions that build the
+    /// player's own 0x7074, which is the mechanism by which a commanded COS
+    /// takes over the ordinary attack path. [V original builder]
     Attack {
         pet_unique_id: u32,
         target_unique_id: u32,
     },
-    /// `action = 4` — turn in place. `b4 b1 b2` (builders `009eb470`,
-    /// `009eb6e0`); the `u16` is a heading. [V]
+    /// `action = 4` — turn in place. `b4 b1 b2` (two builders); the `u16` is a
+    /// heading. [V original builder]
     Turn { pet_unique_id: u32, heading: u16 },
     /// `action = 8`.
     ItemPickUp {
         pet_unique_id: u32,
         item_unique_id: u32,
     },
-    /// `action = 9` — resume following the owner. **[S]**: no builder in any
+    /// `action = 9` — resume following the owner. **[U]**: no builder in any
     /// binary we have, only Hyperbot's `CosCommandType`. Modelled as a bare
     /// `{uid, action}` because a follow order has nothing else to carry; the
     /// 0xB0C5 echo is what will confirm or refute it.
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     /// The original only reads past `inventory_size` when the uid is new to its
-    /// COS map (`FUN_009a1900:204`), so a re-summon body that stops right there
+    /// COS map, so a re-summon body that stops right there
     /// is legal and must not be rejected (#455).
     #[test]
     fn a_body_that_stops_after_inventory_size_is_still_valid() {

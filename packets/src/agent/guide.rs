@@ -21,8 +21,8 @@ use sro_macro_derive::*;
 /// 0x70EA — client → server, eight bytes written as one blob, carrying a
 /// 64-bit flag word in which exactly one bit is ever set.
 ///
-/// Idea of the shape: the sender at `0081eda0` forwards its caller's eight
-/// bytes verbatim with a single `FUN_00508fe0(&stack0x00000004, 8)`, so the
+/// Idea of the shape: the original sender forwards its caller's eight
+/// bytes verbatim as one 8-byte write `[V original builder]`, so the
 /// *grouping* cannot be read off the write sizes the way it can elsewhere in
 /// this family (`0x704F`'s sender writes `1`, which is how that one-byte
 /// action was confirmed). Two things settle it as **one 64-bit word** rather

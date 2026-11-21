@@ -163,7 +163,7 @@ impl XTrapIdentification {
     ///
     /// This is a **stated deviation**, not a valid XTrap signature: the original
     /// returns a blob computed by the anti-cheat module from the challenge
-    /// (`FUN_00b78fd0(challenge, out, 0x13)`, `00842ff0:55`), which we do not
+    /// `[V original handler]`, which we do not
     /// reimplement. A server with XTrap stubbed or disabled accepts the stub, but
     /// sending it is non-original behaviour, so a caller that wires this into the
     /// receive loop must put it behind a config flag. Nothing sends it today.
@@ -213,7 +213,7 @@ pub struct ModuleIdentification {
     /// reply, read because the wire carries them — not because we know what
     /// they are.
     ///
-    /// `[S]`: all 32 captured frames read `a4 3d` = 15780, which is also the
+    /// `[U]`: all 32 captured frames read `a4 3d` = 15780, which is also the
     /// agent port that the same session's `0xA102` announced
     /// (`...09 00 "127.0.0.1" a4 3d`). But the remote server's session runs on
     /// port 15884 and its 37 `AgentServer` replies carry **no** such field, so
