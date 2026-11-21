@@ -56,10 +56,11 @@ const BODIES: f32 = 10.0;
 const SWING_WORD: u16 = 0x3002;
 
 /// 0x7074. Attacking a living monster the client knows is answered `01 01`
-/// and runs, or waits as `01 02` behind a running attack; a cancel ends the
-/// attack with `02 00`, twice while a swing runs [V capture, peer vSRO: 4 of
-/// 4 cancels during a swing, 3 of 3 outside one]. Other actions are not
-/// handled yet.
+/// and runs, or waits as `01 02` behind a running attack; picking up an item
+/// on the ground the client knows is answered the same way and runs in
+/// [`crate::ground`]. A cancel ends either with `02 00`, twice while a swing
+/// runs [V capture, peer vSRO: 4 of 4 cancels during a swing, 3 of 3 outside
+/// one]. Other actions are not handled yet.
 pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> Result<(), Reason> {
     let Packet::ObjectActionRequest(request) = packet else {
         unreachable!("0x7074 decodes to ObjectActionRequest");
@@ -79,6 +80,7 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
             let player = world
                 .player_mut(uid)
                 .expect("a character in the game has a player");
+            player.pickup = None;
             let queue_len = if player.attack.is_some() {
                 player.queued = Some(target);
                 2
@@ -87,6 +89,24 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
                     target,
                     swing_ends: None,
                 });
+                1
+            };
+            vec![ObjectActionResponse::Started { queue_len }]
+        }
+        ObjectActionRequest::Execute(ActionCommand::Pickup(ActionTarget::Entity {
+            unique_id: item,
+        })) => {
+            if world.ground_item(item).is_none() || !world.knows(session, item) {
+                return Err(Reason::NotHandled);
+            }
+            let player = world
+                .player_mut(uid)
+                .expect("a character in the game has a player");
+            player.pickup = Some(item);
+            let queue_len = if player.attack.is_some() {
+                player.queued = None;
+                2
+            } else {
                 1
             };
             vec![ObjectActionResponse::Started { queue_len }]
@@ -100,7 +120,7 @@ pub(crate) fn request(world: &mut World, session: SessionId, packet: Packet) -> 
                 .take()
                 .and_then(|a| a.swing_ends)
                 .is_some_and(|end| now < end);
-            player.queued = None;
+            (player.queued, player.pickup) = (None, None);
             let ended = ObjectActionResponse::Ended { queue_len: 0 };
             vec![ended; 1 + usize::from(swinging)]
         }
@@ -132,6 +152,14 @@ fn attack(world: &mut World, uid: u32) {
         return;
     };
     if attack.swing_ends.is_some_and(|end| now < end) {
+        return;
+    }
+    // A pickup that waited behind the swing takes over (`02 01`); the
+    // character goes for the item in `ground::step`.
+    if attack.swing_ends.is_some() && player.pickup.is_some() {
+        player.attack = None;
+        let started = ObjectActionResponse::Ended { queue_len: 1 };
+        world.send(session, Packet::ObjectActionResponse(started));
         return;
     }
     // A request that waited behind the swing starts now (`02 01`).
@@ -167,7 +195,8 @@ fn attack(world: &mut World, uid: u32) {
     if distance(here, at) <= reach {
         swing(world, uid, target, basic);
     } else if !walking {
-        approach(world, uid, ground(here), ground(at), reach);
+        // A unit inside reach.
+        approach(world, uid, ground(here), ground(at), reach - 1.0);
     }
 }
 
@@ -182,7 +211,7 @@ fn player_weapon(world: &World, uid: u32) -> Option<Option<u32>> {
 }
 
 /// A position in world coordinates.
-fn ground(p: Position) -> Point {
+pub(crate) fn ground(p: Position) -> Point {
     in_world(
         p.region,
         Point {
@@ -194,16 +223,16 @@ fn ground(p: Position) -> Point {
 }
 
 /// The distance between two positions on the ground, across regions.
-fn distance(a: Position, b: Position) -> f32 {
+pub(crate) fn distance(a: Position, b: Position) -> f32 {
     let (a, b) = (ground(a), ground(b));
     (b.x - a.x).hypot(b.z - a.z)
 }
 
-/// Walks the attacker straight toward its target until it is a unit inside
-/// reach; the clients that know it are told where, as for a requested walk.
-fn approach(world: &mut World, uid: u32, here: Point, there: Point, reach: f32) {
+/// Walks character `uid` straight toward `there` until it is `short` units
+/// from it; the clients that know it are told where, as for a requested walk.
+pub(crate) fn approach(world: &mut World, uid: u32, here: Point, there: Point, short: f32) {
     let (dx, dz) = (there.x - here.x, there.z - here.z);
-    let share = 1.0 - (reach - 1.0) / dx.hypot(dz);
+    let share = 1.0 - short / dx.hypot(dz);
     let to = Point {
         x: here.x + dx * share,
         y: there.y,

@@ -1173,6 +1173,15 @@ fn gold_rows() -> String {
     rows.join("\n")
 }
 
+/// The Mangnyang next to the hero (10 units east), and gold as the user's
+/// data holds it: a level 1 monster drops 28 to 59 (levelgold.txt:1).
+fn gold_data() -> RefData {
+    let mut refdata = monster_data("1933\t25000\t979.0\t0.0\t1419.0\r\n");
+    refdata.add_items(&gold_rows());
+    refdata.add_level_gold("1\t28\t59\r\n");
+    refdata
+}
+
 /// A killed Mangnyang drops its gold for the hero in the step it dies, each
 /// pile alone (0x3015): an ITEM_ETC_GOLD_01 of 28 to 59 gold (a level 1
 /// monster, levelgold.txt:1), owned by the hero's id, from the Mangnyang
@@ -1181,10 +1190,7 @@ fn gold_rows() -> String {
 /// (0x3016).
 #[test]
 fn a_killed_monster_drops_gold_that_lies_until_its_decay_time() {
-    let mut refdata = monster_data("1933\t25000\t979.0\t0.0\t1419.0\r\n");
-    refdata.add_items(&gold_rows());
-    refdata.add_level_gold("1\t28\t59\r\n");
-    let mut shard = armed(refdata, hero());
+    let mut shard = armed(gold_data(), hero());
     let (s, _) = enter(&mut shard);
     let world = &mut shard.0;
     let mob = world.monsters().next().unwrap().0;
@@ -1265,4 +1271,179 @@ fn a_killed_monster_drops_gold_that_lies_until_its_decay_time() {
     }
     let due: Vec<(u64, u32)> = uids.iter().map(|uid| (died + 5400, *uid)).collect();
     assert_eq!((gone, world.ground_items().count()), (due, 0));
+}
+
+fn pickup(item: u32) -> Packet {
+    let target = ActionTarget::Entity { unique_id: item };
+    Packet::ObjectActionRequest(ObjectActionRequest::Execute(ActionCommand::Pickup(target)))
+}
+
+/// A world in which the hero killed the Mangnyang for gold.
+struct Killed {
+    shard: (World, Arc<MemoryStore>),
+    s: SessionId,
+    hero: u32,
+    /// The first pile dropped: its uid, where it lies and its gold.
+    pile: (u32, SpawnPosition, u32),
+}
+
+/// The hero kills the Mangnyang in a world with gold, up to the step it dies,
+/// whose frames are taken.
+fn killed_for_gold() -> Killed {
+    let mut shard = armed(gold_data(), hero());
+    let (s, hero) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    frames(world, s);
+    send(world, s, attack(mob));
+    let characters = CharacterData::parse_shard(&monster_rows());
+    let items = ItemData::parse_shard(&gold_rows());
+    let client = SpawnTables {
+        characters: Some(&characters),
+        items: Some(&items),
+        gates: None,
+    };
+    let pile = (0..60 * 30).find_map(|_| {
+        world.step();
+        let (_, body) = frames(world, s).into_iter().find(|f| f.0 == 0x3015)?;
+        let (pile, _) = parse_single_spawn(&body, &client)?;
+        let SpawnKind::Item { amount, .. } = pile.kind else {
+            return None;
+        };
+        Some((pile.unique_id, pile.position, amount?))
+    });
+    let pile = pile.unwrap();
+    Killed {
+        shard,
+        s,
+        hero,
+        pile,
+    }
+}
+
+/// The hero walks to `(x, z)` of `region` and stands there; what it was sent
+/// meanwhile is taken.
+fn walk_to(world: &mut World, s: SessionId, hero: u32, region: u16, (x, z): (f32, f32)) {
+    while world.player(hero).unwrap().attack.is_some() {
+        world.step();
+    }
+    let (x, z) = (x.round() as i32, z.round() as i32);
+    send(
+        world,
+        s,
+        Packet::MovementRequest(MovementRequest::ToLocation { region, x, y: 0, z }),
+    );
+    while world.player(hero).unwrap().walk.is_some() {
+        world.step();
+    }
+    frames(world, s);
+}
+
+/// What the hero's client is sent until pile `pile` is gone, but for others'
+/// moves and goings.
+fn until_picked(world: &mut World, s: SessionId, hero: u32, pile: u32) -> Vec<(u16, Vec<u8>)> {
+    let mut seen = Vec::new();
+    for _ in 0..30 * 30 {
+        for (opcode, body) in frames(world, s) {
+            let about = u32::from_le_bytes(body[..4.min(body.len())].try_into().unwrap_or([0; 4]));
+            let others = (opcode == 0xB021 && about != hero) || (opcode == 0x3016 && about != pile);
+            if !others {
+                seen.push((opcode, body.to_vec()));
+            }
+        }
+        if world.ground_item(pile).is_none() {
+            break;
+        }
+        world.step();
+    }
+    seen
+}
+
+/// The pickup's frames as the vSRO server sends them, for `amount` gold that
+/// the hero, who had none, picked up facing `rotation`.
+fn picked_up(hero: u32, pile: u32, amount: u32, rotation: u8) -> Vec<(u16, Vec<u8>)> {
+    let total = [&[1][..], &u64::from(amount).to_le_bytes(), &[0]].concat();
+    let bend = [&hero.to_le_bytes()[..], &[rotation]].concat();
+    let picked = [&[1, 6, 0xFE][..], &amount.to_le_bytes()].concat();
+    vec![
+        (0x304E, total),
+        (0x3016, pile.to_le_bytes().to_vec()),
+        (0x3036, bend),
+        (0xB034, picked),
+        (0xB074, vec![2, 0]),
+    ]
+}
+
+/// A pile 100 units off is answered `01 01`; the hero walks until it is 1.9
+/// units from it, then picks it up facing it, and has its gold.
+#[test]
+fn a_pile_out_of_reach_is_walked_to_and_picked_up() {
+    let Killed {
+        mut shard,
+        s,
+        hero,
+        pile: (pile, at, amount),
+    } = killed_for_gold();
+    let world = &mut shard.0;
+    walk_to(world, s, hero, at.region, (at.x - 100.0, at.z));
+    send(world, s, pickup(pile));
+    let seen = until_picked(world, s, hero, pile);
+    let Packet::MovementResponse(walk) =
+        Packet::deserialize(seen[1].0, seen[1].1.clone().into()).unwrap()
+    else {
+        panic!("{:#06x}", seen[1].0);
+    };
+    let short = (walk.x as f32 - at.x).hypot(walk.z as f32 - at.z);
+    assert!(
+        walk.unique_id == hero && (1.2..=2.6).contains(&short),
+        "{short}"
+    );
+    // Walking along +x, the hero faces 0.
+    let mut expected = vec![(0xB074, vec![1, 1]), seen[1].clone()];
+    expected.extend(picked_up(hero, pile, amount, 0));
+    assert_eq!(seen, expected);
+    let gold = world.player(hero).unwrap().character.gold;
+    assert_eq!(gold, u64::from(amount));
+}
+
+/// A pile under the hero is picked up in the step after the request.
+#[test]
+fn a_pile_in_reach_is_picked_up_at_once() {
+    let Killed {
+        mut shard,
+        s,
+        hero,
+        pile: (pile, at, amount),
+    } = killed_for_gold();
+    let world = &mut shard.0;
+    walk_to(world, s, hero, at.region, (at.x, at.z));
+    send(world, s, pickup(pile));
+    world.step();
+    let seen = until_picked(world, s, hero, pile);
+    let rotation = seen[3].1[4];
+    let mut expected = vec![(0xB074, vec![1, 1])];
+    expected.extend(picked_up(hero, pile, amount, rotation));
+    assert_eq!(seen, expected);
+}
+
+/// A pickup asked for while the killing swing runs waits behind it (`01
+/// 02`), takes over when it ends (`02 01`), and then runs.
+#[test]
+fn a_pickup_waits_behind_a_swing() {
+    let Killed {
+        mut shard,
+        s,
+        hero,
+        pile: (pile, _, amount),
+    } = killed_for_gold();
+    let world = &mut shard.0;
+    send(world, s, pickup(pile));
+    let seen = until_picked(world, s, hero, pile);
+    let answers: Vec<&[u8]> = (seen.iter())
+        .filter(|f| f.0 == 0xB074)
+        .map(|f| &f.1[..])
+        .collect();
+    assert_eq!(answers, [&[1, 2][..], &[2, 1], &[2, 0]]);
+    let gold = world.player(hero).unwrap().character.gold;
+    assert_eq!(gold, u64::from(amount));
 }

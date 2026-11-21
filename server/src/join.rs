@@ -86,6 +86,7 @@ pub(crate) fn join(world: &mut World, session: SessionId, packet: Packet) -> Res
         walk: None,
         attack: None,
         queued: None,
+        pickup: None,
     };
     world.add_player(uid, player);
     world.enter(session, Phase::Joining { account, uid });

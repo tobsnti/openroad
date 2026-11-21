@@ -84,6 +84,9 @@ pub struct Player {
     pub attack: Option<Attack>,
     /// The target of an attack request waiting behind the running swing.
     pub queued: Option<u32>,
+    /// The item on the ground the character is to pick up; while it attacks,
+    /// the pickup waits behind the running swing.
+    pub pickup: Option<u32>,
 }
 
 /// A walk in world coordinates (it may cross regions): from where, to where,
@@ -651,6 +654,7 @@ impl World {
             sight::monster_crossed(self, uid, from);
         }
         combat::step(self);
+        ground::step(self);
         monster::tend(self);
         ground::tend(self);
         if fires(self.step, AI_STEPS) {
