@@ -97,8 +97,10 @@ Out of the repository, by policy:
   addresses, and the internal source-file names and assert strings the original binary
   happens to embed. A wire layout, an opcode number or a field order is a fact and may
   be written down; the decompiled evidence behind it may not. `make ci` counts the
-  decompiler names and addresses the tree still carries from before this rule, per
-  directory, and the counts may only go down (`scripts/check_re_addresses.py`).
+  decompiler names, addresses and source-file names the tree still carries from before
+  this rule, per directory, and the counts may only go down
+  (`scripts/check_re_addresses.py`; another project's source file is listed there with
+  its licence class).
 - **Verbatim copies of the original's data files** — `resinfo` UI trees, `textdata`
   strings, 2DT tables. Cite the handful of values a change actually needs, do not
   transcribe the file.
