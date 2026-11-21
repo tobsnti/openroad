@@ -36,7 +36,7 @@
 //! names the action — and the wiring is a separate issue per verb.
 
 use bevy::input_focus::InputFocus;
-use bevy::picking::hover::Hovered;
+use bevy::picking::hover::{HoverMap, Hovered};
 use bevy::prelude::*;
 use bevy::text::EditableText;
 use bevy::window::PrimaryWindow;
@@ -47,6 +47,7 @@ use packets::Packet;
 use crate::assets::FontAssets;
 use crate::net::connection::SilkroadConnection;
 use crate::plugins::cursor::interactions::entity_select::SelectedEntity;
+use crate::plugins::cursor::pointer_over_ui;
 use crate::plugins::hud::chat::input::prefill_whisper_input;
 use crate::plugins::hud::chat::model::{ChatHistory, ChatLine, ChatState};
 use crate::plugins::hud::chat::ui::ChatInputBox;
@@ -135,10 +136,18 @@ pub struct TargetMenuTarget(pub Option<Entity>);
 /// Open the menu on a right-click that did not drag the camera, when the
 /// current target is another player. Right-drag rotates the camera in openroad,
 /// so the press position is remembered and a moved release is ignored.
+///
+/// A right-click on the UI belongs to the window under it: an inventory slot
+/// uses its item, a party slot opens its own menu. So it neither opens this
+/// menu nor closes another. Whether the original also opens the menu from its
+/// target window is `[U]`; not over the UI is the least rule that keeps the
+/// click with the window the player aimed at.
 #[allow(clippy::too_many_arguments)]
 pub fn open_target_menu(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    hover_map: Res<HoverMap>,
+    ui_nodes: Query<(), With<Node>>,
     selected: Res<SelectedEntity>,
     remotes: Query<&RemoteEntity>,
     ui_strings: Res<ClientUiStrings>,
@@ -164,6 +173,10 @@ pub fn open_target_menu(
         _ => true,
     };
     if moved {
+        return;
+    }
+
+    if pointer_over_ui(hover_map, ui_nodes) {
         return;
     }
 
