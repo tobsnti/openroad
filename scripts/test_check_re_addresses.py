@@ -21,6 +21,7 @@ _spec.loader.exec_module(cra)
 NAME = "FUN" + "_00412345"
 SHORT = "0x" + "412345"
 LONG = "0x00" + "412345"
+BARE = "00" + "412345"
 SOURCE = "CExampleWindow" + ".cpp"
 
 
@@ -29,8 +30,16 @@ class TestFind(unittest.TestCase):
         line = f"/// {NAME} reads it (`{LONG}`, sro_client.exe@{SHORT})"
         self.assertEqual(cra.find(line), [(0, NAME), (1, LONG), (1, SHORT)])
 
+    def test_an_address_without_its_0x_is_found_but_a_decimal_fraction_is_not(self):
+        line = f"/// builder `{BARE}`, `{BARE}..{BARE}`; vec3(0.{BARE}, 0x{BARE})"
+        self.assertEqual(cra.find(line), [(1, BARE)] * 3 + [(1, "0x" + BARE)])
+
     def test_masks_opcodes_offsets_and_separated_constants_are_not_addresses(self):
         self.assertEqual(cra.find("0x00ff0000 0x400000 0x3015 +0x2e5c 0x80_0000"), [])
+
+    def test_a_listed_value_is_not_an_address_in_either_case(self):
+        listed = next(iter(cra.NOT_ADDRESSES))
+        self.assertEqual(cra.find(f"{listed}, {listed[:2]}{listed[2:].upper()}"), [])
 
     def test_a_source_file_name_is_found_unless_it_is_a_listed_foreign_one(self):
         foreign = next(iter(cra.FOREIGN_SOURCES))
