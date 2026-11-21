@@ -4,7 +4,7 @@ use proc_macro_error::abort;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{spanned::Spanned, Data, Field, Fields, Index, Type};
 
-use crate::{get_type_of, PacketArgs, PacketFieldArgs, UsedType};
+use crate::{get_type_of, is_other, PacketArgs, PacketFieldArgs, UsedType};
 
 pub(crate) fn size(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream {
     match *data {
@@ -34,6 +34,9 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream 
         Data::Enum(ref enum_data) => {
             let arms = enum_data.variants.iter().map(|variant| {
                 let name = &variant.ident;
+                // The `other` variant's first field is the value, which the
+                // `#size` below already counts, so it is matched as `_`.
+                let skip = usize::from(is_other(variant));
                 match &variant.fields {
                     Fields::Named(named) => {
                         let idents = named
@@ -41,15 +44,18 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream 
                             .iter()
                             .map(|field| field.ident.as_ref().expect("i failed"))
                             .collect::<Vec<&Ident>>();
+                        let (skipped, counted) = idents.split_at(skip);
                         let content = named
                             .named
                             .iter()
                             .zip(&idents)
+                            .skip(skip)
                             .map(|(field, ident)| generate_size_for(field, quote!(#ident)));
+                        let sum = sum_of(content);
 
                         quote_spanned! { name.span() =>
-                            #ident::#name { #(#idents),* } => {
-                                #(#content)+*
+                            #ident::#name { #(#skipped: _,)* #(#counted),* } => {
+                                #sum
                             }
                         }
                     }
@@ -57,15 +63,19 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream 
                         let idents = (0..unnamed.unnamed.len())
                             .map(|i| format_ident!("t{}", i))
                             .collect::<Vec<Ident>>();
+                        let (skipped, counted) = idents.split_at(skip);
+                        let skipped = skipped.iter().map(|_| quote!(_));
                         let content = unnamed
                             .unnamed
                             .iter()
                             .zip(&idents)
+                            .skip(skip)
                             .map(|(field, ident)| generate_size_for(field, quote!(#ident)));
+                        let sum = sum_of(content);
 
                         quote_spanned! { name.span() =>
-                            #ident::#name(#(#idents),*) => {
-                                #(#content)+*
+                            #ident::#name(#(#skipped,)* #(#counted),*) => {
+                                #sum
                             }
                         }
                     }
@@ -86,6 +96,17 @@ pub(crate) fn size(ident: &Ident, data: &Data, args: PacketArgs) -> TokenStream 
         Data::Union(_) => {
             quote!(0)
         }
+    }
+}
+
+/// `a + b + …` over a variant's counted fields; `0` when there are none (an
+/// `other` variant that carries only its value).
+fn sum_of(content: impl Iterator<Item = TokenStream>) -> TokenStream {
+    let content = content.collect::<Vec<_>>();
+    if content.is_empty() {
+        quote!(0)
+    } else {
+        quote!(#(#content)+*)
     }
 }
 

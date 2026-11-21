@@ -9,6 +9,8 @@
 //! and applies nothing until the server acks (0xB050/0xB051) — the new
 //! STR/INT and max HP/MP then arrive in the follow-up 0x303D refresh.
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use packets::agent::prelude::{
@@ -64,15 +66,35 @@ pub fn on_stats_update(
 }
 
 /// Apply 0x304E `StatPoints`: the authoritative stat-point wallet.
+///
+/// Also the one consumer that reports the kinds nothing uses, 16 and every
+/// `Other` kind, all [U]: the first of each kind warns, repeats go to debug.
 pub fn on_points_update(
     mut reader: MessageReader<CharacterPointsUpdate>,
     mut stats: ResMut<PlayerStats>,
+    mut unused: Local<HashSet<u8>>,
 ) {
     for msg in reader.read() {
-        if let CharacterPointsUpdate::StatPoints { amount } = msg {
-            if stats.stat_points != *amount {
-                stats.stat_points = *amount;
+        let kind = match msg {
+            CharacterPointsUpdate::StatPoints { amount } => {
+                if stats.stat_points != *amount {
+                    stats.stat_points = *amount;
+                }
+                continue;
             }
+            // the inventory, the underbar and the mini info take these
+            CharacterPointsUpdate::Gold { .. }
+            | CharacterPointsUpdate::Sp { .. }
+            | CharacterPointsUpdate::Berserk { .. } => continue,
+            CharacterPointsUpdate::Kind16 { .. } => 16,
+            CharacterPointsUpdate::Other { kind } => *kind,
+        };
+        if unused.insert(kind) {
+            warn!(
+                "character info: 0x304E kind {kind} is read but used nowhere; repeats log at debug"
+            );
+        } else {
+            debug!("character info: 0x304E kind {kind} unused");
         }
     }
 }

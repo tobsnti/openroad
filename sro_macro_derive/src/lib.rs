@@ -6,7 +6,7 @@ use darling::{FromAttributes, FromDeriveInput};
 use proc_macro_error::{abort, proc_macro_error};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, DeriveInput, Expr, GenericArgument, PathArguments, Type};
+use syn::{parse_macro_input, DeriveInput, Expr, GenericArgument, PathArguments, Type, Variant};
 
 use crate::deserialize::deserialize;
 use crate::serialize::serialize;
@@ -26,6 +26,15 @@ pub(crate) struct PacketFieldArgs {
     size: Option<usize>,
     value: Option<usize>,
     when: Option<String>,
+    /// `#[sro_packet(other)]` on one enum variant: it is read for every value
+    /// that has no variant of its own, instead of failing with
+    /// `UnknownVariation`. Its first field holds that value; the rest read as
+    /// in any variant. This is for kinds the original reads that openroad
+    /// does not model one by one: they are read the original's way rather
+    /// than dropped, so the frame is consumed whole and a consumer still sees
+    /// which kind came.
+    #[darling(default)]
+    other: bool,
 }
 
 #[derive(FromDeriveInput)]
@@ -187,6 +196,13 @@ pub(crate) fn get_type_of(ty: &Type) -> UsedType<'_> {
         }
         _ => abort!(ty, "Encountered unknown syn type."),
     }
+}
+
+/// Whether `variant` is the enum's `#[sro_packet(other)]` variant.
+pub(crate) fn is_other(variant: &Variant) -> bool {
+    PacketFieldArgs::from_attributes(&variant.attrs)
+        .expect("i failed")
+        .other
 }
 
 fn get_variant_value<T: Spanned + ToTokens>(source: &T, value: usize, size: usize) -> Expr {

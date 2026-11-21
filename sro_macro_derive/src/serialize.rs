@@ -192,7 +192,9 @@ fn generate_for_field(field: &Field, ident: TokenStream) -> TokenStream {
 fn generate_for_variant(ident: &Ident, variant: &Variant, size: usize) -> TokenStream {
     let attributes = PacketFieldArgs::from_attributes(&variant.attrs).expect("i failed");
     let variant_name = &variant.ident;
-    let value_output = if size > 0 {
+    // The `other` variant has no value of its own: its first field is the
+    // value, written like any field.
+    let value_output = if size > 0 && !attributes.other {
         let value = attributes
             .value
             .expect("When size is not zero, value should be set.");

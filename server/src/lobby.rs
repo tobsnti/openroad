@@ -82,6 +82,7 @@ pub(crate) fn lobby(world: &mut World, session: SessionId, packet: Packet) -> Re
         action: CharacterSelectionAction::List,
         result: 1,
         characters: Some(CharacterData { count, characters }),
+        action6_string: None,
         error_code: None,
     };
     world.send(session, Packet::CharacterSelectionActionResponse(answer));

@@ -850,6 +850,14 @@ pub enum CharacterPointsUpdate {
     /// `amount` is the hwan/berserk gauge fill (0–5).
     #[sro_packet(value = 4)]
     Berserk { amount: u8, source: u32 },
+    /// Kind 16 carries one `u32` `[V original handler]`; what it counts is
+    /// [U].
+    #[sro_packet(value = 16)]
+    Kind16 { value: u32 },
+    /// Every other kind (5 and 17 among them): the original reads nothing
+    /// after the kind `[V original handler]`.
+    #[sro_packet(other)]
+    Other { kind: u8 },
 }
 
 /// 0x303D — server → client recomputed combat stats for the local player (no
@@ -5564,6 +5572,26 @@ mod test {
         assert_eq!(&bytes[..], &[4, 5, 0x28, 0x62, 0x05, 0x00]);
         let decoded: CharacterPointsUpdate = bytes.try_into().unwrap();
         assert_eq!(decoded, p);
+    }
+
+    /// The kinds the original reads besides the four named ones: 16 carries
+    /// a u32, any other kind (5, 17) nothing. Each frame round-trips whole.
+    #[test]
+    fn character_points_kind16_and_other_kinds_read_as_the_original() {
+        for (body, want) in [
+            (
+                &[16, 0x01, 0x02, 0x03, 0x04][..],
+                CharacterPointsUpdate::Kind16 { value: 0x0403_0201 },
+            ),
+            (&[5][..], CharacterPointsUpdate::Other { kind: 5 }),
+            (&[17][..], CharacterPointsUpdate::Other { kind: 17 }),
+        ] {
+            let decoded = CharacterPointsUpdate::try_from(Bytes::copy_from_slice(body)).unwrap();
+            assert_eq!(decoded, want);
+            assert_eq!(decoded.byte_size(), body.len());
+            let back: Bytes = decoded.into();
+            assert_eq!(back.as_ref(), body);
+        }
     }
 
     #[test]
