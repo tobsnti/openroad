@@ -59,6 +59,8 @@ enum ItemdataFields {
     TypeId2 = 10,
     TypeId3 = 11,
     TypeId4 = 12,
+    /// RefObjCommon DecayTime: how long the item lies on the ground, in ms.
+    DecayTime = 13,
     Country = 14,
     /// 1 = the item may be sold to NPCs (0 on quest/mall items).
     CanSell = 17,
@@ -253,6 +255,21 @@ impl ItemDataRow {
     pub fn degree(&self) -> Option<u32> {
         let class = self.numeric_field(ItemdataFields::ItemClass as usize)? as u32;
         (class > 0).then(|| class.div_ceil(3))
+    }
+
+    /// How long the item lies on the ground once dropped, in milliseconds
+    /// (RefObjCommon `DecayTime`), or `None` when the column is missing or
+    /// zero. 180000 on 12,002 of the user's 12,061 items, gold included; the
+    /// vSRO server took a drop nobody picked up away after 179.9 s (median of
+    /// 2137) [V capture, peer vSRO].
+    pub fn decay_time_ms(&self) -> Option<u32> {
+        let ms: u32 = self
+            .0
+            .get(ItemdataFields::DecayTime as usize)?
+            .trim()
+            .parse()
+            .ok()?;
+        (ms > 0).then_some(ms)
     }
 
     /// Maximum stack count of the item (1 for unstackables).
@@ -480,6 +497,19 @@ mod test {
         let mut fields = vec![String::new(); 53];
         fields[52] = String::from(path);
         ItemDataRow(fields)
+    }
+
+    #[test]
+    fn decay_time_is_column_13_when_above_zero() {
+        let decay = |value: &str| {
+            let mut fields = vec![String::new(); 53];
+            fields[13] = String::from(value);
+            ItemDataRow(fields).decay_time_ms()
+        };
+        assert_eq!(
+            (decay("180000"), decay("0"), decay("")),
+            (Some(180000), None, None)
+        );
     }
 
     #[test]
