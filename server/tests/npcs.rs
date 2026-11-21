@@ -22,6 +22,7 @@ use server::refdata::RefData;
 use server::store::{login, Character, MemoryStore, Position, Store};
 use server::world::{Phase, Point, SessionId, World};
 use sro_textdata::characterdata::CharacterData;
+use sro_textdata::itemdata::ItemData;
 use sro_textdata::spawn::SpawnTables;
 
 const REGION: u16 = 25000;
@@ -137,21 +138,25 @@ const MONSTERPOS: &str = "1933\t25000\t900.0\t0.0\t1400.0\r\n\
                           1933\t25002\t100.0\t0.0\t100.0\r\n";
 
 /// The monsters' characterdata rows with the values of the user's data:
-/// MOB_CH_MANGNYANG, a normal monster (1/2/1, rarity 0, speeds 8 and 22,
-/// 54 HP, 24 EXP), and MOB_CH_TIGERWOMAN, a unique (rarity 3, speeds 20 and
-/// 90, 598720 HP, 451200 EXP).
+/// MOB_CH_MANGNYANG, a normal monster (1/2/1, rarity 0, level 1, speeds 8
+/// and 22, 54 HP, 24 EXP), and MOB_CH_TIGERWOMAN, a unique (rarity 3, level
+/// 20, speeds 20 and 90, 598720 HP, 451200 EXP).
 fn monster_rows() -> String {
-    let row = |id: &str, rarity: &str, (walk, run): (&str, &str), hp: &str, exp: &str| {
+    let row = |id: &str,
+               (rarity, level): (&str, &str),
+               (walk, run): (&str, &str),
+               hp: &str,
+               exp: &str| {
         let mut row = vec![String::from("0"); 80];
         (row[1], row[9], row[10], row[11], row[12]) =
             (id.into(), "1".into(), "2".into(), "1".into(), "1".into());
         (row[15], row[46], row[47], row[59]) = (rarity.into(), walk.into(), run.into(), hp.into());
-        row[79] = exp.into();
+        (row[57], row[79]) = (level.into(), exp.into());
         row.join("\t")
     };
     let rows = [
-        row("1933", "0", ("8", "22"), "54", "24"),
-        row("1954", "3", ("20", "90"), "598720", "451200"),
+        row("1933", ("0", "1"), ("8", "22"), "54", "24"),
+        row("1954", ("3", "20"), ("20", "90"), "598720", "451200"),
     ];
     rows.join("\n")
 }
@@ -792,21 +797,22 @@ fn a_seeded_world_repeats_its_monsters_moves() {
 }
 
 fn armed_at(npcpos: &str) -> (World, Arc<MemoryStore>) {
-    armed(npcpos, hero())
+    armed(monster_data(npcpos), hero())
 }
 
-/// `hero` with the bench's sword, and the monsters of `npcpos`; the sword
-/// and the basic attacks of the fist and the sword as the user's data holds
-/// them (itemdata_5000.txt:1683, skilldata_5000.txt:1 and :2).
-fn armed(npcpos: &str, hero: Character) -> (World, Arc<MemoryStore>) {
-    let mut refdata = monster_data(npcpos);
-    let row = |width: usize, values: &[(usize, &str)]| {
-        let mut row = vec!["0"; width];
-        for (at, value) in values {
-            row[*at] = value;
-        }
-        row.join("\t")
-    };
+/// A table row: `values` at their columns, 0 elsewhere.
+fn row(width: usize, values: &[(usize, &str)]) -> String {
+    let mut row = vec!["0"; width];
+    for (at, value) in values {
+        row[*at] = value;
+    }
+    row.join("\t")
+}
+
+/// `hero` with the bench's sword, in a world of `refdata` and the sword and
+/// the basic attacks of the fist and the sword as the user's data holds them
+/// (itemdata_5000.txt:1683, skilldata_5000.txt:1 and :2).
+fn armed(mut refdata: RefData, hero: Character) -> (World, Arc<MemoryStore>) {
     let sword = [
         (1, "3632"),
         (9, "3"),
@@ -1119,7 +1125,7 @@ fn a_kill_gives_the_monsters_exp_and_400_sp_exp_make_a_skill_point() {
         skill_points: 7,
         ..hero()
     };
-    let mut shard = armed("1933\t25000\t979.0\t0.0\t1419.0\r\n", hero);
+    let mut shard = armed(monster_data("1933\t25000\t979.0\t0.0\t1419.0\r\n"), hero);
     let (s, uid) = enter(&mut shard);
     let world = &mut shard.0;
     let mob = world.monsters().next().unwrap().0;
@@ -1143,4 +1149,120 @@ fn a_kill_gives_the_monsters_exp_and_400_sp_exp_make_a_skill_point() {
     assert_eq!((exp, points), (vec![(mob, 24, 24)], vec![sp]));
     let c = &world.player(uid).unwrap().character;
     assert_eq!((c.exp, c.skill_exp, c.skill_points), (124, 14, 8));
+}
+
+/// The gold piles as the user's data holds them (itemdata_5000.txt:1-3):
+/// ITEM_ETC_GOLD_01 to _03 (3/3/5), Param1 1, 1000 and 10000, each lying
+/// 180000 ms.
+fn gold_rows() -> String {
+    let piles = [
+        ("1", "ITEM_ETC_GOLD_01", "1"),
+        ("2", "ITEM_ETC_GOLD_02", "1000"),
+        ("3", "ITEM_ETC_GOLD_03", "10000"),
+    ];
+    let rows: Vec<String> = piles
+        .iter()
+        .map(|&(id, code, least)| {
+            let types = [(9, "3"), (10, "3"), (11, "5"), (13, "180000")];
+            row(
+                160,
+                &[&[(1, id), (2, code), (118, least)][..], &types[..]].concat(),
+            )
+        })
+        .collect();
+    rows.join("\n")
+}
+
+/// A killed Mangnyang drops its gold for the hero in the step it dies, each
+/// pile alone (0x3015): an ITEM_ETC_GOLD_01 of 28 to 59 gold (a level 1
+/// monster, levelgold.txt:1), owned by the hero's id, from the Mangnyang
+/// (source 5), 10 to 30 units from it. A client that comes into the game
+/// later is shown the piles in its group, and 180 s after the death they go
+/// (0x3016).
+#[test]
+fn a_killed_monster_drops_gold_that_lies_until_its_decay_time() {
+    let mut refdata = monster_data("1933\t25000\t979.0\t0.0\t1419.0\r\n");
+    refdata.add_items(&gold_rows());
+    refdata.add_level_gold("1\t28\t59\r\n");
+    let mut shard = armed(refdata, hero());
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let mob = world.monsters().next().unwrap().0;
+    let at = world.monster(mob).unwrap().position;
+    frames(world, s);
+    send(world, s, attack(mob));
+    let (mut died, mut piles) = (None, Vec::new());
+    for step in 0..60 * 30u64 {
+        world.step();
+        for (opcode, body) in frames(world, s) {
+            match opcode {
+                0x30BF => died = Some(step),
+                0x3015 => piles.push((step, body)),
+                _ => {}
+            }
+        }
+        if died.is_some() {
+            break;
+        }
+    }
+    let died = died.unwrap();
+    let characters = CharacterData::parse_shard(&monster_rows());
+    let items = ItemData::parse_shard(&gold_rows());
+    let client = SpawnTables {
+        characters: Some(&characters),
+        items: Some(&items),
+        gates: None,
+    };
+    let mut uids = Vec::new();
+    for (step, body) in &piles {
+        let (pile, tail) = parse_single_spawn(body, &client).unwrap();
+        let SpawnKind::Item {
+            amount: Some(amount),
+            owner,
+            ..
+        } = pile.kind
+        else {
+            panic!("{pile:?}");
+        };
+        assert_eq!(
+            (*step, pile.ref_id, owner, pile.spawn_rarity),
+            (died, 1, Some(1), Some(0))
+        );
+        assert!((28..=59).contains(&amount), "{amount}");
+        let from = SingleTail::Item {
+            source: 5,
+            dropper: Some(mob),
+        };
+        assert_eq!((pile.position.region, tail), (at.region, from));
+        let apart = (pile.position.x - at.x).hypot(pile.position.z - at.z);
+        assert!((10.0..=30.0).contains(&apart), "{apart}");
+        uids.push(pile.unique_id);
+    }
+    assert!(!uids.is_empty());
+    for _ in 0..200 {
+        world.step();
+    }
+    world.disconnect(s);
+    let (s, _) = enter(&mut shard);
+    let world = &mut shard.0;
+    let seen = frames(world, s);
+    let begin = seen.iter().position(|f| f.0 == 0x3017).unwrap();
+    let (kind, count) = (
+        seen[begin].1[0],
+        u16::from_le_bytes([seen[begin].1[1], seen[begin].1[2]]),
+    );
+    let group = parse_group_spawn(&seen[begin + 1].1, kind == 1, count, &client);
+    let shown: Vec<u32> = group.spawns.iter().map(|e| e.unique_id).collect();
+    assert_eq!(shown, uids);
+    let mut gone = Vec::new();
+    for step in died + 201..died + 5500 {
+        world.step();
+        for (opcode, body) in frames(world, s) {
+            if opcode == 0x3016 {
+                gone.push((step, u32::from_le_bytes(body[..4].try_into().unwrap())));
+            }
+        }
+    }
+    let due: Vec<(u64, u32)> = uids.iter().map(|uid| (died + 5400, *uid)).collect();
+    assert_eq!((gone, world.ground_items().count()), (due, 0));
 }

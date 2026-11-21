@@ -21,6 +21,7 @@ use packets::Packet;
 use rand_core::{OsRng, RngCore};
 
 use crate::combat::{self, Attack};
+use crate::ground::{self, GroundItem};
 use crate::monster::{self, Monster};
 use crate::movement;
 use crate::npc::Npc;
@@ -156,7 +157,9 @@ pub struct World {
     /// Monsters by unique id, placed from the reference data and the bench's
     /// fixture at the start.
     monsters: BTreeMap<u32, Monster>,
-    /// The NPCs and monsters of each region, for sight.
+    /// Items on the ground by unique id.
+    ground: BTreeMap<u32, GroundItem>,
+    /// The NPCs, monsters and items on the ground of each region, for sight.
     placed_in: HashMap<u16, Vec<u32>>,
     /// Rows of `npcpos.txt` that name neither an NPC nor a monster model.
     skipped_npc_rows: usize,
@@ -193,6 +196,7 @@ impl World {
             players: BTreeMap::new(),
             npcs: BTreeMap::new(),
             monsters: BTreeMap::new(),
+            ground: BTreeMap::new(),
             placed_in: HashMap::new(),
             skipped_npc_rows: 0,
             commits: Vec::new(),
@@ -304,6 +308,32 @@ impl World {
 
     pub(crate) fn monster_mut(&mut self, uid: u32) -> Option<&mut Monster> {
         self.monsters.get_mut(&uid)
+    }
+
+    /// Puts `item` on the ground; its unique id.
+    pub(crate) fn place_ground_item(&mut self, item: GroundItem) -> u32 {
+        let uid = self.next_uid();
+        self.placed_in
+            .entry(item.position.region)
+            .or_default()
+            .push(uid);
+        self.ground.insert(uid, item);
+        uid
+    }
+
+    pub(crate) fn remove_ground_item(&mut self, uid: u32) {
+        if let Some(item) = self.ground.remove(&uid) {
+            let placed = self.placed_in.entry(item.position.region).or_default();
+            placed.retain(|placed| *placed != uid);
+        }
+    }
+
+    pub fn ground_items(&self) -> impl Iterator<Item = (u32, &GroundItem)> {
+        self.ground.iter().map(|(uid, item)| (*uid, item))
+    }
+
+    pub fn ground_item(&self, uid: u32) -> Option<&GroundItem> {
+        self.ground.get(&uid)
     }
 
     pub(crate) fn remove_monster(&mut self, uid: u32) {
@@ -546,14 +576,16 @@ impl World {
         self.send(session, Packet::GroupEntitySpawnEnd(GroupEntitySpawnEnd));
     }
 
-    /// The entities `session`'s client was shown that are NPCs or monsters.
+    /// The entities `session`'s client was shown that are NPCs, monsters or
+    /// items on the ground.
     pub(crate) fn shown_placed(&self, session: SessionId) -> Vec<u32> {
+        let placed = |uid: &u32| {
+            self.npcs.contains_key(uid)
+                || self.monsters.contains_key(uid)
+                || self.ground.contains_key(uid)
+        };
         self.sessions.get(&session).map_or(Vec::new(), |s| {
-            s.known
-                .iter()
-                .filter(|uid| self.npcs.contains_key(uid) || self.monsters.contains_key(uid))
-                .copied()
-                .collect()
+            s.known.iter().filter(|uid| placed(uid)).copied().collect()
         })
     }
 
@@ -620,6 +652,7 @@ impl World {
         }
         combat::step(self);
         monster::tend(self);
+        ground::tend(self);
         if fires(self.step, AI_STEPS) {
             monster::think(self);
         }

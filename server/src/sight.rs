@@ -21,7 +21,7 @@ use packets::Packet;
 
 use crate::movement::in_region;
 use crate::world::{Phase, Player, SessionId, World};
-use crate::{monster, npc};
+use crate::{ground, monster, npc};
 
 /// Brings who sees the character `uid`, and whom it sees, in line with where
 /// everyone is: what came into sight is shown, what left it is taken back,
@@ -109,6 +109,31 @@ pub(crate) fn monster_returned(world: &mut World, uid: u32) {
         return;
     };
     let raw = alone(world, uid);
+    show_alone(world, uid, region, raw);
+}
+
+/// Item `uid` fell to the ground: the clients in the game that see where it
+/// lies are shown it alone, with source 5 and the monster that dropped it
+/// behind its record, as behind 2310 of the 2311 drops of the vSRO server
+/// [V capture, peer vSRO]; what 5 means is [U].
+pub(crate) fn item_dropped(world: &mut World, uid: u32) {
+    let Some(&item) = world.ground_item(uid) else {
+        return;
+    };
+    let tail = SingleTail::Item {
+        source: 5,
+        dropper: Some(item.dropper),
+    };
+    let entity = ground::entity(uid, &item);
+    let raw = write_single_spawn(&entity, &tail, &world.refdata().spawn_tables())
+        .expect("a dropped item has its itemdata row")
+        .into();
+    show_alone(world, uid, item.position.region, raw);
+}
+
+/// Shows entity `uid`, which is in `region`, alone (`raw`, a single spawn) to
+/// the clients in the game that see that region.
+fn show_alone(world: &mut World, uid: u32, region: u16, raw: Bytes) {
     let in_game = |s: SessionId| matches!(world.phase(s), Some(Phase::Game { .. }));
     let seeing: Vec<SessionId> = world
         .players()
@@ -143,11 +168,11 @@ fn alone(world: &World, uid: u32) -> Bytes {
     .into()
 }
 
-/// The group spawn record of NPC or monster `uid`.
+/// The group spawn record of NPC, monster or item on the ground `uid`.
 fn placed_record(world: &World, uid: u32) -> Bytes {
-    let entity = match (world.npc(uid), world.monster(uid)) {
-        (Some(npc), _) => npc::entity(uid, npc),
-        (None, Some(m)) => {
+    let entity = match (world.npc(uid), world.monster(uid), world.ground_item(uid)) {
+        (Some(npc), ..) => npc::entity(uid, npc),
+        (None, Some(m), _) => {
             let data = world.refdata().monster(m.ref_id);
             monster::entity(
                 uid,
@@ -155,11 +180,14 @@ fn placed_record(world: &World, uid: u32) -> Bytes {
                 data.expect("a placed monster has a monster's model"),
             )
         }
-        (None, None) => unreachable!("only NPCs and monsters are placed"),
+        (None, None, Some(item)) => ground::entity(uid, item),
+        (None, None, None) => {
+            unreachable!("only NPCs, monsters and items on the ground are placed")
+        }
     };
     let record = write_group_spawn(&[entity], &world.refdata().spawn_tables());
     record
-        .expect("a placed NPC or monster has its model's record (World::new)")
+        .expect("a placed entity has its model's record (World::new, ground::monster_died)")
         .into()
 }
 

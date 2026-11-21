@@ -14,6 +14,7 @@ pub mod clock;
 pub mod combat;
 mod consignment;
 pub mod gateway;
+pub mod ground;
 pub mod handshake;
 mod join;
 mod lobby;
