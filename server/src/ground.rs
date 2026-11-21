@@ -1,12 +1,21 @@
 //! Items on the ground. For now that is gold, which a normal monster drops
-//! when it dies (decision 0021 E2). A pile lies there until its DecayTime is
-//! up, and then it goes (0x3016).
+//! when it dies (decision 0021 E2). A pile lies there until a character picks
+//! it up or its DecayTime is up. Any character may pick it up, a deliberate
+//! simplification (decision 0021 E4): how long a pile is kept for its owner
+//! is decided with the party.
 
 use std::f32::consts::TAU;
 use std::ops::RangeInclusive;
 
+use bytes::Bytes;
 use packets::agent::entity_spawn::{SpawnKind, SpawnedEntity};
+use packets::agent::ingame::{CharacterPointsUpdate, ObjectActionResponse};
+use packets::agent::inventory::{
+    InventoryOperationResponse, InventoryOperationResult, PlayerPickupAnimation,
+};
+use packets::Packet;
 
+use crate::combat;
 use crate::monster::Monster;
 use crate::movement::{in_region, in_world};
 use crate::sight;
@@ -131,6 +140,100 @@ pub(crate) fn tend(world: &mut World) {
         }
         world.remove_ground_item(uid);
     }
+}
+
+/// A character picks an item up where it stands when it is within 10 units
+/// of it, and else first walks until it is 1.9 units from it [S, from 54
+/// walks of vSRO characters to a pile: each began 10.7 units from it or
+/// further, and ended a median 1.87 units from it, 48 of them 0.5 to 2.5].
+const PICK_REACH: f32 = 10.0;
+const PICK_STOP: f32 = 1.9;
+
+/// The slot 0xB034 names for gold [V capture, peer vSRO: 81 of 81 gold
+/// pickups].
+const GOLD_SLOT: u8 = 0xFE;
+
+/// Each step: a character that is to pick an item up and does not attack
+/// walks to it or picks it up; if the item went meanwhile, the request ends
+/// (`02 00`).
+pub(crate) fn step(world: &mut World) {
+    let pickers: Vec<(u32, u32)> = world
+        .players()
+        .filter(|(_, p)| p.attack.is_none())
+        .filter_map(|(uid, p)| Some((uid, p.pickup?)))
+        .collect();
+    for (uid, item) in pickers {
+        fetch(world, uid, item);
+    }
+}
+
+fn fetch(world: &mut World, uid: u32, item: u32) {
+    let player = world.player(uid).expect("a picker is a player");
+    let (session, here) = (player.session, player.character.position);
+    if player.walk.is_some() {
+        return;
+    }
+    let Some(&pile) = world.ground_item(item) else {
+        world.player_mut(uid).expect("a picker is a player").pickup = None;
+        let ended = ObjectActionResponse::Ended { queue_len: 0 };
+        world.send(session, Packet::ObjectActionResponse(ended));
+        return;
+    };
+    if combat::distance(here, pile.position) <= PICK_REACH {
+        pick_up(world, uid, item, pile);
+    } else {
+        let (from, to) = (combat::ground(here), combat::ground(pile.position));
+        combat::approach(world, uid, from, to, PICK_STOP);
+    }
+}
+
+/// Character `uid` picks up the gold of pile `item`. As from the vSRO server
+/// [V capture, peer vSRO: 73 gold pickups], its client is told the new total
+/// (0x304E 1) first; the clients that know the pile see it go (0x3016), those
+/// that know the character see it bend down (0x3036, facing the pile), and
+/// its client is told the pickup (0xB034 `01 06 FE <amount>`) and the end of
+/// the action (`02 00`).
+fn pick_up(world: &mut World, uid: u32, item: u32, pile: GroundItem) {
+    let player = world.player_mut(uid).expect("a picker is a player");
+    player.pickup = None;
+    player.character.gold += u64::from(pile.amount);
+    let character = &player.character;
+    let (session, gold, here) = (player.session, character.gold, character.position);
+    let total = CharacterPointsUpdate::Gold {
+        amount: gold,
+        display: 0,
+    };
+    world.send(session, Packet::CharacterPointsUpdate(total));
+    for session in world.observers(item) {
+        world.hide(session, item);
+    }
+    world.remove_ground_item(item);
+    let bend = PlayerPickupAnimation {
+        unique_id: uid,
+        rotation: facing(here, pile.position),
+    };
+    let observers = world.observers(uid);
+    world.broadcast(&observers, Packet::PlayerPickupAnimation(bend));
+    let picked = InventoryOperationResponse {
+        result: 1,
+        operation: Some(InventoryOperationResult::Pickup {
+            slot: GOLD_SLOT,
+            tail: Bytes::copy_from_slice(&pile.amount.to_le_bytes()),
+        }),
+        error: None,
+    };
+    world.send(session, Packet::InventoryOperationResponse(picked));
+    let ended = ObjectActionResponse::Ended { queue_len: 0 };
+    world.send(session, Packet::ObjectActionResponse(ended));
+}
+
+/// Which way a character at `from` faces `to`, in 256ths of a turn from +x
+/// toward +z, as 0x3036 carries it [S: in the vSRO captures the byte follows
+/// the direction of the walk to the pile].
+fn facing(from: Position, to: Position) -> u8 {
+    let (a, b) = (combat::ground(from), combat::ground(to));
+    let turns = (b.z - a.z).atan2(b.x - a.x) / TAU;
+    ((turns.rem_euclid(1.0) * 256.0).round() as u32 % 256) as u8
 }
 
 /// The spawn record of item `uid`: the owner set, rarity 0, as on all 461
