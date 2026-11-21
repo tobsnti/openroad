@@ -4,7 +4,7 @@
 The original binaries shipped with their assert helpers intact, so a decompiled
 `FUN_<va>` that is otherwise anonymous often sits next to a literal
 `"D:\\...\\ReferenceData.cpp"` plus the line number and the asserted condition.
-That triple pins an anonymous function to a real `File.cpp:line`, which is what
+That triple pins an anonymous function to a real `<file>.cpp:<line>`, which is what
 makes a machine-local corpus queryable at all. Its output is analysis material
 and stays local — see CONTRIBUTING.md, "What this repository does not publish".
 
@@ -117,7 +117,7 @@ def dedupe(rows: list["Anchor"]) -> list["Anchor"]:
     """One row per distinct anchor.
 
     A function that belongs to several feature groups is decompiled into each
-    themed directory, so the same `File.cpp:line` is seen once per copy. The
+    themed directory, so the same `<file>.cpp:<line>` is seen once per copy. The
     histogram deliberately keeps the raw occurrence count (that is the number
     the corpus census is stated in); the tables show each anchor once.
     """

@@ -4,7 +4,7 @@
 Run: `python3 scripts/test_check_re_addresses.py` (also run by `make ci`).
 
 The address-shaped tokens are built from parts, so this file does not count
-itself.
+itself, and the source-file name is made up.
 """
 
 import importlib.util
@@ -21,6 +21,7 @@ _spec.loader.exec_module(cra)
 NAME = "FUN" + "_00412345"
 SHORT = "0x" + "412345"
 LONG = "0x00" + "412345"
+SOURCE = "CExampleWindow" + ".cpp"
 
 
 class TestFind(unittest.TestCase):
@@ -31,22 +32,32 @@ class TestFind(unittest.TestCase):
     def test_masks_opcodes_offsets_and_separated_constants_are_not_addresses(self):
         self.assertEqual(cra.find("0x00ff0000 0x400000 0x3015 +0x2e5c 0x80_0000"), [])
 
+    def test_a_source_file_name_is_found_unless_it_is_a_listed_foreign_one(self):
+        foreign = next(iter(cra.FOREIGN_SOURCES))
+        line = f"// {SOURCE}:42, {foreign}, tpl.h and self.h are field reads"
+        self.assertEqual(cra.find(line), [(2, SOURCE)])
+
 
 class TestRatchet(unittest.TestCase):
     def test_a_count_must_equal_its_ceiling(self):
-        ceiling = {"client": (1, 2)}
-        self.assertEqual(cra.problems(Counter({("client", 0): 1, ("client", 1): 2}), ceiling), [])
+        ceiling = {"client": (1, 2, 1)}
+        exact = Counter({("client", 0): 1, ("client", 1): 2, ("client", 2): 1})
+        self.assertEqual(cra.problems(exact, ceiling), [])
         self.assertEqual(
-            cra.problems(Counter({("client", 0): 2, ("client", 1): 2}), ceiling),
+            cra.problems(exact + Counter({("client", 0): 1}), ceiling),
             [("client", 0, 2, 1)],
         )
         self.assertEqual(
-            cra.problems(Counter({("client", 0): 1, ("client", 1): 1}), ceiling),
+            cra.problems(exact - Counter({("client", 1): 1}), ceiling),
             [("client", 1, 1, 2)],
+        )
+        self.assertEqual(
+            cra.problems(exact + Counter({("client", 2): 1}), ceiling),
+            [("client", 2, 2, 1)],
         )
 
     def test_an_unlisted_directory_has_no_room(self):
-        self.assertEqual(cra.problems(Counter({("server", 1): 1}), {}), [("server", 1, 1, 0)])
+        self.assertEqual(cra.problems(Counter({("server", 2): 1}), {}), [("server", 2, 1, 0)])
 
 
 if __name__ == "__main__":

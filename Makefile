@@ -66,7 +66,7 @@ help:
 	@echo "  clippy          Clippy (all targets, all features)"
 	@echo "  warnings        Reject Rust warnings except unread struct fields"
 	@echo "  opcodes         Check the opcode ledger against the packets! macro"
-	@echo "  addresses       Hold the original binary's addresses per directory at their ceiling"
+	@echo "  addresses       Hold the original's addresses and source-file names per directory at their ceiling"
 	@echo "  reference-data  Check textdata column indices against SR_Db2Media (SRO_REFS_PATH)"
 	@echo "  deny            Supply-chain gate: licences/advisories (needs cargo-deny)"
 	@echo "  ci              Full local gate: check-target-dir + fmt-check + warnings + opcodes + addresses + re-tools + reference-data + deny + test + build"
@@ -301,8 +301,9 @@ fmt-check:
 opcodes:
 	python3 scripts/check_opcode_ledger.py
 
-# The original binary's addresses still in the tree, per directory: the counts
-# may only go down (CONTRIBUTING.md, "What this repository does not publish").
+# The original binary's addresses and source-file names still in the tree, per
+# directory: the counts may only go down (CONTRIBUTING.md, "What this repository
+# does not publish").
 addresses:
 	python3 scripts/check_re_addresses.py
 
