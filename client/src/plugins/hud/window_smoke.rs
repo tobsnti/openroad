@@ -13,13 +13,20 @@
 //! Everything [`hud_app`] adds must be something the game always has. A window
 //! that needs more than that is the finding, not a gap in this fixture.
 
+use bevy::ecs::entity::EntityHashMap;
 use bevy::ecs::error::{BevyError, ErrorContext, FallbackErrorHandler, Severity};
-use bevy::input::InputPlugin;
+use bevy::input::mouse::MouseButtonInput;
+use bevy::input::{ButtonState, InputPlugin};
 use bevy::input_focus::InputFocus;
+use bevy::picking::backend::HitData;
+use bevy::picking::hover::HoverMap;
+use bevy::picking::pointer::PointerId;
 use bevy::prelude::*;
 use bevy::scene::ScenePlugin;
 use bevy::state::app::StatesPlugin;
+use bevy::window::PrimaryWindow;
 
+use super::context_menu::{ContextMenuOwner, ContextMenuRoot};
 use super::death::PlayerDeath;
 use super::quest_reward::QuestRewardState;
 use super::quest_reward_confirm::QuestRewardConfirmState;
@@ -36,6 +43,7 @@ use crate::plugins::cos::{pet::PetCommand, ActiveCosList, CosCommand, RiderState
 use crate::plugins::cursor::interactions::entity_select::{HoveredEntity, SelectedEntity};
 use crate::plugins::cursor::interactions::npcs::TalkStarted;
 use crate::plugins::gm::SlashCommand;
+use crate::plugins::net::entities::RemoteEntity;
 use crate::plugins::net::plugin::NetworkCorePlugin;
 use crate::plugins::settings::options::GameOptions;
 use crate::plugins::skills::book::{SkillBook, SkillGroupIndex};
@@ -98,6 +106,8 @@ fn hud_app() -> App {
         .init_asset::<ItemRareTable>()
         // InputDispatchPlugin
         .init_resource::<InputFocus>()
+        // PickingPlugin
+        .init_resource::<HoverMap>()
         // main.rs inserts the config before any plugin is built
         .insert_resource(config)
         // SceneManagerPlugin; the fonts are its `Loading` collection
@@ -242,4 +252,54 @@ fn quest_reward_confirm() {
         world.resource_mut::<QuestRewardState>().quest = open.then_some(1);
         world.resource_mut::<QuestRewardConfirmState>().open = open;
     });
+}
+
+/// A right-click that did not drag opens the target menu on a selected player
+/// and first closes whatever popup was open. Over the UI it does neither: the
+/// click belongs to the window under it, as a potion's right-click in the
+/// inventory does, or a party slot's, which opens the party's own menu (K32).
+/// So every case starts with the quick-party board's menu open, as the press
+/// on its slot opens it.
+#[test]
+fn a_right_click_on_the_ui_leaves_the_popups_to_the_ui() {
+    for (over_ui, selected, want) in [
+        (true, false, (1, ContextMenuOwner::QuickParty)),
+        (true, true, (1, ContextMenuOwner::QuickParty)),
+        (false, true, (1, ContextMenuOwner::Target)),
+    ] {
+        let mut app = hud_app();
+        let world = app.world_mut();
+        world.spawn(ContextMenuRoot);
+        *world.resource_mut::<ContextMenuOwner>() = ContextMenuOwner::QuickParty;
+        if selected {
+            let player = world.spawn(RemoteEntity::Player).id();
+            world.resource_mut::<SelectedEntity>().0 = Some(player);
+        }
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(400.0, 300.0)));
+        let window = world.spawn((window, PrimaryWindow)).id();
+        if over_ui {
+            let node = world.spawn(Node::default()).id();
+            let mut hits = EntityHashMap::default();
+            hits.insert(node, HitData::new(window, 0.0, None, None));
+            world
+                .resource_mut::<HoverMap>()
+                .insert(PointerId::Mouse, hits);
+        }
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            app.world_mut().write_message(MouseButtonInput {
+                button: MouseButton::Right,
+                state,
+                window,
+            });
+            app.update();
+        }
+        let mut roots = app.world_mut().query::<&ContextMenuRoot>();
+        let open = roots.iter(app.world()).count();
+        assert_eq!(
+            (open, *app.world().resource::<ContextMenuOwner>()),
+            want,
+            "over the UI: {over_ui}, a player selected: {selected}"
+        );
+    }
 }

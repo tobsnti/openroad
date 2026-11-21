@@ -2,6 +2,7 @@ use crate::plugins::cos::{interacts_as_character, CosEntity};
 use crate::plugins::cursor::interactions::entity_select::HoveredEntity;
 use crate::plugins::net::entities::RemoteEntity;
 use bevy::asset::LoadState;
+use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
 use bevy_egui::EguiContexts;
@@ -14,6 +15,16 @@ pub mod interactions;
 #[derive(Component, Default)]
 pub struct GameCursorCamera {
     pub(crate) cursor_ray: Option<Ray3d>,
+}
+
+/// True when the pointer is over a pickable UI node. A click there belongs to
+/// the window under it, so it must not also reach the world: neither as a move
+/// order (`plugins::nav::decal`) nor as the target menu (`hud::target_menu`).
+pub fn pointer_over_ui(hover_map: Res<HoverMap>, ui_nodes: Query<(), With<Node>>) -> bool {
+    hover_map
+        .values()
+        .flat_map(|hits| hits.keys())
+        .any(|entity| ui_nodes.contains(*entity))
 }
 
 /// Which cursor image is (or should be) shown, resolved from the hover target.

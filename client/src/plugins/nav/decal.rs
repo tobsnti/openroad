@@ -2,11 +2,10 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::picking::hover::HoverMap;
 use bevy::prelude::*;
 
 use crate::plugins::cursor::interactions::entity_select::HoveredEntity;
-use crate::plugins::cursor::GameCursorCamera;
+use crate::plugins::cursor::{pointer_over_ui, GameCursorCamera};
 use crate::plugins::hud::death::player_is_dead;
 use crate::plugins::hud::inventory::model::InventoryState;
 use crate::plugins::nav::NavMeshRaycast;
@@ -47,15 +46,6 @@ impl Plugin for NavMeshDecalPlugin {
                     .chain(),
             );
     }
-}
-
-/// True when the pointer is over any pickable UI node, so a map click shouldn't
-/// fall through to a movement order.
-fn pointer_over_ui(hover_map: Res<HoverMap>, ui_nodes: Query<(), With<Node>>) -> bool {
-    hover_map
-        .values()
-        .flat_map(|hits| hits.keys())
-        .any(|entity| ui_nodes.contains(*entity))
 }
 
 /// A textured `size` x `size` quad grid whose vertices are re-draped onto the
