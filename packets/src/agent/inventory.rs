@@ -99,7 +99,7 @@ pub enum InventoryOperationRequest {
     },
     /// Drop the whole of inventory `slot` on the ground at the player's feet.
     ///
-    /// **[S], and the weakest-sourced op in this enum.** Only skrillax's
+    /// **[U], and the weakest-sourced op in this enum.** Only skrillax's
     /// `InventoryOperation` table names op **7** as the item drop
     /// (`docs/net-inventory-0x7034.md:24-26`); go-sro implements neither it nor
     /// any of the 26 further ops it merely names. Our own corpus is silent:
@@ -122,7 +122,7 @@ pub enum InventoryOperationRequest {
     Drop { slot: u8 },
     /// Move an item between two of a pick pet's own bag slots.
     ///
-    /// **[S] — the request bodies for ops 25/26/27 are in no recovered source.**
+    /// **[U] — the request bodies for ops 25/26/27 are in no recovered source.**
     /// The 0xB034 *responses* are [V] (`docs/re/systems/pet-pick-cos.md` §3),
     /// and go-sro names these ops but ships no handler arm, so the shape here
     /// is inferred the way every other op pair in this packet is built: the
@@ -138,7 +138,7 @@ pub enum InventoryOperationRequest {
         target: u8,
         amount: u16,
     },
-    /// Take out of the pet bag into the character's inventory. [S], see
+    /// Take out of the pet bag into the character's inventory. [U], see
     /// [`Self::PetToPet`].
     #[sro_packet(value = 26)]
     PetToInventory {
@@ -146,7 +146,7 @@ pub enum InventoryOperationRequest {
         pet_slot: u8,
         inventory_slot: u8,
     },
-    /// Put an inventory item into the pet bag. [S], see [`Self::PetToPet`].
+    /// Put an inventory item into the pet bag. [U], see [`Self::PetToPet`].
     #[sro_packet(value = 27)]
     InventoryToPet {
         cos_unique_id: u32,
@@ -177,7 +177,7 @@ pub enum InventoryOperationRequest {
     InventoryGoldToExchange { amount: u64 },
     /// Op 29 — move an item between two **guild** warehouse slots.
     ///
-    /// `[S]`, no capture: no guild-storage op appears in any of the 99
+    /// `[U]`, no capture: no guild-storage op appears in any of the 99
     /// captured `0x7034` frames. The body is the old line's reading, which
     /// takes it as the same arm as op 1 plus a quantity. **Note the
     /// discrepancy:** today's op 1 carries no `amount`, the line this is
@@ -191,7 +191,7 @@ pub enum InventoryOperationRequest {
         npc_unique_id: u32,
     },
     /// Op 30 — deposit: inventory `source` → guild `target`. Whole slot, no
-    /// quantity (same arm as op 2). `[S]`, see op 29.
+    /// quantity (same arm as op 2). `[U]`, see op 29.
     #[sro_packet(value = 30)]
     InventoryToGuildStorage {
         source: u8,
@@ -199,7 +199,7 @@ pub enum InventoryOperationRequest {
         npc_unique_id: u32,
     },
     /// Op 31 — withdraw: guild `source` → inventory `target`. Whole slot
-    /// (same arm as op 3). `[S]`, see op 29.
+    /// (same arm as op 3). `[U]`, see op 29.
     #[sro_packet(value = 31)]
     GuildStorageToInventory {
         source: u8,
@@ -211,13 +211,13 @@ pub enum InventoryOperationRequest {
     /// piece of this family that does not rest on a reading alone.
     #[sro_packet(value = 32)]
     InventoryGoldToGuildStorage { amount: u64 },
-    /// Op 33 — withdraw gold from the guild account. `[S]`, see op 32.
+    /// Op 33 — withdraw gold from the guild account. `[U]`, see op 32.
     #[sro_packet(value = 33)]
     GuildStorageGoldToInventory { amount: u64 },
     /// Op 35 (`0x23`) — take a costume **off**: avatar `source` → inventory
     /// `target`.
     ///
-    /// `[S]`, and the mark is measured rather than assumed: across all 13
+    /// `[U]`, and the mark is measured rather than assumed: across all 13
     /// `packet_dump` roots on this machine there is exactly **one** `0x7034`
     /// capture (7 frames, `or-gate/packet_dump/c2s/0x7034.log`) and **every
     /// one of them is op 8** (buy). So neither avatar op has ever been on the
@@ -233,7 +233,7 @@ pub enum InventoryOperationRequest {
     AvatarToInventory { source: u8, target: u8 },
     /// Op 36 (`0x24`) — put a costume **on**: inventory `source` → avatar
     /// `target`. Same arm and therefore the same two bytes as op 35 with the
-    /// slots swapped. `[S]`, see op 35.
+    /// slots swapped. `[U]`, see op 35.
     #[sro_packet(value = 36)]
     InventoryToAvatar { source: u8, target: u8 },
 }
@@ -359,20 +359,18 @@ impl From<ItemRepairResponse> for Bytes {
 ///
 /// | variant | tail | builder |
 /// |---|---|---|
-/// | [`Self::Simple`] | none | `FUN_00796660:550-570` with no target/extra set |
-/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` | `FUN_00796660:286-300` |
-/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes | `FUN_007901c0` (TypeID mask `0xf800 == 0x2800`) |
+/// | [`Self::Simple`] | none | the general builder, no target or extra set |
+/// | [`Self::WithTarget`] | `target u32 LE`, `kind u8` | the general builder, target set |
+/// | [`Self::WithName`] | `len u16 LE` + `len` ASCII bytes | the name builder (TypeID mask `0xf800 == 0x2800`) |
 ///
-/// `FUN_007901c0` writes the string through `FUN_0053d8c0`, which emits the
-/// `std::string` length as a `u16` and then that many bytes; `FUN_0053d460`
-/// (the `type_id` writer) is `FUN_00508fe0(x, 2)`, i.e. exactly two bytes.
+/// The name builder writes the string as a `u16` length and then that many
+/// bytes; the `type_id` writer emits exactly two bytes `[V original builder]`.
 ///
 /// ## The `+0x0D` slot bias is already in `slot`
 ///
-/// The original's builders write `(char)param_1 + '\r'` — their index is
-/// **bag-relative**, so the bias skips the 13 equipment slots
-/// (`FUN_007901c0`, `FUN_00796660:286`), and the `0xB04C` handler subtracts it
-/// again (`FUN_0087a7b0`: `local_23c = (byte)((char)local_22c - 0xd)`). Our
+/// The original's builders add `0x0D` to the slot `[V original builder]` —
+/// their index is **bag-relative**, so the bias skips the 13 equipment slots,
+/// and the `0xB04C` handler subtracts it again `[V original handler]`. Our
 /// slots are the **server's own numbering**, where 0..12 are the equipment
 /// slots and the bag starts at 13 (`client/src/plugins/net/inventory.rs`), i.e.
 /// the biased number already. So `slot` here is the wire slot and **nothing may
@@ -391,7 +389,7 @@ pub enum ItemUseRequest {
     /// Potions, pills, plain return scrolls — no tail.
     Simple { slot: u8, type_id: u16 },
     /// COS potions, bombs and the like: the target's entity id plus a one-byte
-    /// kind selector (`param_3` of `FUN_00796660`).
+    /// kind selector `[V original builder]`.
     WithTarget {
         slot: u8,
         type_id: u16,
@@ -414,8 +412,8 @@ pub enum ItemUseRequest {
     /// A wrong body here does not fail quietly — the server reads past the end
     /// and drops the connection, which is the behaviour that motivated this
     /// variant in the first place (we were sending a 3-byte [`Self::Simple`]
-    /// for a class that wants four). Recovering `FUN_00796660`'s tail switch is
-    /// what turns this `[U]` into `[V]`.
+    /// for a class that wants four). Recovering the general builder's tail
+    /// switch is what turns this `[U]` into `[V original builder]`.
     ///
     /// `target_slot` is in the **server's own slot numbering**, exactly like
     /// `slot` — the `+0x0D` equipment bias is already baked into our slot
@@ -594,7 +592,7 @@ pub fn item_use_error_message(code: u16) -> Option<&'static str> {
         ITEM_USE_ERROR_COS_NOT_SUMMONABLE => Some("UIIT_MSG_COS_STATE_IS_NOT_SUMMONABLE"),
         // "Still have time to reuse the item." The client gates reuse locally
         // too, so the meaning is not in doubt even though the code itself is
-        // spec-derived. [S]
+        // spec-derived. [U]
         ITEM_USE_ERROR_REUSE_DELAY => Some("UIIT_MSG_STRGERR_WAIT_FOR_REUSE_DELAY"),
         _ => None,
     }
@@ -821,14 +819,14 @@ pub enum InventoryOperationResult {
     },
     /// Op 35 — the costume moved out of the avatar container into the bag.
     ///
-    /// `[S]`, same reading as the request (`InventoryOperationRequest::
+    /// `[U]`, same reading as the request (`InventoryOperationRequest::
     /// AvatarToInventory`): the client's own serializer answers this op on the
     /// arm that writes `+2 u8, +3 u8` and then the repeated-slot list op 0's
     /// ack also carries. Only the two slots are decoded, and the list is
     /// ignored exactly as op 0 ignores it.
     AvatarToInventory { source: u8, target: u8 },
     /// Op 36 — the bag item moved into the avatar container. Same arm and
-    /// layout as op 35. `[S]`.
+    /// layout as op 35. `[U]`.
     InventoryToAvatar { source: u8, target: u8 },
     /// Op 28 — the pick pet grabbed an item and passed it through to the
     /// character's inventory: `cosUid:u32, slot:u8, [<item body> only if
@@ -1341,18 +1339,17 @@ pub struct InventoryItemDurabilityUpdate {
     pub durability: u32,
 }
 
-/// Largest magic-param list the original accepts, from its own assert:
-/// `m_btMagicParamNum <= MAX_MAGPARAM_PER_ITEM` (`SOItem.cpp:378`, reached
-/// through the `0x20` sub-parser `FUN_008bcdf0`).
+/// Largest magic-param list the original accepts: its `0x20` sub-parser asserts
+/// the count is at most this `[V original handler]`.
 pub const MAX_MAGPARAM_PER_ITEM: usize = 12;
 
 /// 0x3040 — server → client: a delta on one inventory slot. It does **not**
 /// re-embed the item block; only the named fields change.
 ///
 /// **The second byte is a bitmask, not a discriminator.** The original client
-/// tests it with eight independent `if ((mask & bit) != 0)` blocks and reads
-/// one block per set bit in a fixed order (handler `FUN_0088bf30`, module
-/// `SOItem.cpp`; see `docs/net-inventory-events-0x3040.md` in the local RE
+/// checks it with eight independent bit tests and reads
+/// one block per set bit in a fixed order (`[V original handler]`; see
+/// `docs/net-inventory-events-0x3040.md` in the local RE
 /// store). xBot reads it as a `switch` and gets away with it only because the
 /// two cases it handles happen to be single-bit — and this type followed xBot:
 /// a combined push such as `0x18` (durability + quantity) decoded to "unknown
@@ -1365,8 +1362,8 @@ pub const MAX_MAGPARAM_PER_ITEM: usize = 12;
 /// | bit | field | width | tag |
 /// |---|---|---|---|
 /// | `0x01` | `unknown01` (`item+0x34`) | u32 | semantics [U] |
-/// | `0x02` | `plus` | u8 | [S] |
-/// | `0x04` | `variance` | u64 | [S] |
+/// | `0x02` | `plus` | u8 | [U] |
+/// | `0x04` | `variance` | u64 | [U] |
 /// | `0x08` | `quantity` | u16 | [V] |
 /// | `0x10` | `durability` | u32 | [V] |
 /// | `0x20` | `magic_options` | u8 count + count × u64 | [V] |
@@ -1913,7 +1910,7 @@ mod tests {
     }
 
     /// The two avatar ops (35/36): two bare slots, nothing else, and the
-    /// round-trip holds. `[S]` — no capture of either exists on this machine
+    /// round-trip holds. `[U]` — no capture of either exists on this machine
     /// (one `0x7034` dump, 7 frames, all op 8), so this pins the reading, not
     /// a frame.
     #[test]
@@ -2248,7 +2245,7 @@ mod tests {
     /// slot 13 = the first bag slot (already the `+0x0D`-biased wire number).
     #[test]
     fn item_use_request_roundtrips_per_variant() {
-        // FUN_00796660:550 with no target set — HP potion (type_id 0x08EC).
+        // General builder with no target set — HP potion (type_id 0x08EC).
         let simple = ItemUseRequest::Simple {
             slot: 13,
             type_id: 0x08EC,
@@ -2257,7 +2254,7 @@ mod tests {
         assert_eq!(bytes.as_ref(), &[13, 0xEC, 0x08]);
         assert_eq!(ItemUseRequest::try_from(bytes).unwrap(), simple);
 
-        // FUN_00796660:286-300 — slot, type_id, target u32 LE, kind u8.
+        // General builder with a target — slot, type_id, target u32 LE, kind u8.
         let targeted = ItemUseRequest::WithTarget {
             slot: 14,
             type_id: 0x08EC,
@@ -2271,7 +2268,7 @@ mod tests {
         );
         assert_eq!(ItemUseRequest::try_from(bytes).unwrap(), targeted);
 
-        // FUN_007901c0 — slot, type_id, then FUN_0053d8c0's u16 length + ASCII.
+        // Name builder — slot, type_id, then a u16 length + ASCII.
         let named = ItemUseRequest::WithName {
             slot: 15,
             type_id: 0x09EC,

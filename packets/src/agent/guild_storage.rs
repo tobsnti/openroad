@@ -15,7 +15,7 @@
 //! transcribed from xBot-WinForms (`PacketParser.cs:1504-1528`) and
 //! independently confirmed against the original's handlers; the two the doc
 //! calls xBot-blind (0x7250 body, 0xB250 body) are read out of the original
-//! client (`FUN_00820840`, `FUN_0088f630`, #266). No `packet_dump/*.log`
+//! client's builder and handler (#266). No `packet_dump/*.log`
 //! exists for any of the seven opcodes, so nothing here is capture-verified —
 //! which is why every decoder degrades instead of erroring where it can.
 
@@ -37,13 +37,13 @@ pub const GUILD_PERMISSION_STORAGE: u32 = 8;
 
 /// The one 0xB250 error code the original special-cases: guild storage is a
 /// guild-wide exclusive lock, and this arm names the member holding it
-/// (`FUN_0088f630`, formatted into `UIIT_MSG_GUILD_WAREHOUSE_USE`).
+/// (the original's handler formats it into `UIIT_MSG_GUILD_WAREHOUSE_USE`).
 pub const GUILD_STORAGE_IN_USE: u16 = 0x4C48;
 
 /// 0x7250 — client → server "open this NPC's guild storage".
 ///
-/// One `u32` and nothing else: `FUN_00820840` writes a single 4-byte field and
-/// picks the opcode from a bool, so open and close share a body. Note the
+/// One `u32` and nothing else: the original's builder writes a single 4-byte
+/// field and picks the opcode from a bool, so open and close share a body. Note the
 /// contrast with the personal opener 0x703C, which carries a trailing unknown
 /// byte — do not copy that byte here.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
@@ -52,14 +52,14 @@ pub struct GuildStorageOpenRequest {
 }
 
 /// 0x7251 — client → server "close the guild storage". Same builder, same
-/// body as [`GuildStorageOpenRequest`] (`FUN_00820840` with `is_open == 0`).
+/// body as [`GuildStorageOpenRequest`], only with the open flag false.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildStorageCloseRequest {
     pub npc_unique_id: u32,
 }
 
 /// 0x7252 — client → server "send me the contents". The `u32` is the value the
-/// 0xB250 success arm handed us, echoed back (`FUN_00820980` reads it from the
+/// 0xB250 success arm handed us, echoed back (the builder reads it from the
 /// session object at `+0x7c8`, where the 0xB250 handler had just stored it).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildStorageListRequest {
@@ -71,7 +71,7 @@ pub struct GuildStorageListRequest {
 /// `result == 1` is success and carries nothing further; anything else carries
 /// a `u16` error code, and the in-use code [`GUILD_STORAGE_IN_USE`] adds the
 /// holder's name. That conditional-on-a-conditional is the handler's own shape
-/// (`FUN_0088f630`), not a guess.
+/// `[V original handler]`, not a guess.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildStorageResponse {
     pub result: u8,
@@ -154,7 +154,7 @@ impl From<GuildStorageDataChunk> for Bytes {
 }
 
 /// 0x3254 — guild-storage push end: an empty "chunks complete, decode now"
-/// marker. The original's handler reads no fields at all (`FUN_0088e690`) and
+/// marker. The original's handler reads no fields at all, and
 /// xBot ignores its packet argument (`PacketParser.cs:1515-1528`).
 #[derive(Message, Clone, Debug, Default, PartialEq)]
 pub struct GuildStorageDataEnd;
@@ -193,7 +193,7 @@ mod tests {
     fn open_and_close_share_one_body_without_the_personal_trailer() {
         let open = GuildStorageOpenRequest { npc_unique_id: 185 };
         let bytes: Bytes = open.clone().into();
-        // four bytes, no trailing unknown: FUN_00820840 writes one u32
+        // four bytes, no trailing unknown: the original's builder writes one u32
         assert_eq!(bytes.as_ref(), &[0xB9, 0x00, 0x00, 0x00]);
         assert_eq!(GuildStorageOpenRequest::try_from(bytes).unwrap(), open);
 

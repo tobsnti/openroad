@@ -4,7 +4,7 @@
 //!
 //! **Spec-derived, not capture-verified.** No `packet_dump/` sample exists for
 //! any of these; layouts come from statically reading the original client's
-//! parser/builder. Byte-level notes, per-field [V]/[S]/[U] tags and the
+//! parser/builder. Byte-level notes, per-field evidence tags and the
 //! resolving capture for each unknown live in `docs/net-guild-0x3101.md`.
 //!
 //! The record arrives **chunked**: BEGIN, then one or more DATA bodies whose
@@ -299,30 +299,28 @@ macro_rules! guild_op_ack {
 pub(crate) use guild_op_ack;
 
 guild_op_ack! {
-    /// 0xB0F1 — ack for the guild **disband** request (C→S `0x70F1`), handler
-    /// `FUN_00881820`.
+    /// 0xB0F1 — ack for the guild **disband** request (C→S `0x70F1`).
     ///
     /// Which of 0xB0F1/0xB0F2 is disband and which is leave is not stated by
     /// either handler — both refresh the same guild window. Two independent
     /// sources decide it the same way: the C→S catalog pairs `0x70F1` with
     /// disband and `0x70F2` with leave/secede, and the server function that
     /// emits the *kick* ack `0xB0F4` emits `0xB0F2` on its other branch
-    /// (`FUN_005c8b90 @5c8bbe`, "kick vs leave") — so `0xB0F2` is the
-    /// member-side verb and `0xB0F1` is the one left over. Naming is [S],
-    /// the layout is [V].
+    /// (kick vs leave) — so `0xB0F2` is the
+    /// member-side verb and `0xB0F1` is the one left over. Naming is [U],
+    /// the layout is [V original handler].
     GuildDisbandAck when "result == 2"
 }
 
 guild_op_ack! {
-    /// 0xB0F2 — ack for the guild **leave/secede** request (C→S `0x70F2`),
-    /// handler `FUN_008819e0`. See [`GuildDisbandAck`] for why this one is
-    /// leave rather than disband.
+    /// 0xB0F2 — ack for the guild **leave/secede** request (C→S `0x70F2`).
+    /// See [`GuildDisbandAck`] for why this one is leave rather than disband.
     GuildLeaveAck when "result == 2"
 }
 
 guild_op_ack! {
     /// 0xB0F3 — ack for the guild **invite** (C→S `0x70F3`
-    /// [`crate::agent::ingame::GuildInviteRequest`]), handler `FUN_00881950`.
+    /// [`crate::agent::ingame::GuildInviteRequest`]).
     ///
     /// The success arm is deliberately inert in the original: the inviter
     /// learns nothing here, the invitee gets the `0x3080` petition popup. The
@@ -331,47 +329,47 @@ guild_op_ack! {
 }
 
 guild_op_ack! {
-    /// 0xB0F4 — ack for **kicking** a member (C→S `0x70F4`), handler
-    /// `FUN_00881c60`; SilkroadDoc calls it `AGENT_GUILD_KICK`.
+    /// 0xB0F4 — ack for **kicking** a member (C→S `0x70F4`); SilkroadDoc calls
+    /// it `AGENT_GUILD_KICK`.
     ///
     /// The success arm does nothing: the roster change arrives out of band via
-    /// `0x3100`/`0x38F5`. Server writer `FUN_005c8b90 @5c8bbe` emits the single
+    /// `0x3100`/`0x38F5`. The original server's writer emits the single
     /// byte `01`.
     GuildKickAck when "result != 1"
 }
 
 guild_op_ack! {
     /// 0xB0F9 — ack for the notice edit ([`GuildNoticeEditRequest`], C→S
-    /// `0x70F9`), handler `FUN_00881a70`.
+    /// `0x70F9`).
     ///
     /// On success the original shows `UIIT_MSG_GUILD_COMMON_KNOW_REMIND_UPDATE`
-    /// and reads nothing further; the server writer `FUN_005c91a0 @5c91d7`
+    /// and reads nothing further; the original server's writer
     /// agrees byte-for-byte.
     GuildNoticeEditAck when "result != 1"
 }
 
 guild_op_ack! {
-    /// 0xB0FA — ack for **promote/demote** (C→S `0x70FA`), handler
-    /// `FUN_00881bd0`; SilkroadDoc calls it `AGENT_GUILD_PROMOTE`.
+    /// 0xB0FA — ack for **promote/demote** (C→S `0x70FA`); SilkroadDoc calls
+    /// it `AGENT_GUILD_PROMOTE`.
     ///
     /// Success refreshes the guild panel and carries no payload. The server
-    /// side (`FUN_005c8fd0 @5c90aa`) charges a per-grade cost with the grade
+    /// side of the original charges a per-grade cost with the grade
     /// clamped to 2..=5, which is where the C→S grade range comes from — that
     /// request is not modelled here, only its ack.
     GuildPromoteAck when "result == 2"
 }
 
 guild_op_ack! {
-    /// 0xB104 — ack for a member **permission update** (C→S `0x7104`), handler
-    /// `FUN_00881cb0`; SilkroadDoc calls it `AGENT_GUILD_UPDATE_PERMISSION`.
+    /// 0xB104 — ack for a member **permission update** (C→S `0x7104`);
+    /// SilkroadDoc calls it `AGENT_GUILD_UPDATE_PERMISSION`.
     ///
     /// Success is empty; the new bitmask itself arrives inside the guild record
-    /// as [`GuildMember::permissions`]. Server writer `FUN_005c9530 @5c9557`.
+    /// as [`GuildMember::permissions`]. The original server's writer agrees.
     GuildPermissionUpdateAck when "result == 2"
 }
 
-/// 0xB0F6 — ack for the guild **GP donation** (C→S `0x70F6`), handler
-/// `FUN_00881ae0`; SilkroadDoc calls it `AGENT_GUILD_DONATE_OBSOLETE`.
+/// 0xB0F6 — ack for the guild **GP donation** (C→S `0x70F6`); SilkroadDoc
+/// calls it `AGENT_GUILD_DONATE_OBSOLETE`.
 ///
 /// The one member of the cluster whose success arm is not empty: it carries the
 /// donated guild points, which the original formats into
@@ -398,8 +396,8 @@ impl GuildDonateAck {
 ///
 /// A bare entity id. The client drops the guild association on the spawned
 /// object; the server emits one of these per member while disbanding a guild
-/// (`FUN_005c3d80` writes exactly one `u32` per member, the handler
-/// `FUN_008819b0` reads exactly one).
+/// (the original server writes exactly one `u32` per member, and the
+/// original client's handler reads exactly one).
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct EntityGuildRemove {
     pub entity_id: u32,
@@ -407,11 +405,11 @@ pub struct EntityGuildRemove {
 
 /// 0x70F0 — client → server: create a guild.
 ///
-/// Builder `FUN_0081f5a0@37`: one `b4` then an ASCII string
+/// The original's builder writes one `b4` then an ASCII string
 /// (`docs/re/net/outbound/guild-union.md`). The leading `u32` is the guild
 /// **NPC's** unique id — creation is an NPC dialogue in the original, the same
 /// shape the storage opener [`crate::agent::guild_storage::GuildStorageOpenRequest`]
-/// uses — but the decompile only shows the width, so the name is [S] and the
+/// uses — but the decompile only shows the width, so the name is [U] and the
 /// value's origin is the window's target slot.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildCreateRequest {
@@ -419,10 +417,10 @@ pub struct GuildCreateRequest {
     pub name: String,
 }
 
-/// 0x70F1 — client → server: disband the guild. Builder `FUN_0081f710@24`,
-/// body `b4`.
+/// 0x70F1 — client → server: disband the guild.
+/// Body `b4` `[V original builder]`.
 ///
-/// The `u32` comes from the guild window's accessor `FUN_00778b70()`
+/// The `u32` comes from an accessor of the original's guild window
 /// (`this+0x628`) — the *same* slot 0x70F2 reads. Whether that slot holds the
 /// guild id or the current selection is [U], so the field is not named after a
 /// guess; a capture of either request decides it. See [`GuildDisbandAck`] for
@@ -433,8 +431,8 @@ pub struct GuildDisbandRequest {
     pub unk_u32_00: u32,
 }
 
-/// 0x70F2 — client → server: leave/secede from the guild. Builder
-/// `FUN_0081f7d0@24`, body `b4` from the same accessor as
+/// 0x70F2 — client → server: leave/secede from the guild.
+/// Body `b4` `[V original builder]`, from the same accessor as
 /// [`GuildDisbandRequest`].
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct GuildLeaveRequest {
@@ -443,7 +441,7 @@ pub struct GuildLeaveRequest {
 }
 
 /// 0x70F4 — client → server: kick a member, addressed **by name**, not by id.
-/// Builder `FUN_00824190@72`, body `strA`.
+/// Body `strA` `[V original builder]`.
 ///
 /// The name-addressed form is the notable part: every other membership op in
 /// the family carries a `u32`, so a consumer must pass the roster row's name
@@ -453,11 +451,11 @@ pub struct GuildKickRequest {
     pub member_name: String,
 }
 
-/// 0x70FA — client → server: promote/demote a member. Builder
-/// `FUN_0081fdc0@24`, body `b4`.
+/// 0x70FA — client → server: promote/demote a member.
+/// Body `b4` `[V original builder]`.
 ///
 /// The ack's server side charges a cost indexed by the new grade with the grade
-/// clamped to `2..=5` (`FUN_005c8fd0`), so grades 2..5 are the promotable range;
+/// clamped to `2..=5`, so grades 2..5 are the promotable range;
 /// whether this `u32` is that grade or the member id is [U] — one `b4` is all
 /// the builder shows.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]

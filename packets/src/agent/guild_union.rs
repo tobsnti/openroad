@@ -25,7 +25,7 @@ use sro_macro::Serialize;
 use sro_macro_derive::*;
 
 /// 0x70FB — client → server: invite a guild into the union.
-/// Builder `FUN_008201b0@53`, body `b4`.
+/// Body `b4` `[V original builder]`.
 ///
 /// Target-addressed like the guild invite 0x70F3: the `u32` is the invited
 /// guild master's spawned entity id, which is why the original only offers the
@@ -36,7 +36,7 @@ pub struct UnionInviteRequest {
 }
 
 /// 0x70FD — client → server: expel a guild from the union.
-/// Builder `FUN_00820390@23`, body `b4`.
+/// Body `b4` `[V original builder]`.
 #[derive(Message, Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct UnionExpelRequest {
     /// [U] — one `u32`; the builder shows the width, not whether it addresses
@@ -46,7 +46,7 @@ pub struct UnionExpelRequest {
 
 /// 0x70FC — client → server: leave the union. **Empty body.**
 ///
-/// Builder `FUN_008202f0@23` writes no field at all — the server infers the
+/// The original's builder writes no field at all — the server infers the
 /// sender's guild. An empty body is a real layout, not a missing one, which is
 /// why it is modelled rather than skipped: it is the cheapest possible
 /// round-trip anchor for this family.
@@ -67,19 +67,19 @@ impl From<UnionLeaveRequest> for Bytes {
 }
 
 guild_op_ack! {
-    /// 0xB0FB — ack for [`UnionInviteRequest`], handler `FUN_00881dd0`.
+    /// 0xB0FB — ack for [`UnionInviteRequest`].
     UnionInviteAck when "result == 2"
 }
 
 guild_op_ack! {
-    /// 0xB0FC — ack for [`UnionLeaveRequest`], handler `FUN_00881e20`
-    /// (server writer `FUN_005c9210 @5c9237` emits the single byte `01`).
+    /// 0xB0FC — ack for [`UnionLeaveRequest`] (the original server's writer
+    /// emits the single byte `01`).
     UnionLeaveAck when "result == 2"
 }
 
 guild_op_ack! {
-    /// 0xB0FD — ack for [`UnionExpelRequest`], handler `FUN_00881e70`
-    /// (server writer `FUN_005c9270 @5c9297`).
+    /// 0xB0FD — ack for [`UnionExpelRequest`] (the original server's writer
+    /// agrees).
     UnionExpelAck when "result == 2"
 }
 

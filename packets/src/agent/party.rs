@@ -4,7 +4,7 @@
 //! **Spec-derived, not capture-verified.** No `packet_dump/` sample exists for
 //! any opcode in this family, so every layout here comes from statically reading
 //! the original client's parser/builder (xBot `PacketParser.cs`/`PacketBuilder.cs`)
-//! cross-checked against go-sro's handlers. Byte-level notes, per-field [V]/[S]/[U]
+//! cross-checked against go-sro's handlers. Byte-level notes, per-field evidence
 //! tags and the resolving capture for each unknown live in
 //! `docs/net-party-0x3065.md`. Three opcodes (0x706A, 0xB069, 0xB06A) have **no**
 //! original-client code at all and are go-sro-shaped only — flagged per struct.
@@ -13,8 +13,7 @@
 //!
 //! The one place that is **not** spec-derived is the record framing, and it is
 //! the load-bearing one. `docs/re/net/inbound/party.md` decompiled the original's
-//! own handlers — `FUN_00883cc0` (0x3065), `FUN_00886b10` (0x3864),
-//! `FUN_00884660` (0x706D) and the shared member reader `FUN_00883620` — and they
+//! own handlers (0x3065, 0x3864, 0x706D) and the shared member reader, and they
 //! agree on a shape neither xBot nor go-sro states outright: **both the roster
 //! header and every member record begin with a presence bitmask, and only the
 //! fields whose bit is set are on the wire.**
@@ -130,7 +129,7 @@ pub struct PartyPositionWorld {
     pub z: u16,
 }
 
-/// The presence bits of a member record (`FUN_00883620`), and of the field
+/// The presence bits of a member record `[V original handler]`, and of the field
 /// groups a 0x3864 type-6 update selects with the *same* numbering.
 ///
 /// Modelled as a newtype rather than a derived enum for the same reason
@@ -160,7 +159,7 @@ impl PartyMemberMask {
     }
 }
 
-/// One party-member record, as read by the original's shared `FUN_00883620` —
+/// One party-member record, as read by the original's shared member reader —
 /// the parser behind 0x3065's roster, 0x3864's type-2/type-6 deltas *and*
 /// 0x706D's applicant block.
 ///
@@ -236,7 +235,7 @@ impl PartyMemberCore {
 /// The header used to be nine opaque bytes here, because xBot reads it
 /// `[u32][u32][u8 purpose]` while go-sro writes `[u8 0xFF][u32 party_number]
 /// [u32 master_jid]` and naming it either way would have encoded a guess. The
-/// original's own handler `FUN_00883cc0` settles it in go-sro's favour, with
+/// original's own handler settles it in go-sro's favour, with
 /// the twist that the leading byte is a **presence flag** rather than the
 /// constant `0xFF` go-sro happens to send: bit 0 gates the leader id and the
 /// setup byte, bit 1 gates the count and the roster. go-sro's `0xFF` sets both,
@@ -307,7 +306,7 @@ pub struct PartyUpdate {
     #[sro_packet(when = "update_type == 3")]
     pub removal_code: Option<u8>,
     /// Type 6's payload is the **same** mask record as everything else in this
-    /// family — the original calls `FUN_00883620` here too. It used to be its
+    /// family — the original calls the same reader here too. It used to be its
     /// own `PartyMemberUpdate` type testing `kind` for equality, which read
     /// nothing at all for a combined mask such as `0x24` (level *and* hp/mp).
     #[sro_packet(when = "update_type == 6")]
@@ -406,8 +405,8 @@ pub struct PartyMatchListRequest {
 /// The trailing block used to be modelled flat as
 /// `unk_byte01, join_id_repeated, name`, which is right only when the applicant's
 /// mask happens to be `0x11` and drops everything after the name otherwise. The
-/// original's handler `FUN_00884660` reads five `u32`s, one `u8`, and then hands
-/// the rest to `FUN_00883620` — the same member-record parser 0x3065 and 0x3864
+/// original's handler reads five `u32`s, one `u8`, and then hands
+/// the rest to the shared member-record parser — the one 0x3065 and 0x3864
 /// use. So the applicant arrives as an ordinary [`PartyMemberCore`], which is
 /// also where the dialog's level / guild fields come from when the mask names
 /// them.
@@ -426,8 +425,8 @@ pub struct PartyMatchJoinNotify {
 /// The advertised entry echoed back by 0xB069 and 0xB06A on success.
 ///
 /// One type for both because the original delegates both handlers to the same
-/// reader, `FUN_00883780`, whose seven fields match go-sro's record exactly —
-/// which is what promoted these two structs from [S] to [V].
+/// reader, whose seven fields match go-sro's record exactly — which is what
+/// promoted these two structs from [U] to [V original handler].
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchForm {
     pub party_number: u32,
@@ -486,7 +485,8 @@ pub struct PartyMatchDeleteResponse {
 #[derive(Serialize, Deserialize, ByteSize, Clone, Debug, PartialEq)]
 pub struct PartyMatchEntry {
     pub number: u32,
-    /// When the entry was advertised — a **unix timestamp**, seconds, [V].
+    /// When the entry was advertised — a **unix timestamp**, seconds,
+    /// [S meaning from timing].
     ///
     /// go-sro calls this field `masterJID` and openroad inherited the name, but
     /// a capture of a real vSRO 1.188 server refutes it. Two registrations in
@@ -698,7 +698,7 @@ mod tests {
     use bytes::Bytes;
 
     /// A member record with every presence bit set, written in the original's
-    /// read order (`FUN_00883620`). This is the shape the pre-mask fixed-layout
+    /// read order. This is the shape the pre-mask fixed-layout
     /// model used to read, so it doubles as the compatibility anchor.
     fn full_member_bytes() -> Vec<u8> {
         let mut b: Vec<u8> = vec![PartyMemberMask::ALL];
